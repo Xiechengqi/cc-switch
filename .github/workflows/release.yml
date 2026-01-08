@@ -96,21 +96,21 @@ jobs:
       - name: Prepare release asset
         run: |
           if [ "${{ matrix.target }}" = "arm64" ]; then
-            APPIMAGE=$(find src-tauri/target -name "*.AppImage" | head -1 || true)
-            if [ -n "$APPIMAGE" ]; then
-              mv "$APPIMAGE" "CC-Switch-Linux-arm64.AppImage"
-              echo "RELEASE_ASSET=CC-Switch-Linux-arm64.AppImage" >> $GITHUB_ENV
+            DEB=$(find src-tauri/target -name "*.deb" | head -1 || true)
+            if [ -n "$DEB" ]; then
+              mv "$DEB" "CC-Switch-Linux-arm64.deb"
+              echo "RELEASE_ASSET=CC-Switch-Linux-arm64.deb" >> $GITHUB_ENV
             else
-              echo "No AppImage found for arm64" >&2
+              echo "No .deb found for arm64" >&2
               exit 1
             fi
           else
-            APPIMAGE=$(find src-tauri/target/release/bundle -name "*.AppImage" | head -1 || true)
-            if [ -n "$APPIMAGE" ]; then
-              mv "$APPIMAGE" "CC-Switch-Linux-amd64.AppImage"
-              echo "RELEASE_ASSET=CC-Switch-Linux-amd64.AppImage" >> $GITHUB_ENV
+            DEB=$(find src-tauri/target/release/bundle -name "*.deb" | head -1 || true)
+            if [ -n "$DEB" ]; then
+              mv "$DEB" "CC-Switch-Linux-amd64.deb"
+              echo "RELEASE_ASSET=CC-Switch-Linux-amd64.deb" >> $GITHUB_ENV
             else
-              echo "No AppImage found for amd64" >&2
+              echo "No .deb found for amd64" >&2
               exit 1
             fi
           fi
@@ -136,8 +136,8 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release-files
-          cp artifacts/cc-switch-amd64/CC-Switch-Linux-amd64.AppImage release-files/
-          cp artifacts/cc-switch-arm64/CC-Switch-Linux-arm64.AppImage release-files/
+          cp artifacts/cc-switch-amd64/CC-Switch-Linux-amd64.deb release-files/
+          cp artifacts/cc-switch-arm64/CC-Switch-Linux-arm64.deb release-files/
           ls -lh release-files/
 
       - name: Get version from Cargo.toml
@@ -182,15 +182,13 @@ jobs:
 
             ### 下载
 
-            - **Linux AMD64**: `CC-Switch-Linux-amd64.AppImage`
-            - **Linux ARM64**: `CC-Switch-Linux-arm64.AppImage`
+            - **Linux AMD64**: `CC-Switch-Linux-amd64.deb`
+            - **Linux ARM64**: `CC-Switch-Linux-arm64.deb`
 
-            ### 使用说明
+            ### 安装说明
 
-            下载后请赋予执行权限：
             ```bash
-            chmod +x CC-Switch-Linux-*.AppImage
-            ./CC-Switch-Linux-*.AppImage
+            sudo dpkg -i CC-Switch-Linux-*.deb
             ```
           files: release-files/*
           prerelease: false

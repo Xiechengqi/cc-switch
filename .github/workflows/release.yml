@@ -32,9 +32,11 @@ jobs:
           rustup target add aarch64-unknown-linux-musl
 
       - name: Install Zig for cross-compilation
-        uses: mxschmitt/action-zig@v3
-        with:
-          version: 0.13.0
+        run: |
+          ZIG_VERSION="0.13.0"
+          wget -q "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+          tar -xf "zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+          echo "${PWD}/zig-linux-x86_64-${ZIG_VERSION}" >> $GITHUB_PATH
 
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild

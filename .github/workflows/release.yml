@@ -87,7 +87,7 @@ jobs:
           path: ${{ env.RELEASE_ASSET }}
 
   build-arm64:
-    runs-on: ubuntu-22.04-arm64
+    runs-on: [self-hosted, Linux, ARM64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

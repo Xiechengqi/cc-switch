@@ -88,9 +88,9 @@ jobs:
             export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
             export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-            pnpm tauri build --release --target aarch64-unknown-linux-gnu --bundles appimage
+            pnpm tauri build -- --release --target aarch64-unknown-linux-gnu --bundles appimage
           else
-            pnpm tauri build --release --bundles appimage
+            pnpm tauri build -- --release --bundles appimage
           fi
 
       - name: Prepare release asset

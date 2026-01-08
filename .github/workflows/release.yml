@@ -93,6 +93,7 @@ jobs:
 
       - name: Build Tauri App
         run: |
+          cd src-tauri
           if [ "${{ matrix.target }}" = "arm64" ]; then
             cargo zigbuild --release --target aarch64-unknown-linux-musl
           else

@@ -25,21 +25,8 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Add musl targets
-        run: |
-          rustup target add x86_64-unknown-linux-musl
-          rustup target add aarch64-unknown-linux-musl
-
-      - name: Install Zig for cross-compilation
-        run: |
-          ZIG_VERSION="0.13.0"
-          wget -q "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
-          tar -xf "zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
-          echo "${PWD}/zig-linux-x86_64-${ZIG_VERSION}" >> $GITHUB_PATH
-
-      - name: Install cargo-zigbuild
-        run: cargo install cargo-zigbuild
+        with:
+          targets: ${{ matrix.target == 'arm64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu' }}
 
       - name: Install Linux system deps
         shell: bash
@@ -57,7 +44,10 @@ jobs:
             libssl-dev \
             rpm \
             flatpak \
-            flatpak-builder
+            flatpak-builder \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
           # GTK/GLib stack for gdk-3.0, glib-2.0, gio-2.0
           sudo apt-get install -y --no-install-recommends \
             libgtk-3-dev \
@@ -95,17 +85,12 @@ jobs:
         run: |
           cd src-tauri
           if [ "${{ matrix.target }}" = "arm64" ]; then
-            cargo zigbuild --release --target aarch64-unknown-linux-musl
+            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+            export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            pnpm tauri build --release --target aarch64-unknown-linux-gnu --bundles appimage
           else
-            cargo zigbuild --release --target x86_64-unknown-linux-musl
-          fi
-
-      - name: Bundle AppImage
-        run: |
-          if [ "${{ matrix.target }}" = "arm64" ]; then
-            pnpm tauri build --release --target aarch64-unknown-linux-musl --bundles appimage
-          else
-            pnpm tauri build --release --target x86_64-unknown-linux-musl --bundles appimage
+            pnpm tauri build --release --bundles appimage
           fi
 
       - name: Prepare release asset
@@ -120,7 +105,7 @@ jobs:
               exit 1
             fi
           else
-            APPIMAGE=$(find src-tauri/target -name "*.AppImage" | head -1 || true)
+            APPIMAGE=$(find src-tauri/target/release/bundle -name "*.AppImage" | head -1 || true)
             if [ -n "$APPIMAGE" ]; then
               mv "$APPIMAGE" "CC-Switch-Linux-amd64.AppImage"
               echo "RELEASE_ASSET=CC-Switch-Linux-amd64.AppImage" >> $GITHUB_ENV

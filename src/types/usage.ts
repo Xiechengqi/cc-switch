@@ -31,6 +31,8 @@ export interface RequestLog {
   statusCode: number;
   errorMessage?: string;
   createdAt: number;
+  shareId?: string;
+  shareName?: string;
   dataSource?: string;
 }
 
@@ -106,6 +108,7 @@ export interface LogFilters {
   appType?: string;
   providerName?: string;
   model?: string;
+  shareId?: string;
   statusCode?: number;
   startDate?: number;
   endDate?: number;

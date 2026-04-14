@@ -3,17 +3,25 @@ import type { AppId } from "@/lib/api/types";
 import type { McpServer, Provider, Settings } from "@/types";
 import {
   addProvider,
+  addShare,
   deleteProvider,
   deleteSession,
+  getShare,
+  getShareConnectInfo,
+  getTunnelStatus,
   getCurrentProviderId,
   getLiveProviderIds,
   getSessionMessages,
   getProviders,
   listProviders,
+  listShares,
   listSessions,
+  removeShare,
   resetProviderState,
   setCurrentProviderId,
+  setTunnelStatus,
   updateProvider,
+  updateShare,
   updateSortOrder,
   getSettings,
   setSettings,
@@ -218,6 +226,126 @@ export const handlers = [
     const { settings } = await withJson<{ settings: Settings }>(request);
     setSettings(settings);
     return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/list_shares`, () => success(listShares())),
+
+  http.post(`${TAURI_ENDPOINT}/get_share_detail`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    return success(getShare(shareId));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/create_share`, async ({ request }) => {
+    const { params } = await withJson<{
+      params: {
+        name: string;
+        tokenLimit: number;
+        expiresInSecs: number;
+      };
+    }>(request);
+
+    if (listShares().length > 0) {
+      return HttpResponse.json(
+        "当前版本的分享能力基于本地代理服务，一个 cc-switch 只能创建一个分享",
+        { status: 400 },
+      );
+    }
+
+    const now = Date.now();
+    const share = {
+      id: `share-${now}`,
+      name: params.name,
+      shareToken: `token-${now}`,
+      appType: "proxy",
+      providerId: null,
+      apiKey: "",
+      settingsConfig: null,
+      tokenLimit: params.tokenLimit,
+      tokensUsed: 0,
+      requestsCount: 0,
+      expiresAt: new Date(now + params.expiresInSecs * 1000).toISOString(),
+      subdomain: null,
+      tunnelUrl: null,
+      status: "active",
+      createdAt: new Date(now).toISOString(),
+      lastUsedAt: null,
+    };
+
+    addShare(share as any);
+    return success(share);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/delete_share`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    removeShare(shareId);
+    return success(null);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/pause_share`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    updateShare(shareId, { status: "paused" });
+    return success(null);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/resume_share`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    updateShare(shareId, { status: "active" });
+    return success(null);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/start_share_tunnel`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    const share = getShare(shareId);
+    if (!share) {
+      return HttpResponse.json("Share not found", { status: 404 });
+    }
+
+    const info = {
+      tunnelUrl: `https://${shareId}.example.test`,
+      subdomain: `${shareId}-sub`,
+      remotePort: 443,
+      healthy: true,
+    };
+
+    setTunnelStatus(shareId, info);
+    updateShare(shareId, {
+      tunnelUrl: info.tunnelUrl,
+      subdomain: info.subdomain,
+    });
+
+    return success(info);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/stop_share_tunnel`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    setTunnelStatus(shareId, null);
+    return success(null);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_tunnel_status`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    return success(getTunnelStatus(shareId));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_share_connect_info`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    const info = getShareConnectInfo(shareId);
+    if (!info) {
+      return HttpResponse.json("Share not found", { status: 404 });
+    }
+    return success(info);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/configure_tunnel`, async ({ request }) => {
+    const { config } = await withJson<{
+      config: {
+        domain: string;
+      };
+    }>(request);
+    setSettings({
+      portrDomain: config.domain,
+    });
+    return success(null);
   }),
 
   http.post(

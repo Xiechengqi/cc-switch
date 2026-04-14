@@ -80,6 +80,30 @@ pub struct StreamCheckResult {
 pub struct StreamCheckService;
 
 impl StreamCheckService {
+    fn unsupported_official_provider_message(
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Option<String> {
+        if provider.category.as_deref() != Some("official") {
+            return None;
+        }
+
+        let message = match app_type {
+            AppType::Claude => {
+                "Claude Official 使用 Claude Code 官方登录流程，不支持独立流式健康检查。请直接在 Claude Code 中验证。"
+            }
+            AppType::Codex => {
+                "OpenAI Official 使用官方 OAuth 登录流程，不支持独立流式健康检查。请直接在 Codex CLI 中验证。"
+            }
+            AppType::Gemini => {
+                "Google Official 使用官方 OAuth 登录流程，不支持独立流式健康检查。请直接在 Gemini CLI 中验证。"
+            }
+            _ => return None,
+        };
+
+        Some(message.to_string())
+    }
+
     /// 执行流式健康检查（带重试）
     ///
     /// 如果 Provider 配置了单独的测试配置（meta.testConfig），则使用该配置覆盖全局配置
@@ -197,6 +221,19 @@ impl StreamCheckService {
         claude_api_format_override: Option<String>,
     ) -> Result<StreamCheckResult, AppError> {
         let start = Instant::now();
+
+        if let Some(message) = Self::unsupported_official_provider_message(app_type, provider) {
+            return Ok(StreamCheckResult {
+                status: HealthStatus::Failed,
+                success: false,
+                message,
+                response_time_ms: None,
+                http_status: None,
+                model_used: Self::resolve_test_model(app_type, provider, config),
+                tested_at: chrono::Utc::now().timestamp(),
+                retry_count: 0,
+            });
+        }
 
         // OpenCode / OpenClaw 的 settings_config 结构与 Claude/Codex/Gemini 不同
         // （baseUrl / apiKey 直接作为根字段而非嵌套在 env），并且协议由 `api`
@@ -1294,6 +1331,32 @@ mod tests {
             settings_config,
             None,
         )
+    }
+
+    fn make_official_provider(app_name: &str, settings_config: serde_json::Value) -> Provider {
+        let mut provider = Provider::with_id(
+            "official".to_string(),
+            app_name.to_string(),
+            settings_config,
+            None,
+        );
+        provider.category = Some("official".to_string());
+        provider
+    }
+
+    #[tokio::test]
+    async fn test_check_once_returns_clear_message_for_claude_official() {
+        let provider = make_official_provider("Claude Official", serde_json::json!({ "env": {} }));
+        let config = StreamCheckConfig::default();
+
+        let result =
+            StreamCheckService::check_once(&AppType::Claude, &provider, &config, None, None, None)
+                .await
+                .unwrap();
+
+        assert!(!result.success);
+        assert!(result.message.contains("不支持独立流式健康检查"));
+        assert_eq!(result.model_used, config.claude_model);
     }
 
     #[test]

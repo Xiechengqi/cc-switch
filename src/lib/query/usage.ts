@@ -24,6 +24,7 @@ type RequestLogsKey = {
   timeMode: RequestLogsTimeMode;
   rollingWindowSeconds?: number;
   appType?: string;
+  shareId?: string;
   providerName?: string;
   model?: string;
   statusCode?: number;
@@ -49,6 +50,7 @@ export const usageKeys = {
       key.timeMode,
       key.rollingWindowSeconds ?? 0,
       key.appType ?? "",
+      key.shareId ?? "",
       key.providerName ?? "",
       key.model ?? "",
       key.statusCode ?? -1,
@@ -147,6 +149,7 @@ export function useRequestLogs({
     rollingWindowSeconds:
       timeMode === "rolling" ? rollingWindowSeconds : undefined,
     appType: filters.appType,
+    shareId: filters.shareId,
     providerName: filters.providerName,
     model: filters.model,
     statusCode: filters.statusCode,

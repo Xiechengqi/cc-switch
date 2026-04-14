@@ -280,6 +280,21 @@ pub struct AppSettings {
     /// - Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_terminal: Option<String>,
+
+    // ===== Token 分享（portr 内网穿透）=====
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portr_domain: Option<String>,
+    // 旧字段：仅用于反序列化迁移，不再写入
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portr_server_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portr_ssh_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portr_tunnel_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portr_secret_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portr_use_localhost: Option<bool>,
 }
 
 fn default_show_in_tray() -> bool {
@@ -327,6 +342,12 @@ impl Default for AppSettings {
             backup_interval_hours: None,
             backup_retain_count: None,
             preferred_terminal: None,
+            portr_domain: None,
+            portr_server_url: None,
+            portr_ssh_url: None,
+            portr_tunnel_url: None,
+            portr_secret_key: None,
+            portr_use_localhost: None,
         }
     }
 }
@@ -392,6 +413,26 @@ impl AppSettings {
         }
     }
 
+    /// Migrate legacy portr_server_url / portr_tunnel_url to portr_domain.
+    fn migrate_portr_domain(&mut self) {
+        if self.portr_domain.is_some() {
+            return;
+        }
+        // Prefer tunnel_url (pure domain), fall back to server_url
+        if let Some(domain) = self
+            .portr_tunnel_url
+            .clone()
+            .or_else(|| self.portr_server_url.clone())
+        {
+            self.portr_domain = Some(domain);
+            // Clear legacy fields
+            self.portr_server_url = None;
+            self.portr_ssh_url = None;
+            self.portr_tunnel_url = None;
+            self.portr_use_localhost = None;
+        }
+    }
+
     fn load_from_file() -> Self {
         let Some(path) = Self::settings_path() else {
             return Self::default();
@@ -400,6 +441,7 @@ impl AppSettings {
             match serde_json::from_str::<AppSettings>(&content) {
                 Ok(mut settings) => {
                     settings.normalize_paths();
+                    settings.migrate_portr_domain();
                     settings
                 }
                 Err(err) => {

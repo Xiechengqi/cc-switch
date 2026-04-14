@@ -24,6 +24,7 @@ pub mod response_handler;
 pub mod response_processor;
 pub(crate) mod server;
 pub mod session;
+pub(crate) mod share_guard;
 pub(crate) mod sse;
 pub(crate) mod switch_lock;
 pub mod thinking_budget_rectifier;

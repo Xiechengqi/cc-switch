@@ -8,6 +8,7 @@ use crate::proxy::{
     extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
+    share_guard::{check_share_token, ShareGuardResult},
     types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
     ProxyError,
 };
@@ -63,6 +64,10 @@ pub struct RequestContext {
     pub optimizer_config: OptimizerConfig,
     /// Copilot 优化器配置
     pub copilot_optimizer_config: CopilotOptimizerConfig,
+    /// 共享 token 请求：如果本次请求由 X-Share-Token 发起，记录 share_id 用于用量回写
+    pub share_id: Option<String>,
+    /// 共享 token 请求对应的 share 名称，用于请求明细落库
+    pub share_name: Option<String>,
 }
 
 impl RequestContext {
@@ -150,7 +155,7 @@ impl RequestContext {
             session_id
         );
 
-        Ok(Self {
+        let mut this = Self {
             start_time,
             app_config,
             provider,
@@ -164,7 +169,45 @@ impl RequestContext {
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,
-        })
+            share_id: None,
+            share_name: None,
+        };
+
+        // 共享 Token 拦截：若请求带 X-Share-Token，则校验设备级分享并记录 share_id
+        this.try_apply_share(state, headers)?;
+
+        Ok(this)
+    }
+
+    /// 验证 X-Share-Token 并记录 share_id。
+    ///
+    /// - 无 header：保持原始的 provider 路由（正常本地代理）。
+    /// - header 存在且有效：
+    ///   * 这是设备级分享，直接沿用本地代理当前的 app/provider 路由。
+    ///   * 仅记录 share_id，用于额度统计和审计。
+    /// - header 存在但无效/过期/耗尽：返回 `ProxyError::AuthError`。
+    fn try_apply_share(
+        &mut self,
+        state: &ProxyState,
+        headers: &HeaderMap,
+    ) -> Result<(), ProxyError> {
+        match check_share_token(&state.db, headers) {
+            ShareGuardResult::NotShareRequest => Ok(()),
+            ShareGuardResult::Rejected(_code, msg) => Err(ProxyError::AuthError(msg)),
+            ShareGuardResult::Valid(share) => {
+                self.share_id = Some(share.id.clone());
+                self.share_name = Some(share.name.clone());
+                crate::proxy::share_guard::record_share_access(&state.db, &share.id);
+                log::info!(
+                    "[{}] 共享请求 share_id={} app={} provider={}",
+                    self.tag,
+                    share.id,
+                    self.app_type_str,
+                    self.provider.name
+                );
+                Ok(())
+            }
+        }
     }
 
     /// 从 URI 提取模型名称（Gemini 专用）
@@ -263,4 +306,9 @@ impl RequestContext {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    // share 已改为设备级代理穿透，相关 provider 重写逻辑已移除。
 }

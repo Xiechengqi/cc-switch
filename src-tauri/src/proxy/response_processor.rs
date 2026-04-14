@@ -14,6 +14,7 @@ use super::{
 use axum::http::header::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
+use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
 use serde_json::Value;
 use std::{
@@ -391,8 +392,10 @@ fn create_usage_collector(
         .try_read()
         .map(|c| c.enable_logging)
         .unwrap_or(true);
+    let should_log_request = logging_enabled || ctx.share_id.is_some();
     let state = state.clone();
     let provider_id = ctx.provider.id.clone();
+    let provider_name = ctx.provider.name.clone();
     let request_model = ctx.request_model.clone();
     let app_type_str = parser_config.app_type_str;
     let tag = ctx.tag;
@@ -400,11 +403,10 @@ fn create_usage_collector(
     let stream_parser = parser_config.stream_parser;
     let model_extractor = parser_config.model_extractor;
     let session_id = ctx.session_id.clone();
+    let share_id = ctx.share_id.clone();
+    let share_name = ctx.share_name.clone();
 
     SseUsageCollector::new(start_time, move |events, first_token_ms| {
-        if !logging_enabled {
-            return;
-        }
         if let Some(usage) = stream_parser(&events) {
             let model = model_extractor(&events, &request_model);
             let latency_ms = start_time.elapsed().as_millis() as u64;
@@ -413,22 +415,64 @@ fn create_usage_collector(
             let provider_id = provider_id.clone();
             let session_id = session_id.clone();
             let request_model = request_model.clone();
+            let share_id = share_id.clone();
+            let share_name = share_name.clone();
+            let total_tokens = i64::from(usage.input_tokens)
+                + i64::from(usage.output_tokens)
+                + i64::from(usage.cache_read_tokens)
+                + i64::from(usage.cache_creation_tokens);
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let usage_for_log = usage.clone();
+            let usage_for_sync = usage.clone();
+            let session_id_for_log = session_id.clone();
+            let session_id_for_sync = session_id.clone();
+            let share_name_for_log = share_name.clone();
+            let share_name_for_sync = share_name.clone();
+            let provider_name_for_sync = provider_name.clone();
 
             tokio::spawn(async move {
-                log_usage_internal(
-                    &state,
-                    &provider_id,
-                    app_type_str,
-                    &model,
-                    &request_model,
-                    usage,
-                    latency_ms,
-                    first_token_ms,
-                    true, // is_streaming
-                    status_code,
-                    Some(session_id),
-                )
-                .await;
+                if should_log_request {
+                    log_usage_internal(
+                        &state,
+                        &request_id,
+                        &provider_id,
+                        app_type_str,
+                        &model,
+                        &request_model,
+                        usage_for_log,
+                        latency_ms,
+                        first_token_ms,
+                        true, // is_streaming
+                        status_code,
+                        Some(session_id_for_log),
+                        share_id.clone(),
+                        share_name_for_log,
+                    )
+                    .await;
+                }
+                if let Some(sid) = share_id {
+                    crate::tunnel::sync::schedule_sync_share_request_log(build_share_request_log(
+                        &request_id,
+                        &sid,
+                        share_name_for_sync.as_deref().unwrap_or(""),
+                        &provider_id,
+                        &provider_name_for_sync,
+                        app_type_str,
+                        &model,
+                        &request_model,
+                        status_code,
+                        latency_ms,
+                        first_token_ms,
+                        &usage_for_sync,
+                        true,
+                        Some(session_id_for_sync),
+                    ));
+                    crate::proxy::share_guard::record_share_request(
+                        &state.db,
+                        &sid,
+                        total_tokens,
+                    );
+                }
             });
         } else {
             let model = model_extractor(&events, &request_model);
@@ -437,22 +481,54 @@ fn create_usage_collector(
             let provider_id = provider_id.clone();
             let session_id = session_id.clone();
             let request_model = request_model.clone();
+            let share_id = share_id.clone();
+            let share_name = share_name.clone();
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let session_id_for_log = session_id.clone();
+            let session_id_for_sync = session_id.clone();
+            let share_name_for_log = share_name.clone();
+            let share_name_for_sync = share_name.clone();
+            let provider_name_for_sync = provider_name.clone();
 
             tokio::spawn(async move {
-                log_usage_internal(
-                    &state,
-                    &provider_id,
-                    app_type_str,
-                    &model,
-                    &request_model,
-                    TokenUsage::default(),
-                    latency_ms,
-                    first_token_ms,
-                    true, // is_streaming
-                    status_code,
-                    Some(session_id),
-                )
-                .await;
+                if should_log_request {
+                    log_usage_internal(
+                        &state,
+                        &request_id,
+                        &provider_id,
+                        app_type_str,
+                        &model,
+                        &request_model,
+                        TokenUsage::default(),
+                        latency_ms,
+                        first_token_ms,
+                        true, // is_streaming
+                        status_code,
+                        Some(session_id_for_log),
+                        share_id.clone(),
+                        share_name_for_log,
+                    )
+                    .await;
+                }
+                if let Some(sid) = share_id {
+                    crate::tunnel::sync::schedule_sync_share_request_log(build_share_request_log(
+                        &request_id,
+                        &sid,
+                        share_name_for_sync.as_deref().unwrap_or(""),
+                        &provider_id,
+                        &provider_name_for_sync,
+                        app_type_str,
+                        &model,
+                        &request_model,
+                        status_code,
+                        latency_ms,
+                        first_token_ms,
+                        &TokenUsage::default(),
+                        true,
+                        Some(session_id_for_sync),
+                    ));
+                    crate::proxy::share_guard::record_share_request(&state.db, &sid, 0);
+                }
             });
             log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
         }
@@ -469,36 +545,80 @@ fn spawn_log_usage(
     status_code: u16,
     is_streaming: bool,
 ) {
-    // Check enable_logging before spawning the log task
-    if let Ok(config) = state.config.try_read() {
-        if !config.enable_logging {
-            return;
-        }
-    }
+    let enable_logging = state
+        .config
+        .try_read()
+        .map(|config| config.enable_logging)
+        .unwrap_or(true);
 
     let state = state.clone();
     let provider_id = ctx.provider.id.clone();
+    let provider_name = ctx.provider.name.clone();
     let app_type_str = ctx.app_type_str.to_string();
     let model = model.to_string();
     let request_model = request_model.to_string();
     let latency_ms = ctx.latency_ms();
     let session_id = ctx.session_id.clone();
+    let share_id = ctx.share_id.clone();
+    let share_name = ctx.share_name.clone();
+    let total_tokens = i64::from(usage.input_tokens)
+        + i64::from(usage.output_tokens)
+        + i64::from(usage.cache_read_tokens)
+        + i64::from(usage.cache_creation_tokens);
+    let should_log_request = enable_logging || share_id.is_some();
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let usage_for_log = usage.clone();
+    let usage_for_sync = usage.clone();
+    let session_id_for_log = session_id.clone();
+    let session_id_for_sync = session_id.clone();
+    let share_name_for_log = share_name.clone();
+    let share_name_for_sync = share_name.clone();
 
     tokio::spawn(async move {
-        log_usage_internal(
-            &state,
-            &provider_id,
-            &app_type_str,
-            &model,
-            &request_model,
-            usage,
-            latency_ms,
-            None,
-            is_streaming,
-            status_code,
-            Some(session_id),
-        )
-        .await;
+        if should_log_request {
+            log_usage_internal(
+                &state,
+                &request_id,
+                &provider_id,
+                &app_type_str,
+                &model,
+                &request_model,
+                usage_for_log,
+                latency_ms,
+                None,
+                is_streaming,
+                status_code,
+                Some(session_id_for_log),
+                share_id.clone(),
+                share_name_for_log,
+            )
+            .await;
+        }
+
+        // 共享 Token：请求成功进入本地代理后，总是记录一次请求；若解析到 usage，再累计 tokens。
+        if let Some(sid) = share_id {
+            crate::tunnel::sync::schedule_sync_share_request_log(build_share_request_log(
+                &request_id,
+                &sid,
+                share_name_for_sync.as_deref().unwrap_or(""),
+                &provider_id,
+                &provider_name,
+                &app_type_str,
+                &model,
+                &request_model,
+                status_code,
+                latency_ms,
+                None,
+                &usage_for_sync,
+                is_streaming,
+                Some(session_id_for_sync),
+            ));
+            crate::proxy::share_guard::record_share_request(
+                &state.db,
+                &sid,
+                total_tokens,
+            );
+        }
     });
 }
 
@@ -506,6 +626,7 @@ fn spawn_log_usage(
 #[allow(clippy::too_many_arguments)]
 async fn log_usage_internal(
     state: &ProxyState,
+    request_id: &str,
     provider_id: &str,
     app_type: &str,
     model: &str,
@@ -516,6 +637,8 @@ async fn log_usage_internal(
     is_streaming: bool,
     status_code: u16,
     session_id: Option<String>,
+    share_id: Option<String>,
+    share_name: Option<String>,
 ) {
     use super::usage::logger::UsageLogger;
 
@@ -530,6 +653,7 @@ async fn log_usage_internal(
 
     let request_id = usage.dedup_request_id();
 
+
     log::debug!(
         "[{app_type}] 记录请求日志: id={request_id}, provider={provider_id}, model={model}, streaming={is_streaming}, status={status_code}, latency_ms={latency_ms}, first_token_ms={first_token_ms:?}, session={}, input={}, output={}, cache_read={}, cache_creation={}",
         session_id.as_deref().unwrap_or("none"),
@@ -540,7 +664,7 @@ async fn log_usage_internal(
     );
 
     if let Err(e) = logger.log_with_calculation(
-        request_id,
+        request_id.to_string(),
         provider_id.to_string(),
         app_type.to_string(),
         model.to_string(),
@@ -554,8 +678,49 @@ async fn log_usage_internal(
         session_id,
         None, // provider_type
         is_streaming,
+        share_id,
+        share_name,
     ) {
         log::warn!("[USG-001] 记录使用量失败: {e}");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_share_request_log(
+    request_id: &str,
+    share_id: &str,
+    share_name: &str,
+    provider_id: &str,
+    provider_name: &str,
+    app_type: &str,
+    model: &str,
+    request_model: &str,
+    status_code: u16,
+    latency_ms: u64,
+    first_token_ms: Option<u64>,
+    usage: &TokenUsage,
+    is_streaming: bool,
+    session_id: Option<String>,
+) -> crate::tunnel::config::ShareTunnelRequestLog {
+    crate::tunnel::config::ShareTunnelRequestLog {
+        request_id: request_id.to_string(),
+        share_id: share_id.to_string(),
+        share_name: share_name.to_string(),
+        provider_id: provider_id.to_string(),
+        provider_name: provider_name.to_string(),
+        app_type: app_type.to_string(),
+        model: model.to_string(),
+        request_model: request_model.to_string(),
+        status_code,
+        latency_ms,
+        first_token_ms,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_creation_tokens: usage.cache_creation_tokens,
+        is_streaming,
+        session_id,
+        created_at: Utc::now().timestamp(),
     }
 }
 
@@ -789,6 +954,7 @@ mod tests {
 
         log_usage_internal(
             &state,
+            "req-provider-override",
             "provider-1",
             app_type,
             "resp-model",
@@ -798,6 +964,8 @@ mod tests {
             None,
             false,
             200,
+            None,
+            None,
             None,
         )
         .await;
@@ -849,6 +1017,7 @@ mod tests {
 
         log_usage_internal(
             &state,
+            "req-provider-default",
             "provider-2",
             app_type,
             "resp-model",
@@ -858,6 +1027,8 @@ mod tests {
             None,
             false,
             200,
+            None,
+            None,
             None,
         )
         .await;

@@ -319,6 +319,9 @@ export interface Settings {
   // Windows: "cmd" | "powershell" | "wt"
   // Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
   preferredTerminal?: string;
+
+  // ===== Token Share / Tunnel =====
+  portrDomain?: string;
 }
 
 export interface SessionMeta {

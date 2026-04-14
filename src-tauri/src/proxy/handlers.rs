@@ -165,35 +165,80 @@ async fn handle_claude_transform(
         let usage_collector = {
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
+            let provider_name = ctx.provider.name.clone();
             let model = ctx.request_model.clone();
             let status_code = status.as_u16();
             let start_time = ctx.start_time;
+            let share_id = ctx.share_id.clone();
+            let share_name = ctx.share_name.clone();
+            let session_id = ctx.session_id.clone();
 
             SseUsageCollector::new(start_time, move |events, first_token_ms| {
-                if let Some(usage) = TokenUsage::from_claude_stream_events(&events) {
-                    let latency_ms = start_time.elapsed().as_millis() as u64;
-                    let state = state.clone();
-                    let provider_id = provider_id.clone();
-                    let model = model.clone();
+                let latency_ms = start_time.elapsed().as_millis() as u64;
+                let (usage, total_tokens) =
+                    if let Some(u) = TokenUsage::from_claude_stream_events(&events) {
+                        let total = i64::from(u.input_tokens)
+                            + i64::from(u.output_tokens)
+                            + i64::from(u.cache_read_tokens)
+                            + i64::from(u.cache_creation_tokens);
+                        (u, total)
+                    } else {
+                        log::debug!(
+                            "[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录"
+                        );
+                        (TokenUsage::default(), 0)
+                    };
 
-                    tokio::spawn(async move {
-                        log_usage(
-                            &state,
-                            &provider_id,
-                            "claude",
-                            &model,
-                            &model,
-                            usage,
-                            latency_ms,
-                            first_token_ms,
-                            true,
-                            status_code,
-                        )
-                        .await;
-                    });
-                } else {
-                    log::debug!("[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录");
-                }
+                let state = state.clone();
+                let provider_id = provider_id.clone();
+                let provider_name = provider_name.clone();
+                let model = model.clone();
+                let share_id = share_id.clone();
+                let share_name = share_name.clone();
+                let session_id = session_id.clone();
+
+                tokio::spawn(async move {
+                    log_usage(
+                        &state,
+                        &provider_id,
+                        "claude",
+                        &model,
+                        &model,
+                        usage.clone(),
+                        latency_ms,
+                        first_token_ms,
+                        true,
+                        status_code,
+                    )
+                    .await;
+
+                    if let Some(sid) = share_id {
+                        let request_id = uuid::Uuid::new_v4().to_string();
+                        crate::tunnel::sync::schedule_sync_share_request_log(
+                            super::response_processor::build_share_request_log(
+                                &request_id,
+                                &sid,
+                                share_name.as_deref().unwrap_or(""),
+                                &provider_id,
+                                &provider_name,
+                                "claude",
+                                &model,
+                                &model,
+                                status_code,
+                                latency_ms,
+                                first_token_ms,
+                                &usage,
+                                true,
+                                Some(session_id),
+                            ),
+                        );
+                        crate::proxy::share_guard::record_share_request(
+                            &state.db,
+                            &sid,
+                            total_tokens,
+                        );
+                    }
+                });
             })
         };
 
@@ -241,6 +286,7 @@ async fn handle_claude_transform(
         log::error!("[Claude] 解析上游响应失败: {e}, body: {body_str}");
         ProxyError::TransformError(format!("Failed to parse upstream response: {e}"))
     })?;
+    let upstream_response_for_usage = upstream_response.clone();
 
     // 根据 api_format 选择非流式转换器
     let anthropic_response = if api_format == "openai_responses" {
@@ -253,15 +299,25 @@ async fn handle_claude_transform(
         e
     })?;
 
-    // 记录使用量
-    if let Some(usage) = TokenUsage::from_claude_response(&anthropic_response) {
+    // 记录使用量。优先使用转换后的 Anthropic 响应；若转换路径未保留 usage，则回退到原始上游响应。
+    {
         let model = anthropic_response
             .get("model")
             .and_then(|m| m.as_str())
             .unwrap_or("unknown");
         let latency_ms = ctx.latency_ms();
+        let usage =
+            extract_claude_transform_usage(api_format, &upstream_response_for_usage, &anthropic_response);
+        let total_tokens = i64::from(usage.input_tokens)
+            + i64::from(usage.output_tokens)
+            + i64::from(usage.cache_read_tokens)
+            + i64::from(usage.cache_creation_tokens);
 
         let request_model = ctx.request_model.clone();
+        let share_id = ctx.share_id.clone();
+        let share_name = ctx.share_name.clone();
+        let provider_name = ctx.provider.name.clone();
+        let session_id = ctx.session_id.clone();
         tokio::spawn({
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
@@ -273,13 +329,40 @@ async fn handle_claude_transform(
                     "claude",
                     &model,
                     &request_model,
-                    usage,
+                    usage.clone(),
                     latency_ms,
                     None,
                     false,
                     status.as_u16(),
                 )
                 .await;
+
+                if let Some(sid) = share_id {
+                    let request_id = uuid::Uuid::new_v4().to_string();
+                    crate::tunnel::sync::schedule_sync_share_request_log(
+                        super::response_processor::build_share_request_log(
+                            &request_id,
+                            &sid,
+                            share_name.as_deref().unwrap_or(""),
+                            &provider_id,
+                            &provider_name,
+                            "claude",
+                            &model,
+                            &request_model,
+                            status.as_u16(),
+                            latency_ms,
+                            None,
+                            &usage,
+                            false,
+                            Some(session_id),
+                        ),
+                    );
+                    crate::proxy::share_guard::record_share_request(
+                        &state.db,
+                        &sid,
+                        total_tokens,
+                    );
+                }
             }
         });
     }
@@ -304,6 +387,22 @@ async fn handle_claude_transform(
         log::error!("[Claude] 构建响应失败: {e}");
         ProxyError::Internal(format!("Failed to build response: {e}"))
     })
+}
+
+fn extract_claude_transform_usage(
+    api_format: &str,
+    upstream_response: &Value,
+    anthropic_response: &Value,
+) -> TokenUsage {
+    TokenUsage::from_claude_response(anthropic_response)
+        .or_else(|| {
+            if api_format == "openai_responses" {
+                TokenUsage::from_codex_response_auto(upstream_response)
+            } else {
+                TokenUsage::from_openai_response(upstream_response)
+            }
+        })
+        .unwrap_or_default()
 }
 
 fn endpoint_with_query(uri: &axum::http::Uri, endpoint: &str) -> String {
@@ -577,7 +676,7 @@ fn log_forward_error(
     }
 }
 
-/// 记录请求使用量
+/// 记录请求使用量（用于 Claude 格式转换路径）
 #[allow(clippy::too_many_arguments)]
 async fn log_usage(
     state: &ProxyState,
@@ -620,6 +719,8 @@ async fn log_usage(
         None,
         None, // provider_type
         is_streaming,
+        None, // share_id — recorded separately via record_share_request
+        None, // share_name
     ) {
         log::warn!("[USG-001] 记录使用量失败: {e}");
     }

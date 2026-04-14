@@ -12,11 +12,23 @@ export { proxyApi } from "./proxy";
 export { openclawApi } from "./openclaw";
 export { sessionsApi } from "./sessions";
 export { workspaceApi } from "./workspace";
+export { shareApi } from "./share";
 export * as configApi from "./config";
 export * as authApi from "./auth";
 export * as copilotApi from "./copilot";
 export type { ProviderSwitchEvent } from "./providers";
 export type { Prompt } from "./prompts";
+export type {
+  ShareRecord,
+  CreateShareParams,
+  UpdateShareTokenLimitParams,
+  UpdateShareSubdomainParams,
+  UpdateShareApiKeyParams,
+  UpdateShareExpirationParams,
+  TunnelInfo,
+  TunnelConfig,
+  ConnectInfo,
+} from "./share";
 export type {
   CopilotDeviceCodeResponse,
   CopilotAuthStatus,

@@ -122,7 +122,7 @@ impl Database {
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
             app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
-            listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
+            listen_port INTEGER NOT NULL DEFAULT 3000, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
@@ -190,7 +190,8 @@ impl Database {
             duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL,
-            data_source TEXT NOT NULL DEFAULT 'proxy'
+            data_source TEXT NOT NULL DEFAULT 'proxy',
+            share_id TEXT, share_name TEXT
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)", [])
@@ -212,6 +213,9 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        // NOTE: share_id index is created in migrate_v9_to_v10, not here,
+        // because existing databases may not have the share_id column yet
+        // when create_tables runs (before migrations).
 
         // 11. Model Pricing 表
         conn.execute(
@@ -300,7 +304,7 @@ impl Database {
             [],
         );
         let _ = conn.execute(
-            "ALTER TABLE proxy_config ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 15721",
+            "ALTER TABLE proxy_config ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 3000",
             [],
         );
         let _ = conn.execute(
@@ -346,6 +350,35 @@ impl Database {
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_providers_failover
              ON providers(app_type, in_failover_queue, sort_index)",
+            [],
+        );
+
+        // 12. Shares 表（Token 分享）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS shares (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                share_token TEXT NOT NULL UNIQUE,
+                app_type TEXT NOT NULL,
+                provider_id TEXT,
+                api_key TEXT NOT NULL,
+                settings_config TEXT,
+                token_limit INTEGER NOT NULL,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                requests_count INTEGER NOT NULL DEFAULT 0,
+                expires_at TEXT NOT NULL,
+                subdomain TEXT,
+                tunnel_url TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                last_used_at TEXT
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shares_token ON shares(share_token)",
             [],
         );
 
@@ -422,6 +455,16 @@ impl Database {
                         log::info!("迁移数据库从 v8 到 v9（全面补充模型定价）");
                         Self::migrate_v8_to_v9(conn)?;
                         Self::set_user_version(conn, 9)?;
+                    }
+                    9 => {
+                        log::info!("迁移数据库从 v9 到 v10（Token 分享功能）");
+                        Self::migrate_v9_to_v10(conn)?;
+                        Self::set_user_version(conn, 10)?;
+                    }
+                    10 => {
+                        log::info!("迁移数据库从 v10 到 v11（Share 请求日志维度）");
+                        Self::migrate_v10_to_v11(conn)?;
+                        Self::set_user_version(conn, 11)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -546,7 +589,7 @@ impl Database {
                 conn,
                 "proxy_config",
                 "listen_port",
-                "INTEGER NOT NULL DEFAULT 15721",
+                "INTEGER NOT NULL DEFAULT 3000",
             )?;
             Self::add_column_if_missing(
                 conn,
@@ -600,7 +643,8 @@ impl Database {
             total_cost_usd TEXT NOT NULL DEFAULT '0', latency_ms INTEGER NOT NULL, first_token_ms INTEGER,
             duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
-            cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL
+            cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL,
+            share_id TEXT, share_name TEXT
         )", [])?;
 
         // 为已存在的表添加新字段
@@ -619,6 +663,8 @@ impl Database {
         )?;
         Self::add_column_if_missing(conn, "proxy_request_logs", "first_token_ms", "INTEGER")?;
         Self::add_column_if_missing(conn, "proxy_request_logs", "duration_ms", "INTEGER")?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "share_id", "TEXT")?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "share_name", "TEXT")?;
 
         // model_pricing 表
         conn.execute(
@@ -742,7 +788,7 @@ impl Database {
         conn.execute("CREATE TABLE proxy_config_new (
             app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
-            listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
+            listen_port INTEGER NOT NULL DEFAULT 3000, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
@@ -1165,6 +1211,57 @@ impl Database {
             .map_err(|e| AppError::Database(format!("清空模型定价失败: {e}")))?;
         Self::seed_model_pricing(conn)?;
         log::info!("v8 -> v9 迁移完成：已刷新全部模型定价数据");
+        Ok(())
+    }
+
+    /// v9 -> v10 迁移：Token 分享功能
+    fn migrate_v9_to_v10(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS shares (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                share_token TEXT NOT NULL UNIQUE,
+                app_type TEXT NOT NULL,
+                provider_id TEXT,
+                api_key TEXT NOT NULL,
+                settings_config TEXT,
+                token_limit INTEGER NOT NULL,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                requests_count INTEGER NOT NULL DEFAULT 0,
+                expires_at TEXT NOT NULL,
+                subdomain TEXT,
+                tunnel_url TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                last_used_at TEXT
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 shares 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shares_token ON shares(share_token)",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 shares 索引失败: {e}")))?;
+
+        log::info!("v9 -> v10 迁移完成：shares 表（Token 分享）");
+        Ok(())
+    }
+
+    /// v10 -> v11 迁移：为 proxy_request_logs 增加 share 维度
+    fn migrate_v10_to_v11(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "proxy_request_logs")? {
+            Self::add_column_if_missing(conn, "proxy_request_logs", "share_id", "TEXT")?;
+            Self::add_column_if_missing(conn, "proxy_request_logs", "share_name", "TEXT")?;
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_share ON proxy_request_logs(share_id, created_at)",
+                [],
+            )
+            .map_err(|e| AppError::Database(format!("创建 share 请求日志索引失败: {e}")))?;
+        }
+
+        log::info!("v10 -> v11 迁移完成：proxy_request_logs 支持 share 维度");
         Ok(())
     }
 

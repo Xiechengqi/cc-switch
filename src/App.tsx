@@ -21,6 +21,7 @@ import {
   Download,
   FolderArchive,
   Search,
+  Share2,
   FolderOpen,
   KeyRound,
   Shield,
@@ -82,6 +83,7 @@ import EnvPanel from "@/components/openclaw/EnvPanel";
 import ToolsPanel from "@/components/openclaw/ToolsPanel";
 import AgentsDefaultsPanel from "@/components/openclaw/AgentsDefaultsPanel";
 import OpenClawHealthBanner from "@/components/openclaw/OpenClawHealthBanner";
+import { SharePage } from "@/components/share";
 
 type View =
   | "providers"
@@ -91,6 +93,7 @@ type View =
   | "skillsDiscovery"
   | "mcp"
   | "agents"
+  | "shares"
   | "universal"
   | "sessions"
   | "workspace"
@@ -133,6 +136,7 @@ const VALID_VIEWS: View[] = [
   "skillsDiscovery",
   "mcp",
   "agents",
+  "shares",
   "universal",
   "sessions",
   "workspace",
@@ -903,6 +907,8 @@ function App() {
           return (
             <AgentsPanel onOpenChange={() => setCurrentView("providers")} />
           );
+        case "shares":
+          return <SharePage defaultApp={activeApp} />;
         case "universal":
           return (
             <div className="px-6 pt-4">
@@ -1123,6 +1129,7 @@ function App() {
                   {currentView === "skillsDiscovery" && t("skills.title")}
                   {currentView === "mcp" && t("mcp.unifiedPanel.title")}
                   {currentView === "agents" && t("agents.title")}
+                  {currentView === "shares" && t("share.title")}
                   {currentView === "universal" &&
                     t("universalProvider.title", {
                       defaultValue: "统一供应商",
@@ -1377,6 +1384,15 @@ function App() {
                               <Button
                                 variant="ghost"
                                 size="sm"
+                                onClick={() => setCurrentView("shares")}
+                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                                title={t("share.title")}
+                              >
+                                <Share2 className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
                                 onClick={() => setCurrentView("sessions")}
                                 className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
                                 title={t("sessionManager.title")}
@@ -1386,6 +1402,15 @@ function App() {
                             </>
                           ) : (
                             <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setCurrentView("shares")}
+                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                                title={t("share.title")}
+                              >
+                                <Share2 className="w-4 h-4" />
+                              </Button>
                               <Button
                                 variant="ghost"
                                 size="sm"

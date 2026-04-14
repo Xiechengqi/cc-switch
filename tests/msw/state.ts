@@ -1,4 +1,5 @@
 import type { AppId } from "@/lib/api/types";
+import type { ShareRecord, TunnelInfo } from "@/lib/api/share";
 import type {
   McpServer,
   Provider,
@@ -11,6 +12,11 @@ type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
 type McpConfigState = Record<AppId, Record<string, McpServer>>;
 type LiveProviderIdsByApp = Record<"opencode" | "openclaw", string[]>;
+type ShareConnectInfo = {
+  tunnelUrl: string;
+  shareToken: string;
+  subdomain: string;
+};
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -82,6 +88,8 @@ let liveProviderIds: LiveProviderIdsByApp = {
   opencode: [],
   openclaw: [],
 };
+let sharesState: ShareRecord[] = [];
+let tunnelState: Record<string, TunnelInfo | null> = {};
 let settingsState: Settings = {
   showInTray: true,
   minimizeToTrayOnClose: true,
@@ -204,6 +212,8 @@ export const resetProviderState = () => {
     language: "zh",
   };
   appConfigDirOverride = null;
+  sharesState = [];
+  tunnelState = {};
   mcpConfigs = {
     claude: {
       sample: {
@@ -332,6 +342,47 @@ export const getSettings = () =>
 
 export const setSettings = (data: Partial<Settings>) => {
   settingsState = { ...settingsState, ...data };
+};
+
+export const listShares = () =>
+  JSON.parse(JSON.stringify(sharesState)) as ShareRecord[];
+
+export const setShares = (shares: ShareRecord[]) => {
+  sharesState = JSON.parse(JSON.stringify(shares)) as ShareRecord[];
+};
+
+export const addShare = (share: ShareRecord) => {
+  sharesState = [share, ...sharesState.filter((item) => item.id !== share.id)];
+};
+
+export const updateShare = (shareId: string, patch: Partial<ShareRecord>) => {
+  sharesState = sharesState.map((share) =>
+    share.id === shareId ? { ...share, ...patch } : share,
+  );
+};
+
+export const removeShare = (shareId: string) => {
+  sharesState = sharesState.filter((share) => share.id !== shareId);
+  delete tunnelState[shareId];
+};
+
+export const getShare = (shareId: string) =>
+  sharesState.find((share) => share.id === shareId) ?? null;
+
+export const setTunnelStatus = (shareId: string, info: TunnelInfo | null) => {
+  tunnelState[shareId] = info ? ({ ...info } as TunnelInfo) : null;
+};
+
+export const getTunnelStatus = (shareId: string) => tunnelState[shareId] ?? null;
+
+export const getShareConnectInfo = (shareId: string): ShareConnectInfo | null => {
+  const share = getShare(shareId);
+  if (!share) return null;
+  return {
+    tunnelUrl: share.tunnelUrl ?? "",
+    shareToken: share.shareToken,
+    subdomain: share.subdomain ?? "",
+  };
 };
 
 export const getAppConfigDirOverride = () => appConfigDirOverride;

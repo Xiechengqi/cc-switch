@@ -28,6 +28,7 @@ mod services;
 mod session_manager;
 mod settings;
 mod store;
+mod tunnel;
 
 mod tray;
 mod usage_script;
@@ -412,6 +413,21 @@ pub fn run() {
 
             // 设置 AppHandle 用于代理故障转移时的 UI 更新
             app_state.proxy_service.set_app_handle(app.handle().clone());
+
+            // 从 AppSettings 恢复 portr 隧道配置（重启后仍然可用）
+            {
+                let settings = crate::settings::get_settings();
+                let cfg = if let Some(domain) = settings.portr_domain.clone() {
+                    crate::tunnel::config::TunnelConfig { domain }
+                } else {
+                    crate::tunnel::config::TunnelConfig::default_public_service()
+                };
+                let tunnel_manager = app_state.tunnel_manager.clone();
+                tauri::async_runtime::block_on(async move {
+                    tunnel_manager.write().await.set_config(cfg);
+                });
+                log::info!("✓ 已恢复 portr-rs 隧道配置");
+            }
 
             // ============================================================
             // 按表独立判断的导入逻辑（各类数据独立检查，互不影响）
@@ -872,6 +888,28 @@ pub fn run() {
                 // 检查 settings 表中的代理状态，自动恢复代理服务
                 restore_proxy_state_on_startup(&state).await;
 
+                // 恢复 active share 的 tunnel，避免 portr-rs 或桌面端重启后
+                // 本地状态仍是 active，但真实隧道长期停留在离线状态。
+                if let Err(e) = crate::commands::share::restore_active_share_tunnel(&state).await {
+                    log::warn!("恢复 active share tunnel 失败: {e}");
+                }
+
+                let app_handle_for_share_restore = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    const SHARE_RESTORE_INTERVAL_SECS: u64 = 15;
+                    let state = app_handle_for_share_restore.state::<AppState>();
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                        SHARE_RESTORE_INTERVAL_SECS,
+                    ));
+                    interval.tick().await;
+                    loop {
+                        interval.tick().await;
+                        if let Err(e) = crate::commands::share::restore_active_share_tunnel(&state).await {
+                            log::warn!("周期性恢复 active share tunnel 失败: {e}");
+                        }
+                    }
+                });
+
                 // Periodic backup check (on startup)
                 if let Err(e) = state.db.periodic_backup_if_needed() {
                     log::warn!("Periodic backup failed on startup: {e}");
@@ -1287,6 +1325,25 @@ pub fn run() {
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
+            // Token sharing via portr tunnel
+            commands::create_share,
+            commands::delete_share,
+            commands::pause_share,
+            commands::resume_share,
+            commands::reset_share_usage,
+            commands::update_share_token_limit,
+            commands::update_share_api_key,
+            commands::update_share_expiration,
+            commands::update_share_subdomain,
+            commands::enable_share,
+            commands::disable_share,
+            commands::list_shares,
+            commands::get_share_detail,
+            commands::start_share_tunnel,
+            commands::stop_share_tunnel,
+            commands::get_tunnel_status,
+            commands::get_share_connect_info,
+            commands::configure_tunnel,
         ]);
 
     let app = builder

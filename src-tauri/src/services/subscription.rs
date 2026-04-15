@@ -296,8 +296,27 @@ const KNOWN_TIERS: &[&str] = &[
     "five_hour",
     "seven_day",
     "seven_day_opus",
+    "seven_day_omelette",
     "seven_day_sonnet",
 ];
+
+fn normalize_claude_tier_name(name: &str) -> &str {
+    match name {
+        // Anthropic OAuth usage endpoint has been seen returning this variant.
+        "seven_day_omelette" => "seven_day_opus",
+        _ => name,
+    }
+}
+
+/// 使用给定的 access_token 查询 Claude 订阅额度（公开接口，供 ClaudeOAuthManager 使用）
+pub async fn query_claude_quota_with_token(
+    access_token: &str,
+    tool_name: &str,
+) -> SubscriptionQuota {
+    let mut result = query_claude_quota(access_token).await;
+    result.tool = tool_name.to_string();
+    result
+}
 
 /// 查询 Claude 官方订阅额度
 async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
@@ -360,7 +379,7 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
             if let Ok(w) = serde_json::from_value::<ApiUsageWindow>(window.clone()) {
                 if let Some(util) = w.utilization {
                     tiers.push(QuotaTier {
-                        name: tier_name.to_string(),
+                        name: normalize_claude_tier_name(tier_name).to_string(),
                         utilization: util,
                         resets_at: w.resets_at,
                     });
@@ -378,7 +397,7 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
             if let Ok(w) = serde_json::from_value::<ApiUsageWindow>(value.clone()) {
                 if let Some(util) = w.utilization {
                     tiers.push(QuotaTier {
-                        name: key.clone(),
+                        name: normalize_claude_tier_name(key).to_string(),
                         utilization: util,
                         resets_at: w.resets_at,
                     });

@@ -83,6 +83,7 @@ import {
   useOpenclawFormState,
   useCopilotAuth,
   useCodexOauth,
+  useClaudeOauth,
 } from "./hooks";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useSettingsQuery } from "@/lib/query";
@@ -368,6 +369,9 @@ export function ProviderForm({
   // Codex OAuth 认证状态（ChatGPT Plus/Pro 反代）
   const { isAuthenticated: isCodexOauthAuthenticated } = useCodexOauth();
 
+  // Claude OAuth 认证状态（Anthropic 官方订阅）
+  const { isAuthenticated: isClaudeOauthAuthenticated } = useClaudeOauth();
+
   // 选中的 GitHub 账号 ID（多账号支持）
   const [selectedGitHubAccountId, setSelectedGitHubAccountId] = useState<
     string | null
@@ -377,6 +381,11 @@ export function ProviderForm({
   const [selectedCodexAccountId, setSelectedCodexAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "codex_oauth"));
+
+  // 选中的 Claude 账号 ID（Claude OAuth 多账号支持）
+  const [selectedClaudeAccountId, setSelectedClaudeAccountId] = useState<
+    string | null
+  >(() => resolveManagedAccountId(initialData?.meta, "claude_oauth"));
 
   const {
     codexAuth,
@@ -812,6 +821,9 @@ export function ProviderForm({
     const isCodexOauthProvider =
       templatePreset?.providerType === "codex_oauth" ||
       initialData?.meta?.providerType === "codex_oauth";
+    const isClaudeOauthProvider =
+      templatePreset?.providerType === "claude_oauth" ||
+      initialData?.meta?.providerType === "claude_oauth";
     // GitHub Copilot 必须先登录才能添加
     if (isCopilotProvider && !isCopilotAuthenticated) {
       toast.error(
@@ -826,6 +838,15 @@ export function ProviderForm({
       toast.error(
         t("codexOauth.loginRequired", {
           defaultValue: "请先登录 ChatGPT 账号",
+        }),
+      );
+      return;
+    }
+    // Claude OAuth 必须先登录才能添加
+    if (isClaudeOauthProvider && !isClaudeOauthAuthenticated) {
+      toast.error(
+        t("claudeOauth.loginRequired", {
+          defaultValue: "请先登录 Claude 账号",
         }),
       );
       return;
@@ -1068,7 +1089,13 @@ export function ProviderForm({
               authProvider: "codex_oauth",
               accountId: selectedCodexAccountId ?? undefined,
             }
-          : undefined,
+          : isClaudeOauthProvider
+            ? {
+                source: "managed_account",
+                authProvider: "claude_oauth",
+                accountId: selectedClaudeAccountId ?? undefined,
+              }
+            : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         isCopilotProvider && selectedGitHubAccountId
@@ -1543,13 +1570,19 @@ export function ProviderForm({
                 templatePreset?.providerType === "codex_oauth" ||
                 initialData?.meta?.providerType === "codex_oauth"
               }
+              isClaudeOauthPreset={
+                templatePreset?.providerType === "claude_oauth" ||
+                initialData?.meta?.providerType === "claude_oauth"
+              }
               usesOAuth={
                 templatePreset?.requiresOAuth === true ||
                 templatePreset?.providerType === "github_copilot" ||
                 initialData?.meta?.providerType === "github_copilot" ||
                 baseUrl.includes("githubcopilot.com") ||
                 templatePreset?.providerType === "codex_oauth" ||
-                initialData?.meta?.providerType === "codex_oauth"
+                initialData?.meta?.providerType === "codex_oauth" ||
+                templatePreset?.providerType === "claude_oauth" ||
+                initialData?.meta?.providerType === "claude_oauth"
               }
               isCopilotAuthenticated={isCopilotAuthenticated}
               selectedGitHubAccountId={selectedGitHubAccountId}
@@ -1557,6 +1590,9 @@ export function ProviderForm({
               isCodexOauthAuthenticated={isCodexOauthAuthenticated}
               selectedCodexAccountId={selectedCodexAccountId}
               onCodexAccountSelect={setSelectedCodexAccountId}
+              isClaudeOauthAuthenticated={isClaudeOauthAuthenticated}
+              selectedClaudeAccountId={selectedClaudeAccountId}
+              onClaudeAccountSelect={setSelectedClaudeAccountId}
               templateValueEntries={templateValueEntries}
               templateValues={templateValues}
               templatePresetName={templatePreset?.name || ""}

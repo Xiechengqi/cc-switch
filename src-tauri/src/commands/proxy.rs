@@ -2,10 +2,13 @@
 //!
 //! 提供前端调用的 API 接口
 
+use crate::database::Database;
 use crate::error::AppError;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
+use crate::services::share::ShareService;
 use crate::store::AppState;
+use std::sync::Arc;
 
 /// 启动代理服务器（仅启动服务，不接管 Live 配置）
 #[tauri::command]
@@ -39,7 +42,9 @@ pub async fn set_proxy_takeover_for_app(
     state
         .proxy_service
         .set_takeover_for_app(&app_type, enabled)
-        .await
+        .await?;
+    sync_active_share_support(&state.db).await;
+    Ok(())
 }
 
 /// 获取代理服务器状态
@@ -117,7 +122,20 @@ pub async fn update_proxy_config_for_app(
     let db = &state.db;
     db.update_proxy_config_for_app(config)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    sync_active_share_support(db).await;
+    Ok(())
+}
+
+/// 当代理开关变更时，重新同步 active share 的 support 状态到 portr-rs
+async fn sync_active_share_support(db: &Arc<Database>) {
+    if let Ok(shares) = ShareService::list(db) {
+        for share in shares {
+            if share.status == "active" {
+                crate::tunnel::sync::schedule_sync_share(share, db);
+            }
+        }
+    }
 }
 
 async fn get_default_cost_multiplier_internal(
@@ -259,7 +277,7 @@ pub async fn switch_proxy_provider(
         .get_provider_by_id(&provider_id, &app_type)
         .map_err(|e| format!("读取供应商失败: {e}"))?
         .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
-    if provider.category.as_deref() == Some("official") {
+    if provider.is_blocked_by_proxy_takeover() {
         return Err(
             "代理接管模式下不能切换到官方供应商 (Cannot switch to official provider during proxy takeover)"
                 .to_string(),

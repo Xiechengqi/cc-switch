@@ -88,6 +88,15 @@ impl StreamCheckService {
             return None;
         }
 
+        let is_claude_oauth = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("claude_oauth");
+        if *app_type == AppType::Claude && is_claude_oauth {
+            return None;
+        }
+
         let message = match app_type {
             AppType::Claude => {
                 "Claude Official 使用 Claude Code 官方登录流程，不支持独立流式健康检查。请直接在 Claude Code 中验证。"
@@ -454,6 +463,12 @@ impl StreamCheckService {
             // Anthropic native: full Claude CLI headers
             let os_name = Self::get_os_name();
             let arch_name = Self::get_arch_name();
+            let is_claude_oauth = auth.strategy == AuthStrategy::ClaudeOAuth;
+            let anthropic_beta = if is_claude_oauth {
+                "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
+            } else {
+                "claude-code-20250219,interleaved-thinking-2025-05-14"
+            };
 
             request_builder =
                 request_builder.header("authorization", format!("Bearer {}", auth.api_key));
@@ -466,11 +481,7 @@ impl StreamCheckService {
             request_builder = request_builder
                 // Anthropic required headers
                 .header("anthropic-version", "2023-06-01")
-                .header(
-                    "anthropic-beta",
-                    "claude-code-20250219,interleaved-thinking-2025-05-14",
-                )
-                .header("anthropic-dangerous-direct-browser-access", "true")
+                .header("anthropic-beta", anthropic_beta)
                 // Content type headers
                 .header("content-type", "application/json")
                 .header("accept", "application/json")
@@ -491,6 +502,11 @@ impl StreamCheckService {
                 // Other headers
                 .header("sec-fetch-mode", "cors")
                 .header("connection", "keep-alive");
+
+            if auth.strategy == AuthStrategy::Anthropic {
+                request_builder =
+                    request_builder.header("anthropic-dangerous-direct-browser-access", "true");
+            }
         }
 
         // 供应商自定义 headers 最后追加，允许覆盖内置默认值（例如 user-agent）

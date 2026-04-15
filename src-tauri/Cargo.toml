@@ -78,11 +78,13 @@ indexmap = { version = "2", features = ["serde"] }
 rust_decimal = "1.33"
 uuid = { version = "1.11", features = ["v4"] }
 sha2 = "0.10"
+urlencoding = "2.1"
 json5 = "0.4"
 json-five = "0.3.1"
 russh = { version = "0.46", default-features = false, features = ["flate2"] }
 russh-keys = { version = "0.46", default-features = false }
 rand = "0.8"
+twox-hash = "1.6"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

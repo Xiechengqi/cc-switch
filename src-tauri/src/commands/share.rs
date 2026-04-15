@@ -9,7 +9,7 @@ use crate::tunnel::config::{
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::net::TcpStream;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +70,7 @@ pub async fn create_share(
         params.api_key,
     )
     .map_err(|e: AppError| e.to_string())?;
-    crate::tunnel::sync::claim_share_subdomain(&share)
+    crate::tunnel::sync::claim_share_subdomain(&share, &state.db)
         .await
         .map_err(|e| format!("claim subdomain failed: {e}"))?;
     ShareService::create(&state.db, share).map_err(|e: AppError| e.to_string())
@@ -150,7 +150,7 @@ pub async fn update_share_subdomain(
     let mut next = share.clone();
     next.subdomain = Some(requested_subdomain.clone());
 
-    crate::tunnel::sync::claim_share_subdomain(&next)
+    crate::tunnel::sync::claim_share_subdomain(&next, &state.db)
         .await
         .map_err(|e| format!("claim subdomain failed: {e}"))?;
 
@@ -177,7 +177,10 @@ pub async fn update_share_subdomain(
 }
 
 #[tauri::command]
-pub async fn enable_share(state: State<'_, AppState>, share_id: String) -> Result<TunnelInfo, String> {
+pub async fn enable_share(
+    state: State<'_, AppState>,
+    share_id: String,
+) -> Result<TunnelInfo, String> {
     ShareService::resume(&state.db, &share_id).map_err(|e: AppError| e.to_string())?;
     start_share_tunnel_inner(state.inner(), &share_id)
         .await
@@ -189,7 +192,9 @@ pub async fn disable_share(state: State<'_, AppState>, share_id: String) -> Resu
     {
         let mut mgr = state.tunnel_manager.write().await;
         if mgr.get_info(&share_id).is_some() {
-            mgr.stop_tunnel(&share_id).await.map_err(|e| e.to_string())?;
+            mgr.stop_tunnel(&share_id)
+                .await
+                .map_err(|e| e.to_string())?;
         }
     }
     ShareService::pause(&state.db, &share_id).map_err(|e: AppError| e.to_string())
@@ -248,13 +253,13 @@ async fn start_share_tunnel_inner(
 ) -> Result<TunnelInfo, AppError> {
     let share = ShareService::get_detail(&state.db, share_id)?
         .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+    let support = crate::tunnel::sync::query_share_support(&state.db).await;
 
     let subdomain = share
         .subdomain
         .clone()
         .unwrap_or_else(|| format!("share-{}", &share.id[..8]));
-
-    crate::tunnel::sync::claim_share_subdomain(&share)
+    crate::tunnel::sync::claim_share_subdomain(&share, &state.db)
         .await
         .map_err(|e| AppError::Message(format!("claim subdomain failed: {e}")))?;
 
@@ -278,6 +283,7 @@ async fn start_share_tunnel_inner(
             share_status: share.status.clone(),
             created_at: share.created_at.clone(),
             expires_at: share.expires_at.clone(),
+            support,
         }),
     };
 
@@ -292,6 +298,16 @@ async fn start_share_tunnel_inner(
         .db
         .update_share_tunnel(share_id, &info.subdomain, &info.tunnel_url)
         .map_err(AppError::from)?;
+
+    if let Err(e) =
+        crate::tunnel::sync::sync_recent_share_request_logs(&state.db, share_id, 50).await
+    {
+        log::warn!(
+            "[Share] Failed to backfill recent request logs for share {}: {}",
+            share_id,
+            e
+        );
+    }
 
     Ok(info)
 }
@@ -366,11 +382,7 @@ fn current_tunnel_config() -> TunnelConfig {
 }
 
 async fn current_proxy_local_addr(state: &AppState) -> Result<String, AppError> {
-    let config = state
-        .db
-        .get_proxy_config()
-        .await
-        .map_err(AppError::from)?;
+    let config = state.db.get_proxy_config().await.map_err(AppError::from)?;
     Ok(proxy_local_addr_from_config(&config))
 }
 

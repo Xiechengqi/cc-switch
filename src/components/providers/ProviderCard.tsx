@@ -175,13 +175,18 @@ export function ProviderCard({
 
   const usageEnabled = provider.meta?.usage_script?.enabled ?? false;
   const isOfficial = isOfficialProvider(provider, appId);
-  const isOfficialBlockedByProxy =
-    isProxyTakeover && (provider.category === "official" || isOfficial);
   const isCopilot =
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.usage_script?.templateType === "github_copilot";
   const isCodexOauth =
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
+  const isClaudeOauth =
+    provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH;
+  const isManagedOauthProvider = isCopilot || isCodexOauth || isClaudeOauth;
+  const isOfficialBlockedByProxy =
+    isProxyTakeover &&
+    !isManagedOauthProvider &&
+    (provider.category === "official" || isOfficial);
 
   // 获取用量数据以判断是否有多套餐
   // 累加模式应用（OpenCode/OpenClaw）：使用 isInConfig 代替 isCurrent
@@ -432,7 +437,8 @@ export function ProviderCard({
               onEdit={() => onEdit(provider)}
               onDuplicate={() => onDuplicate(provider)}
               onTest={
-                onTest && !isOfficial && !isCopilot && !isCodexOauth
+                onTest &&
+                ((!isOfficial && !isCopilot && !isCodexOauth) || isClaudeOauth)
                   ? () => onTest(provider)
                   : undefined
               }

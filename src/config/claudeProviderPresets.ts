@@ -54,7 +54,8 @@ export interface ProviderPreset {
   // 供应商类型标识（用于特殊供应商检测）
   // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
   // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
-  providerType?: "github_copilot" | "codex_oauth";
+  // - "claude_oauth": Claude 官方订阅 OAuth（Anthropic 官方）
+  providerType?: "github_copilot" | "codex_oauth" | "claude_oauth";
 
   // 是否需要 OAuth 认证（而非 API Key）
   requiresOAuth?: boolean;
@@ -72,6 +73,8 @@ export const providerPresets: ProviderPreset[] = [
     },
     isOfficial: true, // 明确标识为官方预设
     category: "official",
+    providerType: "claude_oauth",
+    requiresOAuth: true,
     theme: {
       icon: "claude",
       backgroundColor: "#D97757",

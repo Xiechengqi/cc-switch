@@ -1,6 +1,7 @@
 //! 流式健康检查命令
 
 use crate::app_config::AppType;
+use crate::commands::claude_oauth::ClaudeOAuthState;
 use crate::commands::copilot::CopilotAuthState;
 use crate::error::AppError;
 use crate::services::stream_check::{
@@ -15,6 +16,7 @@ use tauri::State;
 pub async fn stream_check_provider(
     state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
+    claude_oauth_state: State<'_, ClaudeOAuthState>,
     app_type: AppType,
     provider_id: String,
 ) -> Result<StreamCheckResult, AppError> {
@@ -25,8 +27,12 @@ pub async fn stream_check_provider(
         .get(&provider_id)
         .ok_or_else(|| AppError::Message(format!("供应商 {provider_id} 不存在")))?;
 
-    let auth_override = resolve_copilot_auth_override(provider, &copilot_state).await?;
-    let base_url_override = resolve_copilot_base_url_override(provider, &copilot_state).await?;
+    let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
+        .await?
+        .or(resolve_claude_oauth_auth_override(provider, &claude_oauth_state).await?);
+    let base_url_override = resolve_copilot_base_url_override(provider, &copilot_state)
+        .await?
+        .or(resolve_claude_oauth_base_url_override(provider));
     let claude_api_format_override = resolve_claude_api_format_override(
         &app_type,
         provider,
@@ -59,6 +65,7 @@ pub async fn stream_check_provider(
 pub async fn stream_check_all_providers(
     state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
+    claude_oauth_state: State<'_, ClaudeOAuthState>,
     app_type: AppType,
     proxy_targets_only: bool,
 ) -> Result<Vec<(String, StreamCheckResult)>, AppError> {
@@ -88,9 +95,12 @@ pub async fn stream_check_all_providers(
             }
         }
 
-        let auth_override = resolve_copilot_auth_override(&provider, &copilot_state).await?;
-        let base_url_override =
-            resolve_copilot_base_url_override(&provider, &copilot_state).await?;
+        let auth_override = resolve_copilot_auth_override(&provider, &copilot_state)
+            .await?
+            .or(resolve_claude_oauth_auth_override(&provider, &claude_oauth_state).await?);
+        let base_url_override = resolve_copilot_base_url_override(&provider, &copilot_state)
+            .await?
+            .or(resolve_claude_oauth_base_url_override(&provider));
         let claude_api_format_override = resolve_claude_api_format_override(
             &app_type,
             &provider,
@@ -228,6 +238,53 @@ fn is_copilot_provider(provider: &crate::provider::Provider) -> bool {
             .unwrap_or(false)
 }
 
+async fn resolve_claude_oauth_auth_override(
+    provider: &crate::provider::Provider,
+    claude_oauth_state: &State<'_, ClaudeOAuthState>,
+) -> Result<Option<crate::proxy::providers::AuthInfo>, AppError> {
+    if !is_claude_oauth_provider(provider) {
+        return Ok(None);
+    }
+
+    let auth_manager = claude_oauth_state.0.read().await;
+    let account_id = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("claude_oauth"));
+
+    let token = match account_id.as_deref() {
+        Some(id) => auth_manager
+            .get_valid_token_for_account(id)
+            .await
+            .map_err(|e| AppError::Message(format!("Claude OAuth 认证失败: {e}")))?,
+        None => auth_manager
+            .get_valid_token()
+            .await
+            .map_err(|e| AppError::Message(format!("Claude OAuth 认证失败: {e}")))?,
+    };
+
+    Ok(Some(crate::proxy::providers::AuthInfo::new(
+        token,
+        crate::proxy::providers::AuthStrategy::ClaudeOAuth,
+    )))
+}
+
+fn is_claude_oauth_provider(provider: &crate::provider::Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.provider_type.as_deref())
+        == Some("claude_oauth")
+}
+
+fn resolve_claude_oauth_base_url_override(provider: &crate::provider::Provider) -> Option<String> {
+    if !is_claude_oauth_provider(provider) {
+        return None;
+    }
+
+    Some("https://api.anthropic.com".to_string())
+}
+
 async fn resolve_claude_api_format_override(
     app_type: &AppType,
     provider: &crate::provider::Provider,
@@ -278,7 +335,9 @@ async fn resolve_claude_api_format_override(
 
 #[cfg(test)]
 mod tests {
-    use super::is_copilot_provider;
+    use super::{
+        is_claude_oauth_provider, is_copilot_provider, resolve_claude_oauth_base_url_override,
+    };
     use crate::provider::{Provider, ProviderMeta};
     use serde_json::json;
 
@@ -349,6 +408,37 @@ mod tests {
         assert_eq!(
             provider.meta.as_ref().and_then(|meta| meta.is_full_url),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn claude_oauth_base_url_override_uses_official_endpoint() {
+        let provider = Provider {
+            id: "p4".to_string(),
+            name: "Claude OAuth".to_string(),
+            settings_config: json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:21852"
+                }
+            }),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                provider_type: Some("claude_oauth".to_string()),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert!(is_claude_oauth_provider(&provider));
+        assert_eq!(
+            resolve_claude_oauth_base_url_override(&provider).as_deref(),
+            Some("https://api.anthropic.com")
         );
     }
 }

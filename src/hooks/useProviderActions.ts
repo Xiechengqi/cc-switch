@@ -18,6 +18,7 @@ import {
 } from "@/lib/query";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { openclawKeys } from "@/hooks/useOpenClaw";
+import { PROVIDER_TYPES } from "@/config/constants";
 
 /**
  * Hook for managing provider actions (add, update, delete, switch)
@@ -189,8 +190,18 @@ export function useProviderActions(
         );
       }
 
-      // Block official providers when proxy takeover is active
-      if (isProxyTakeover && provider.category === "official") {
+      // Block only direct official providers when proxy takeover is active.
+      // Managed OAuth providers (Copilot / Codex OAuth / Claude OAuth) are
+      // proxy-backed entries and must remain switchable.
+      const isManagedOauthProvider =
+        provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
+        provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
+        provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH;
+      if (
+        isProxyTakeover &&
+        provider.category === "official" &&
+        !isManagedOauthProvider
+      ) {
         toast.error(
           t("notifications.officialBlockedByProxy", {
             defaultValue:

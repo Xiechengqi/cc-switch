@@ -3,8 +3,11 @@ import { useTranslation } from "react-i18next";
 import { ExternalLink, Play, Power, Trash2, Info, Copy, RefreshCw } from "lucide-react";
 import type { ShareRecord, TunnelConfig, TunnelInfo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import { SHARE_REFRESH_INTERVAL_MS } from "@/lib/query/share";
+import { useProxyTakeoverStatus } from "@/lib/query/proxy";
 import { ShareStatusBadge } from "./ShareStatusBadge";
 import { ShareRequestLogTable } from "./ShareRequestLogTable";
 import {
@@ -47,6 +50,7 @@ export function ShareCard({
   const isBusy = pendingAction === share.id;
   const tunnelDisplay = resolveShareTunnelInfo(share, tunnelConfig);
   const tunnelRuntimeStatus = getShareTunnelRuntimeStatus(share, tunnelStatus);
+  const { data: takeoverStatus } = useProxyTakeoverStatus();
   const [refreshCountdown, setRefreshCountdown] = useState(
     Math.ceil(SHARE_REFRESH_INTERVAL_MS / 1000),
   );
@@ -71,6 +75,23 @@ export function ShareCard({
               <h3 className="text-lg font-semibold">{share.name}</h3>
               <ShareStatusBadge status={share.status} />
               <ShareStatusBadge kind="tunnel" status={tunnelRuntimeStatus} />
+              {(["claude", "codex", "gemini"] as const).map((app) => {
+                const active = takeoverStatus?.[app] ?? false;
+                return (
+                  <Badge
+                    key={app}
+                    variant="outline"
+                    className={cn(
+                      "rounded-full px-2.5 py-1 text-[11px] font-medium capitalize",
+                      active
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                        : "border-muted bg-muted/50 text-muted-foreground",
+                    )}
+                  >
+                    {app.charAt(0).toUpperCase() + app.slice(1)}
+                  </Badge>
+                );
+              })}
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
               <span>

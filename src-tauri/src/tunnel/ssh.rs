@@ -60,7 +60,9 @@ impl SshTunnel {
         let ssh_addr = &lease.ssh_addr;
         let mut handle = client::connect(ssh_config, ssh_addr, handler)
             .await
-            .map_err(|e| TunnelError::SshConnect(describe_connect_error(ssh_addr, &e.to_string())))?;
+            .map_err(|e| {
+                TunnelError::SshConnect(describe_connect_error(ssh_addr, &e.to_string()))
+            })?;
 
         let auth_ok = handle
             .authenticate_password(&lease.ssh_username, &lease.ssh_password)

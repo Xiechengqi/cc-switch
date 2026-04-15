@@ -19,3 +19,4 @@ export { useOmoDraftState } from "./useOmoDraftState";
 export { useOpenclawFormState } from "./useOpenclawFormState";
 export { useCopilotAuth } from "./useCopilotAuth";
 export { useCodexOauth } from "./useCodexOauth";
+export { useClaudeOauth } from "./useClaudeOauth";

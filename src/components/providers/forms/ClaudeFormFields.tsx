@@ -29,6 +29,7 @@ import EndpointSpeedTest from "./EndpointSpeedTest";
 import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
 import { CopilotAuthSection } from "./CopilotAuthSection";
 import { CodexOAuthSection } from "./CodexOAuthSection";
+import { ClaudeOAuthSection } from "./ClaudeOAuthSection";
 import {
   copilotGetModels,
   copilotGetModelsForAccount,
@@ -76,6 +77,12 @@ interface ClaudeFormFieldsProps {
   isCodexOauthAuthenticated?: boolean;
   selectedCodexAccountId?: string | null;
   onCodexAccountSelect?: (accountId: string | null) => void;
+
+  // Claude OAuth (Anthropic 官方订阅)
+  isClaudeOauthPreset?: boolean;
+  isClaudeOauthAuthenticated?: boolean;
+  selectedClaudeAccountId?: string | null;
+  onClaudeAccountSelect?: (accountId: string | null) => void;
 
   // Template Values
   templateValueEntries: Array<[string, TemplateValueConfig]>;
@@ -144,6 +151,9 @@ export function ClaudeFormFields({
   isCodexOauthPreset,
   selectedCodexAccountId,
   onCodexAccountSelect,
+  isClaudeOauthPreset,
+  selectedClaudeAccountId,
+  onClaudeAccountSelect,
   templateValueEntries,
   templateValues,
   templatePresetName,
@@ -372,6 +382,14 @@ export function ClaudeFormFields({
         <CodexOAuthSection
           selectedAccountId={selectedCodexAccountId}
           onAccountSelect={onCodexAccountSelect}
+        />
+      )}
+
+      {/* Claude OAuth 认证 (Anthropic 官方订阅) */}
+      {isClaudeOauthPreset && (
+        <ClaudeOAuthSection
+          selectedAccountId={selectedClaudeAccountId}
+          onAccountSelect={onClaudeAccountSelect}
         />
       )}
 

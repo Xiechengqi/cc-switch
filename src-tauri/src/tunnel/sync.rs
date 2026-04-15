@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use crate::database::ShareRecord;
+use crate::database::{Database, ShareRecord};
 use crate::settings;
-use crate::tunnel::config::{ShareTunnelMetadata, ShareTunnelRequestLog, TunnelConfig};
+use crate::tunnel::config::{
+    ShareSupport, ShareTunnelMetadata, ShareTunnelRequestLog, TunnelConfig,
+};
 use crate::tunnel::identity;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 const BATCH_DELAY_MS: u64 = 1500;
@@ -28,25 +31,48 @@ fn global_state() -> &'static Mutex<SyncState> {
     STATE.get_or_init(|| Mutex::new(SyncState::default()))
 }
 
-pub fn schedule_sync_share(share: ShareRecord) {
+pub fn schedule_sync_share(share: ShareRecord, db: &Arc<Database>) {
+    let db = Arc::clone(db);
     tauri::async_runtime::spawn(async move {
-        if let Err(err) = enqueue_op(ShareSyncOp::Upsert(share_metadata_from_record(&share))).await
-        {
+        let support = query_share_support(&db).await;
+        let mut metadata = share_metadata_from_record(&share);
+        metadata.support = support;
+        if let Err(err) = enqueue_op(ShareSyncOp::Upsert(metadata)).await {
             log::debug!("[TunnelSync] enqueue upsert failed: {err}");
         }
     });
 }
 
-pub async fn claim_share_subdomain(share: &ShareRecord) -> Result<(), String> {
-    claim_share_subdomain_inner(share, true).await
+pub(crate) async fn query_share_support(db: &Database) -> ShareSupport {
+    ShareSupport {
+        claude: db
+            .get_proxy_config_for_app("claude")
+            .await
+            .map(|c| c.enabled)
+            .unwrap_or(false),
+        codex: db
+            .get_proxy_config_for_app("codex")
+            .await
+            .map(|c| c.enabled)
+            .unwrap_or(false),
+        gemini: db
+            .get_proxy_config_for_app("gemini")
+            .await
+            .map(|c| c.enabled)
+            .unwrap_or(false),
+    }
 }
 
-pub async fn send_share_heartbeat(share_id: &str) -> Result<(), String> {
-    send_share_heartbeat_inner(share_id, true).await
+pub async fn claim_share_subdomain(
+    share: &ShareRecord,
+    db: &Arc<Database>,
+) -> Result<(), String> {
+    claim_share_subdomain_inner(share, db, true).await
 }
 
 async fn claim_share_subdomain_inner(
     share: &ShareRecord,
+    db: &Arc<Database>,
     allow_identity_reset_retry: bool,
 ) -> Result<(), String> {
     let config = load_config();
@@ -54,25 +80,30 @@ async fn claim_share_subdomain_inner(
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
+    let support = query_share_support(db).await;
+    let mut metadata = share_metadata_from_record(share);
+    metadata.support = support;
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
     let resp = client
         .post(url)
         .json(&serde_json::json!({
             "installationId": identity.installation_id,
-            "share": share_metadata_from_record(share),
+            "share": metadata,
         }))
         .send()
         .await
         .map_err(|e| e.to_string())?;
     match handle_claim_response(resp, &identity.installation_id).await {
         Ok(()) => Ok(()),
-        Err(message) if allow_identity_reset_retry && message.contains("installation not found") => {
+        Err(message)
+            if allow_identity_reset_retry && message.contains("installation not found") =>
+        {
             log::warn!(
                 "[TunnelSync] portr-rs no longer recognizes installation {}, re-registering identity before subdomain claim",
                 identity.installation_id
             );
             identity::reset_identity().map_err(|e| e.to_string())?;
-            Box::pin(claim_share_subdomain_inner(share, false)).await
+            Box::pin(claim_share_subdomain_inner(share, db, false)).await
         }
         Err(message) => Err(message),
     }?;
@@ -88,60 +119,22 @@ async fn handle_claim_response(
     }
 
     let status = resp.status();
-    let text = resp.text().await.unwrap_or_else(|_| format!("HTTP {status}"));
+    let text = resp
+        .text()
+        .await
+        .unwrap_or_else(|_| format!("HTTP {status}"));
     let message = serde_json::from_str::<serde_json::Value>(&text)
         .ok()
-        .and_then(|value| value.get("message").and_then(|msg| msg.as_str()).map(str::to_string))
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(|msg| msg.as_str())
+                .map(str::to_string)
+        })
         .unwrap_or(text);
 
     Err(format!(
         "claim subdomain request for installation {installation_id} failed: {message}"
-    ))
-}
-
-async fn send_share_heartbeat_inner(
-    share_id: &str,
-    allow_identity_reset_retry: bool,
-) -> Result<(), String> {
-    let config = load_config();
-    let client = reqwest::Client::new();
-    let identity = identity::ensure_identity(&client, &config)
-        .await
-        .map_err(|e| e.to_string())?;
-    let url = format!("{}/v1/shares/heartbeat", config.get_server_addr());
-    let resp = client
-        .post(url)
-        .json(&serde_json::json!({
-            "installationId": identity.installation_id,
-            "shareId": share_id,
-        }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if resp.status().is_success() {
-        return Ok(());
-    }
-
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_else(|_| format!("HTTP {status}"));
-    let message = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|value| value.get("message").and_then(|msg| msg.as_str()).map(str::to_string))
-        .unwrap_or(text);
-
-    if allow_identity_reset_retry && message.contains("installation not found") {
-        log::warn!(
-            "[TunnelSync] portr-rs no longer recognizes installation {}, re-registering identity before heartbeat",
-            identity.installation_id
-        );
-        identity::reset_identity().map_err(|e| e.to_string())?;
-        return Box::pin(send_share_heartbeat_inner(share_id, false)).await;
-    }
-
-    Err(format!(
-        "share heartbeat request for installation {} failed: {message}",
-        identity.installation_id
     ))
 }
 
@@ -159,6 +152,41 @@ pub fn schedule_sync_share_request_log(log: ShareTunnelRequestLog) {
             log::debug!("[TunnelSync] enqueue share request log failed: {err}");
         }
     });
+}
+
+pub async fn sync_recent_share_request_logs(
+    db: &crate::database::Database,
+    share_id: &str,
+    limit: usize,
+) -> Result<(), String> {
+    let logs = db
+        .get_recent_share_request_logs(share_id, limit)
+        .map_err(|e| e.to_string())?;
+    if logs.is_empty() {
+        return Ok(());
+    }
+
+    let config = load_config();
+    let client = reqwest::Client::new();
+    let identity = identity::ensure_identity(&client, &config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "{}/v1/share-request-logs/batch-sync",
+        config.get_server_addr()
+    );
+    client
+        .post(url)
+        .json(&serde_json::json!({
+            "installationId": identity.installation_id,
+            "logs": logs,
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 async fn enqueue_op(op: ShareSyncOp) -> Result<(), String> {
@@ -184,7 +212,9 @@ async fn enqueue_op(op: ShareSyncOp) -> Result<(), String> {
 async fn enqueue_request_log(log: ShareTunnelRequestLog) -> Result<(), String> {
     let state = global_state();
     let mut guard = state.lock().await;
-    guard.pending_request_logs.insert(log.request_id.clone(), log);
+    guard
+        .pending_request_logs
+        .insert(log.request_id.clone(), log);
     if !guard.flush_scheduled {
         guard.flush_scheduled = true;
         tauri::async_runtime::spawn(async {
@@ -251,7 +281,10 @@ async fn flush_pending() -> Result<(), String> {
     }
 
     if !request_logs.is_empty() {
-        let url = format!("{}/v1/share-request-logs/batch-sync", config.get_server_addr());
+        let url = format!(
+            "{}/v1/share-request-logs/batch-sync",
+            config.get_server_addr()
+        );
         client
             .post(url)
             .json(&serde_json::json!({
@@ -290,5 +323,6 @@ fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMetadata {
         share_status: share.status.clone(),
         created_at: share.created_at.clone(),
         expires_at: share.expires_at.clone(),
+        support: Default::default(),
     }
 }

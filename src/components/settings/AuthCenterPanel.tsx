@@ -1,9 +1,10 @@
-import { Github, ShieldCheck } from "lucide-react";
+import { ExternalLink, Github, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
-import { CodexIcon } from "@/components/BrandIcons";
+import { ClaudeIcon, CodexIcon } from "@/components/BrandIcons";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
+import { ClaudeOAuthSection } from "@/components/providers/forms/ClaudeOAuthSection";
 
 export function AuthCenterPanel() {
   const { t } = useTranslation();
@@ -32,6 +33,35 @@ export function AuthCenterPanel() {
             {t("settings.authCenter.beta", { defaultValue: "Beta" })}
           </Badge>
         </div>
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+            <ClaudeIcon size={20} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h4 className="font-medium">Claude Official</h4>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.authCenter.claudeOauthDescription", {
+                defaultValue: "管理 Claude 官方订阅账号",
+              })}
+            </p>
+          </div>
+          <a
+            href="https://claude.ai"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-blue-500 hover:underline"
+          >
+            {t("settings.authCenter.claudeLink", {
+              defaultValue: "Claude 订阅链接",
+            })}
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
+
+        <ClaudeOAuthSection />
       </section>
 
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">

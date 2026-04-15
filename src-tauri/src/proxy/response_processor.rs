@@ -467,11 +467,7 @@ fn create_usage_collector(
                         true,
                         Some(session_id_for_sync),
                     ));
-                    crate::proxy::share_guard::record_share_request(
-                        &state.db,
-                        &sid,
-                        total_tokens,
-                    );
+                    crate::proxy::share_guard::record_share_request(&state.db, &sid, total_tokens);
                 }
             });
         } else {
@@ -613,11 +609,7 @@ fn spawn_log_usage(
                 is_streaming,
                 Some(session_id_for_sync),
             ));
-            crate::proxy::share_guard::record_share_request(
-                &state.db,
-                &sid,
-                total_tokens,
-            );
+            crate::proxy::share_guard::record_share_request(&state.db, &sid, total_tokens);
         }
     });
 }
@@ -652,7 +644,6 @@ async fn log_usage_internal(
     };
 
     let request_id = usage.dedup_request_id();
-
 
     log::debug!(
         "[{app_type}] 记录请求日志: id={request_id}, provider={provider_id}, model={model}, streaming={is_streaming}, status={status_code}, latency_ms={latency_ms}, first_token_ms={first_token_ms:?}, session={}, input={}, output={}, cache_read={}, cache_creation={}",

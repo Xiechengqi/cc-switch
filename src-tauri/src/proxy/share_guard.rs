@@ -42,11 +42,7 @@ pub fn record_share_access(db: &Arc<Database>, share_id: &str) {
 }
 
 /// Record token usage once a request finishes and usage has been parsed.
-pub fn record_share_request(
-    db: &Arc<Database>,
-    share_id: &str,
-    total_tokens: i64,
-) {
+pub fn record_share_request(db: &Arc<Database>, share_id: &str, total_tokens: i64) {
     if total_tokens > 0 {
         if let Err(e) = ShareService::record_tokens(db, share_id, total_tokens) {
             log::error!("[ShareGuard] Failed to record token usage for share {share_id}: {e}");

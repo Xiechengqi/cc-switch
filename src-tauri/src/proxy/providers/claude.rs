@@ -154,12 +154,18 @@ impl ClaudeAdapter {
     /// 获取供应商类型
     ///
     /// 根据 base_url 和 auth_mode 检测具体的供应商类型：
+    /// - ClaudeOAuth: meta.provider_type 为 claude_oauth
     /// - GitHubCopilot: meta.provider_type 为 github_copilot 或 base_url 包含 githubcopilot.com
     /// - CodexOAuth: meta.provider_type 为 codex_oauth
     /// - OpenRouter: base_url 包含 openrouter.ai
     /// - ClaudeAuth: auth_mode 为 bearer_only
     /// - Claude: 默认 Anthropic 官方
     pub fn provider_type(&self, provider: &Provider) -> ProviderType {
+        // 检测 Claude OAuth（官方订阅）
+        if self.is_claude_oauth(provider) {
+            return ProviderType::ClaudeOAuth;
+        }
+
         // 检测 Codex OAuth (ChatGPT Plus/Pro)
         if self.is_codex_oauth(provider) {
             return ProviderType::CodexOAuth;
@@ -181,6 +187,16 @@ impl ClaudeAdapter {
         }
 
         ProviderType::Claude
+    }
+
+    /// 检测是否为 Claude OAuth 供应商（官方订阅）
+    fn is_claude_oauth(&self, provider: &Provider) -> bool {
+        if let Some(meta) = provider.meta.as_ref() {
+            if meta.provider_type.as_deref() == Some("claude_oauth") {
+                return true;
+            }
+        }
+        false
     }
 
     /// 检测是否为 Codex OAuth 供应商（ChatGPT Plus/Pro 反代）
@@ -361,9 +377,9 @@ impl ProviderAdapter for ClaudeAdapter {
             return Ok(url.trim_end_matches('/').to_string());
         }
 
-        Err(ProxyError::ConfigError(
-            "Claude Provider 缺少 base_url 配置".to_string(),
-        ))
+        // Claude Official（官方订阅）没有配置 base_url，使用默认的 Anthropic API 地址
+        log::info!("[Claude] 未找到 base_url 配置，使用默认 Anthropic API 地址");
+        Ok("https://api.anthropic.com".to_string())
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
@@ -385,6 +401,15 @@ impl ProviderAdapter for ClaudeAdapter {
             return Some(AuthInfo::new(
                 "codex_oauth_placeholder".to_string(),
                 AuthStrategy::CodexOAuth,
+            ));
+        }
+
+        // Claude OAuth（官方订阅）使用占位符
+        // 实际的 access_token 由 ClaudeOAuthManager 动态提供
+        if provider_type == ProviderType::ClaudeOAuth {
+            return Some(AuthInfo::new(
+                "claude_oauth_placeholder".to_string(),
+                AuthStrategy::ClaudeOAuth,
             ));
         }
 
@@ -432,6 +457,14 @@ impl ProviderAdapter for ClaudeAdapter {
         let bearer = format!("Bearer {}", auth.api_key);
         match auth.strategy {
             AuthStrategy::Anthropic | AuthStrategy::ClaudeAuth | AuthStrategy::Bearer => {
+                vec![(
+                    HeaderName::from_static("authorization"),
+                    HeaderValue::from_str(&bearer).unwrap(),
+                )]
+            }
+            AuthStrategy::ClaudeOAuth => {
+                // Claude 官方订阅 OAuth：仅使用 Authorization: Bearer
+                // OAuth token 不是 API key，不能放在 x-api-key 头（会被当作无效 key 拒绝）
                 vec![(
                     HeaderName::from_static("authorization"),
                     HeaderValue::from_str(&bearer).unwrap(),

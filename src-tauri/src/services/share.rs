@@ -52,7 +52,7 @@ impl ShareService {
             ));
         }
         db.create_share(&record)?;
-        crate::tunnel::sync::schedule_sync_share(record.clone());
+        crate::tunnel::sync::schedule_sync_share(record.clone(), db);
         Ok(record)
     }
 
@@ -70,7 +70,7 @@ impl ShareService {
     pub fn pause(db: &Arc<Database>, share_id: &str) -> Result<(), AppError> {
         db.update_share_status(share_id, "paused")?;
         if let Some(share) = db.get_share_by_id(share_id)? {
-            crate::tunnel::sync::schedule_sync_share(share);
+            crate::tunnel::sync::schedule_sync_share(share, db);
         }
         Ok(())
     }
@@ -78,7 +78,7 @@ impl ShareService {
     pub fn resume(db: &Arc<Database>, share_id: &str) -> Result<(), AppError> {
         db.update_share_status(share_id, "active")?;
         if let Some(share) = db.get_share_by_id(share_id)? {
-            crate::tunnel::sync::schedule_sync_share(share);
+            crate::tunnel::sync::schedule_sync_share(share, db);
         }
         Ok(())
     }
@@ -131,7 +131,7 @@ impl ShareService {
     pub fn record_request(db: &Arc<Database>, share_id: &str) -> Result<(), AppError> {
         db.increment_share_requests(share_id)?;
         if let Some(share) = db.get_share_by_id(share_id)? {
-            crate::tunnel::sync::schedule_sync_share(share);
+            crate::tunnel::sync::schedule_sync_share(share, db);
         }
         Ok(())
     }
@@ -145,7 +145,7 @@ impl ShareService {
             }
         }
         if let Some(share) = db.get_share_by_id(share_id)? {
-            crate::tunnel::sync::schedule_sync_share(share);
+            crate::tunnel::sync::schedule_sync_share(share, db);
         }
         Ok(())
     }
@@ -164,7 +164,7 @@ impl ShareService {
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
-        crate::tunnel::sync::schedule_sync_share(updated.clone());
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
         Ok(updated)
     }
 
@@ -192,7 +192,7 @@ impl ShareService {
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
-        crate::tunnel::sync::schedule_sync_share(updated.clone());
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
         Ok(updated)
     }
 
@@ -206,7 +206,7 @@ impl ShareService {
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
-        crate::tunnel::sync::schedule_sync_share(updated.clone());
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
         Ok(updated)
     }
 
@@ -220,7 +220,7 @@ impl ShareService {
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
-        crate::tunnel::sync::schedule_sync_share(updated.clone());
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
         Ok(updated)
     }
 
@@ -250,7 +250,7 @@ impl ShareService {
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
-        crate::tunnel::sync::schedule_sync_share(updated.clone());
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
         Ok(updated)
     }
 
@@ -278,7 +278,9 @@ impl ShareService {
 fn normalize_subdomain(value: &str) -> Result<String, AppError> {
     let value = value.trim().to_ascii_lowercase();
     if value.len() < 3 || value.len() > 63 {
-        return Err(AppError::Message("子域名长度必须在 3 到 63 个字符之间".to_string()));
+        return Err(AppError::Message(
+            "子域名长度必须在 3 到 63 个字符之间".to_string(),
+        ));
     }
     if value.starts_with('-') || value.ends_with('-') {
         return Err(AppError::Message("子域名不能以 - 开头或结尾".to_string()));

@@ -65,6 +65,21 @@ impl Provider {
             in_failover_queue: false,
         }
     }
+
+    /// 是否为通过代理访问的托管 OAuth 官方订阅。
+    pub fn is_managed_oauth_provider(&self) -> bool {
+        matches!(
+            self.meta
+                .as_ref()
+                .and_then(|meta| meta.provider_type.as_deref()),
+            Some("github_copilot" | "codex_oauth" | "claude_oauth")
+        )
+    }
+
+    /// 代理接管模式下是否应阻止切换到该供应商。
+    pub fn is_blocked_by_proxy_takeover(&self) -> bool {
+        self.category.as_deref() == Some("official") && !self.is_managed_oauth_provider()
+    }
 }
 
 /// 供应商管理器
@@ -786,6 +801,53 @@ mod tests {
 
         assert_eq!(manager.get_all_providers().len(), 1);
         assert!(manager.get_all_providers().contains_key("provider-1"));
+    }
+
+    #[test]
+    fn managed_oauth_official_providers_are_allowed_during_proxy_takeover() {
+        for provider_type in ["github_copilot", "codex_oauth", "claude_oauth"] {
+            let provider = Provider {
+                id: format!("provider-{provider_type}"),
+                name: provider_type.to_string(),
+                settings_config: json!({}),
+                website_url: None,
+                category: Some("official".to_string()),
+                created_at: None,
+                sort_index: None,
+                notes: None,
+                meta: Some(ProviderMeta {
+                    provider_type: Some(provider_type.to_string()),
+                    ..ProviderMeta::default()
+                }),
+                icon: None,
+                icon_color: None,
+                in_failover_queue: false,
+            };
+
+            assert!(provider.is_managed_oauth_provider());
+            assert!(!provider.is_blocked_by_proxy_takeover());
+        }
+    }
+
+    #[test]
+    fn direct_official_provider_is_blocked_during_proxy_takeover() {
+        let provider = Provider {
+            id: "official".to_string(),
+            name: "Official".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert!(!provider.is_managed_oauth_provider());
+        assert!(provider.is_blocked_by_proxy_takeover());
     }
 
     #[test]

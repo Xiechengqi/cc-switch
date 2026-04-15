@@ -77,6 +77,14 @@ pub struct TunnelInfo {
     pub healthy: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareSupport {
+    pub claude: bool,
+    pub codex: bool,
+    pub gemini: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareTunnelMetadata {
@@ -92,6 +100,8 @@ pub struct ShareTunnelMetadata {
     pub share_status: String,
     pub created_at: String,
     pub expires_at: String,
+    #[serde(default)]
+    pub support: ShareSupport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

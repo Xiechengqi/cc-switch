@@ -4,11 +4,71 @@
 
 use crate::error::AppError;
 use crate::proxy::types::*;
+use crate::tunnel::config::ShareTunnelRequestLog;
 use rust_decimal::Decimal;
 
 use super::super::{lock_conn, Database};
 
 impl Database {
+    pub fn get_recent_share_request_logs(
+        &self,
+        share_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ShareTunnelRequestLog>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = match conn.prepare(
+            "SELECT request_id, share_id, COALESCE(share_name, ''), provider_id, provider_id,
+                    app_type, model, COALESCE(request_model, model), status_code, latency_ms,
+                    first_token_ms, input_tokens, output_tokens, cache_read_tokens,
+                    cache_creation_tokens, is_streaming, session_id, created_at
+             FROM proxy_request_logs
+             WHERE share_id = ?1
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        ) {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                let msg = err.to_string();
+                if msg.contains("no such column: share_id") {
+                    return Ok(Vec::new());
+                }
+                return Err(AppError::Database(msg));
+            }
+        };
+
+        let rows = stmt
+            .query_map(rusqlite::params![share_id, limit as i64], |row| {
+                Ok(ShareTunnelRequestLog {
+                    request_id: row.get(0)?,
+                    share_id: row.get(1)?,
+                    share_name: row.get(2)?,
+                    provider_id: row.get(3)?,
+                    provider_name: row.get(4)?,
+                    app_type: row.get(5)?,
+                    model: row.get(6)?,
+                    request_model: row.get(7)?,
+                    status_code: row.get::<_, i64>(8)? as u16,
+                    latency_ms: row.get::<_, i64>(9)? as u64,
+                    first_token_ms: row.get::<_, Option<i64>>(10)?.map(|v| v as u64),
+                    input_tokens: row.get::<_, i64>(11)? as u32,
+                    output_tokens: row.get::<_, i64>(12)? as u32,
+                    cache_read_tokens: row.get::<_, i64>(13)? as u32,
+                    cache_creation_tokens: row.get::<_, i64>(14)? as u32,
+                    is_streaming: row.get::<_, i64>(15)? != 0,
+                    session_id: row.get(16)?,
+                    created_at: row.get(17)?,
+                })
+            })
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let mut logs = Vec::new();
+        for row in rows {
+            logs.push(row.map_err(|e| AppError::Database(e.to_string()))?);
+        }
+        logs.reverse();
+        Ok(logs)
+    }
+
     // ==================== Global Proxy Config ====================
 
     /// 获取全局代理配置（统一字段）

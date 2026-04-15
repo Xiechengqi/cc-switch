@@ -101,7 +101,6 @@ impl TunnelManager {
             let checker = HealthChecker::new(
                 config.clone(),
                 req.subdomain.clone(),
-                req.share_metadata.as_ref().map(|share| share.share_id.clone()),
                 self.http_client.clone(),
                 healthy.clone(),
             );

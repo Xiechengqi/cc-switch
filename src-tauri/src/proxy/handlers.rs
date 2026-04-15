@@ -33,6 +33,8 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
+const PORTR_REQUEST_LOGS_LIMIT: usize = 10;
+
 // ============================================================================
 // 健康检查和状态查询（简单端点）
 // ============================================================================
@@ -46,6 +48,69 @@ pub async fn health_check() -> (StatusCode, Json<Value>) {
             "timestamp": chrono::Utc::now().to_rfc3339(),
         })),
     )
+}
+
+/// Internal health endpoint used by portr-rs route probing.
+///
+/// This endpoint is intentionally separate from the public `/health` route so
+/// probe traffic can be identified and kept out of share usage accounting.
+pub async fn portr_health_probe(headers: axum::http::HeaderMap) -> impl IntoResponse {
+    let is_probe = headers
+        .get("X-Portr-Probe")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if !is_probe {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })));
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "status": "healthy",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        })),
+    )
+}
+
+/// Internal request-log endpoint used by portr-rs for share log recovery.
+///
+/// The request must carry a valid share token. Only logs for that share are
+/// returned, so portr-rs can backfill its local drawer state after a DB reset.
+pub async fn portr_recent_request_logs(
+    State(state): State<ProxyState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    match crate::proxy::share_guard::check_share_token(&state.db, &headers) {
+        crate::proxy::share_guard::ShareGuardResult::NotShareRequest => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "share token required" })),
+        ),
+        crate::proxy::share_guard::ShareGuardResult::Rejected(code, message) => (
+            StatusCode::from_u16(code).unwrap_or(StatusCode::FORBIDDEN),
+            Json(json!({ "error": message })),
+        ),
+        crate::proxy::share_guard::ShareGuardResult::Valid(share) => {
+            match state
+                .db
+                .get_recent_share_request_logs(&share.id, PORTR_REQUEST_LOGS_LIMIT)
+            {
+                Ok(logs) => (
+                    StatusCode::OK,
+                    Json(json!({
+                        "shareId": share.id,
+                        "logs": logs,
+                    })),
+                ),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": err.to_string() })),
+                ),
+            }
+        }
+    }
 }
 
 /// 获取服务状态
@@ -183,9 +248,7 @@ async fn handle_claude_transform(
                             + i64::from(u.cache_creation_tokens);
                         (u, total)
                     } else {
-                        log::debug!(
-                            "[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录"
-                        );
+                        log::debug!("[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录");
                         (TokenUsage::default(), 0)
                     };
 
@@ -306,8 +369,11 @@ async fn handle_claude_transform(
             .and_then(|m| m.as_str())
             .unwrap_or("unknown");
         let latency_ms = ctx.latency_ms();
-        let usage =
-            extract_claude_transform_usage(api_format, &upstream_response_for_usage, &anthropic_response);
+        let usage = extract_claude_transform_usage(
+            api_format,
+            &upstream_response_for_usage,
+            &anthropic_response,
+        );
         let total_tokens = i64::from(usage.input_tokens)
             + i64::from(usage.output_tokens)
             + i64::from(usage.cache_read_tokens)
@@ -357,11 +423,7 @@ async fn handle_claude_transform(
                             Some(session_id),
                         ),
                     );
-                    crate::proxy::share_guard::record_share_request(
-                        &state.db,
-                        &sid,
-                        total_tokens,
-                    );
+                    crate::proxy::share_guard::record_share_request(&state.db, &sid, total_tokens);
                 }
             }
         });

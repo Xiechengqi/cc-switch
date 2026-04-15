@@ -827,6 +827,18 @@ pub fn run() {
                 log::info!("✓ CodexOAuthManager initialized");
             }
 
+            // 初始化 ClaudeOAuthManager (Claude 官方订阅 OAuth 反代)
+            {
+                use crate::proxy::providers::claude_oauth_auth::ClaudeOAuthManager;
+                use commands::ClaudeOAuthState;
+                use tokio::sync::RwLock;
+
+                let app_config_dir = crate::config::get_app_config_dir();
+                let claude_oauth_manager = ClaudeOAuthManager::new(app_config_dir);
+                app.manage(ClaudeOAuthState(Arc::new(RwLock::new(claude_oauth_manager))));
+                log::info!("✓ ClaudeOAuthManager initialized");
+            }
+
             // 初始化全局出站代理 HTTP 客户端
             {
                 let db = &app.state::<AppState>().db;
@@ -1098,6 +1110,7 @@ pub fn run() {
             // subscription quota
             commands::get_subscription_quota,
             commands::get_codex_oauth_quota,
+            commands::get_claude_oauth_quota,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // New MCP via config.json (SSOT)
@@ -1304,6 +1317,8 @@ pub fn run() {
             commands::copilot_get_models_for_account,
             commands::copilot_get_usage,
             commands::copilot_get_usage_for_account,
+            // Claude OAuth commands (official Claude subscription)
+            commands::claude_oauth_get_status,
             // OMO commands
             commands::read_omo_local_file,
             commands::get_current_omo_provider_id,

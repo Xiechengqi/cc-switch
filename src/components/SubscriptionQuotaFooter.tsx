@@ -25,6 +25,8 @@ export const TIER_I18N_KEYS: Record<string, string> = {
   five_hour: "subscription.fiveHour",
   seven_day: "subscription.sevenDay",
   seven_day_opus: "subscription.sevenDayOpus",
+  // Upstream has occasionally exposed this typo-like key; treat it as Opus.
+  seven_day_omelette: "subscription.sevenDayOpus",
   seven_day_sonnet: "subscription.sevenDaySonnet",
   // Gemini 模型分类
   gemini_pro: "subscription.geminiPro",
@@ -71,7 +73,8 @@ function formatResetTime(
 }
 
 /** 不需要在 inline 模式显示的 tier */
-const HIDDEN_INLINE_TIERS = new Set(["seven_day_sonnet"]);
+const HIDDEN_INLINE_TIERS = new Set(["seven_day_sonnet", "seven_day_omelette"]);
+const SUPPRESSED_TIERS = new Set(["seven_day_omelette"]);
 
 /** 格式化相对时间（与 UsageFooter 一致） */
 function formatRelativeTime(
@@ -236,7 +239,11 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
         {/* 第二行：各 tier 使用百分比 */}
         <div className="flex items-center gap-2">
           {tiers
-            .filter((tier) => !HIDDEN_INLINE_TIERS.has(tier.name))
+            .filter(
+              (tier) =>
+                !HIDDEN_INLINE_TIERS.has(tier.name) &&
+                !SUPPRESSED_TIERS.has(tier.name),
+            )
             .map((tier) => (
               <TierBadge key={tier.name} tier={tier} t={t} />
             ))}
@@ -271,7 +278,9 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
       </div>
 
       <div className="flex flex-col gap-2">
-        {tiers.map((tier) => (
+        {tiers
+          .filter((tier) => !SUPPRESSED_TIERS.has(tier.name))
+          .map((tier) => (
           <TierBar key={tier.name} tier={tier} t={t} />
         ))}
       </div>

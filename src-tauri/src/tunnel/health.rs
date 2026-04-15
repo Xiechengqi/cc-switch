@@ -12,7 +12,6 @@ use tokio::sync::broadcast;
 pub struct HealthChecker {
     config: TunnelConfig,
     subdomain: String,
-    share_id: Option<String>,
     http_client: reqwest::Client,
     consecutive_failures: AtomicU32,
     max_retries: u32,
@@ -23,14 +22,12 @@ impl HealthChecker {
     pub fn new(
         config: TunnelConfig,
         subdomain: String,
-        share_id: Option<String>,
         http_client: reqwest::Client,
         healthy: Arc<AtomicBool>,
     ) -> Self {
         Self {
             config,
             subdomain,
-            share_id,
             http_client,
             consecutive_failures: AtomicU32::new(0),
             max_retries: 3,
@@ -53,11 +50,6 @@ impl HealthChecker {
                         Ok(()) => {
                             self.consecutive_failures.store(0, Ordering::Relaxed);
                             self.healthy.store(true, Ordering::Relaxed);
-                            if let Some(share_id) = &self.share_id {
-                                if let Err(err) = crate::tunnel::sync::send_share_heartbeat(share_id).await {
-                                    log::debug!("[Tunnel] share heartbeat failed: {err}");
-                                }
-                            }
                         }
                         Err(e) => {
                             let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;

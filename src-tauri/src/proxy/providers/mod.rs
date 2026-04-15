@@ -14,6 +14,7 @@
 mod adapter;
 mod auth;
 mod claude;
+pub mod claude_oauth_auth;
 mod codex;
 pub mod codex_oauth_auth;
 pub mod copilot_auth;
@@ -61,6 +62,8 @@ pub enum ProviderType {
     GitHubCopilot,
     /// OpenAI Codex (ChatGPT Plus/Pro OAuth，需要 Anthropic ↔ Responses API 转换)
     CodexOAuth,
+    /// Claude Official (Anthropic 官方订阅 OAuth，透传不转换)
+    ClaudeOAuth,
 }
 
 impl ProviderType {
@@ -83,7 +86,9 @@ impl ProviderType {
     #[allow(dead_code)]
     pub fn default_endpoint(&self) -> &'static str {
         match self {
-            ProviderType::Claude | ProviderType::ClaudeAuth => "https://api.anthropic.com",
+            ProviderType::Claude | ProviderType::ClaudeAuth | ProviderType::ClaudeOAuth => {
+                "https://api.anthropic.com"
+            }
             ProviderType::Codex => "https://api.openai.com",
             ProviderType::Gemini | ProviderType::GeminiCli => {
                 "https://generativelanguage.googleapis.com"
@@ -108,6 +113,9 @@ impl ProviderType {
                     }
                     if meta.provider_type.as_deref() == Some("codex_oauth") {
                         return ProviderType::CodexOAuth;
+                    }
+                    if meta.provider_type.as_deref() == Some("claude_oauth") {
+                        return ProviderType::ClaudeOAuth;
                     }
                 }
 
@@ -184,6 +192,7 @@ impl ProviderType {
             ProviderType::OpenRouter => "openrouter",
             ProviderType::GitHubCopilot => "github_copilot",
             ProviderType::CodexOAuth => "codex_oauth",
+            ProviderType::ClaudeOAuth => "claude_oauth",
         }
     }
 }
@@ -239,7 +248,8 @@ pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> Box<dyn Pr
         | ProviderType::ClaudeAuth
         | ProviderType::OpenRouter
         | ProviderType::GitHubCopilot
-        | ProviderType::CodexOAuth => Box::new(ClaudeAdapter::new()),
+        | ProviderType::CodexOAuth
+        | ProviderType::ClaudeOAuth => Box::new(ClaudeAdapter::new()),
         ProviderType::Codex => Box::new(CodexAdapter::new()),
         ProviderType::Gemini | ProviderType::GeminiCli => Box::new(GeminiAdapter::new()),
     }

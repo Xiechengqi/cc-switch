@@ -128,6 +128,14 @@ pub enum AuthStrategy {
     ///
     /// 使用动态获取的 OpenAI access_token（通过 Device Code 流程获取）
     CodexOAuth,
+
+    /// Claude OAuth 认证方式（Claude 官方订阅）
+    ///
+    /// - Header: `Authorization: Bearer <access_token>`
+    ///
+    /// 使用动态获取的 Anthropic OAuth access_token（通过浏览器 PKCE 流程获取）
+    /// 注意：OAuth token 不能放在 x-api-key 头，那是给 sk-ant-* 格式 API key 用的。
+    ClaudeOAuth,
 }
 
 #[cfg(test)]

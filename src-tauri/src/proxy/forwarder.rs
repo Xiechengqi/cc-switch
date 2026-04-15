@@ -17,15 +17,18 @@ use super::{
     types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
-use crate::commands::{CodexOAuthState, CopilotAuthState};
+use crate::commands::{ClaudeOAuthState, CodexOAuthState, CopilotAuthState};
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{app_config::AppType, provider::Provider};
 use http::Extensions;
+use regex::Regex;
 use serde_json::Value;
 use std::sync::Arc;
+use std::{hash::Hasher, sync::OnceLock};
 use tauri::Manager;
 use tokio::sync::RwLock;
+use twox_hash::XxHash64;
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -927,12 +930,21 @@ impl RequestForwarder {
                         .map(ToString::to_string),
                 )
             };
+        let is_claude_oauth_provider = adapter.name() == "Claude"
+            && provider
+                .meta
+                .as_ref()
+                .and_then(|m| m.provider_type.as_deref())
+                == Some("claude_oauth");
 
-        let url = if is_full_url {
+        let mut url = if is_full_url {
             append_query_to_full_url(&base_url, passthrough_query.as_deref())
         } else {
             adapter.build_url(&base_url, &effective_endpoint)
         };
+        if is_claude_oauth_provider {
+            url = ensure_claude_oauth_beta_query(&url);
+        }
 
         // 转换请求体（如果需要）
         let request_body = if needs_transform {
@@ -954,7 +966,10 @@ impl RequestForwarder {
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
-        let filtered_body = filter_private_params_with_whitelist(request_body, &[]);
+        let mut filtered_body = filter_private_params_with_whitelist(request_body, &[]);
+        if is_claude_oauth_provider {
+            filtered_body = sign_claude_oauth_messages_body(filtered_body);
+        }
         let force_identity_encoding = needs_transform
             || should_force_identity_encoding(&effective_endpoint, &filtered_body, headers);
 
@@ -1066,6 +1081,45 @@ impl RequestForwarder {
                 }
             }
 
+            // Claude OAuth: 从 ClaudeOAuthManager 获取真实 access_token
+            if auth.strategy == AuthStrategy::ClaudeOAuth {
+                if let Some(app_handle) = &self.app_handle {
+                    let claude_state = app_handle.state::<ClaudeOAuthState>();
+                    let claude_auth = claude_state.0.read().await;
+
+                    let account_id = provider
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.managed_account_id_for("claude_oauth"));
+
+                    match if let Some(ref acc_id) = account_id {
+                        claude_auth.get_valid_token_for_account(acc_id).await
+                    } else {
+                        claude_auth.get_valid_token().await
+                    } {
+                        Ok(token) => {
+                            auth.api_key = token.clone();
+                            auth.access_token = Some(token);
+                            log::debug!(
+                                "[ClaudeOAuth] 成功获取 access_token (account={})",
+                                account_id.as_deref().unwrap_or("default")
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("[ClaudeOAuth] 获取 access_token 失败: {e}");
+                            return Err(ProxyError::AuthError(format!(
+                                "Claude OAuth 认证失败: {e}"
+                            )));
+                        }
+                    }
+                } else {
+                    log::error!("[ClaudeOAuth] AppHandle 不可用");
+                    return Err(ProxyError::AuthError(
+                        "Claude OAuth 认证不可用（无 AppHandle）".to_string(),
+                    ));
+                }
+            }
+
             adapter.get_auth_headers(&auth)
         } else {
             Vec::new()
@@ -1146,18 +1200,31 @@ impl RequestForwarder {
         // 预计算 anthropic-beta 值（仅 Claude）
         let anthropic_beta_value = if adapter.name() == "Claude" {
             const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
+            const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
             Some(if let Some(beta) = headers.get("anthropic-beta") {
                 if let Ok(beta_str) = beta.to_str() {
-                    if beta_str.contains(CLAUDE_CODE_BETA) {
-                        beta_str.to_string()
-                    } else {
-                        format!("{CLAUDE_CODE_BETA},{beta_str}")
+                    let mut merged = beta_str.to_string();
+                    if !merged.contains(CLAUDE_CODE_BETA) {
+                        merged = format!("{CLAUDE_CODE_BETA},{merged}");
                     }
+                    if is_claude_oauth_provider && !merged.contains(CLAUDE_OAUTH_BETA) {
+                        merged.push(',');
+                        merged.push_str(CLAUDE_OAUTH_BETA);
+                    }
+                    merged
+                } else {
+                    if is_claude_oauth_provider {
+                        format!("{CLAUDE_CODE_BETA},{CLAUDE_OAUTH_BETA}")
+                    } else {
+                        CLAUDE_CODE_BETA.to_string()
+                    }
+                }
+            } else {
+                if is_claude_oauth_provider {
+                    format!("{CLAUDE_CODE_BETA},{CLAUDE_OAUTH_BETA}")
                 } else {
                     CLAUDE_CODE_BETA.to_string()
                 }
-            } else {
-                CLAUDE_CODE_BETA.to_string()
             })
         } else {
             None
@@ -1226,9 +1293,17 @@ impl RequestForwarder {
             {
                 if !saw_auth {
                     saw_auth = true;
-                    for (ah_name, ah_value) in &auth_headers {
-                        ordered_headers.append(ah_name.clone(), ah_value.clone());
+                    if auth_headers.is_empty() {
+                        // Provider 未配置认证（如 Claude Official 订阅），透传客户端原始认证头
+                        ordered_headers.append(key.clone(), value.clone());
+                    } else {
+                        for (ah_name, ah_value) in &auth_headers {
+                            ordered_headers.append(ah_name.clone(), ah_value.clone());
+                        }
                     }
+                } else if auth_headers.is_empty() {
+                    // 透传模式下后续认证头也需要保留
+                    ordered_headers.append(key.clone(), value.clone());
                 }
                 continue;
             }
@@ -1697,6 +1772,60 @@ fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
     }
 }
 
+fn ensure_claude_oauth_beta_query(url: &str) -> String {
+    let (base, query) = split_endpoint_and_query(url);
+    match query {
+        Some(query) if !query.is_empty() => {
+            if query.split('&').any(|part| part == "beta=true") {
+                url.to_string()
+            } else {
+                format!("{base}?beta=true&{query}")
+            }
+        }
+        _ => format!("{base}?beta=true"),
+    }
+}
+
+fn sign_claude_oauth_messages_body(mut body: Value) -> Value {
+    const CCH_SEED: u64 = 0x6E52736AC806831E;
+    static CCH_PATTERN: OnceLock<Regex> = OnceLock::new();
+
+    let Some(system) = body.get("system").and_then(|value| value.as_array()) else {
+        return body;
+    };
+    let Some(first_block) = system.first() else {
+        return body;
+    };
+    let Some(text) = first_block.get("text").and_then(|value| value.as_str()) else {
+        return body;
+    };
+    if !text.starts_with("x-anthropic-billing-header:") {
+        return body;
+    }
+
+    let pattern = CCH_PATTERN
+        .get_or_init(|| Regex::new(r"\bcch=([0-9a-f]{5});").expect("valid Claude OAuth cch regex"));
+    if !pattern.is_match(text) {
+        return body;
+    }
+
+    let unsigned_text = pattern.replace(text, "cch=00000;").to_string();
+    body["system"][0]["text"] = Value::String(unsigned_text.clone());
+
+    let Ok(unsigned_body) = serde_json::to_vec(&body) else {
+        return body;
+    };
+
+    let mut hasher = XxHash64::with_seed(CCH_SEED);
+    hasher.write(&unsigned_body);
+    let cch = format!("{:05x}", hasher.finish() & 0xFFFFF);
+    let signed_text = pattern
+        .replace(&unsigned_text, format!("cch={cch};"))
+        .to_string();
+    body["system"][0]["text"] = Value::String(signed_text);
+    body
+}
+
 fn should_force_identity_encoding(
     endpoint: &str,
     body: &Value,
@@ -1856,6 +1985,53 @@ mod tests {
         let url = append_query_to_full_url("https://relay.example/api?foo=bar", Some("x-id=1"));
 
         assert_eq!(url, "https://relay.example/api?foo=bar&x-id=1");
+    }
+
+    #[test]
+    fn ensure_claude_oauth_beta_query_adds_missing_flag() {
+        let url = ensure_claude_oauth_beta_query("https://api.anthropic.com/v1/messages");
+
+        assert_eq!(url, "https://api.anthropic.com/v1/messages?beta=true");
+    }
+
+    #[test]
+    fn ensure_claude_oauth_beta_query_preserves_existing_query() {
+        let url = ensure_claude_oauth_beta_query("https://api.anthropic.com/v1/messages?foo=bar");
+
+        assert_eq!(
+            url,
+            "https://api.anthropic.com/v1/messages?beta=true&foo=bar"
+        );
+    }
+
+    #[test]
+    fn ensure_claude_oauth_beta_query_keeps_existing_beta_flag() {
+        let url = ensure_claude_oauth_beta_query(
+            "https://api.anthropic.com/v1/messages?beta=true&foo=bar",
+        );
+
+        assert_eq!(
+            url,
+            "https://api.anthropic.com/v1/messages?beta=true&foo=bar"
+        );
+    }
+
+    #[test]
+    fn sign_claude_oauth_messages_body_rewrites_cch() {
+        let body = serde_json::json!({
+            "system": [{
+                "type": "text",
+                "text": "x-anthropic-billing-header: test;cch=abcde;foo=bar"
+            }],
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+
+        let signed = sign_claude_oauth_messages_body(body);
+        let text = signed["system"][0]["text"].as_str().unwrap();
+
+        assert!(text.starts_with("x-anthropic-billing-header:"));
+        assert!(!text.contains("cch=00000;"));
+        assert_ne!(text, "x-anthropic-billing-header: test;cch=abcde;foo=bar");
     }
 
     #[test]

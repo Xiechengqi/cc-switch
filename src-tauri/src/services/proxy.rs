@@ -382,7 +382,7 @@ impl ProxyService {
                 crate::settings::get_effective_current_provider(&self.db, &app)
             {
                 if let Ok(Some(provider)) = self.db.get_provider_by_id(&current_id, app_type_str) {
-                    if provider.category.as_deref() == Some("official") {
+                    if provider.is_blocked_by_proxy_takeover() {
                         if let Some(handle) = self.app_handle.read().await.as_ref() {
                             let _ = handle.emit(
                                 "proxy-official-warning",
@@ -1570,7 +1570,7 @@ impl ProxyService {
             .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
 
         // Defense-in-depth: block official providers during proxy takeover
-        if provider.category.as_deref() == Some("official") {
+        if provider.is_blocked_by_proxy_takeover() {
             return Err(
                 "代理接管模式下不能切换到官方供应商 (Cannot switch to official provider during proxy takeover)"
                     .to_string(),

@@ -43,6 +43,10 @@ pub fn schedule_sync_share(share: ShareRecord, db: &Arc<Database>) {
     });
 }
 
+pub async fn sync_share_metadata_now(share: ShareTunnelMetadata) -> Result<(), String> {
+    sync_share_metadata_now_inner(share, true).await
+}
+
 pub(crate) async fn query_share_support(db: &Database) -> ShareSupport {
     ShareSupport {
         claude: db
@@ -63,10 +67,7 @@ pub(crate) async fn query_share_support(db: &Database) -> ShareSupport {
     }
 }
 
-pub async fn claim_share_subdomain(
-    share: &ShareRecord,
-    db: &Arc<Database>,
-) -> Result<(), String> {
+pub async fn claim_share_subdomain(share: &ShareRecord, db: &Arc<Database>) -> Result<(), String> {
     claim_share_subdomain_inner(share, db, true).await
 }
 
@@ -187,6 +188,60 @@ pub async fn sync_recent_share_request_logs(
         .error_for_status()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+async fn sync_share_metadata_now_inner(
+    share: ShareTunnelMetadata,
+    allow_identity_reset_retry: bool,
+) -> Result<(), String> {
+    let config = load_config();
+    let client = reqwest::Client::new();
+    let identity = identity::ensure_identity(&client, &config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let url = format!("{}/v1/shares/sync", config.get_server_addr());
+    let resp = client
+        .post(url)
+        .json(&serde_json::json!({
+            "installationId": identity.installation_id,
+            "share": share,
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if resp.status().is_success() {
+        return Ok(());
+    }
+
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .unwrap_or_else(|_| format!("HTTP {status}"));
+    let message = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(|msg| msg.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or(text);
+
+    if allow_identity_reset_retry && message.contains("installation not found") {
+        log::warn!(
+            "[TunnelSync] portr-rs no longer recognizes installation {}, re-registering identity before direct share sync",
+            identity.installation_id
+        );
+        identity::reset_identity().map_err(|e| e.to_string())?;
+        return Box::pin(sync_share_metadata_now_inner(share, false)).await;
+    }
+
+    Err(format!(
+        "direct share sync request for installation {} failed: {}",
+        identity.installation_id, message
+    ))
 }
 
 async fn enqueue_op(op: ShareSyncOp) -> Result<(), String> {
@@ -313,8 +368,10 @@ fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMetadata {
     ShareTunnelMetadata {
         share_id: share.id.clone(),
         share_name: share.name.clone(),
+        description: share.description.clone(),
+        for_sale: share.for_sale.clone(),
         subdomain: share.subdomain.clone().unwrap_or_default(),
-        share_token: share.share_token.clone(),
+        share_token: mask_share_token(&share.share_token),
         app_type: share.app_type.clone(),
         provider_id: share.provider_id.clone(),
         token_limit: share.token_limit,
@@ -325,4 +382,13 @@ fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMetadata {
         expires_at: share.expires_at.clone(),
         support: Default::default(),
     }
+}
+
+fn mask_share_token(token: &str) -> String {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return "***".to_string();
+    };
+    let last = token.chars().last().unwrap_or(first);
+    format!("{first}***{last}")
 }

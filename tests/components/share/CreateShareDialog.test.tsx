@@ -37,12 +37,15 @@ describe("CreateShareDialog", () => {
 
     await user.clear(screen.getByLabelText("share.name"));
     await user.type(screen.getByLabelText("share.name"), "Manual Share");
+    await user.type(screen.getByLabelText("share.description"), "Team-facing proxy");
     await user.click(screen.getByRole("button", { name: "share.create" }));
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
           name: "Manual Share",
+          description: "Team-facing proxy",
+          forSale: "No",
           tokenLimit: 100000,
           expiresInSecs: 86400,
         }),

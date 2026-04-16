@@ -657,7 +657,7 @@ fn spawn_log_usage(
 #[allow(clippy::too_many_arguments)]
 async fn log_usage_internal(
     state: &ProxyState,
-    request_id: &str,
+    _request_id: &str,
     provider_id: &str,
     app_type: &str,
     model: &str,

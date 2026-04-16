@@ -15,6 +15,8 @@ use tokio::time::{timeout, Duration};
 #[serde(rename_all = "camelCase")]
 pub struct CreateShareParams {
     pub name: String,
+    pub description: Option<String>,
+    pub for_sale: String,
     pub token_limit: i64,
     pub expires_in_secs: i64,
     pub subdomain: Option<String>,
@@ -44,6 +46,20 @@ pub struct UpdateShareApiKeyParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateShareDescriptionParams {
+    pub share_id: String,
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateShareForSaleParams {
+    pub share_id: String,
+    pub for_sale: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateShareExpirationParams {
     pub share_id: String,
     pub expires_at: String,
@@ -64,6 +80,8 @@ pub async fn create_share(
 ) -> Result<ShareRecord, String> {
     let share = ShareService::prepare_create(
         params.name,
+        params.description,
+        params.for_sale,
         params.token_limit,
         params.expires_in_secs,
         params.subdomain,
@@ -126,6 +144,24 @@ pub fn update_share_api_key(
     params: UpdateShareApiKeyParams,
 ) -> Result<ShareRecord, String> {
     ShareService::update_api_key(&state.db, &params.share_id, &params.api_key)
+        .map_err(|e: AppError| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_share_description(
+    state: State<'_, AppState>,
+    params: UpdateShareDescriptionParams,
+) -> Result<ShareRecord, String> {
+    ShareService::update_description(&state.db, &params.share_id, params.description)
+        .map_err(|e: AppError| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_share_for_sale(
+    state: State<'_, AppState>,
+    params: UpdateShareForSaleParams,
+) -> Result<ShareRecord, String> {
+    ShareService::update_for_sale(&state.db, &params.share_id, &params.for_sale)
         .map_err(|e: AppError| e.to_string())
 }
 
@@ -273,6 +309,8 @@ async fn start_share_tunnel_inner(
         share_metadata: Some(ShareTunnelMetadata {
             share_id: share.id.clone(),
             share_name: share.name.clone(),
+            description: share.description.clone(),
+            for_sale: share.for_sale.clone(),
             subdomain: subdomain.clone(),
             share_token: share.share_token.clone(),
             app_type: share.app_type.clone(),

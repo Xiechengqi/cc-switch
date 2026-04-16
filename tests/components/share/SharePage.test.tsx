@@ -23,6 +23,7 @@ describe("SharePage", () => {
       {
         id: "share-1",
         name: "Alpha Share",
+        forSale: "No",
         shareToken: "token-1",
         appType: "proxy",
         providerId: null,

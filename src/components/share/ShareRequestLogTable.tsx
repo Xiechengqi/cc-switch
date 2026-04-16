@@ -32,8 +32,7 @@ export function ShareRequestLogTable({
 
   const { data, isLoading } = useRequestLogs({
     filters: { shareId },
-    timeMode: "rolling",
-    rollingWindowSeconds: 7 * 24 * 60 * 60,
+    range: { preset: "7d" },
     page,
     pageSize,
     options: {

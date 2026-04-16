@@ -15,6 +15,7 @@ use ssh::SshTunnel;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::task::JoinHandle;
 
@@ -25,6 +26,7 @@ struct TunnelHandle {
     healthy: Arc<AtomicBool>,
     _health_task: JoinHandle<()>,
     _reconnect_task: JoinHandle<()>,
+    _share_sync_task: JoinHandle<()>,
 }
 
 /// Manages multiple portr tunnels, each identified by a string key (share_id).
@@ -137,6 +139,25 @@ impl TunnelManager {
             .await;
         });
 
+        let share_sync_task = if let Some(share_metadata) = req.share_metadata.clone() {
+            let mut shutdown_for_share_sync = shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            if let Err(err) = sync::sync_share_metadata_now(share_metadata.clone()).await {
+                                log::warn!("[Tunnel] periodic share sync failed for {}: {}", share_metadata.share_id, err);
+                            }
+                        }
+                        _ = shutdown_for_share_sync.recv() => break,
+                    }
+                }
+            })
+        } else {
+            tokio::spawn(async {})
+        };
+
         self.tunnels.insert(
             id.to_string(),
             TunnelHandle {
@@ -146,6 +167,7 @@ impl TunnelManager {
                 healthy,
                 _health_task: health_task,
                 _reconnect_task: reconnect_task,
+                _share_sync_task: share_sync_task,
             },
         );
 

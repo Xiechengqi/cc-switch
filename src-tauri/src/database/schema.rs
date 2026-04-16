@@ -358,6 +358,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS shares (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                description TEXT,
                 share_token TEXT NOT NULL UNIQUE,
                 app_type TEXT NOT NULL,
                 provider_id TEXT,
@@ -465,6 +466,16 @@ impl Database {
                         log::info!("迁移数据库从 v10 到 v11（Share 请求日志维度）");
                         Self::migrate_v10_to_v11(conn)?;
                         Self::set_user_version(conn, 11)?;
+                    }
+                    11 => {
+                        log::info!("迁移数据库从 v11 到 v12（Share 说明文字）");
+                        Self::migrate_v11_to_v12(conn)?;
+                        Self::set_user_version(conn, 12)?;
+                    }
+                    12 => {
+                        log::info!("迁移数据库从 v12 到 v13（Share 出售意愿）");
+                        Self::migrate_v12_to_v13(conn)?;
+                        Self::set_user_version(conn, 13)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1220,6 +1231,8 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS shares (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                description TEXT,
+                for_sale TEXT NOT NULL DEFAULT 'No',
                 share_token TEXT NOT NULL UNIQUE,
                 app_type TEXT NOT NULL,
                 provider_id TEXT,
@@ -1262,6 +1275,26 @@ impl Database {
         }
 
         log::info!("v10 -> v11 迁移完成：proxy_request_logs 支持 share 维度");
+        Ok(())
+    }
+
+    /// v11 -> v12 迁移：shares 增加 description 字段
+    fn migrate_v11_to_v12(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(conn, "shares", "description", "TEXT")?;
+        }
+
+        log::info!("v11 -> v12 迁移完成：shares 表增加 description 字段");
+        Ok(())
+    }
+
+    /// v12 -> v13 迁移：shares 增加 for_sale 字段
+    fn migrate_v12_to_v13(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(conn, "shares", "for_sale", "TEXT NOT NULL DEFAULT 'No'")?;
+        }
+
+        log::info!("v12 -> v13 迁移完成：shares 表增加 for_sale 字段");
         Ok(())
     }
 

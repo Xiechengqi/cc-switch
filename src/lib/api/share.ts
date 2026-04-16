@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 export interface ShareRecord {
   id: string;
   name: string;
+  description?: string | null;
+  forSale: "Yes" | "No";
   shareToken: string;
   appType: string;
   providerId?: string | null;
@@ -20,6 +22,8 @@ export interface ShareRecord {
 
 export interface CreateShareParams {
   name: string;
+  description?: string;
+  forSale: "Yes" | "No";
   tokenLimit: number;
   expiresInSecs: number;
   subdomain?: string;
@@ -39,6 +43,16 @@ export interface UpdateShareSubdomainParams {
 export interface UpdateShareApiKeyParams {
   shareId: string;
   apiKey: string;
+}
+
+export interface UpdateShareDescriptionParams {
+  shareId: string;
+  description?: string;
+}
+
+export interface UpdateShareForSaleParams {
+  shareId: string;
+  forSale: "Yes" | "No";
 }
 
 export interface UpdateShareExpirationParams {
@@ -109,6 +123,18 @@ async function updateApiKey(
   return invoke<ShareRecord>("update_share_api_key", { params });
 }
 
+async function updateDescription(
+  params: UpdateShareDescriptionParams,
+): Promise<ShareRecord> {
+  return invoke<ShareRecord>("update_share_description", { params });
+}
+
+async function updateForSale(
+  params: UpdateShareForSaleParams,
+): Promise<ShareRecord> {
+  return invoke<ShareRecord>("update_share_for_sale", { params });
+}
+
 async function updateExpiration(
   params: UpdateShareExpirationParams,
 ): Promise<ShareRecord> {
@@ -154,6 +180,8 @@ export const shareApi = {
   updateTokenLimit,
   updateSubdomain,
   updateApiKey,
+  updateDescription,
+  updateForSale,
   updateExpiration,
   list,
   getDetail,

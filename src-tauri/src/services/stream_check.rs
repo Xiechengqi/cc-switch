@@ -245,6 +245,7 @@ impl StreamCheckService {
                 model_used: Self::resolve_test_model(app_type, provider, config),
                 tested_at: chrono::Utc::now().timestamp(),
                 retry_count: 0,
+                error_category: None,
             });
         }
 

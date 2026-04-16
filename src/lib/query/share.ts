@@ -282,6 +282,34 @@ export function useUpdateShareApiKeyMutation() {
   );
 }
 
+export function useUpdateShareDescriptionMutation() {
+  return useShareActionMutation(
+    ({ shareId, description }: { shareId: string; description: string }) =>
+      shareApi.updateDescription({ shareId, description }),
+    {
+      successKey: "share.toast.updateDescriptionSuccess",
+      successDefault: "说明已更新",
+      errorKey: "share.toast.updateDescriptionError",
+      errorDefault: "更新说明失败: {{error}}",
+    },
+    ({ shareId }) => shareId,
+  );
+}
+
+export function useUpdateShareForSaleMutation() {
+  return useShareActionMutation(
+    ({ shareId, forSale }: { shareId: string; forSale: "Yes" | "No" }) =>
+      shareApi.updateForSale({ shareId, forSale }),
+    {
+      successKey: "share.toast.updateForSaleSuccess",
+      successDefault: "For Sale 已更新",
+      errorKey: "share.toast.updateForSaleError",
+      errorDefault: "更新 For Sale 失败: {{error}}",
+    },
+    ({ shareId }) => shareId,
+  );
+}
+
 export function useUpdateShareExpirationMutation() {
   return useShareActionMutation(
     ({ shareId, expiresAt }: { shareId: string; expiresAt: string }) =>

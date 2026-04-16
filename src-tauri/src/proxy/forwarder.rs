@@ -1308,6 +1308,11 @@ impl RequestForwarder {
                 continue;
             }
 
+            // --- 设备级 share 凭证 — 仅用于本地校验，绝不能继续转发到上游 ---
+            if key_str.eq_ignore_ascii_case("x-share-token") {
+                continue;
+            }
+
             // --- accept-encoding — transform / SSE 路径强制 identity，其余保留原值 ---
             if key_str.eq_ignore_ascii_case("accept-encoding") {
                 if !saw_accept_encoding {

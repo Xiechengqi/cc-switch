@@ -239,6 +239,8 @@ export const handlers = [
     const { params } = await withJson<{
       params: {
         name: string;
+        description?: string;
+        forSale: "Yes" | "No";
         tokenLimit: number;
         expiresInSecs: number;
       };
@@ -255,6 +257,8 @@ export const handlers = [
     const share = {
       id: `share-${now}`,
       name: params.name,
+      description: params.description ?? null,
+      forSale: params.forSale ?? "No",
       shareToken: `token-${now}`,
       appType: "proxy",
       providerId: null,
@@ -291,6 +295,22 @@ export const handlers = [
     const { shareId } = await withJson<{ shareId: string }>(request);
     updateShare(shareId, { status: "active" });
     return success(null);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/update_share_description`, async ({ request }) => {
+    const { params } = await withJson<{
+      params: { shareId: string; description?: string };
+    }>(request);
+    updateShare(params.shareId, { description: params.description?.trim() || null });
+    return success(getShare(params.shareId));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/update_share_for_sale`, async ({ request }) => {
+    const { params } = await withJson<{
+      params: { shareId: string; forSale: "Yes" | "No" };
+    }>(request);
+    updateShare(params.shareId, { forSale: params.forSale });
+    return success(getShare(params.shareId));
   }),
 
   http.post(`${TAURI_ENDPOINT}/start_share_tunnel`, async ({ request }) => {

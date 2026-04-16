@@ -5,6 +5,14 @@ import type { ShareRecord, TunnelConfig, TunnelInfo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -30,6 +38,8 @@ interface ShareDetailDrawerProps {
   onUpdateTokenLimit: (share: ShareRecord, tokenLimit: number) => void;
   onUpdateSubdomain: (share: ShareRecord, subdomain: string) => void;
   onUpdateApiKey: (share: ShareRecord, apiKey: string) => void;
+  onUpdateDescription: (share: ShareRecord, description: string) => void;
+  onUpdateForSale: (share: ShareRecord, forSale: "Yes" | "No") => void;
   onUpdateExpiration: (share: ShareRecord, expiresAt: string) => void;
   busy?: boolean;
 }
@@ -44,6 +54,8 @@ export function ShareDetailDrawer({
   onUpdateTokenLimit,
   onUpdateSubdomain,
   onUpdateApiKey,
+  onUpdateDescription,
+  onUpdateForSale,
   onUpdateExpiration,
   busy = false,
 }: ShareDetailDrawerProps) {
@@ -52,6 +64,8 @@ export function ShareDetailDrawer({
   const [tokenLimitInput, setTokenLimitInput] = useState("");
   const [subdomainInput, setSubdomainInput] = useState("");
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [descriptionInput, setDescriptionInput] = useState("");
+  const [forSaleInput, setForSaleInput] = useState<"Yes" | "No">("No");
   const [expiryDateInput, setExpiryDateInput] = useState("");
   const [expiryHourInput, setExpiryHourInput] = useState("");
   const [expiryMinuteInput, setExpiryMinuteInput] = useState("");
@@ -60,6 +74,8 @@ export function ShareDetailDrawer({
     setTokenLimitInput(share ? String(share.tokenLimit) : "");
     setSubdomainInput(share?.subdomain ?? "");
     setApiKeyInput(share?.shareToken ?? "");
+    setDescriptionInput(share?.description ?? "");
+    setForSaleInput(share?.forSale ?? "No");
     if (share?.expiresAt) {
       const expires = new Date(share.expiresAt);
       if (!Number.isNaN(expires.getTime())) {
@@ -98,6 +114,10 @@ export function ShareDetailDrawer({
   const apiKeyInvalid =
     apiKeyInput.trim().length < 8 ||
     !/^[A-Za-z0-9._-]{8,128}$/.test(apiKeyInput.trim());
+  const normalizedDescription = descriptionInput.trim();
+  const descriptionDirty = normalizedDescription !== (share.description ?? "");
+  const descriptionInvalid = normalizedDescription.length > 200;
+  const forSaleDirty = forSaleInput !== share.forSale;
   const parsedExpiryHour = Number.parseInt(expiryHourInput, 10);
   const parsedExpiryMinute = Number.parseInt(expiryMinuteInput, 10);
   const expiryIso =
@@ -172,6 +192,14 @@ export function ShareDetailDrawer({
               value={formatUtcDateTime(share.createdAt)}
             />
             <InfoField
+              label={t("share.description")}
+              value={share.description || "-"}
+            />
+            <InfoField
+              label={t("share.forSale")}
+              value={t(`share.forSaleOptions.${share.forSale.toLowerCase()}`)}
+            />
+            <InfoField
               label={t("share.expiresAt")}
               value={formatUtcDateTime(share.expiresAt)}
             />
@@ -191,6 +219,68 @@ export function ShareDetailDrawer({
               label={t("share.tunnelHealth")}
               value={t(`share.statuses.${tunnelRuntimeStatus}`)}
             />
+          </section>
+
+          <section className="space-y-3">
+            <div className="text-sm font-medium">{t("share.forSaleSettings")}</div>
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="space-y-2">
+                <Select
+                  value={forSaleInput}
+                  onValueChange={(value) => setForSaleInput(value as "Yes" | "No")}
+                  disabled={busy}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="No">{t("share.forSaleOptions.no")}</SelectItem>
+                    <SelectItem value="Yes">{t("share.forSaleOptions.yes")}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="text-xs text-muted-foreground">
+                  {t("share.forSaleHint")}
+                </div>
+              </div>
+              <div className="flex items-end">
+                <Button
+                  variant="outline"
+                  disabled={busy || !forSaleDirty}
+                  onClick={() => onUpdateForSale(share, forSaleInput)}
+                >
+                  <Save className="h-4 w-4" />
+                  {t("share.saveForSale")}
+                </Button>
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-3">
+            <div className="text-sm font-medium">{t("share.descriptionSettings")}</div>
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="space-y-2">
+                <Textarea
+                  value={descriptionInput}
+                  maxLength={200}
+                  disabled={busy}
+                  onChange={(event) => setDescriptionInput(event.target.value)}
+                />
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>{t("share.descriptionHint")}</span>
+                  <span>{normalizedDescription.length}/200</span>
+                </div>
+              </div>
+              <div className="flex items-end">
+                <Button
+                  variant="outline"
+                  disabled={busy || descriptionInvalid || !descriptionDirty}
+                  onClick={() => onUpdateDescription(share, normalizedDescription)}
+                >
+                  <Save className="h-4 w-4" />
+                  {t("share.saveDescription")}
+                </Button>
+              </div>
+            </div>
           </section>
 
           <section className="space-y-3">

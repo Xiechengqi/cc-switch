@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct ShareRecord {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
+    pub for_sale: String,
     pub share_token: String,
     pub app_type: String,
     pub provider_id: Option<String>,
@@ -25,16 +27,20 @@ pub struct ShareRecord {
 }
 
 impl Database {
+    const SHARE_SELECT_COLUMNS: &str = "id, name, description, for_sale, share_token, app_type, provider_id, api_key, settings_config, token_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, created_at, last_used_at";
+
     pub fn create_share(&self, share: &ShareRecord) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
-            "INSERT INTO shares (id, name, share_token, app_type, provider_id, api_key,
+            "INSERT INTO shares (id, name, description, for_sale, share_token, app_type, provider_id, api_key,
              settings_config, token_limit, tokens_used, requests_count, expires_at,
              subdomain, tunnel_url, status, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 share.id,
                 share.name,
+                share.description,
+                share.for_sale,
                 share.share_token,
                 share.app_type,
                 share.provider_id,
@@ -58,7 +64,10 @@ impl Database {
     pub fn get_share_by_id(&self, id: &str) -> Result<Option<ShareRecord>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn
-            .prepare("SELECT * FROM shares WHERE id = ?1")
+            .prepare(&format!(
+                "SELECT {} FROM shares WHERE id = ?1",
+                Self::SHARE_SELECT_COLUMNS
+            ))
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut rows = stmt
             .query(params![id])
@@ -72,7 +81,10 @@ impl Database {
     pub fn get_share_by_token(&self, token: &str) -> Result<Option<ShareRecord>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn
-            .prepare("SELECT * FROM shares WHERE share_token = ?1")
+            .prepare(&format!(
+                "SELECT {} FROM shares WHERE share_token = ?1",
+                Self::SHARE_SELECT_COLUMNS
+            ))
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut rows = stmt
             .query(params![token])
@@ -86,7 +98,10 @@ impl Database {
     pub fn list_shares(&self) -> Result<Vec<ShareRecord>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn
-            .prepare("SELECT * FROM shares ORDER BY created_at DESC")
+            .prepare(&format!(
+                "SELECT {} FROM shares ORDER BY created_at DESC",
+                Self::SHARE_SELECT_COLUMNS
+            ))
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut rows = stmt
             .query([])
@@ -196,6 +211,30 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_share_description(
+        &self,
+        id: &str,
+        description: Option<&str>,
+    ) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE shares SET description = ?2 WHERE id = ?1",
+            params![id, description],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn update_share_for_sale(&self, id: &str, for_sale: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE shares SET for_sale = ?2 WHERE id = ?1",
+            params![id, for_sale],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn update_share_expires_at(&self, id: &str, expires_at: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
@@ -230,20 +269,22 @@ impl Database {
         Ok(ShareRecord {
             id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
             name: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
-            share_token: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
-            app_type: row.get(3).map_err(|e| AppError::Database(e.to_string()))?,
-            provider_id: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
-            api_key: row.get(5).map_err(|e| AppError::Database(e.to_string()))?,
-            settings_config: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
-            token_limit: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
-            tokens_used: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
-            requests_count: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
-            expires_at: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
-            subdomain: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
-            tunnel_url: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
-            status: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
-            created_at: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
-            last_used_at: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
+            description: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
+            for_sale: row.get(3).map_err(|e| AppError::Database(e.to_string()))?,
+            share_token: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
+            app_type: row.get(5).map_err(|e| AppError::Database(e.to_string()))?,
+            provider_id: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
+            api_key: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
+            settings_config: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
+            token_limit: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
+            tokens_used: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
+            requests_count: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
+            expires_at: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
+            subdomain: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
+            tunnel_url: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
+            status: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
+            created_at: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
+            last_used_at: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
         })
     }
 }

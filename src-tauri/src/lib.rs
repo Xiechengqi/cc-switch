@@ -1348,6 +1348,8 @@ pub fn run() {
             commands::reset_share_usage,
             commands::update_share_token_limit,
             commands::update_share_api_key,
+            commands::update_share_description,
+            commands::update_share_for_sale,
             commands::update_share_expiration,
             commands::update_share_subdomain,
             commands::enable_share,

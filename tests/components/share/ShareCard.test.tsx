@@ -10,6 +10,7 @@ const tunnelConfig = {
 const baseShare = {
   id: "share-1",
   name: "Demo Share",
+  forSale: "No",
   shareToken: "token",
   appType: "proxy",
   providerId: null,

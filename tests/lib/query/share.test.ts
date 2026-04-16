@@ -54,6 +54,7 @@ describe("share query hooks", () => {
     createMock.mockResolvedValue({
       id: "share-1",
       name: "Demo Share",
+      forSale: "No",
       shareToken: "token",
       appType: "proxy",
       providerId: null,
@@ -77,6 +78,7 @@ describe("share query hooks", () => {
     const { result } = renderHook(() => useCreateShareMutation(), { wrapper });
     await result.current.mutateAsync({
       name: "Demo Share",
+      forSale: "No",
       tokenLimit: 1000,
       expiresInSecs: 3600,
     });

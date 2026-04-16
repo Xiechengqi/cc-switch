@@ -14,7 +14,9 @@ import {
   useResetShareUsageMutation,
   useSharesQuery,
   useUpdateShareApiKeyMutation,
+  useUpdateShareDescriptionMutation,
   useUpdateShareExpirationMutation,
+  useUpdateShareForSaleMutation,
   useUpdateShareSubdomainMutation,
   useUpdateShareTokenLimitMutation,
 } from "@/lib/query";
@@ -55,6 +57,8 @@ export function SharePage(_props: SharePageProps) {
   const disableMutation = useDisableShareMutation();
   const resetUsageMutation = useResetShareUsageMutation();
   const updateApiKeyMutation = useUpdateShareApiKeyMutation();
+  const updateDescriptionMutation = useUpdateShareDescriptionMutation();
+  const updateForSaleMutation = useUpdateShareForSaleMutation();
   const updateExpirationMutation = useUpdateShareExpirationMutation();
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
   const updateTokenLimitMutation = useUpdateShareTokenLimitMutation();
@@ -105,7 +109,7 @@ export function SharePage(_props: SharePageProps) {
       queryClient.invalidateQueries({ queryKey: shareKeys.list() }),
       queryClient.invalidateQueries({ queryKey: shareKeys.tunnelStatus(share.id) }),
       queryClient.invalidateQueries({ queryKey: shareKeys.detail(share.id) }),
-      queryClient.invalidateQueries({ queryKey: usageKeys.logs({ timeMode: "rolling", shareId: share.id }, 0, 10).slice(0, 2) }),
+      queryClient.invalidateQueries({ queryKey: usageKeys.logs({ preset: "7d", shareId: share.id }, 0, 10).slice(0, 2) }),
     ]);
   };
 
@@ -175,6 +179,22 @@ export function SharePage(_props: SharePageProps) {
         onUpdateApiKey={(share, apiKey) =>
           void runShareAction(share, () =>
             updateApiKeyMutation.mutateAsync({ shareId: share.id, apiKey }),
+          )
+        }
+        onUpdateDescription={(share, description) =>
+          void runShareAction(share, () =>
+            updateDescriptionMutation.mutateAsync({
+              shareId: share.id,
+              description,
+            }),
+          )
+        }
+        onUpdateForSale={(share, forSale) =>
+          void runShareAction(share, () =>
+            updateForSaleMutation.mutateAsync({
+              shareId: share.id,
+              forSale,
+            }),
           )
         }
         onUpdateExpiration={(share, expiresAt) =>

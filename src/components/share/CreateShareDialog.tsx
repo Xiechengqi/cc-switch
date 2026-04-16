@@ -19,6 +19,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
 interface CreateShareDialogProps {
@@ -51,6 +58,8 @@ export function CreateShareDialog({
     resolver: zodResolver(createShareSchema),
     defaultValues: {
       name: "Proxy Share",
+      description: "",
+      forSale: "No",
       tokenLimit: 100000,
       expiresInSecs: 24 * 3600,
       apiKey: "",
@@ -62,6 +71,8 @@ export function CreateShareDialog({
     if (!open) return;
     form.reset({
       name: "Proxy Share",
+      description: "",
+      forSale: "No",
       tokenLimit: 100000,
       expiresInSecs: 24 * 3600,
       apiKey: "",
@@ -72,6 +83,8 @@ export function CreateShareDialog({
   const submit = form.handleSubmit(async (values) => {
     await onSubmit({
       name: values.name,
+      description: values.description || undefined,
+      forSale: values.forSale,
       tokenLimit: values.tokenLimit,
       expiresInSecs: values.expiresInSecs,
       apiKey: values.apiKey || undefined,
@@ -92,6 +105,45 @@ export function CreateShareDialog({
             <Label htmlFor="share-name">{t("share.name")}</Label>
             <Input id="share-name" {...form.register("name")} />
             <FieldError error={form.formState.errors.name?.message} />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="share-description">{t("share.description")}</Label>
+            <Textarea
+              id="share-description"
+              maxLength={200}
+              placeholder={t("share.descriptionPlaceholder")}
+              {...form.register("description")}
+            />
+            <div className="text-xs text-muted-foreground">
+              {t("share.descriptionHint")}
+            </div>
+            <FieldError error={form.formState.errors.description?.message} />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="share-for-sale">{t("share.forSale")}</Label>
+            <Select
+              value={form.watch("forSale")}
+              onValueChange={(value) =>
+                form.setValue("forSale", value as "Yes" | "No", {
+                  shouldDirty: true,
+                  shouldValidate: true,
+                })
+              }
+            >
+              <SelectTrigger id="share-for-sale">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="No">{t("share.forSaleOptions.no")}</SelectItem>
+                <SelectItem value="Yes">{t("share.forSaleOptions.yes")}</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="text-xs text-muted-foreground">
+              {t("share.forSaleHint")}
+            </div>
+            <FieldError error={form.formState.errors.forSale?.message} />
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">

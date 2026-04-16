@@ -5,8 +5,14 @@ use std::sync::Arc;
 pub struct ShareService;
 
 impl ShareService {
+    pub const MAX_DESCRIPTION_CHARS: usize = 200;
+    pub const FOR_SALE_NO: &'static str = "No";
+    pub const FOR_SALE_YES: &'static str = "Yes";
+
     pub fn prepare_create(
         name: String,
+        description: Option<String>,
+        for_sale: String,
         token_limit: i64,
         expires_in_secs: i64,
         subdomain: Option<String>,
@@ -23,10 +29,14 @@ impl ShareService {
             .unwrap_or_else(Self::generate_token);
         let now = chrono::Utc::now();
         let expires_at = now + chrono::Duration::seconds(expires_in_secs);
+        let description = normalize_description(description)?;
+        let for_sale = normalize_for_sale(&for_sale)?;
 
         let record = ShareRecord {
             id,
             name,
+            description,
+            for_sale,
             share_token,
             app_type: "proxy".to_string(),
             provider_id: None,
@@ -224,6 +234,34 @@ impl ShareService {
         Ok(updated)
     }
 
+    pub fn update_description(
+        db: &Arc<Database>,
+        share_id: &str,
+        description: Option<String>,
+    ) -> Result<ShareRecord, AppError> {
+        let normalized = normalize_description(description)?;
+        db.update_share_description(share_id, normalized.as_deref())?;
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
+    pub fn update_for_sale(
+        db: &Arc<Database>,
+        share_id: &str,
+        for_sale: &str,
+    ) -> Result<ShareRecord, AppError> {
+        let normalized = normalize_for_sale(for_sale)?;
+        db.update_share_for_sale(share_id, &normalized)?;
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
     pub fn update_expires_at(
         db: &Arc<Database>,
         share_id: &str,
@@ -317,4 +355,32 @@ fn normalize_api_key(value: &str) -> Result<String, AppError> {
         ));
     }
     Ok(value.to_string())
+}
+
+fn normalize_description(description: Option<String>) -> Result<Option<String>, AppError> {
+    let Some(description) = description else {
+        return Ok(None);
+    };
+
+    let trimmed = description.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    if trimmed.chars().count() > ShareService::MAX_DESCRIPTION_CHARS {
+        return Err(AppError::Message(format!(
+            "说明文字不能超过 {} 个字符",
+            ShareService::MAX_DESCRIPTION_CHARS
+        )));
+    }
+
+    Ok(Some(trimmed.to_string()))
+}
+
+fn normalize_for_sale(value: &str) -> Result<String, AppError> {
+    match value.trim() {
+        ShareService::FOR_SALE_NO => Ok(ShareService::FOR_SALE_NO.to_string()),
+        ShareService::FOR_SALE_YES => Ok(ShareService::FOR_SALE_YES.to_string()),
+        _ => Err(AppError::Message("For Sale 只能是 Yes 或 No".to_string())),
+    }
 }

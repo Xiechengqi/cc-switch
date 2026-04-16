@@ -90,6 +90,9 @@ pub struct ShareSupport {
 pub struct ShareTunnelMetadata {
     pub share_id: String,
     pub share_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub for_sale: String,
     pub subdomain: String,
     pub share_token: String,
     pub app_type: String,

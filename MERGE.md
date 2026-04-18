@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-04-18
+
+- **上游分支：** `main`
+- **合并提交：** `8a87b35c`
+- **上游 HEAD：** `1126c745`
+- **共同祖先：** `de23216e`
+- **合并提交数：** 2
+- **主要变更：**
+  - feat(proxy): Gemini Native API proxy integration (#1918)
+    - 新增 `proxy/gemini_url.rs`、`providers/gemini_schema.rs`、`providers/gemini_shadow.rs`
+    - 新增 `providers/streaming_gemini.rs`、`providers/transform_gemini.rs`
+    - Claude adapter 支持 `gemini_native` api_format 与 Gemini / GeminiCli provider 类型
+    - forwarder 根据 api_format 选择 `resolve_gemini_native_url` 构造 URL
+  - style: 新增 `provider.notes` 字段 (#2138)
+- **冲突解决：**
+  - `src-tauri/src/proxy/forwarder.rs` — 同时保留本地 Claude OAuth 逻辑（`ensure_claude_oauth_beta_query`、`sign_claude_oauth_messages_body`、动态 access_token 注入、`is_claude_oauth_provider`）和上游 `resolve_gemini_native_url`
+  - `src-tauri/src/proxy/providers/claude.rs` — 同时保留本地 `ProviderType::ClaudeOAuth` / `AuthStrategy::ClaudeOAuth` 分支与上游 Gemini/GeminiCli 检测及 `Google` / `GoogleOAuth` 认证策略
+- **合并后整理（同日）：**
+  - feat(share): 新增区域隧道路由与展示状态徽章（`fetch-regions.mjs`、`shareRegions.ts`、`ShareRouterBar`、`ShareDisplayStatusBadge`）
+  - feat(oauth): 新增可配置的配额刷新间隔与 Claude OAuth 配额展示 footer
+
+---
+
 ## 2026-04-16
 
 - **上游分支：** `main`

@@ -1,7 +1,14 @@
+import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createElement, type ReactNode } from "react";
 import { describe, it, expect, vi } from "vitest";
 import { ShareCard } from "@/components/share/ShareCard";
+import { createTestQueryClient } from "../../utils/testQueryClient";
+
+vi.mock("@/components/share/ShareRequestLogTable", () => ({
+  ShareRequestLogTable: () => null,
+}));
 
 const tunnelConfig = {
   domain: "127.0.0.1:8787",
@@ -28,8 +35,13 @@ const baseShare = {
 } as const;
 
 describe("ShareCard", () => {
-  it("disables start tunnel when tunnel is not configured", () => {
-    render(
+  const renderShareCard = (ui: ReactNode) => {
+    const client = createTestQueryClient();
+    return render(createElement(QueryClientProvider, { client }, ui));
+  };
+
+  it("shows disable for active share even when tunnel is not configured", () => {
+    renderShareCard(
       <ShareCard
         share={baseShare}
         tunnelConfig={tunnelConfig}
@@ -42,11 +54,11 @@ describe("ShareCard", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "share.enable" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "share.disable" })).toBeEnabled();
   });
 
-  it("allows enable when share is active but tunnel is offline", () => {
-    render(
+  it("shows disable when share is active but tunnel is offline", () => {
+    renderShareCard(
       <ShareCard
         share={baseShare}
         tunnelConfig={tunnelConfig}
@@ -59,13 +71,13 @@ describe("ShareCard", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "share.enable" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "share.disable" })).toBeEnabled();
   });
 
   it("calls disable handler for active share", async () => {
     const user = userEvent.setup();
     const onDisable = vi.fn();
-    render(
+    renderShareCard(
       <ShareCard
         share={baseShare}
         tunnelConfig={tunnelConfig}
@@ -80,5 +92,27 @@ describe("ShareCard", () => {
 
     await user.click(screen.getByRole("button", { name: "share.disable" }));
     expect(onDisable).toHaveBeenCalledWith(baseShare);
+  });
+
+  it("shows enable for paused share even if a stale tunnel url exists", () => {
+    renderShareCard(
+      <ShareCard
+        share={{
+          ...baseShare,
+          status: "paused",
+          tunnelUrl: "http://share-1.127.0.0.1:8787",
+        }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        onOpenDetail={vi.fn()}
+        onOpenConnect={vi.fn()}
+        onDelete={vi.fn()}
+        onEnable={vi.fn()}
+        onDisable={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "share.disable" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "share.enable" })).toBeEnabled();
   });
 });

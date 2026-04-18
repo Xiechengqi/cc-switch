@@ -2,6 +2,7 @@
 
 use crate::app_config::AppType;
 use crate::commands::claude_oauth::ClaudeOAuthState;
+use crate::commands::codex_oauth::CodexOAuthState;
 use crate::commands::copilot::CopilotAuthState;
 use crate::error::AppError;
 use crate::services::stream_check::{
@@ -16,6 +17,7 @@ use tauri::State;
 pub async fn stream_check_provider(
     state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
+    codex_oauth_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     app_type: AppType,
     provider_id: String,
@@ -29,9 +31,10 @@ pub async fn stream_check_provider(
 
     let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
         .await?
+        .or(resolve_codex_oauth_auth_override(&app_type, provider, &codex_oauth_state).await?)
         .or(resolve_claude_oauth_auth_override(provider, &claude_oauth_state).await?);
-    let base_url_override = resolve_copilot_base_url_override(provider, &copilot_state)
-        .await?
+    let base_url_override = resolve_codex_oauth_base_url_override(&app_type, provider)
+        .or(resolve_copilot_base_url_override(provider, &copilot_state).await?)
         .or(resolve_claude_oauth_base_url_override(provider));
     let claude_api_format_override = resolve_claude_api_format_override(
         &app_type,
@@ -65,6 +68,7 @@ pub async fn stream_check_provider(
 pub async fn stream_check_all_providers(
     state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
+    codex_oauth_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     app_type: AppType,
     proxy_targets_only: bool,
@@ -97,9 +101,10 @@ pub async fn stream_check_all_providers(
 
         let auth_override = resolve_copilot_auth_override(&provider, &copilot_state)
             .await?
+            .or(resolve_codex_oauth_auth_override(&app_type, &provider, &codex_oauth_state).await?)
             .or(resolve_claude_oauth_auth_override(&provider, &claude_oauth_state).await?);
-        let base_url_override = resolve_copilot_base_url_override(&provider, &copilot_state)
-            .await?
+        let base_url_override = resolve_codex_oauth_base_url_override(&app_type, &provider)
+            .or(resolve_copilot_base_url_override(&provider, &copilot_state).await?)
             .or(resolve_claude_oauth_base_url_override(&provider));
         let claude_api_format_override = resolve_claude_api_format_override(
             &app_type,
@@ -248,11 +253,69 @@ fn is_copilot_provider(provider: &crate::provider::Provider) -> bool {
             .unwrap_or(false)
 }
 
+async fn resolve_codex_oauth_auth_override(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+    codex_oauth_state: &State<'_, CodexOAuthState>,
+) -> Result<Option<crate::proxy::providers::AuthInfo>, AppError> {
+    if !uses_codex_oauth_auth(app_type, provider) {
+        return Ok(None);
+    }
+
+    let auth_manager = codex_oauth_state.0.read().await;
+    let account_id = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("codex_oauth"));
+
+    let (token, resolved_account_id) = match account_id.as_deref() {
+        Some(id) => (
+            auth_manager
+                .get_valid_token_for_account(id)
+                .await
+                .map_err(|e| AppError::Message(format!("Codex OAuth 认证失败: {e}")))?,
+            Some(id.to_string()),
+        ),
+        None => {
+            let token = auth_manager
+                .get_valid_token()
+                .await
+                .map_err(|e| AppError::Message(format!("Codex OAuth 认证失败: {e}")))?;
+            (token, auth_manager.default_account_id().await)
+        }
+    };
+
+    Ok(Some(
+        crate::proxy::providers::AuthInfo::new(
+            token,
+            crate::proxy::providers::AuthStrategy::CodexOAuth,
+        )
+        .with_managed_account_id(resolved_account_id),
+    ))
+}
+
+fn uses_codex_oauth_auth(app_type: &AppType, provider: &crate::provider::Provider) -> bool {
+    match app_type {
+        AppType::Codex => provider.is_codex_official_with_managed_auth(),
+        AppType::Claude => provider.is_codex_oauth_provider(),
+        _ => false,
+    }
+}
+
+fn resolve_codex_oauth_base_url_override(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+) -> Option<String> {
+    provider
+        .stream_check_base_url_override(app_type)
+        .map(str::to_string)
+}
+
 async fn resolve_claude_oauth_auth_override(
     provider: &crate::provider::Provider,
     claude_oauth_state: &State<'_, ClaudeOAuthState>,
 ) -> Result<Option<crate::proxy::providers::AuthInfo>, AppError> {
-    if !is_claude_oauth_provider(provider) {
+    if !provider.is_claude_oauth_provider() {
         return Ok(None);
     }
 
@@ -279,20 +342,15 @@ async fn resolve_claude_oauth_auth_override(
     )))
 }
 
+#[cfg(test)]
 fn is_claude_oauth_provider(provider: &crate::provider::Provider) -> bool {
-    provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.provider_type.as_deref())
-        == Some("claude_oauth")
+    provider.is_claude_oauth_provider()
 }
 
 fn resolve_claude_oauth_base_url_override(provider: &crate::provider::Provider) -> Option<String> {
-    if !is_claude_oauth_provider(provider) {
-        return None;
-    }
-
-    Some("https://api.anthropic.com".to_string())
+    provider
+        .stream_check_base_url_override(&AppType::Claude)
+        .map(str::to_string)
 }
 
 async fn resolve_claude_api_format_override(
@@ -347,8 +405,10 @@ async fn resolve_claude_api_format_override(
 mod tests {
     use super::{
         is_claude_oauth_provider, is_copilot_provider, resolve_claude_oauth_base_url_override,
+        resolve_codex_oauth_base_url_override, uses_codex_oauth_auth,
     };
-    use crate::provider::{Provider, ProviderMeta};
+    use crate::app_config::AppType;
+    use crate::provider::{AuthBinding, AuthBindingSource, Provider, ProviderMeta};
     use serde_json::json;
 
     #[test]
@@ -450,5 +510,63 @@ mod tests {
             resolve_claude_oauth_base_url_override(&provider).as_deref(),
             Some("https://api.anthropic.com")
         );
+    }
+
+    #[test]
+    fn codex_official_managed_auth_base_url_override_uses_chatgpt_codex_endpoint() {
+        let provider = Provider {
+            id: "p5".to_string(),
+            name: "OpenAI Official".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                }),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert_eq!(
+            resolve_codex_oauth_base_url_override(&AppType::Codex, &provider).as_deref(),
+            Some("https://chatgpt.com/backend-api/codex")
+        );
+    }
+
+    #[test]
+    fn claude_codex_oauth_provider_uses_codex_oauth_auth_override() {
+        let provider = Provider {
+            id: "p6".to_string(),
+            name: "Codex OAuth".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                provider_type: Some("codex_oauth".to_string()),
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                }),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert!(uses_codex_oauth_auth(&AppType::Claude, &provider));
     }
 }

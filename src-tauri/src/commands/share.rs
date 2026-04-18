@@ -233,7 +233,25 @@ pub async fn disable_share(state: State<'_, AppState>, share_id: String) -> Resu
                 .map_err(|e| e.to_string())?;
         }
     }
-    ShareService::pause(&state.db, &share_id).map_err(|e: AppError| e.to_string())
+    state
+        .db
+        .clear_share_tunnel(&share_id)
+        .map_err(|e: AppError| e.to_string())?;
+    ShareService::pause(&state.db, &share_id).map_err(|e: AppError| e.to_string())?;
+
+    if let Ok(Some(share)) = state.db.get_share_by_id(&share_id) {
+        let mut metadata = crate::tunnel::sync::share_metadata_from_record(&share);
+        metadata.support = crate::tunnel::sync::query_share_support(&state.db).await;
+        if let Err(err) = crate::tunnel::sync::sync_share_metadata_now(metadata).await {
+            log::warn!(
+                "[Share] immediate remote sync after disable failed for {}: {}",
+                share_id,
+                err
+            );
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -327,7 +345,7 @@ async fn start_share_tunnel_inner(
 
     let mut mgr = state.tunnel_manager.write().await;
     let info = mgr
-        .start_tunnel(share_id, req)
+        .start_tunnel(share_id, req, state.db.clone())
         .await
         .map_err(|e| AppError::Message(e.to_string()))?;
 
@@ -353,7 +371,15 @@ async fn start_share_tunnel_inner(
 #[tauri::command]
 pub async fn stop_share_tunnel(state: State<'_, AppState>, share_id: String) -> Result<(), String> {
     let mut mgr = state.tunnel_manager.write().await;
-    mgr.stop_tunnel(&share_id).await.map_err(|e| e.to_string())
+    mgr.stop_tunnel(&share_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    drop(mgr);
+    state
+        .db
+        .clear_share_tunnel(&share_id)
+        .map_err(|e: AppError| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

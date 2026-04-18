@@ -17,9 +17,9 @@ import {
   Copy,
   Check,
   Plus,
-  X,
   Sparkles,
   User,
+  X,
 } from "lucide-react";
 import { useClaudeOauth } from "./hooks/useClaudeOauth";
 import { copyText } from "@/lib/clipboard";
@@ -30,6 +30,8 @@ interface ClaudeOAuthSectionProps {
   selectedAccountId?: string | null;
   /** 账号选择回调 */
   onAccountSelect?: (accountId: string | null) => void;
+  /** 是否显示已登录账号管理列表 */
+  showLoggedInAccounts?: boolean;
 }
 
 /**
@@ -42,13 +44,13 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
   className,
   selectedAccountId,
   onAccountSelect,
+  showLoggedInAccounts = false,
 }) => {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
 
   const {
     accounts,
-    defaultAccountId,
     hasAnyAccount,
     authState,
     deviceCode,
@@ -57,11 +59,12 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
     isAddingAccount,
     isRemovingAccount,
     isSettingDefaultAccount,
+    defaultAccountId,
     addAccount,
-    removeAccount,
-    setDefaultAccount,
     cancelAuth,
     logout,
+    removeAccount,
+    setDefaultAccount,
   } = useClaudeOauth();
 
   const copyVerificationUrl = async () => {
@@ -104,6 +107,65 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
         </Badge>
       </div>
 
+      {/* 已登录账号列表 */}
+      {hasAnyAccount && showLoggedInAccounts && (
+        <div className="space-y-2">
+          <Label className="text-sm text-muted-foreground">
+            {t("claudeOauth.loggedInAccounts", "已登录账号")}
+          </Label>
+          <div className="space-y-1">
+            {accounts.map((account) => (
+              <div
+                key={account.id}
+                className="flex items-center justify-between rounded-md border bg-muted/30 p-2"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <User className="h-5 w-5 shrink-0 text-muted-foreground" />
+                  <span className="truncate text-sm font-medium">
+                    {account.login}
+                  </span>
+                  {defaultAccountId === account.id && (
+                    <Badge variant="secondary" className="text-xs">
+                      {t("claudeOauth.defaultAccount", "默认")}
+                    </Badge>
+                  )}
+                  {selectedAccountId === account.id && (
+                    <Badge variant="outline" className="text-xs">
+                      {t("claudeOauth.selected", "已选中")}
+                    </Badge>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {defaultAccountId !== account.id && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs text-muted-foreground"
+                      onClick={() => setDefaultAccount(account.id)}
+                      disabled={isSettingDefaultAccount}
+                    >
+                      {t("claudeOauth.setAsDefault", "设为默认")}
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-red-500"
+                    onClick={(e) => handleRemoveAccount(account.id, e)}
+                    disabled={isRemovingAccount}
+                    title={t("claudeOauth.removeAccount", "移除账号")}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 账号选择器 */}
       {hasAnyAccount && onAccountSelect && (
         <div className="space-y-2">
@@ -138,63 +200,6 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
               ))}
             </SelectContent>
           </Select>
-        </div>
-      )}
-
-      {/* 已登录账号列表 */}
-      {hasAnyAccount && (
-        <div className="space-y-2">
-          <Label className="text-sm text-muted-foreground">
-            {t("claudeOauth.loggedInAccounts", "已登录账号")}
-          </Label>
-          <div className="space-y-1">
-            {accounts.map((account) => (
-              <div
-                key={account.id}
-                className="flex items-center justify-between p-2 rounded-md border bg-muted/30"
-              >
-                <div className="flex items-center gap-2">
-                  <User className="h-5 w-5 text-muted-foreground" />
-                  <span className="text-sm font-medium">{account.login}</span>
-                  {defaultAccountId === account.id && (
-                    <Badge variant="secondary" className="text-xs">
-                      {t("claudeOauth.defaultAccount", "默认")}
-                    </Badge>
-                  )}
-                  {selectedAccountId === account.id && (
-                    <Badge variant="outline" className="text-xs">
-                      {t("claudeOauth.selected", "已选中")}
-                    </Badge>
-                  )}
-                </div>
-                <div className="flex items-center gap-1">
-                  {defaultAccountId !== account.id && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs text-muted-foreground"
-                      onClick={() => setDefaultAccount(account.id)}
-                      disabled={isSettingDefaultAccount}
-                    >
-                      {t("claudeOauth.setAsDefault", "设为默认")}
-                    </Button>
-                  )}
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-red-500"
-                    onClick={(e) => handleRemoveAccount(account.id, e)}
-                    disabled={isRemovingAccount}
-                    title={t("claudeOauth.removeAccount", "移除账号")}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 

@@ -258,6 +258,11 @@
       "title": "OAuth 認証センター",
       "description": "Claude Code で他のサブスクリプションをご利用いただけます。コンプライアンスリスクにご注意ください。",
       "beta": "Beta",
+      "quotaRefreshIntervalTitle": "使用量の更新間隔",
+      "quotaRefreshIntervalDescription": "OAuth アカウントの 5h / 7day 使用量バーを自動更新する頻度を制御します。バックグラウンドでポーリングするのは現在有効なプロバイダーのみです。",
+      "quotaRefreshIntervalMinutes": "分",
+      "quotaRefreshIntervalInvalid": "更新間隔は 1 分以上の整数である必要があります",
+      "quotaRefreshIntervalSaved": "使用量の更新間隔を保存しました",
       "copilotDescription": "GitHub Copilot アカウントを管理します",
       "codexOauthDescription": "ChatGPT アカウントを管理します"
     },
@@ -801,6 +806,7 @@
     "modelHint": "💡 空欄ならプロバイダーのデフォルトモデルを使用します",
     "apiHint": "💡 Claude API 互換サービスのエンドポイントを入力してください。末尾にスラッシュを付けないでください",
     "apiHintOAI": "💡 OpenAI Chat Completions 互換サービスのエンドポイントを入力してください。末尾にスラッシュを付けないでください",
+    "apiHintGeminiNative": "💡 Gemini Native では https://generativelanguage.googleapis.com または https://generativelanguage.googleapis.com/v1beta のような base URL を推奨します。プロキシが models/*:generateContent を自動補完します",
     "codexApiHint": "💡 OpenAI Response 互換のサービスエンドポイントを入力してください",
     "fillSupplierName": "プロバイダー名を入力してください",
     "fillConfigContent": "設定内容を入力してください",
@@ -823,9 +829,11 @@
     "fullUrlEnabled": "フル URL モード",
     "fullUrlDisabled": "フル URL として設定",
     "fullUrlHint": "💡 完全なリクエスト URL を入力してください。このモードはルーティングを有効にして使用する必要があり、ルーティングはこの URL をそのまま使用し、パスを追加しません",
+    "fullUrlHintGeminiNative": "💡 Gemini Native のフル URL モードでは 2 種類の入力を扱えます。1. 公式/構造化された Gemini URL は、要求されたモデルやストリーミング方式に合わせて正規化されます。2. カスタム relay の opaque な完全 URL は、主にそのまま使用され、必要なクエリだけ追加されます",
     "apiFormatAnthropic": "Anthropic Messages（ネイティブ）",
     "apiFormatOpenAIChat": "OpenAI Chat Completions（ルーティングが必要）",
     "apiFormatOpenAIResponses": "OpenAI Responses API（ルーティングが必要）",
+    "apiFormatGeminiNative": "Gemini Native generateContent（ルーティングが必要）",
     "authField": "認証フィールド",
     "authFieldAuthToken": "ANTHROPIC_AUTH_TOKEN（デフォルト）",
     "authFieldApiKey": "ANTHROPIC_API_KEY",
@@ -2430,7 +2438,7 @@
   },
   "share": {
     "title": "Share",
-    "subtitle": "単一のデバイス共有トークンと tunnel により、ローカルプロキシサービスを外部公開します。",
+    "subtitle": "ローカルプロキシサービスを安全に外部へ共有",
     "create": "Share を作成",
     "createDescription": "現在のローカルプロキシサービスを tunnel 経由で外部公開する、デバイス単位の share を作成します。",
     "createHelp": "作成メモ",
@@ -2476,6 +2484,16 @@
       "offline": "オフライン",
       "unknown": "不明"
     },
+    "displayStatuses": {
+      "not_created": "未作成",
+      "not_configured": "未設定",
+      "sharing": "共有中",
+      "closed": "停止中",
+      "connecting": "接続中",
+      "connection_error": "接続異常",
+      "expired": "期限切れ",
+      "exhausted": "上限到達"
+    },
     "enable": "Share を開始",
     "disable": "Share を停止",
     "delete": "削除",
@@ -2501,8 +2519,11 @@
     "saveForSale": "販売可否を保存",
     "forSaleOptions": {
       "yes": "Yes",
-      "no": "No"
+      "no": "No",
+      "free": "Free"
     },
+    "forSaleFreeConfirmTitle": "Free モードの確認",
+    "forSaleFreeConfirmMessage": "Free に設定すると、API Key がマスクされずに全員に公開されます。リスクを理解した上で確認してください。",
     "apiKey": "API Key",
     "apiKeyHint": "任意です。空欄なら自動生成します。使用できるのは英数字、.、_、- で、長さは 8 から 128 です。",
     "apiKeySettings": "API Key 設定",
@@ -2520,12 +2541,17 @@
     "subdomainEditHint": "保存時に portr-rs 上でこのサブドメインを再確保します。share が有効なら新しいサブドメインで tunnel を再構築します。",
     "saveSubdomain": "サブドメインを保存",
     "tunnelUrl": "Tunnel URL",
+    "apiUrl": "API URL",
+    "more": "その他",
     "remotePort": "リモートポート",
     "tunnelHealth": "Tunnel 状態",
     "quota": "クォータ",
     "requestLogs": "リクエスト記録",
     "requestLogsHint": "最新 10 件の share リクエスト",
     "requestLogsEmpty": "share リクエスト記録はまだありません",
+    "requestLogsSummary": "最新 {{count}} 件 · 成功 {{success}} · 失敗 {{failed}} · 平均 {{avg}} ms",
+    "requestLogsExpand": "展開",
+    "requestLogsCollapse": "折りたたむ",
     "requestLogsRange": "{{total}} 件中 {{start}} - {{end}} 件を表示",
     "requestLogsRangeEmpty": "記録はありません",
     "requestLogsPage": "{{page}} / {{totalPages}} ページ",
@@ -2543,6 +2569,7 @@
     "never": "未使用",
     "proxyNotRunningTitle": "ローカルプロキシが起動していません",
     "proxyNotRunningDescription": "share はローカルプロキシサービスに依存します。{{address}}:{{port}} でプロキシが検出されていないため、先にプロキシを起動してください。",
+    "proxyCompactWarning": "ローカルプロキシが起動していません。share はローカルプロキシサービス（{{address}}:{{port}}）に依存します。",
     "hero": {
       "activeShares": "有効な share {{count}} 件",
       "runningTunnels": "稼働中 tunnel {{count}} 件"
@@ -2556,8 +2583,10 @@
     },
     "tunnel": {
       "title": "Tunnel 設定",
-      "description": "デバイス単位 share は 1 つの portr tunnel 設定を使います。未設定でも share は作成できますが、tunnel は開始できません。",
       "domain": "ドメイン",
+      "region": "ルーティングノード",
+      "selectRegion": "ルーティングノードを選択",
+      "loading": "読み込み中...",
       "notConfigured": "Tunnel 未設定",
       "configured": "Tunnel 設定済み",
       "configSaved": "Tunnel 設定を保存しました"
@@ -2574,7 +2603,9 @@
       "sixHours": "6時間",
       "oneDay": "1日",
       "sevenDays": "7日",
-      "thirtyDays": "30日"
+      "thirtyDays": "30日",
+      "permanent": "無期限",
+      "permanentLabel": "無期限"
     },
     "confirmDeleteTitle": "Share を削除",
     "confirmDeleteMessage": "「{{name}}」を削除しますか？ 実行中の tunnel があれば先に停止します。",

@@ -258,6 +258,11 @@
       "title": "OAuth Authentication Center",
       "description": "Use your other subscriptions in Claude Code — please be mindful of compliance risks.",
       "beta": "Beta",
+      "quotaRefreshIntervalTitle": "Usage Refresh Interval",
+      "quotaRefreshIntervalDescription": "Controls how often OAuth account 5h / 7day usage bars refresh automatically. Only the currently active provider polls in the background.",
+      "quotaRefreshIntervalMinutes": "min",
+      "quotaRefreshIntervalInvalid": "Refresh interval must be an integer greater than or equal to 1 minute",
+      "quotaRefreshIntervalSaved": "Usage refresh interval saved",
       "copilotDescription": "Manage GitHub Copilot accounts",
       "codexOauthDescription": "Manage ChatGPT accounts"
     },
@@ -801,6 +806,7 @@
     "modelHint": "💡 Leave blank to use provider's default model",
     "apiHint": "💡 Fill in Claude API compatible service endpoint, avoid trailing slash",
     "apiHintOAI": "💡 Fill in OpenAI Chat Completions compatible service endpoint, avoid trailing slash",
+    "apiHintGeminiNative": "💡 Prefer a Gemini Native base URL such as https://generativelanguage.googleapis.com or https://generativelanguage.googleapis.com/v1beta; the proxy will append models/*:generateContent automatically",
     "codexApiHint": "💡 Fill in service endpoint compatible with OpenAI Response format",
     "fillSupplierName": "Please fill in provider name",
     "fillConfigContent": "Please fill in configuration content",
@@ -823,9 +829,11 @@
     "fullUrlEnabled": "Full URL Mode",
     "fullUrlDisabled": "Mark as Full URL",
     "fullUrlHint": "💡 Enter the full request URL. This mode requires routing to be enabled, and routing will use the URL as-is without appending a path",
+    "fullUrlHintGeminiNative": "💡 In Gemini Native full URL mode, two inputs are supported: 1. official/structured Gemini URLs, which will still be normalized to the requested model and streaming method; 2. opaque custom relay URLs, which will be used mostly as-is with only query parameters appended",
     "apiFormatAnthropic": "Anthropic Messages (Native)",
     "apiFormatOpenAIChat": "OpenAI Chat Completions (Requires routing)",
     "apiFormatOpenAIResponses": "OpenAI Responses API (Requires routing)",
+    "apiFormatGeminiNative": "Gemini Native generateContent (Requires routing)",
     "authField": "Auth Field",
     "authFieldAuthToken": "ANTHROPIC_AUTH_TOKEN (Default)",
     "authFieldApiKey": "ANTHROPIC_API_KEY",
@@ -2430,7 +2438,7 @@
   },
   "share": {
     "title": "Share",
-    "subtitle": "Expose the local proxy service externally through a single device-level token and tunnel.",
+    "subtitle": "Securely share local proxy service to external access",
     "create": "Create Share",
     "createDescription": "Create a device-level share that exposes the current local proxy service through the tunnel.",
     "createHelp": "Creation Notes",
@@ -2476,6 +2484,16 @@
       "offline": "Offline",
       "unknown": "Unknown"
     },
+    "displayStatuses": {
+      "not_created": "Not created",
+      "not_configured": "Not configured",
+      "sharing": "Sharing",
+      "closed": "Closed",
+      "connecting": "Connecting",
+      "connection_error": "Connection issue",
+      "expired": "Expired",
+      "exhausted": "Quota used up"
+    },
     "enable": "Enable Share",
     "disable": "Disable Share",
     "delete": "Delete",
@@ -2501,8 +2519,11 @@
     "saveForSale": "Save For Sale",
     "forSaleOptions": {
       "yes": "Yes",
-      "no": "No"
+      "no": "No",
+      "free": "Free"
     },
+    "forSaleFreeConfirmTitle": "Confirm Free Mode",
+    "forSaleFreeConfirmMessage": "Setting to Free will fully expose the API Key to everyone without masking. Please confirm you understand the risks.",
     "apiKey": "API Key",
     "apiKeyHint": "Optional. Leave blank to auto-generate. Only letters, numbers, ., _, and - are allowed, with length 8 to 128.",
     "apiKeySettings": "API Key Settings",
@@ -2520,12 +2541,17 @@
     "subdomainEditHint": "Saving reclaims this subdomain on portr-rs. If the share is active, the tunnel will be rebuilt with the new subdomain.",
     "saveSubdomain": "Save Subdomain",
     "tunnelUrl": "Tunnel URL",
+    "apiUrl": "API URL",
+    "more": "More",
     "remotePort": "Remote Port",
     "tunnelHealth": "Tunnel Health",
     "quota": "Quota",
     "requestLogs": "Request Logs",
     "requestLogsHint": "Latest 10 share requests",
     "requestLogsEmpty": "No share request logs yet",
+    "requestLogsSummary": "Latest {{count}} requests · {{success}} success · {{failed}} failed · avg {{avg}} ms",
+    "requestLogsExpand": "Expand",
+    "requestLogsCollapse": "Collapse",
     "requestLogsRange": "Showing {{start}} - {{end}} of {{total}}",
     "requestLogsRangeEmpty": "No records",
     "requestLogsPage": "Page {{page}} / {{totalPages}}",
@@ -2543,6 +2569,7 @@
     "never": "Never",
     "proxyNotRunningTitle": "Local proxy is not running",
     "proxyNotRunningDescription": "Shares depend on the local proxy service. No proxy was detected on {{address}}:{{port}}. Start the proxy before using share access.",
+    "proxyCompactWarning": "Local proxy is not running. Share depends on the local proxy service ({{address}}:{{port}}).",
     "hero": {
       "activeShares": "{{count}} active shares",
       "runningTunnels": "{{count}} running tunnels"
@@ -2556,8 +2583,10 @@
     },
     "tunnel": {
       "title": "Tunnel Config",
-      "description": "The device-level share uses one shared portr tunnel config. You can create the share without it, but you cannot start the tunnel.",
       "domain": "Domain",
+      "region": "Region",
+      "selectRegion": "Select region",
+      "loading": "Loading...",
       "notConfigured": "Tunnel not configured",
       "configured": "Tunnel configured",
       "configSaved": "Tunnel config saved"
@@ -2574,7 +2603,9 @@
       "sixHours": "6 hours",
       "oneDay": "1 day",
       "sevenDays": "7 days",
-      "thirtyDays": "30 days"
+      "thirtyDays": "30 days",
+      "permanent": "Permanent",
+      "permanentLabel": "Permanent"
     },
     "confirmDeleteTitle": "Delete Share",
     "confirmDeleteMessage": "Delete share \"{{name}}\"? Any running tunnel will be stopped first.",

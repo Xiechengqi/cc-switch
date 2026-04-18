@@ -18,8 +18,8 @@ import {
   Check,
   ExternalLink,
   Plus,
-  X,
   User,
+  X,
 } from "lucide-react";
 import { useCopilotAuth } from "./hooks/useCopilotAuth";
 import { copyText } from "@/lib/clipboard";
@@ -31,6 +31,8 @@ interface CopilotAuthSectionProps {
   selectedAccountId?: string | null;
   /** 账号选择回调 */
   onAccountSelect?: (accountId: string | null) => void;
+  /** 是否显示已登录账号管理列表 */
+  showLoggedInAccounts?: boolean;
 }
 
 /**
@@ -42,13 +44,13 @@ export const CopilotAuthSection: React.FC<CopilotAuthSectionProps> = ({
   className,
   selectedAccountId,
   onAccountSelect,
+  showLoggedInAccounts = false,
 }) => {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
 
   const {
     accounts,
-    defaultAccountId,
     migrationError,
     hasAnyAccount,
     pollingState,
@@ -58,11 +60,12 @@ export const CopilotAuthSection: React.FC<CopilotAuthSectionProps> = ({
     isAddingAccount,
     isRemovingAccount,
     isSettingDefaultAccount,
+    defaultAccountId,
     addAccount,
-    removeAccount,
-    setDefaultAccount,
     cancelAuth,
     logout,
+    removeAccount,
+    setDefaultAccount,
   } = useCopilotAuth();
 
   // 复制用户码
@@ -79,12 +82,10 @@ export const CopilotAuthSection: React.FC<CopilotAuthSectionProps> = ({
     onAccountSelect?.(value === "none" ? null : value);
   };
 
-  // 处理移除账号
   const handleRemoveAccount = (accountId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     removeAccount(accountId);
-    // 如果移除的是当前选中的账号，清除选择
     if (selectedAccountId === accountId) {
       onAccountSelect?.(null);
     }
@@ -112,6 +113,65 @@ export const CopilotAuthSection: React.FC<CopilotAuthSectionProps> = ({
             : t("copilot.notAuthenticated", "未认证")}
         </Badge>
       </div>
+
+      {/* 已登录账号列表 */}
+      {hasAnyAccount && showLoggedInAccounts && (
+        <div className="space-y-2">
+          <Label className="text-sm text-muted-foreground">
+            {t("copilot.loggedInAccounts", "已登录账号")}
+          </Label>
+          <div className="space-y-1">
+            {accounts.map((account) => (
+              <div
+                key={account.id}
+                className="flex items-center justify-between rounded-md border bg-muted/30 p-2"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="shrink-0">{renderAvatar(account)}</span>
+                  <span className="truncate text-sm font-medium">
+                    {account.login}
+                  </span>
+                  {defaultAccountId === account.id && (
+                    <Badge variant="secondary" className="text-xs">
+                      {t("copilot.defaultAccount", "默认")}
+                    </Badge>
+                  )}
+                  {selectedAccountId === account.id && (
+                    <Badge variant="outline" className="text-xs">
+                      {t("copilot.selected", "已选中")}
+                    </Badge>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {defaultAccountId !== account.id && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs text-muted-foreground"
+                      onClick={() => setDefaultAccount(account.id)}
+                      disabled={isSettingDefaultAccount}
+                    >
+                      {t("copilot.setAsDefault", "设为默认")}
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-red-500"
+                    onClick={(e) => handleRemoveAccount(account.id, e)}
+                    disabled={isRemovingAccount}
+                    title={t("copilot.removeAccount", "移除账号")}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {migrationError && (
         <p className="text-sm text-amber-600 dark:text-amber-400">
@@ -156,63 +216,6 @@ export const CopilotAuthSection: React.FC<CopilotAuthSectionProps> = ({
               ))}
             </SelectContent>
           </Select>
-        </div>
-      )}
-
-      {/* 已登录账号列表 */}
-      {hasAnyAccount && (
-        <div className="space-y-2">
-          <Label className="text-sm text-muted-foreground">
-            {t("copilot.loggedInAccounts", "已登录账号")}
-          </Label>
-          <div className="space-y-1">
-            {accounts.map((account) => (
-              <div
-                key={account.id}
-                className="flex items-center justify-between p-2 rounded-md border bg-muted/30"
-              >
-                <div className="flex items-center gap-2">
-                  {renderAvatar(account)}
-                  <span className="text-sm font-medium">{account.login}</span>
-                  {defaultAccountId === account.id && (
-                    <Badge variant="secondary" className="text-xs">
-                      {t("copilot.defaultAccount", "默认")}
-                    </Badge>
-                  )}
-                  {selectedAccountId === account.id && (
-                    <Badge variant="outline" className="text-xs">
-                      {t("copilot.selected", "已选中")}
-                    </Badge>
-                  )}
-                </div>
-                <div className="flex items-center gap-1">
-                  {defaultAccountId !== account.id && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs text-muted-foreground"
-                      onClick={() => setDefaultAccount(account.id)}
-                      disabled={isSettingDefaultAccount}
-                    >
-                      {t("copilot.setAsDefault", "设为默认")}
-                    </Button>
-                  )}
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-red-500"
-                    onClick={(e) => handleRemoveAccount(account.id, e)}
-                    disabled={isRemovingAccount}
-                    title={t("copilot.removeAccount", "移除账号")}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 

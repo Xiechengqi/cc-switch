@@ -1265,6 +1265,12 @@ impl Database {
     /// v10 -> v11 迁移：为 proxy_request_logs 增加 share 维度
     fn migrate_v10_to_v11(conn: &Connection) -> Result<(), AppError> {
         if Self::table_exists(conn, "proxy_request_logs")? {
+            Self::add_column_if_missing(
+                conn,
+                "proxy_request_logs",
+                "created_at",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
             Self::add_column_if_missing(conn, "proxy_request_logs", "share_id", "TEXT")?;
             Self::add_column_if_missing(conn, "proxy_request_logs", "share_name", "TEXT")?;
             conn.execute(

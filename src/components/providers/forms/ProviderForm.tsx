@@ -362,7 +362,11 @@ export function ProviderForm({
   const { isAuthenticated: isCopilotAuthenticated } = useCopilotAuth();
 
   // Codex OAuth 认证状态（ChatGPT Plus/Pro 反代）
-  const { isAuthenticated: isCodexOauthAuthenticated } = useCodexOauth();
+  const {
+    isAuthenticated: isCodexOauthAuthenticated,
+    accounts: codexOauthAccounts,
+    defaultAccountId: defaultCodexAccountId,
+  } = useCodexOauth();
 
   // Claude OAuth 认证状态（Anthropic 官方订阅）
   const { isAuthenticated: isClaudeOauthAuthenticated } = useClaudeOauth();
@@ -381,6 +385,25 @@ export function ProviderForm({
   const [selectedClaudeAccountId, setSelectedClaudeAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "claude_oauth"));
+
+  const isCodexOfficialPreset = appId === "codex" && category === "official";
+
+  useEffect(() => {
+    if (!isCodexOfficialPreset || selectedCodexAccountId) {
+      return;
+    }
+
+    const preferredAccountId =
+      defaultCodexAccountId ?? codexOauthAccounts[0]?.id ?? null;
+    if (preferredAccountId) {
+      setSelectedCodexAccountId(preferredAccountId);
+    }
+  }, [
+    codexOauthAccounts,
+    defaultCodexAccountId,
+    isCodexOfficialPreset,
+    selectedCodexAccountId,
+  ]);
 
   const {
     codexAuth,
@@ -837,6 +860,24 @@ export function ProviderForm({
       );
       return;
     }
+    if (isCodexOfficialPreset) {
+      if (!isCodexOauthAuthenticated) {
+        toast.error(
+          t("codexOauth.loginRequired", {
+            defaultValue: "请先登录 ChatGPT 账号",
+          }),
+        );
+        return;
+      }
+      if (!selectedCodexAccountId) {
+        toast.error(
+          t("codexOauth.selectAccountRequired", {
+            defaultValue: "OpenAI Official 必须绑定一个 ChatGPT 账号",
+          }),
+        );
+        return;
+      }
+    }
     // Claude OAuth 必须先登录才能添加
     if (isClaudeOauthProvider && !isClaudeOauthAuthenticated) {
       toast.error(
@@ -1078,7 +1119,7 @@ export function ProviderForm({
             authProvider: "github_copilot",
             accountId: selectedGitHubAccountId ?? undefined,
           }
-        : isCodexOauthProvider
+        : isCodexOauthProvider || isCodexOfficialPreset
           ? {
               source: "managed_account",
               authProvider: "codex_oauth",
@@ -1628,6 +1669,10 @@ export function ProviderForm({
               websiteUrl={codexWebsiteUrl}
               isPartner={isCodexPartner}
               partnerPromotionKey={codexPartnerPromotionKey}
+              isCodexOfficialPreset={category === "official"}
+              isCodexOauthAuthenticated={isCodexOauthAuthenticated}
+              selectedCodexAccountId={selectedCodexAccountId}
+              onCodexAccountSelect={setSelectedCodexAccountId}
               shouldShowSpeedTest={shouldShowSpeedTest}
               codexBaseUrl={codexBaseUrl}
               onBaseUrlChange={handleCodexBaseUrlChange}

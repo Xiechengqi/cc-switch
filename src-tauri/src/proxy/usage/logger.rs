@@ -389,6 +389,8 @@ mod tests {
             None,
             Some("claude".to_string()),
             false,
+            None,
+            None,
         )?;
 
         // 验证记录已插入

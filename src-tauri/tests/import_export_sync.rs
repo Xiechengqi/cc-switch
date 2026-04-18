@@ -1,6 +1,5 @@
 use serde_json::json;
 use std::fs;
-use std::path::PathBuf;
 
 use cc_switch_lib::{
     get_claude_settings_path, read_json_file, AppError, AppType, ConfigService, MultiAppConfig,
@@ -967,16 +966,13 @@ fn export_sql_writes_to_target_path() {
 fn export_sql_returns_error_for_invalid_path() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
-    let _home = ensure_test_home();
+    let home = ensure_test_home();
 
     let state = create_test_state().expect("create test state");
 
-    // Try to export to an invalid path (nonexistent parent or invalid name on Windows)
-    let invalid_parent = if cfg!(windows) {
-        std::env::temp_dir().join("cc-switch-test-invalid<>dir")
-    } else {
-        PathBuf::from("/nonexistent/directory")
-    };
+    // Use a regular file as the would-be parent directory so create_dir_all fails reliably.
+    let invalid_parent = home.join("not-a-directory");
+    std::fs::write(&invalid_parent, "sentinel").expect("seed invalid parent file");
     let invalid_path = invalid_parent.join("export.sql");
     let err = state
         .db

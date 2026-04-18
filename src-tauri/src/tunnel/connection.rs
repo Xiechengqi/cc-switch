@@ -2,6 +2,9 @@ use super::config::{ShareTunnelMetadata, TunnelConfig, TunnelType};
 use super::error::TunnelError;
 use super::identity;
 use serde::Deserialize;
+use tokio::time::sleep;
+
+const PORTR_REQUEST_TIMEOUT_SECS: u64 = 20;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +18,45 @@ pub struct LeaseResponse {
 #[derive(Deserialize)]
 struct ErrorResponse {
     message: String,
+}
+
+fn describe_portr_send_error(operation: &str, url: &str, err: reqwest::Error) -> String {
+    if err.is_timeout() {
+        return format!(
+            "{operation} timed out after {PORTR_REQUEST_TIMEOUT_SECS}s: {url}. 请检查分享节点是否可访问，或切换到其他分享节点后重试"
+        );
+    }
+    if err.is_connect() {
+        return format!(
+            "{operation} connection failed: {url}. 请检查网络、DNS、代理或防火墙，或切换到其他分享节点后重试: {err}"
+        );
+    }
+    format!("{operation} request failed: {url}: {err}")
+}
+
+async fn send_portr_request(
+    request: reqwest::RequestBuilder,
+    operation: &str,
+    url: &str,
+) -> Result<reqwest::Response, TunnelError> {
+    let retry_request = request.try_clone();
+    match request.send().await {
+        Ok(resp) => Ok(resp),
+        Err(err) if (err.is_timeout() || err.is_connect()) && retry_request.is_some() => {
+            log::warn!("[Tunnel] {operation} failed once for {url}, retrying: {err}");
+            sleep(std::time::Duration::from_millis(500)).await;
+            retry_request
+                .expect("checked is_some")
+                .send()
+                .await
+                .map_err(|retry_err| {
+                    TunnelError::Api(describe_portr_send_error(operation, url, retry_err))
+                })
+        }
+        Err(err) => Err(TunnelError::Api(describe_portr_send_error(
+            operation, url, err,
+        ))),
+    }
 }
 
 /// Request a short-lived tunnel lease from portr-rs.
@@ -58,13 +100,15 @@ async fn issue_lease_inner(
         "share": share_metadata,
     });
 
-    let resp = client
-        .post(&url)
-        .json(&payload)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| TunnelError::Api(format!("request failed: {e}")))?;
+    let resp = send_portr_request(
+        client
+            .post(&url)
+            .json(&payload)
+            .timeout(std::time::Duration::from_secs(PORTR_REQUEST_TIMEOUT_SECS)),
+        "issue tunnel lease",
+        &url,
+    )
+    .await?;
 
     if resp.status().is_success() {
         return resp
@@ -135,16 +179,18 @@ async fn claim_share_subdomain_inner(
 ) -> Result<(), TunnelError> {
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
     let identity = identity::ensure_identity(client, config).await?;
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "installationId": identity.installation_id,
-            "share": share_metadata,
-        }))
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| TunnelError::Api(format!("claim share subdomain request failed: {e}")))?;
+    let resp = send_portr_request(
+        client
+            .post(&url)
+            .json(&serde_json::json!({
+                "installationId": identity.installation_id,
+                "share": share_metadata,
+            }))
+            .timeout(std::time::Duration::from_secs(PORTR_REQUEST_TIMEOUT_SECS)),
+        "claim share subdomain",
+        &url,
+    )
+    .await?;
 
     if resp.status().is_success() {
         return Ok(());

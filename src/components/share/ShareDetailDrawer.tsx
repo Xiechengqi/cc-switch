@@ -19,12 +19,18 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { ShareStatusBadge } from "./ShareStatusBadge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ShareDisplayStatusBadge } from "./ShareDisplayStatusBadge";
 import {
   formatUtcDateTime,
+  getShareDisplayStatus,
   getShareTunnelRuntimeStatus,
   getShareUsageRatio,
+  isPermanentExpiry,
   maskSensitive,
+  PERMANENT_EXPIRES_AT,
   resolveShareTunnelInfo,
 } from "@/utils/shareUtils";
 
@@ -39,7 +45,7 @@ interface ShareDetailDrawerProps {
   onUpdateSubdomain: (share: ShareRecord, subdomain: string) => void;
   onUpdateApiKey: (share: ShareRecord, apiKey: string) => void;
   onUpdateDescription: (share: ShareRecord, description: string) => void;
-  onUpdateForSale: (share: ShareRecord, forSale: "Yes" | "No") => void;
+  onUpdateForSale: (share: ShareRecord, forSale: "Yes" | "No" | "Free") => void;
   onUpdateExpiration: (share: ShareRecord, expiresAt: string) => void;
   busy?: boolean;
 }
@@ -65,10 +71,12 @@ export function ShareDetailDrawer({
   const [subdomainInput, setSubdomainInput] = useState("");
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [descriptionInput, setDescriptionInput] = useState("");
-  const [forSaleInput, setForSaleInput] = useState<"Yes" | "No">("No");
+  const [forSaleInput, setForSaleInput] = useState<"Yes" | "No" | "Free">("No");
+  const [confirmFreeOpen, setConfirmFreeOpen] = useState(false);
   const [expiryDateInput, setExpiryDateInput] = useState("");
   const [expiryHourInput, setExpiryHourInput] = useState("");
   const [expiryMinuteInput, setExpiryMinuteInput] = useState("");
+  const [expiryPermanent, setExpiryPermanent] = useState(false);
 
   useEffect(() => {
     setTokenLimitInput(share ? String(share.tokenLimit) : "");
@@ -77,6 +85,8 @@ export function ShareDetailDrawer({
     setDescriptionInput(share?.description ?? "");
     setForSaleInput(share?.forSale ?? "No");
     if (share?.expiresAt) {
+      const permanent = isPermanentExpiry(share.expiresAt);
+      setExpiryPermanent(permanent);
       const expires = new Date(share.expiresAt);
       if (!Number.isNaN(expires.getTime())) {
         const year = expires.getFullYear();
@@ -87,6 +97,7 @@ export function ShareDetailDrawer({
         setExpiryMinuteInput(String(expires.getMinutes()).padStart(2, "0"));
       }
     } else {
+      setExpiryPermanent(false);
       setExpiryDateInput("");
       setExpiryHourInput("");
       setExpiryMinuteInput("");
@@ -98,6 +109,11 @@ export function ShareDetailDrawer({
   const ratio = getShareUsageRatio(share);
   const tunnelDisplay = resolveShareTunnelInfo(share, tunnelConfig);
   const tunnelRuntimeStatus = getShareTunnelRuntimeStatus(share, tunnelStatus);
+  const displayStatus = getShareDisplayStatus(
+    share,
+    Boolean(tunnelConfig.domain),
+    tunnelStatus,
+  );
   const parsedTokenLimit = Number.parseInt(tokenLimitInput, 10);
   const tokenLimitDirty =
     Number.isFinite(parsedTokenLimit) && parsedTokenLimit !== share.tokenLimit;
@@ -120,7 +136,7 @@ export function ShareDetailDrawer({
   const forSaleDirty = forSaleInput !== share.forSale;
   const parsedExpiryHour = Number.parseInt(expiryHourInput, 10);
   const parsedExpiryMinute = Number.parseInt(expiryMinuteInput, 10);
-  const expiryIso =
+  const computedExpiryIso =
     expiryDateInput &&
     Number.isFinite(parsedExpiryHour) &&
     Number.isFinite(parsedExpiryMinute) &&
@@ -132,23 +148,25 @@ export function ShareDetailDrawer({
           Number.parseInt(expiryDateInput.slice(0, 4), 10),
           Number.parseInt(expiryDateInput.slice(5, 7), 10) - 1,
           Number.parseInt(expiryDateInput.slice(8, 10), 10),
-            parsedExpiryHour,
-            parsedExpiryMinute,
-            0,
-            0,
+          parsedExpiryHour,
+          parsedExpiryMinute,
+          0,
+          0,
         ).toISOString()
       : "";
+  const expiryIso = expiryPermanent ? PERMANENT_EXPIRES_AT : computedExpiryIso;
   const expiryDirty = expiryIso && expiryIso !== share.expiresAt;
-  const expiryInvalid =
-    !expiryDateInput ||
-    !Number.isFinite(parsedExpiryHour) ||
-    !Number.isFinite(parsedExpiryMinute) ||
-    parsedExpiryHour < 0 ||
-    parsedExpiryHour > 23 ||
-    parsedExpiryMinute < 0 ||
-    parsedExpiryMinute > 59 ||
-    Number.isNaN(new Date(expiryIso).getTime()) ||
-    new Date(expiryIso).getTime() <= Date.now();
+  const expiryInvalid = expiryPermanent
+    ? false
+    : !expiryDateInput ||
+      !Number.isFinite(parsedExpiryHour) ||
+      !Number.isFinite(parsedExpiryMinute) ||
+      parsedExpiryHour < 0 ||
+      parsedExpiryHour > 23 ||
+      parsedExpiryMinute < 0 ||
+      parsedExpiryMinute > 59 ||
+      Number.isNaN(new Date(expiryIso).getTime()) ||
+      new Date(expiryIso).getTime() <= Date.now();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -159,7 +177,7 @@ export function ShareDetailDrawer({
         <DialogHeader className="space-y-3">
           <DialogTitle className="flex items-center gap-2">
             {share.name}
-            <ShareStatusBadge status={share.status} />
+            <ShareDisplayStatusBadge status={displayStatus} />
           </DialogTitle>
           <DialogDescription>{t("share.editDescription")}</DialogDescription>
         </DialogHeader>
@@ -168,15 +186,25 @@ export function ShareDetailDrawer({
             <InfoField label={t("share.id")} value={share.id} />
             <InfoField
               label={t("share.apiKey")}
-              value={revealToken ? share.shareToken : maskSensitive(share.shareToken)}
+              value={
+                share.forSale === "Free" || revealToken
+                  ? share.shareToken
+                  : maskSensitive(share.shareToken)
+              }
               action={
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setRevealToken((prev) => !prev)}
-                >
-                  {revealToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
+                share.forSale !== "Free" ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setRevealToken((prev) => !prev)}
+                  >
+                    {revealToken ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </Button>
+                ) : null
               }
             />
             <InfoField
@@ -184,8 +212,16 @@ export function ShareDetailDrawer({
               value={String(share.requestsCount)}
             />
             <InfoField
+              label={t("share.status")}
+              value={t(`share.displayStatuses.${displayStatus}`)}
+            />
+            <InfoField
               label={t("share.lastUsedAt")}
-              value={share.lastUsedAt ? formatUtcDateTime(share.lastUsedAt) : t("share.never")}
+              value={
+                share.lastUsedAt
+                  ? formatUtcDateTime(share.lastUsedAt)
+                  : t("share.never")
+              }
             />
             <InfoField
               label={t("share.createdAt")}
@@ -201,7 +237,11 @@ export function ShareDetailDrawer({
             />
             <InfoField
               label={t("share.expiresAt")}
-              value={formatUtcDateTime(share.expiresAt)}
+              value={
+                isPermanentExpiry(share.expiresAt)
+                  ? t("share.expiry.permanentLabel")
+                  : formatUtcDateTime(share.expiresAt)
+              }
             />
             <InfoField
               label={t("share.tunnelUrl")}
@@ -213,7 +253,9 @@ export function ShareDetailDrawer({
             />
             <InfoField
               label={t("share.remotePort")}
-              value={tunnelStatus?.remotePort ? String(tunnelStatus.remotePort) : "-"}
+              value={
+                tunnelStatus?.remotePort ? String(tunnelStatus.remotePort) : "-"
+              }
             />
             <InfoField
               label={t("share.tunnelHealth")}
@@ -222,20 +264,36 @@ export function ShareDetailDrawer({
           </section>
 
           <section className="space-y-3">
-            <div className="text-sm font-medium">{t("share.forSaleSettings")}</div>
+            <div className="text-sm font-medium">
+              {t("share.forSaleSettings")}
+            </div>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
               <div className="space-y-2">
                 <Select
                   value={forSaleInput}
-                  onValueChange={(value) => setForSaleInput(value as "Yes" | "No")}
+                  onValueChange={(value) => {
+                    const next = value as "Yes" | "No" | "Free";
+                    if (next === "Free" && share.forSale !== "Free") {
+                      setConfirmFreeOpen(true);
+                    } else {
+                      setForSaleInput(next);
+                    }
+                  }}
                   disabled={busy}
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="No">{t("share.forSaleOptions.no")}</SelectItem>
-                    <SelectItem value="Yes">{t("share.forSaleOptions.yes")}</SelectItem>
+                    <SelectItem value="No">
+                      {t("share.forSaleOptions.no")}
+                    </SelectItem>
+                    <SelectItem value="Yes">
+                      {t("share.forSaleOptions.yes")}
+                    </SelectItem>
+                    <SelectItem value="Free">
+                      {t("share.forSaleOptions.free")}
+                    </SelectItem>
                   </SelectContent>
                 </Select>
                 <div className="text-xs text-muted-foreground">
@@ -253,10 +311,24 @@ export function ShareDetailDrawer({
                 </Button>
               </div>
             </div>
+            <ConfirmDialog
+              isOpen={confirmFreeOpen}
+              title={t("share.forSaleFreeConfirmTitle")}
+              message={t("share.forSaleFreeConfirmMessage")}
+              variant="destructive"
+              zIndex="top"
+              onConfirm={() => {
+                setForSaleInput("Free");
+                setConfirmFreeOpen(false);
+              }}
+              onCancel={() => setConfirmFreeOpen(false)}
+            />
           </section>
 
           <section className="space-y-3">
-            <div className="text-sm font-medium">{t("share.descriptionSettings")}</div>
+            <div className="text-sm font-medium">
+              {t("share.descriptionSettings")}
+            </div>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
               <div className="space-y-2">
                 <Textarea
@@ -274,7 +346,9 @@ export function ShareDetailDrawer({
                 <Button
                   variant="outline"
                   disabled={busy || descriptionInvalid || !descriptionDirty}
-                  onClick={() => onUpdateDescription(share, normalizedDescription)}
+                  onClick={() =>
+                    onUpdateDescription(share, normalizedDescription)
+                  }
                 >
                   <Save className="h-4 w-4" />
                   {t("share.saveDescription")}
@@ -284,36 +358,44 @@ export function ShareDetailDrawer({
           </section>
 
           <section className="space-y-3">
-            <div className="text-sm font-medium">{t("share.expirationSettings")}</div>
+            <div className="text-sm font-medium">
+              {t("share.expirationSettings")}
+            </div>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_120px_120px_auto]">
               <div className="space-y-2">
-                <div className="text-sm font-medium">{t("share.expirationDate")}</div>
+                <div className="text-sm font-medium">
+                  {t("share.expirationDate")}
+                </div>
                 <Input
                   type="date"
-                  value={expiryDateInput}
-                  disabled={busy}
+                  value={expiryPermanent ? "2099-12-31" : expiryDateInput}
+                  disabled={busy || expiryPermanent}
                   onChange={(event) => setExpiryDateInput(event.target.value)}
                 />
               </div>
               <div className="space-y-2">
-                <div className="text-sm font-medium">{t("share.expirationHour")}</div>
+                <div className="text-sm font-medium">
+                  {t("share.expirationHour")}
+                </div>
                 <Input
                   type="number"
                   min={0}
                   max={23}
-                  value={expiryHourInput}
-                  disabled={busy}
+                  value={expiryPermanent ? "23" : expiryHourInput}
+                  disabled={busy || expiryPermanent}
                   onChange={(event) => setExpiryHourInput(event.target.value)}
                 />
               </div>
               <div className="space-y-2">
-                <div className="text-sm font-medium">{t("share.expirationMinute")}</div>
+                <div className="text-sm font-medium">
+                  {t("share.expirationMinute")}
+                </div>
                 <Input
                   type="number"
                   min={0}
                   max={59}
-                  value={expiryMinuteInput}
-                  disabled={busy}
+                  value={expiryPermanent ? "59" : expiryMinuteInput}
+                  disabled={busy || expiryPermanent}
                   onChange={(event) => setExpiryMinuteInput(event.target.value)}
                 />
               </div>
@@ -328,13 +410,31 @@ export function ShareDetailDrawer({
                 </Button>
               </div>
             </div>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="share-detail-expiry-permanent"
+                checked={expiryPermanent}
+                disabled={busy}
+                onCheckedChange={(checked) =>
+                  setExpiryPermanent(checked === true)
+                }
+              />
+              <Label
+                htmlFor="share-detail-expiry-permanent"
+                className="cursor-pointer text-sm font-normal"
+              >
+                {t("share.expiry.permanent")}
+              </Label>
+            </div>
             <div className="text-xs text-muted-foreground">
               {t("share.expirationEditHint")}
             </div>
           </section>
 
           <section className="space-y-3">
-            <div className="text-sm font-medium">{t("share.apiKeySettings")}</div>
+            <div className="text-sm font-medium">
+              {t("share.apiKeySettings")}
+            </div>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
               <div className="space-y-2">
                 <Input
@@ -360,13 +460,17 @@ export function ShareDetailDrawer({
           </section>
 
           <section className="space-y-3">
-            <div className="text-sm font-medium">{t("share.subdomainSettings")}</div>
+            <div className="text-sm font-medium">
+              {t("share.subdomainSettings")}
+            </div>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
               <div className="space-y-2">
                 <Input
                   value={subdomainInput}
                   disabled={busy}
-                  onChange={(event) => setSubdomainInput(event.target.value.toLowerCase())}
+                  onChange={(event) =>
+                    setSubdomainInput(event.target.value.toLowerCase())
+                  }
                 />
                 <div className="text-xs text-muted-foreground">
                   {t("share.subdomainEditHint")}
@@ -376,7 +480,9 @@ export function ShareDetailDrawer({
                 <Button
                   variant="outline"
                   disabled={busy || subdomainInvalid || !subdomainDirty}
-                  onClick={() => onUpdateSubdomain(share, subdomainInput.trim())}
+                  onClick={() =>
+                    onUpdateSubdomain(share, subdomainInput.trim())
+                  }
                 >
                   <Save className="h-4 w-4" />
                   {t("share.saveSubdomain")}
@@ -401,7 +507,9 @@ export function ShareDetailDrawer({
             <div className="text-sm font-medium">{t("share.usageActions")}</div>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
               <div className="space-y-2">
-                <div className="text-sm font-medium">{t("share.tokenLimit")}</div>
+                <div className="text-sm font-medium">
+                  {t("share.tokenLimit")}
+                </div>
                 <Input
                   type="number"
                   min={1}
@@ -438,7 +546,6 @@ export function ShareDetailDrawer({
               </Button>
             </div>
           </section>
-
         </div>
       </DialogContent>
     </Dialog>

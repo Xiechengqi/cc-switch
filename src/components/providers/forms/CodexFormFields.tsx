@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Download, Loader2 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
+import { CodexOAuthSection } from "./CodexOAuthSection";
 import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
 import {
   fetchModelsForConfig,
@@ -26,6 +27,10 @@ interface CodexFormFieldsProps {
   websiteUrl: string;
   isPartner?: boolean;
   partnerPromotionKey?: string;
+  isCodexOfficialPreset?: boolean;
+  isCodexOauthAuthenticated?: boolean;
+  selectedCodexAccountId?: string | null;
+  onCodexAccountSelect?: (accountId: string | null) => void;
 
   // Base URL
   shouldShowSpeedTest: boolean;
@@ -57,6 +62,10 @@ export function CodexFormFields({
   websiteUrl,
   isPartner,
   partnerPromotionKey,
+  isCodexOfficialPreset = false,
+  isCodexOauthAuthenticated = false,
+  selectedCodexAccountId,
+  onCodexAccountSelect,
   shouldShowSpeedTest,
   codexBaseUrl,
   onBaseUrlChange,
@@ -106,6 +115,14 @@ export function CodexFormFields({
 
   return (
     <>
+      {isCodexOfficialPreset && (
+        <CodexOAuthSection
+          selectedAccountId={selectedCodexAccountId}
+          onAccountSelect={onCodexAccountSelect}
+          allowDefaultAccountOption={false}
+        />
+      )}
+
       {/* Codex API Key 输入框 */}
       <ApiKeySection
         id="codexApiKey"
@@ -127,8 +144,16 @@ export function CodexFormFields({
         }}
       />
 
+      {isCodexOfficialPreset && !isCodexOauthAuthenticated && (
+        <p className="text-xs text-destructive">
+          {t("codexOauth.loginRequired", {
+            defaultValue: "请先登录 ChatGPT 账号",
+          })}
+        </p>
+      )}
+
       {/* Codex Base URL 输入框 */}
-      {shouldShowSpeedTest && (
+      {shouldShowSpeedTest && !isCodexOfficialPreset && (
         <EndpointField
           id="codexBaseUrl"
           label={t("codexConfig.apiUrlLabel")}
@@ -192,7 +217,7 @@ export function CodexFormFields({
       )}
 
       {/* 端点测速弹窗 - Codex */}
-      {shouldShowSpeedTest && isEndpointModalOpen && (
+      {shouldShowSpeedTest && !isCodexOfficialPreset && isEndpointModalOpen && (
         <EndpointSpeedTest
           appId="codex"
           providerId={providerId}

@@ -85,6 +85,10 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
+        if provider.is_codex_official_with_managed_auth() {
+            return Ok("https://chatgpt.com/backend-api/codex".to_string());
+        }
+
         // 1. 尝试直接获取 base_url 字段
         if let Some(url) = provider
             .settings_config
@@ -132,6 +136,13 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        if provider.is_codex_official_with_managed_auth() {
+            return Some(AuthInfo::new(
+                "codex_oauth_placeholder".to_string(),
+                AuthStrategy::CodexOAuth,
+            ));
+        }
+
         self.extract_key(provider)
             .map(|key| AuthInfo::new(key, AuthStrategy::Bearer))
     }
@@ -261,6 +272,27 @@ mod tests {
         let adapter = CodexAdapter::new();
         let url = adapter.build_url("https://example.com/openai", "/responses");
         assert_eq!(url, "https://example.com/openai/responses");
+    }
+
+    #[test]
+    fn test_extract_base_url_for_managed_codex_official() {
+        use crate::provider::{AuthBinding, AuthBindingSource, ProviderMeta};
+
+        let adapter = CodexAdapter::new();
+        let mut provider = create_provider(json!({}));
+        provider.category = Some("official".to_string());
+        provider.meta = Some(ProviderMeta {
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("acct-1".to_string()),
+            }),
+            ..Default::default()
+        });
+
+        let url = adapter.extract_base_url(&provider).unwrap();
+
+        assert_eq!(url, "https://chatgpt.com/backend-api/codex");
     }
 
     #[test]

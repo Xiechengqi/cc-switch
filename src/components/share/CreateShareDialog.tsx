@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -27,6 +27,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { permanentExpiresInSecs } from "@/utils/shareUtils";
 
 interface CreateShareDialogProps {
   open: boolean;
@@ -53,6 +56,8 @@ export function CreateShareDialog({
   onSubmit,
 }: CreateShareDialogProps) {
   const { t } = useTranslation();
+  const [confirmFreeOpen, setConfirmFreeOpen] = useState(false);
+  const [isPermanent, setIsPermanent] = useState(false);
 
   const form = useForm<CreateShareFormInput, unknown, CreateShareFormValues>({
     resolver: zodResolver(createShareSchema),
@@ -78,6 +83,7 @@ export function CreateShareDialog({
       apiKey: "",
       subdomain: "",
     });
+    setIsPermanent(false);
   }, [form, open]);
 
   const submit = form.handleSubmit(async (values) => {
@@ -125,12 +131,17 @@ export function CreateShareDialog({
             <Label htmlFor="share-for-sale">{t("share.forSale")}</Label>
             <Select
               value={form.watch("forSale")}
-              onValueChange={(value) =>
-                form.setValue("forSale", value as "Yes" | "No", {
-                  shouldDirty: true,
-                  shouldValidate: true,
-                })
-              }
+              onValueChange={(value) => {
+                const next = value as "Yes" | "No" | "Free";
+                if (next === "Free") {
+                  setConfirmFreeOpen(true);
+                } else {
+                  form.setValue("forSale", next, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  });
+                }
+              }}
             >
               <SelectTrigger id="share-for-sale">
                 <SelectValue />
@@ -138,12 +149,28 @@ export function CreateShareDialog({
               <SelectContent>
                 <SelectItem value="No">{t("share.forSaleOptions.no")}</SelectItem>
                 <SelectItem value="Yes">{t("share.forSaleOptions.yes")}</SelectItem>
+                <SelectItem value="Free">{t("share.forSaleOptions.free")}</SelectItem>
               </SelectContent>
             </Select>
             <div className="text-xs text-muted-foreground">
               {t("share.forSaleHint")}
             </div>
             <FieldError error={form.formState.errors.forSale?.message} />
+            <ConfirmDialog
+              isOpen={confirmFreeOpen}
+              title={t("share.forSaleFreeConfirmTitle")}
+              message={t("share.forSaleFreeConfirmMessage")}
+              variant="destructive"
+              zIndex="top"
+              onConfirm={() => {
+                form.setValue("forSale", "Free", {
+                  shouldDirty: true,
+                  shouldValidate: true,
+                });
+                setConfirmFreeOpen(false);
+              }}
+              onCancel={() => setConfirmFreeOpen(false)}
+            />
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
@@ -175,6 +202,7 @@ export function CreateShareDialog({
               <Input
                 id="share-expires"
                 type="number"
+                disabled={isPermanent}
                 {...form.register("expiresInSecs", { valueAsNumber: true })}
               />
               <div className="flex flex-wrap gap-2">
@@ -184,11 +212,37 @@ export function CreateShareDialog({
                     type="button"
                     variant="outline"
                     size="sm"
+                    disabled={isPermanent}
                     onClick={() => form.setValue("expiresInSecs", preset.value)}
                   >
                     {t(preset.labelKey)}
                   </Button>
                 ))}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <Checkbox
+                  id="share-expires-permanent"
+                  checked={isPermanent}
+                  onCheckedChange={(checked) => {
+                    const next = checked === true;
+                    setIsPermanent(next);
+                    if (next) {
+                      form.setValue("expiresInSecs", permanentExpiresInSecs(), {
+                        shouldValidate: true,
+                      });
+                    } else {
+                      form.setValue("expiresInSecs", 24 * 3600, {
+                        shouldValidate: true,
+                      });
+                    }
+                  }}
+                />
+                <Label
+                  htmlFor="share-expires-permanent"
+                  className="cursor-pointer text-sm font-normal"
+                >
+                  {t("share.expiry.permanent")}
+                </Label>
               </div>
               <FieldError error={form.formState.errors.expiresInSecs?.message} />
             </div>

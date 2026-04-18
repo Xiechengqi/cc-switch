@@ -1,3 +1,4 @@
+use crate::app_config::AppType;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,19 +67,71 @@ impl Provider {
         }
     }
 
+    pub fn has_managed_auth_binding(&self, auth_provider: &str) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.managed_account_id_for(auth_provider))
+            .map(|id| !id.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    pub fn is_codex_official_with_managed_auth(&self) -> bool {
+        self.category.as_deref() == Some("official") && self.has_managed_auth_binding("codex_oauth")
+    }
+
+    pub fn is_codex_oauth_provider(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("codex_oauth")
+    }
+
+    pub fn is_claude_oauth_provider(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("claude_oauth")
+    }
+
     /// 是否为通过代理访问的托管 OAuth 官方订阅。
     pub fn is_managed_oauth_provider(&self) -> bool {
-        matches!(
-            self.meta
-                .as_ref()
-                .and_then(|meta| meta.provider_type.as_deref()),
-            Some("github_copilot" | "codex_oauth" | "claude_oauth")
-        )
+        self.is_codex_official_with_managed_auth()
+            || matches!(
+                self.meta
+                    .as_ref()
+                    .and_then(|meta| meta.provider_type.as_deref()),
+                Some("github_copilot")
+            )
+            || self.is_codex_oauth_provider()
+            || self.is_claude_oauth_provider()
     }
 
     /// 代理接管模式下是否应阻止切换到该供应商。
     pub fn is_blocked_by_proxy_takeover(&self) -> bool {
-        self.category.as_deref() == Some("official") && !self.is_managed_oauth_provider()
+        !self.can_switch_during_proxy_takeover()
+    }
+
+    /// 代理接管模式下是否允许切换到该供应商。
+    pub fn can_switch_during_proxy_takeover(&self) -> bool {
+        self.category.as_deref() != Some("official") || self.is_managed_oauth_provider()
+    }
+
+    pub fn supports_stream_check(&self, app_type: &AppType) -> bool {
+        match app_type {
+            AppType::Claude => self.is_claude_oauth_provider(),
+            AppType::Codex => self.is_codex_official_with_managed_auth(),
+            _ => false,
+        }
+    }
+
+    pub fn stream_check_base_url_override(&self, app_type: &AppType) -> Option<&'static str> {
+        match app_type {
+            AppType::Claude if self.is_claude_oauth_provider() => Some("https://api.anthropic.com"),
+            AppType::Codex if self.is_codex_official_with_managed_auth() => {
+                Some("https://chatgpt.com/backend-api/codex")
+            }
+            _ => None,
+        }
     }
 }
 
@@ -707,9 +760,10 @@ pub struct OpenCodeModelLimit {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, OpenCodeProviderConfig, Provider,
-        ProviderManager, ProviderMeta, UniversalProvider,
+        AuthBinding, AuthBindingSource, ClaudeModelConfig, CodexModelConfig, GeminiModelConfig,
+        OpenCodeProviderConfig, Provider, ProviderManager, ProviderMeta, UniversalProvider,
     };
+    use crate::app_config::AppType;
     use serde_json::json;
 
     #[test]
@@ -799,6 +853,7 @@ mod tests {
             };
 
             assert!(provider.is_managed_oauth_provider());
+            assert!(provider.can_switch_during_proxy_takeover());
             assert!(!provider.is_blocked_by_proxy_takeover());
         }
     }
@@ -821,7 +876,72 @@ mod tests {
         };
 
         assert!(!provider.is_managed_oauth_provider());
+        assert!(!provider.can_switch_during_proxy_takeover());
         assert!(provider.is_blocked_by_proxy_takeover());
+    }
+
+    #[test]
+    fn codex_official_with_managed_auth_is_allowed_during_proxy_takeover() {
+        let provider = Provider {
+            id: "codex-official".to_string(),
+            name: "OpenAI Official".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                }),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert!(provider.is_codex_official_with_managed_auth());
+        assert!(provider.is_managed_oauth_provider());
+        assert!(provider.can_switch_during_proxy_takeover());
+        assert!(!provider.is_blocked_by_proxy_takeover());
+        assert!(provider.supports_stream_check(&AppType::Codex));
+        assert_eq!(
+            provider.stream_check_base_url_override(&AppType::Codex),
+            Some("https://chatgpt.com/backend-api/codex")
+        );
+    }
+
+    #[test]
+    fn claude_oauth_provider_supports_stream_check_and_official_base_url() {
+        let provider = Provider {
+            id: "claude-oauth".to_string(),
+            name: "Claude Official".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                provider_type: Some("claude_oauth".to_string()),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert!(provider.is_claude_oauth_provider());
+        assert!(provider.is_managed_oauth_provider());
+        assert!(provider.supports_stream_check(&AppType::Claude));
+        assert_eq!(
+            provider.stream_check_base_url_override(&AppType::Claude),
+            Some("https://api.anthropic.com")
+        );
     }
 
     #[test]

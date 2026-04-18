@@ -1,7 +1,12 @@
 import { useMemo, useState } from "react";
 import { useQueries, useQueryClient, type Query } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { shareApi, type AppId, type ShareRecord, type TunnelInfo } from "@/lib/api";
+import {
+  shareApi,
+  type AppId,
+  type ShareRecord,
+  type TunnelInfo,
+} from "@/lib/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useSettingsQuery } from "@/lib/query";
 import { useProxyStatus } from "@/lib/query/proxy";
@@ -30,8 +35,8 @@ import {
 import { ShareConnectDialog } from "./ShareConnectDialog";
 import { CreateShareDialog } from "./CreateShareDialog";
 import { ShareDetailDrawer } from "./ShareDetailDrawer";
-import { ShareHero } from "./ShareHero";
 import { ShareList } from "./ShareList";
+import { ShareRouterBar } from "./ShareRouterBar";
 
 interface SharePageProps {
   defaultApp?: AppId;
@@ -43,13 +48,21 @@ export function SharePage(_props: SharePageProps) {
   const { data: shares = [], isLoading, error, refetch } = useSharesQuery();
   const { data: settings } = useSettingsQuery();
   const { data: proxyStatus } = useProxyStatus();
-  const tunnelConfigured = useMemo(() => isTunnelConfigured(settings), [settings]);
-  const tunnelConfig = useMemo(() => getTunnelConfigFromSettings(settings), [settings]);
+  const tunnelConfigured = useMemo(
+    () => isTunnelConfigured(settings),
+    [settings],
+  );
+  const tunnelConfig = useMemo(
+    () => getTunnelConfigFromSettings(settings),
+    [settings],
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const [detailShareId, setDetailShareId] = useState<string | null>(null);
   const [connectShareId, setConnectShareId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ShareRecord | null>(null);
-  const [pendingActionShareId, setPendingActionShareId] = useState<string | null>(null);
+  const [pendingActionShareId, setPendingActionShareId] = useState<
+    string | null
+  >(null);
 
   const createMutation = useCreateShareMutation();
   const deleteMutation = useDeleteShareMutation();
@@ -78,16 +91,23 @@ export function SharePage(_props: SharePageProps) {
   const tunnelStatusMap = useMemo(
     () =>
       Object.fromEntries(
-        shares.map((share, index) => [share.id, tunnelQueries[index]?.data ?? null]),
+        shares.map((share, index) => [
+          share.id,
+          tunnelQueries[index]?.data ?? null,
+        ]),
       ),
     [shares, tunnelQueries],
   );
 
-  const detailShare = shares.find((share) => share.id === detailShareId) ?? null;
-  const connectShare = shares.find((share) => share.id === connectShareId) ?? null;
+  const detailShare =
+    shares.find((share) => share.id === detailShareId) ?? null;
+  const connectShare =
+    shares.find((share) => share.id === connectShareId) ?? null;
   const primaryShare = shares[0] ?? null;
 
-  const handleCreate = async (params: Parameters<typeof createMutation.mutateAsync>[0]) => {
+  const handleCreate = async (
+    params: Parameters<typeof createMutation.mutateAsync>[0],
+  ) => {
     await createMutation.mutateAsync(params);
     setCreateOpen(false);
   };
@@ -107,27 +127,32 @@ export function SharePage(_props: SharePageProps) {
   const handleRefresh = async (share: ShareRecord) => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: shareKeys.list() }),
-      queryClient.invalidateQueries({ queryKey: shareKeys.tunnelStatus(share.id) }),
+      queryClient.invalidateQueries({
+        queryKey: shareKeys.tunnelStatus(share.id),
+      }),
       queryClient.invalidateQueries({ queryKey: shareKeys.detail(share.id) }),
-      queryClient.invalidateQueries({ queryKey: usageKeys.logs({ preset: "7d", shareId: share.id }, 0, 10).slice(0, 2) }),
+      queryClient.invalidateQueries({
+        queryKey: usageKeys
+          .logs({ preset: "7d", shareId: share.id }, 0, 10)
+          .slice(0, 2),
+      }),
     ]);
   };
 
   return (
     <div className="px-6 py-4">
       <div className="mx-auto flex max-w-7xl flex-col gap-5 pb-10">
-        <ShareHero
-          tunnelConfigured={tunnelConfigured}
+        <ShareRouterBar
           tunnelConfig={tunnelConfig}
           tunnelConfigSaving={configureTunnelMutation.isPending}
           proxyRunning={proxyStatus?.running ?? false}
           proxyAddress={proxyStatus?.address ?? null}
           proxyPort={proxyStatus?.port ?? null}
-          share={primaryShare}
-          tunnelStatus={primaryShare ? tunnelStatusMap[primaryShare.id] : null}
           hasShare={shares.length > 0}
           onCreate={() => setCreateOpen(true)}
-          onSaveTunnelConfig={(config) => configureTunnelMutation.mutateAsync(config)}
+          onSaveTunnelConfig={(config) =>
+            configureTunnelMutation.mutateAsync(config)
+          }
         />
 
         <ShareList
@@ -144,10 +169,14 @@ export function SharePage(_props: SharePageProps) {
           onOpenConnect={(share) => setConnectShareId(share.id)}
           onDelete={(share) => setDeleteTarget(share)}
           onEnable={(share) =>
-            void runShareAction(share, () => enableMutation.mutateAsync(share.id))
+            void runShareAction(share, () =>
+              enableMutation.mutateAsync(share.id),
+            )
           }
           onDisable={(share) =>
-            void runShareAction(share, () => disableMutation.mutateAsync(share.id))
+            void runShareAction(share, () =>
+              disableMutation.mutateAsync(share.id),
+            )
           }
           onRefresh={(share) => void handleRefresh(share)}
         />
@@ -169,11 +198,16 @@ export function SharePage(_props: SharePageProps) {
           if (!open) setDetailShareId(null);
         }}
         onResetUsage={(share) =>
-          void runShareAction(share, () => resetUsageMutation.mutateAsync(share.id))
+          void runShareAction(share, () =>
+            resetUsageMutation.mutateAsync(share.id),
+          )
         }
         onUpdateSubdomain={(share, subdomain) =>
           void runShareAction(share, () =>
-            updateSubdomainMutation.mutateAsync({ shareId: share.id, subdomain }),
+            updateSubdomainMutation.mutateAsync({
+              shareId: share.id,
+              subdomain,
+            }),
           )
         }
         onUpdateApiKey={(share, apiKey) =>
@@ -199,12 +233,18 @@ export function SharePage(_props: SharePageProps) {
         }
         onUpdateExpiration={(share, expiresAt) =>
           void runShareAction(share, () =>
-            updateExpirationMutation.mutateAsync({ shareId: share.id, expiresAt }),
+            updateExpirationMutation.mutateAsync({
+              shareId: share.id,
+              expiresAt,
+            }),
           )
         }
         onUpdateTokenLimit={(share, tokenLimit) =>
           void runShareAction(share, () =>
-            updateTokenLimitMutation.mutateAsync({ shareId: share.id, tokenLimit }),
+            updateTokenLimitMutation.mutateAsync({
+              shareId: share.id,
+              tokenLimit,
+            }),
           )
         }
         busy={pendingActionShareId === detailShare?.id}

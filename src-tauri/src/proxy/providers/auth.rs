@@ -13,6 +13,8 @@ pub struct AuthInfo {
     pub strategy: AuthStrategy,
     /// OAuth access_token（用于 GoogleOAuth 策略）
     pub access_token: Option<String>,
+    /// 托管 OAuth 账号 ID（用于需要账号上下文的供应商，如 Codex OAuth）
+    pub managed_account_id: Option<String>,
 }
 
 impl AuthInfo {
@@ -22,6 +24,7 @@ impl AuthInfo {
             api_key,
             strategy,
             access_token: None,
+            managed_account_id: None,
         }
     }
 
@@ -31,7 +34,14 @@ impl AuthInfo {
             api_key,
             strategy: AuthStrategy::GoogleOAuth,
             access_token: Some(access_token),
+            managed_account_id: None,
         }
+    }
+
+    /// 设置托管 OAuth 账号 ID。
+    pub fn with_managed_account_id(mut self, account_id: Option<String>) -> Self {
+        self.managed_account_id = account_id;
+        self
     }
 
     /// 返回遮蔽后的 API Key（用于日志输出）
@@ -184,6 +194,7 @@ mod tests {
     fn test_auth_info_new_has_no_access_token() {
         let auth = AuthInfo::new("api-key".to_string(), AuthStrategy::Bearer);
         assert!(auth.access_token.is_none());
+        assert!(auth.managed_account_id.is_none());
     }
 
     #[test]
@@ -198,6 +209,15 @@ mod tests {
             auth.access_token,
             Some("ya29.access-token-12345".to_string())
         );
+        assert!(auth.managed_account_id.is_none());
+    }
+
+    #[test]
+    fn test_auth_info_with_managed_account_id() {
+        let auth = AuthInfo::new("token".to_string(), AuthStrategy::CodexOAuth)
+            .with_managed_account_id(Some("acct-1".to_string()));
+
+        assert_eq!(auth.managed_account_id.as_deref(), Some("acct-1"));
     }
 
     #[test]

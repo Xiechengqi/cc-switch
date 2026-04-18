@@ -382,7 +382,7 @@ impl ProxyService {
                 crate::settings::get_effective_current_provider(&self.db, &app)
             {
                 if let Ok(Some(provider)) = self.db.get_provider_by_id(&current_id, app_type_str) {
-                    if provider.is_blocked_by_proxy_takeover() {
+                    if !provider.can_switch_during_proxy_takeover() {
                         if let Some(handle) = self.app_handle.read().await.as_ref() {
                             let _ = handle.emit(
                                 "proxy-official-warning",
@@ -1569,8 +1569,8 @@ impl ProxyService {
             .map_err(|e| format!("读取供应商失败: {e}"))?
             .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
 
-        // Defense-in-depth: block official providers during proxy takeover
-        if provider.is_blocked_by_proxy_takeover() {
+        // Defense-in-depth: proxy takeover only supports third-party and managed OAuth providers.
+        if !provider.can_switch_during_proxy_takeover() {
             return Err(
                 "代理接管模式下不能切换到官方供应商 (Cannot switch to official provider during proxy takeover)"
                     .to_string(),
@@ -2320,6 +2320,8 @@ model = "gpt-5.1-codex"
             .hot_switch_provider("claude", "b")
             .await
             .expect("hot switch provider");
+        let proxy_config = db.get_proxy_config().await.expect("get proxy config");
+        let expected_proxy_base_url = format!("http://127.0.0.1:{}", proxy_config.listen_port);
 
         let live = service.read_claude_live().expect("read live config");
         assert_eq!(
@@ -2338,7 +2340,7 @@ model = "gpt-5.1-codex"
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721"),
+            Some(expected_proxy_base_url.as_str()),
             "takeover proxy URL should remain active"
         );
         assert!(

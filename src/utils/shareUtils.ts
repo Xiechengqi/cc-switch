@@ -1,10 +1,11 @@
-import type { ConnectInfo, ShareRecord, TunnelConfig, TunnelInfo } from "@/lib/api";
+import type {
+  ConnectInfo,
+  ShareRecord,
+  TunnelConfig,
+  TunnelInfo,
+} from "@/lib/api";
 import type { Settings } from "@/types";
-export type ShareAction =
-  | "enable"
-  | "disable"
-  | "delete"
-  | "connectInfo";
+export type ShareAction = "enable" | "disable" | "delete" | "connectInfo";
 
 export type ShareTunnelRuntimeStatus =
   | "running"
@@ -13,11 +14,23 @@ export type ShareTunnelRuntimeStatus =
   | "offline"
   | "unknown";
 
+export type ShareDisplayStatus =
+  | "not_created"
+  | "not_configured"
+  | "sharing"
+  | "closed"
+  | "connecting"
+  | "connection_error"
+  | "expired"
+  | "exhausted";
+
 export function formatShareStatus(status: string): string {
   return status.replace(/_/g, " ");
 }
 
-export function getShareUsageRatio(share: Pick<ShareRecord, "tokenLimit" | "tokensUsed">): number {
+export function getShareUsageRatio(
+  share: Pick<ShareRecord, "tokenLimit" | "tokensUsed">,
+): number {
   if (!share.tokenLimit || share.tokenLimit <= 0) return 0;
   return Math.max(0, Math.min(share.tokensUsed / share.tokenLimit, 1));
 }
@@ -27,7 +40,9 @@ export function isTunnelConfigured(settings?: Settings | null): boolean {
   return Boolean(config.domain);
 }
 
-export function getTunnelConfigFromSettings(settings?: Settings | null): TunnelConfig {
+export function getTunnelConfigFromSettings(
+  settings?: Settings | null,
+): TunnelConfig {
   return {
     domain: settings?.portrDomain ?? "127.0.0.1:8787",
   };
@@ -56,7 +71,8 @@ export function resolveShareTunnelInfo(
   }
 
   const host = config.domain.split(":")[0] ?? config.domain;
-  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0";
+  const isLocal =
+    host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0";
   const protocol = isLocal ? "http" : "https";
   return {
     subdomain,
@@ -72,19 +88,66 @@ export function getShareTunnelRuntimeStatus(
   share: Pick<ShareRecord, "status" | "tunnelUrl">,
   tunnelStatus?: TunnelInfo | null,
 ): ShareTunnelRuntimeStatus {
+  if (share.status !== "active") {
+    return share.tunnelUrl ? "stopped" : "unknown";
+  }
   if (tunnelStatus?.healthy) {
     return "running";
   }
   if (tunnelStatus && !tunnelStatus.healthy) {
     return "reconnecting";
   }
-  if (share.status === "active") {
-    return "offline";
+  return "offline";
+}
+
+export function getShareDisplayStatus(
+  share: Pick<ShareRecord, "status" | "tunnelUrl"> | null | undefined,
+  tunnelConfigured: boolean,
+  tunnelStatus?: TunnelInfo | null,
+): ShareDisplayStatus {
+  if (!share) {
+    return "not_created";
+  }
+
+  if (share.status === "paused") {
+    return "closed";
+  }
+  if (share.status === "expired") {
+    return "expired";
+  }
+  if (share.status === "exhausted") {
+    return "exhausted";
+  }
+  if (!tunnelConfigured) {
+    return "not_configured";
+  }
+  if (share.status !== "active") {
+    return "connection_error";
+  }
+  if (tunnelStatus?.healthy) {
+    return "sharing";
+  }
+  if (tunnelStatus && !tunnelStatus.healthy) {
+    return "connecting";
   }
   if (share.tunnelUrl) {
-    return "stopped";
+    return "connecting";
   }
-  return "unknown";
+  return "connection_error";
+}
+
+export const PERMANENT_EXPIRES_AT = "2099-12-31T23:59:59Z";
+
+export function isPermanentExpiry(value?: string | null): boolean {
+  if (!value) return false;
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime()) && date.getUTCFullYear() >= 2099;
+}
+
+export function permanentExpiresInSecs(): number {
+  const target = new Date(PERMANENT_EXPIRES_AT).getTime();
+  const now = Date.now();
+  return Math.max(1, Math.floor((target - now) / 1000));
 }
 
 export function maskSensitive(value?: string | null, visible = 4): string {
@@ -107,7 +170,8 @@ export function formatUtcDateTime(value?: string | number | null): string {
     second: "2-digit",
     hour12: false,
   }).formatToParts(date);
-  const pick = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  const pick = (type: string) =>
+    parts.find((part) => part.type === type)?.value ?? "00";
   return `${pick("year")}-${pick("month")}-${pick("day")} ${pick("hour")}:${pick("minute")}:${pick("second")} UTC`;
 }
 
@@ -121,7 +185,7 @@ export function isShareActionAllowed(
     case "enable":
       return tunnelConfigured && (share.status !== "active" || !tunnelStatus);
     case "disable":
-      return share.status === "active" || Boolean(tunnelStatus || share.tunnelUrl);
+      return share.status === "active";
     case "delete":
     case "connectInfo":
       return true;

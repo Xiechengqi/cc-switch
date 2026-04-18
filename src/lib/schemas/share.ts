@@ -8,7 +8,7 @@ export const createShareSchema = z.object({
     .optional()
     .transform((value) => value ?? "")
     .refine((value) => value.length <= 200, "share.validation.descriptionTooLong"),
-  forSale: z.enum(["Yes", "No"]),
+  forSale: z.enum(["Yes", "No", "Free"]),
   tokenLimit: z.coerce.number().int().positive("share.validation.required"),
   expiresInSecs: z.coerce.number().int().positive("share.validation.required"),
   apiKey: z

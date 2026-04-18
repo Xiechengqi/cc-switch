@@ -1,13 +1,76 @@
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Github, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ClaudeIcon, CodexIcon } from "@/components/BrandIcons";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
 import { ClaudeOAuthSection } from "@/components/providers/forms/ClaudeOAuthSection";
+import { settingsApi } from "@/lib/api";
+import { useSettingsQuery } from "@/lib/query";
+import {
+  DEFAULT_OAUTH_QUOTA_REFRESH_INTERVAL_MINUTES,
+  getOauthQuotaRefreshIntervalMinutes,
+} from "@/lib/query/oauthQuotaRefresh";
 
 export function AuthCenterPanel() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { data: settings } = useSettingsQuery();
+  const currentRefreshInterval = getOauthQuotaRefreshIntervalMinutes(settings);
+  const [refreshIntervalInput, setRefreshIntervalInput] = useState(
+    String(DEFAULT_OAUTH_QUOTA_REFRESH_INTERVAL_MINUTES),
+  );
+
+  useEffect(() => {
+    setRefreshIntervalInput(String(currentRefreshInterval));
+  }, [currentRefreshInterval]);
+
+  const parsedRefreshIntervalValue = Number(refreshIntervalInput);
+  const parsedRefreshInterval =
+    Number.isFinite(parsedRefreshIntervalValue) &&
+    Number.isInteger(parsedRefreshIntervalValue) &&
+    parsedRefreshIntervalValue >= 1
+      ? parsedRefreshIntervalValue
+      : null;
+
+  const handleSaveRefreshInterval = async () => {
+    if (!settings) {
+      return;
+    }
+    if (parsedRefreshInterval == null) {
+      toast.error(
+        t("settings.authCenter.quotaRefreshIntervalInvalid", {
+          defaultValue: "刷新间隔必须是大于等于 1 的整数分钟",
+        }),
+      );
+      setRefreshIntervalInput(String(currentRefreshInterval));
+      return;
+    }
+
+    const { webdavSync: _, ...rest } = settings;
+    await settingsApi.save({
+      ...rest,
+      oauthQuotaRefreshIntervalMinutes: parsedRefreshInterval,
+    });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["settings"] }),
+      queryClient.invalidateQueries({ queryKey: ["subscription", "quota"] }),
+      queryClient.invalidateQueries({ queryKey: ["claude_oauth", "quota"] }),
+      queryClient.invalidateQueries({ queryKey: ["codex_oauth", "quota"] }),
+      queryClient.invalidateQueries({ queryKey: ["copilot", "quota"] }),
+    ]);
+    toast.success(
+      t("settings.authCenter.quotaRefreshIntervalSaved", {
+        defaultValue: "用量刷新间隔已保存",
+      }),
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -32,6 +95,53 @@ export function AuthCenterPanel() {
           <Badge variant="secondary">
             {t("settings.authCenter.beta", { defaultValue: "Beta" })}
           </Badge>
+        </div>
+
+        <div className="mt-5 rounded-lg border border-border/50 bg-background/60 p-4">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div className="space-y-2">
+              <Label htmlFor="oauth-quota-refresh-interval">
+                {t("settings.authCenter.quotaRefreshIntervalTitle", {
+                  defaultValue: "用量刷新间隔",
+                })}
+              </Label>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                {t("settings.authCenter.quotaRefreshIntervalDescription", {
+                  defaultValue:
+                    "控制 OAuth 账号 5h / 7day 用量进度条的自动刷新频率，仅当前激活供应商会自动轮询。",
+                })}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                id="oauth-quota-refresh-interval"
+                type="number"
+                min={1}
+                step={1}
+                value={refreshIntervalInput}
+                onChange={(event) =>
+                  setRefreshIntervalInput(event.currentTarget.value)
+                }
+                className="w-24"
+                disabled={!settings}
+              />
+              <span className="text-sm text-muted-foreground">
+                {t("settings.authCenter.quotaRefreshIntervalMinutes", {
+                  defaultValue: "分钟",
+                })}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleSaveRefreshInterval}
+                disabled={
+                  !settings || parsedRefreshInterval === currentRefreshInterval
+                }
+              >
+                {t("common.save", { defaultValue: "保存" })}
+              </Button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -61,7 +171,7 @@ export function AuthCenterPanel() {
           </a>
         </div>
 
-        <ClaudeOAuthSection />
+        <ClaudeOAuthSection showLoggedInAccounts />
       </section>
 
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">
@@ -79,7 +189,7 @@ export function AuthCenterPanel() {
           </div>
         </div>
 
-        <CopilotAuthSection />
+        <CopilotAuthSection showLoggedInAccounts />
       </section>
 
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">
@@ -97,7 +207,7 @@ export function AuthCenterPanel() {
           </div>
         </div>
 
-        <CodexOAuthSection />
+        <CodexOAuthSection showLoggedInAccounts />
       </section>
     </div>
   );

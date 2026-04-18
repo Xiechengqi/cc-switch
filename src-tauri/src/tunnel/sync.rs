@@ -10,8 +10,11 @@ use crate::tunnel::config::{
 use crate::tunnel::identity;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 const BATCH_DELAY_MS: u64 = 1500;
+const PORTR_CONNECT_TIMEOUT_SECS: u64 = 10;
+const PORTR_REQUEST_TIMEOUT_SECS: u64 = 20;
 
 #[derive(Clone)]
 enum ShareSyncOp {
@@ -29,6 +32,49 @@ struct SyncState {
 fn global_state() -> &'static Mutex<SyncState> {
     static STATE: OnceLock<Mutex<SyncState>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(SyncState::default()))
+}
+
+fn portr_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(PORTR_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(PORTR_REQUEST_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("create portr-rs HTTP client failed: {e}"))
+}
+
+fn describe_portr_send_error(operation: &str, url: &str, err: reqwest::Error) -> String {
+    if err.is_timeout() {
+        return format!(
+            "{operation} timed out after {PORTR_REQUEST_TIMEOUT_SECS}s: {url}. 请检查分享节点是否可访问，或切换到其他分享节点后重试"
+        );
+    }
+    if err.is_connect() {
+        return format!(
+            "{operation} connection failed: {url}. 请检查网络、DNS、代理或防火墙，或切换到其他分享节点后重试: {err}"
+        );
+    }
+    format!("{operation} request failed: {url}: {err}")
+}
+
+async fn send_portr_request(
+    request: reqwest::RequestBuilder,
+    operation: &str,
+    url: &str,
+) -> Result<reqwest::Response, String> {
+    let retry_request = request.try_clone();
+    match request.send().await {
+        Ok(resp) => Ok(resp),
+        Err(err) if (err.is_timeout() || err.is_connect()) && retry_request.is_some() => {
+            log::warn!("[TunnelSync] {operation} failed once for {url}, retrying: {err}");
+            sleep(Duration::from_millis(500)).await;
+            retry_request
+                .expect("checked is_some")
+                .send()
+                .await
+                .map_err(|retry_err| describe_portr_send_error(operation, url, retry_err))
+        }
+        Err(err) => Err(describe_portr_send_error(operation, url, err)),
+    }
 }
 
 pub fn schedule_sync_share(share: ShareRecord, db: &Arc<Database>) {
@@ -77,7 +123,7 @@ async fn claim_share_subdomain_inner(
     allow_identity_reset_retry: bool,
 ) -> Result<(), String> {
     let config = load_config();
-    let client = reqwest::Client::new();
+    let client = portr_client()?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -85,15 +131,15 @@ async fn claim_share_subdomain_inner(
     let mut metadata = share_metadata_from_record(share);
     metadata.support = support;
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
-    let resp = client
-        .post(url)
-        .json(&serde_json::json!({
+    let resp = send_portr_request(
+        client.post(&url).json(&serde_json::json!({
             "installationId": identity.installation_id,
             "share": metadata,
-        }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        })),
+        "claim subdomain",
+        &url,
+    )
+    .await?;
     match handle_claim_response(resp, &identity.installation_id).await {
         Ok(()) => Ok(()),
         Err(message)
@@ -168,7 +214,7 @@ pub async fn sync_recent_share_request_logs(
     }
 
     let config = load_config();
-    let client = reqwest::Client::new();
+    let client = portr_client()?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -176,17 +222,17 @@ pub async fn sync_recent_share_request_logs(
         "{}/v1/share-request-logs/batch-sync",
         config.get_server_addr()
     );
-    client
-        .post(url)
-        .json(&serde_json::json!({
+    send_portr_request(
+        client.post(&url).json(&serde_json::json!({
             "installationId": identity.installation_id,
             "logs": logs,
-        }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?;
+        })),
+        "sync share request logs",
+        &url,
+    )
+    .await?
+    .error_for_status()
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -195,20 +241,20 @@ async fn sync_share_metadata_now_inner(
     allow_identity_reset_retry: bool,
 ) -> Result<(), String> {
     let config = load_config();
-    let client = reqwest::Client::new();
+    let client = portr_client()?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
     let url = format!("{}/v1/shares/sync", config.get_server_addr());
-    let resp = client
-        .post(url)
-        .json(&serde_json::json!({
+    let resp = send_portr_request(
+        client.post(&url).json(&serde_json::json!({
             "installationId": identity.installation_id,
             "share": share,
-        }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        })),
+        "sync share metadata",
+        &url,
+    )
+    .await?;
 
     if resp.status().is_success() {
         return Ok(());
@@ -284,7 +330,7 @@ async fn enqueue_request_log(log: ShareTunnelRequestLog) -> Result<(), String> {
 
 async fn flush_pending() -> Result<(), String> {
     let config = load_config();
-    let client = reqwest::Client::new();
+    let client = portr_client()?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -322,17 +368,17 @@ async fn flush_pending() -> Result<(), String> {
             .collect::<Vec<_>>();
 
         let url = format!("{}/v1/shares/batch-sync", config.get_server_addr());
-        client
-            .post(url)
-            .json(&serde_json::json!({
+        send_portr_request(
+            client.post(&url).json(&serde_json::json!({
                 "installationId": identity.installation_id,
                 "ops": payload_ops,
-            }))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|e| e.to_string())?;
+            })),
+            "batch sync shares",
+            &url,
+        )
+        .await?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
     }
 
     if !request_logs.is_empty() {
@@ -340,17 +386,17 @@ async fn flush_pending() -> Result<(), String> {
             "{}/v1/share-request-logs/batch-sync",
             config.get_server_addr()
         );
-        client
-            .post(url)
-            .json(&serde_json::json!({
+        send_portr_request(
+            client.post(&url).json(&serde_json::json!({
                 "installationId": identity.installation_id,
                 "logs": request_logs,
-            }))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|e| e.to_string())?;
+            })),
+            "batch sync share request logs",
+            &url,
+        )
+        .await?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -364,14 +410,19 @@ fn load_config() -> TunnelConfig {
     }
 }
 
-fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMetadata {
+pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMetadata {
+    let token = if share.for_sale == "Free" {
+        share.share_token.clone()
+    } else {
+        mask_share_token(&share.share_token)
+    };
     ShareTunnelMetadata {
         share_id: share.id.clone(),
         share_name: share.name.clone(),
         description: share.description.clone(),
         for_sale: share.for_sale.clone(),
         subdomain: share.subdomain.clone().unwrap_or_default(),
-        share_token: mask_share_token(&share.share_token),
+        share_token: token,
         app_type: share.app_type.clone(),
         provider_id: share.provider_id.clone(),
         token_limit: share.token_limit,

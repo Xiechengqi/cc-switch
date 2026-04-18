@@ -8,6 +8,7 @@ impl ShareService {
     pub const MAX_DESCRIPTION_CHARS: usize = 200;
     pub const FOR_SALE_NO: &'static str = "No";
     pub const FOR_SALE_YES: &'static str = "Yes";
+    pub const FOR_SALE_FREE: &'static str = "Free";
 
     pub fn prepare_create(
         name: String,
@@ -381,6 +382,9 @@ fn normalize_for_sale(value: &str) -> Result<String, AppError> {
     match value.trim() {
         ShareService::FOR_SALE_NO => Ok(ShareService::FOR_SALE_NO.to_string()),
         ShareService::FOR_SALE_YES => Ok(ShareService::FOR_SALE_YES.to_string()),
-        _ => Err(AppError::Message("For Sale 只能是 Yes 或 No".to_string())),
+        ShareService::FOR_SALE_FREE => Ok(ShareService::FOR_SALE_FREE.to_string()),
+        _ => Err(AppError::Message(
+            "For Sale 只能是 Yes、No 或 Free".to_string(),
+        )),
     }
 }

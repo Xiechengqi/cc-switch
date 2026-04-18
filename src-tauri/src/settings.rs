@@ -213,6 +213,9 @@ pub struct AppSettings {
     /// User has confirmed the common config first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub common_config_confirmed: Option<bool>,
+    /// OAuth 额度自动刷新间隔（分钟）
+    #[serde(default = "default_oauth_quota_refresh_interval_minutes")]
+    pub oauth_quota_refresh_interval_minutes: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 
@@ -305,6 +308,10 @@ fn default_minimize_to_tray_on_close() -> bool {
     true
 }
 
+fn default_oauth_quota_refresh_interval_minutes() -> u32 {
+    5
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -323,6 +330,7 @@ impl Default for AppSettings {
             failover_confirmed: None,
             first_run_notice_confirmed: None,
             common_config_confirmed: None,
+            oauth_quota_refresh_interval_minutes: default_oauth_quota_refresh_interval_minutes(),
             language: None,
             visible_apps: None,
             claude_config_dir: None,

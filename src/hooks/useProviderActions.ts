@@ -17,8 +17,10 @@ import {
   useSwitchProviderMutation,
 } from "@/lib/query";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  isOfficialBlockedByProxyTakeover,
+} from "@/utils/providerMetaUtils";
 import { openclawKeys } from "@/hooks/useOpenClaw";
-import { PROVIDER_TYPES } from "@/config/constants";
 
 /**
  * Hook for managing provider actions (add, update, delete, switch)
@@ -193,14 +195,8 @@ export function useProviderActions(
       // Block only direct official providers when proxy takeover is active.
       // Managed OAuth providers (Copilot / Codex OAuth / Claude OAuth) are
       // proxy-backed entries and must remain switchable.
-      const isManagedOauthProvider =
-        provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
-        provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
-        provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH;
       if (
-        isProxyTakeover &&
-        provider.category === "official" &&
-        !isManagedOauthProvider
+        isOfficialBlockedByProxyTakeover(provider, activeApp, !!isProxyTakeover)
       ) {
         toast.error(
           t("notifications.officialBlockedByProxy", {

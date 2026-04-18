@@ -59,7 +59,9 @@ export function useSharesQuery() {
 
 export function useShareDetailQuery(shareId?: string | null) {
   return useQuery({
-    queryKey: shareId ? shareKeys.detail(shareId) : [...shareKeys.all, "detail"],
+    queryKey: shareId
+      ? shareKeys.detail(shareId)
+      : [...shareKeys.all, "detail"],
     queryFn: () => shareApi.getDetail(shareId!),
     enabled: Boolean(shareId),
   });
@@ -80,14 +82,16 @@ export function useShareTunnelStatusQuery(
     queryFn: () => shareApi.getTunnelStatus(shareId!),
     enabled: Boolean(shareId) && enabled,
     refetchInterval: enabled
-      ? options?.refetchInterval ?? TUNNEL_POLL_INTERVAL_MS
+      ? (options?.refetchInterval ?? TUNNEL_POLL_INTERVAL_MS)
       : false,
-    refetchIntervalInBackground:
-      options?.refetchIntervalInBackground ?? true,
+    refetchIntervalInBackground: options?.refetchIntervalInBackground ?? true,
   });
 }
 
-export function useShareConnectInfoQuery(shareId?: string | null, enabled = false) {
+export function useShareConnectInfoQuery(
+  shareId?: string | null,
+  enabled = false,
+) {
   return useQuery<ConnectInfo>({
     queryKey: shareId
       ? shareKeys.connectInfo(shareId)
@@ -104,7 +108,9 @@ function invalidateShareDetail(
   if (!shareId) return Promise.resolve();
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: shareKeys.detail(shareId) }),
-    queryClient.invalidateQueries({ queryKey: shareKeys.tunnelStatus(shareId) }),
+    queryClient.invalidateQueries({
+      queryKey: shareKeys.tunnelStatus(shareId),
+    }),
     queryClient.invalidateQueries({ queryKey: shareKeys.connectInfo(shareId) }),
   ]);
 }
@@ -117,12 +123,14 @@ export function useCreateShareMutation() {
     mutationFn: (params: CreateShareParams) => shareApi.create(params),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: shareKeys.list() });
-      toast.success(buildMessages({
-        successKey: "share.toast.createSuccess",
-        successDefault: "分享已创建",
-        errorKey: "",
-        errorDefault: "",
-      }).success);
+      toast.success(
+        buildMessages({
+          successKey: "share.toast.createSuccess",
+          successDefault: "分享已创建",
+          errorKey: "",
+          errorDefault: "",
+        }).success,
+      );
       return created;
     },
     onError: (error: Error) => {
@@ -152,8 +160,9 @@ function useShareActionMutation<TVariables>(
   return useMutation({
     mutationFn,
     onSuccess: async (_data, variables) => {
+      const shareId = getShareId(variables);
       await queryClient.invalidateQueries({ queryKey: shareKeys.list() });
-      await invalidateShareDetail(queryClient, getShareId(variables));
+      await invalidateShareDetail(queryClient, shareId);
       toast.success(buildMessages(messages).success);
     },
     onError: (error: Error) => {
@@ -215,16 +224,53 @@ export function useEnableShareMutation() {
 }
 
 export function useDisableShareMutation() {
-  return useShareActionMutation(
-    (shareId: string) => shareApi.disable(shareId),
-    {
-      successKey: "share.toast.disableSuccess",
-      successDefault: "分享已关闭",
-      errorKey: "share.toast.disableError",
-      errorDefault: "关闭分享失败: {{error}}",
+  const queryClient = useQueryClient();
+  const buildMessages = useShareMutationMessages();
+
+  return useMutation({
+    mutationFn: (shareId: string) => shareApi.disable(shareId),
+    onSuccess: async (_data, shareId) => {
+      queryClient.setQueryData(shareKeys.tunnelStatus(shareId), null);
+      queryClient.setQueryData<ShareRecord[] | undefined>(
+        shareKeys.list(),
+        (current) =>
+          current?.map((share) =>
+            share.id === shareId
+              ? { ...share, status: "paused", tunnelUrl: null }
+              : share,
+          ),
+      );
+      queryClient.setQueryData<ShareRecord | null | undefined>(
+        shareKeys.detail(shareId),
+        (current) =>
+          current ? { ...current, status: "paused", tunnelUrl: null } : current,
+      );
+
+      await queryClient.invalidateQueries({ queryKey: shareKeys.list() });
+      await invalidateShareDetail(queryClient, shareId);
+      toast.success(
+        buildMessages({
+          successKey: "share.toast.disableSuccess",
+          successDefault: "分享已关闭",
+          errorKey: "share.toast.disableError",
+          errorDefault: "关闭分享失败: {{error}}",
+        }).success,
+      );
     },
-    (shareId) => shareId,
-  );
+    onError: (error: Error) => {
+      toast.error(
+        buildMessages(
+          {
+            successKey: "",
+            successDefault: "",
+            errorKey: "share.toast.disableError",
+            errorDefault: "关闭分享失败: {{error}}",
+          },
+          extractErrorMessage(error),
+        ).error,
+      );
+    },
+  });
 }
 
 export function useResetShareUsageMutation() {
@@ -298,8 +344,13 @@ export function useUpdateShareDescriptionMutation() {
 
 export function useUpdateShareForSaleMutation() {
   return useShareActionMutation(
-    ({ shareId, forSale }: { shareId: string; forSale: "Yes" | "No" }) =>
-      shareApi.updateForSale({ shareId, forSale }),
+    ({
+      shareId,
+      forSale,
+    }: {
+      shareId: string;
+      forSale: "Yes" | "No" | "Free";
+    }) => shareApi.updateForSale({ shareId, forSale }),
     {
       successKey: "share.toast.updateForSaleSuccess",
       successDefault: "For Sale 已更新",
@@ -357,15 +408,18 @@ export function useConfigureTunnelMutation() {
   return useMutation({
     mutationFn: (config: TunnelConfig) => shareApi.configureTunnel(config),
     onSuccess: async (_data, config) => {
-      queryClient.setQueryData<Settings | undefined>(["settings"], (current) => {
-        if (!current) {
-          return current;
-        }
-        return {
-          ...current,
-          portrDomain: config.domain,
-        };
-      });
+      queryClient.setQueryData<Settings | undefined>(
+        ["settings"],
+        (current) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            portrDomain: config.domain,
+          };
+        },
+      );
       await queryClient.invalidateQueries({ queryKey: ["settings"] });
       toast.success(
         buildMessages({

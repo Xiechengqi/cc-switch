@@ -384,6 +384,8 @@ base_url = "http://localhost:8080"
             .start()
             .await
             .expect("start proxy service");
+        let proxy_config = db.get_proxy_config().await.expect("get proxy config");
+        let expected_proxy_base_url = format!("http://127.0.0.1:{}", proxy_config.listen_port);
 
         let updated = Provider::with_id(
             "p1".into(),
@@ -432,7 +434,7 @@ base_url = "http://localhost:8080"
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721"),
+            Some(expected_proxy_base_url.as_str()),
             "proxy base URL should stay intact"
         );
         assert!(
@@ -1407,9 +1409,8 @@ impl ProviderService {
         // Hot-switch only when BOTH: this app is taken over AND proxy server is actually running
         let should_hot_switch = (is_app_taken_over || live_taken_over) && is_proxy_running;
 
-        // Block switching to official providers when proxy takeover is active.
-        // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause account bans.
-        if should_hot_switch && _provider.is_blocked_by_proxy_takeover() {
+        // Proxy takeover only supports third-party providers and managed OAuth official providers.
+        if should_hot_switch && !_provider.can_switch_during_proxy_takeover() {
             return Err(AppError::localized(
                 "switch.official_blocked_by_proxy",
                 "代理接管模式下不能切换到官方供应商，使用代理访问官方 API 可能导致账号被封禁。请先关闭代理接管，或选择第三方供应商。",
@@ -2059,6 +2060,16 @@ impl ProviderService {
                     if let Some(cfg_text) = config_value.as_str() {
                         crate::codex_config::validate_config_toml(cfg_text)?;
                     }
+                }
+
+                if provider.category.as_deref() == Some("official")
+                    && !provider.is_codex_official_with_managed_auth()
+                {
+                    return Err(AppError::localized(
+                        "provider.codex.official.account_required",
+                        "OpenAI Official 必须绑定一个 ChatGPT 账号",
+                        "OpenAI Official must be bound to a ChatGPT account",
+                    ));
                 }
             }
             AppType::Gemini => {

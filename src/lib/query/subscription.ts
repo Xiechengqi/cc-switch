@@ -4,30 +4,59 @@ import type { AppId } from "@/lib/api/types";
 import type { ProviderMeta } from "@/types";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
-
-const REFETCH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+import { useSettingsQuery } from "./queries";
+import { getOauthQuotaRefreshIntervalMs } from "./oauthQuotaRefresh";
 
 export function useSubscriptionQuota(
   appId: AppId,
   enabled: boolean,
   autoQuery = false,
 ) {
+  const { data: settings } = useSettingsQuery();
+  const refreshInterval = getOauthQuotaRefreshIntervalMs(settings);
+
   return useQuery({
     queryKey: ["subscription", "quota", appId],
     queryFn: () => subscriptionApi.getQuota(appId),
     enabled: enabled && ["claude", "codex", "gemini"].includes(appId),
-    refetchInterval: autoQuery ? REFETCH_INTERVAL : false,
+    refetchInterval: autoQuery ? refreshInterval : false,
     refetchIntervalInBackground: autoQuery,
     refetchOnWindowFocus: autoQuery,
-    staleTime: REFETCH_INTERVAL,
+    staleTime: refreshInterval,
     retry: 1,
   });
 }
 
 export interface UseCodexOauthQuotaOptions {
   enabled?: boolean;
-  /** 是否启用自动轮询（5 分钟）与窗口 focus 重取 */
+  /** 是否启用自动轮询与窗口 focus 重取，间隔由认证页统一配置 */
   autoQuery?: boolean;
+}
+
+export interface UseClaudeOauthQuotaOptions {
+  enabled?: boolean;
+  /** 是否启用自动轮询与窗口 focus 重取，间隔由认证页统一配置 */
+  autoQuery?: boolean;
+}
+
+export function useClaudeOauthQuota(
+  meta: ProviderMeta | undefined,
+  options: UseClaudeOauthQuotaOptions = {},
+) {
+  const { enabled = true, autoQuery = false } = options;
+  const { data: settings } = useSettingsQuery();
+  const refreshInterval = getOauthQuotaRefreshIntervalMs(settings);
+  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CLAUDE_OAUTH);
+  return useQuery({
+    queryKey: ["claude_oauth", "quota", accountId ?? "default"],
+    queryFn: () => subscriptionApi.getClaudeOauthQuota(accountId),
+    enabled,
+    refetchInterval: autoQuery ? refreshInterval : false,
+    refetchIntervalInBackground: autoQuery,
+    refetchOnWindowFocus: autoQuery,
+    staleTime: refreshInterval,
+    retry: 1,
+  });
 }
 
 /**
@@ -44,15 +73,17 @@ export function useCodexOauthQuota(
   options: UseCodexOauthQuotaOptions = {},
 ) {
   const { enabled = true, autoQuery = false } = options;
+  const { data: settings } = useSettingsQuery();
+  const refreshInterval = getOauthQuotaRefreshIntervalMs(settings);
   const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CODEX_OAUTH);
   return useQuery({
     queryKey: ["codex_oauth", "quota", accountId ?? "default"],
     queryFn: () => subscriptionApi.getCodexOauthQuota(accountId),
     enabled,
-    refetchInterval: autoQuery ? REFETCH_INTERVAL : false,
+    refetchInterval: autoQuery ? refreshInterval : false,
     refetchIntervalInBackground: autoQuery,
     refetchOnWindowFocus: autoQuery,
-    staleTime: REFETCH_INTERVAL,
+    staleTime: refreshInterval,
     retry: 1,
   });
 }

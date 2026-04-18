@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { copilotGetUsage, copilotGetUsageForAccount } from "@/lib/api/copilot";
 import type { QuotaTier } from "@/types/subscription";
-
-const REFETCH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+import { useSettingsQuery } from "./queries";
+import { getOauthQuotaRefreshIntervalMs } from "./oauthQuotaRefresh";
 
 export interface CopilotQuota {
   success: boolean;
@@ -15,7 +15,7 @@ export interface CopilotQuota {
 
 export interface UseCopilotQuotaOptions {
   enabled?: boolean;
-  /** 是否启用自动轮询（5 分钟）与窗口 focus 重取 */
+  /** 是否启用自动轮询与窗口 focus 重取，间隔由认证页统一配置 */
   autoQuery?: boolean;
 }
 
@@ -24,6 +24,8 @@ export function useCopilotQuota(
   options: UseCopilotQuotaOptions = {},
 ) {
   const { enabled = true, autoQuery = false } = options;
+  const { data: settings } = useSettingsQuery();
+  const refreshInterval = getOauthQuotaRefreshIntervalMs(settings);
   return useQuery<CopilotQuota>({
     queryKey: ["copilot", "quota", accountId ?? "default"],
     queryFn: async (): Promise<CopilotQuota> => {
@@ -54,10 +56,10 @@ export function useCopilotQuota(
       };
     },
     enabled,
-    refetchInterval: autoQuery ? REFETCH_INTERVAL : false,
+    refetchInterval: autoQuery ? refreshInterval : false,
     refetchIntervalInBackground: autoQuery,
     refetchOnWindowFocus: autoQuery,
-    staleTime: REFETCH_INTERVAL,
+    staleTime: refreshInterval,
     retry: 1,
   });
 }

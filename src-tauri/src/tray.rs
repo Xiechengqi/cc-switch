@@ -345,7 +345,7 @@ pub fn create_tray_menu(
             for (id, provider) in sort_providers(&providers) {
                 let is_current = current_id == *id;
                 let is_official_blocked =
-                    is_app_taken_over && provider.is_blocked_by_proxy_takeover();
+                    is_app_taken_over && !provider.can_switch_during_proxy_takeover();
                 let label = if is_official_blocked {
                     format!("{} \u{26D4}", &provider.name) // ⛔ emoji
                 } else {

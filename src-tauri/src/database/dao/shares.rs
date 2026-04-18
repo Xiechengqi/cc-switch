@@ -148,6 +148,16 @@ impl Database {
         Ok(())
     }
 
+    pub fn clear_share_tunnel(&self, id: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE shares SET tunnel_url = NULL WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn increment_share_requests(&self, id: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         let last_used_at = chrono::Utc::now().to_rfc3339();

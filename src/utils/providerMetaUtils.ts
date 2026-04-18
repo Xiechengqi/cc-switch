@@ -1,4 +1,6 @@
-import type { CustomEndpoint, ProviderMeta } from "@/types";
+import type { AppId } from "@/lib/api/types";
+import { PROVIDER_TYPES } from "@/config/constants";
+import type { CustomEndpoint, Provider, ProviderMeta } from "@/types";
 
 /**
  * 合并供应商元数据中的自定义端点。
@@ -56,4 +58,113 @@ export function mergeProviderMeta(
   }
 
   return { ...initialMeta };
+}
+
+export function hasManagedAuthBinding(
+  meta: ProviderMeta | undefined,
+  authProvider: string,
+): boolean {
+  const binding = meta?.authBinding;
+  return (
+    binding?.source === "managed_account" &&
+    binding.authProvider === authProvider &&
+    typeof binding.accountId === "string" &&
+    binding.accountId.trim() !== ""
+  );
+}
+
+export function isCodexOfficialWithManagedAuth(
+  provider: Pick<Provider, "category" | "meta">,
+): boolean {
+  return (
+    provider.category === "official" &&
+    hasManagedAuthBinding(provider.meta, "codex_oauth")
+  );
+}
+
+export function isManagedOauthProvider(
+  provider: Pick<Provider, "category" | "meta">,
+  appId: AppId,
+): boolean {
+  return (
+    provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
+    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
+    (appId === "codex" && isCodexOfficialWithManagedAuth(provider))
+  );
+}
+
+export function isOfficialBlockedByProxyTakeover(
+  provider: Pick<Provider, "category" | "meta">,
+  appId: AppId,
+  isProxyTakeover: boolean,
+): boolean {
+  return (
+    isProxyTakeover &&
+    provider.category === "official" &&
+    !isManagedOauthProvider(provider, appId)
+  );
+}
+
+export function canTestProvider(
+  provider: Pick<Provider, "category" | "meta">,
+  appId: AppId,
+): boolean {
+  if (provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH) {
+    return true;
+  }
+
+  if (appId === "codex" && isCodexOfficialWithManagedAuth(provider)) {
+    return true;
+  }
+
+  if (provider.category === "official") {
+    return false;
+  }
+
+  if (
+    provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
+    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export type ProviderQuotaSource =
+  | "copilot"
+  | "codex_oauth"
+  | "claude_oauth"
+  | "official"
+  | "none";
+
+export function getProviderQuotaSource(
+  provider: Pick<Provider, "category" | "meta">,
+  appId: AppId,
+): ProviderQuotaSource {
+  if (provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT) {
+    return "copilot";
+  }
+
+  if (provider.meta?.usage_script?.templateType === "github_copilot") {
+    return "copilot";
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH) {
+    return "claude_oauth";
+  }
+
+  if (
+    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
+    (appId === "codex" && isCodexOfficialWithManagedAuth(provider))
+  ) {
+    return "codex_oauth";
+  }
+
+  if (provider.category === "official") {
+    return "official";
+  }
+
+  return "none";
 }

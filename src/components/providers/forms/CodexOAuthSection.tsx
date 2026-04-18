@@ -17,9 +17,9 @@ import {
   Check,
   ExternalLink,
   Plus,
-  X,
   Sparkles,
   User,
+  X,
 } from "lucide-react";
 import { useCodexOauth } from "./hooks/useCodexOauth";
 import { copyText } from "@/lib/clipboard";
@@ -30,6 +30,10 @@ interface CodexOAuthSectionProps {
   selectedAccountId?: string | null;
   /** 账号选择回调 */
   onAccountSelect?: (accountId: string | null) => void;
+  /** 是否允许选择“使用默认账号” */
+  allowDefaultAccountOption?: boolean;
+  /** 是否显示已登录账号管理列表 */
+  showLoggedInAccounts?: boolean;
 }
 
 /**
@@ -42,13 +46,14 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
   className,
   selectedAccountId,
   onAccountSelect,
+  allowDefaultAccountOption = true,
+  showLoggedInAccounts = false,
 }) => {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
 
   const {
     accounts,
-    defaultAccountId,
     hasAnyAccount,
     pollingState,
     deviceCode,
@@ -57,11 +62,12 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
     isAddingAccount,
     isRemovingAccount,
     isSettingDefaultAccount,
+    defaultAccountId,
     addAccount,
-    removeAccount,
-    setDefaultAccount,
     cancelAuth,
     logout,
+    removeAccount,
+    setDefaultAccount,
   } = useCodexOauth();
 
   const copyUserCode = async () => {
@@ -103,45 +109,8 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
         </Badge>
       </div>
 
-      {/* 账号选择器 */}
-      {hasAnyAccount && onAccountSelect && (
-        <div className="space-y-2">
-          <Label className="text-sm text-muted-foreground">
-            {t("codexOauth.selectAccount", "选择账号")}
-          </Label>
-          <Select
-            value={selectedAccountId || "none"}
-            onValueChange={handleAccountSelect}
-          >
-            <SelectTrigger>
-              <SelectValue
-                placeholder={t(
-                  "codexOauth.selectAccountPlaceholder",
-                  "选择一个 ChatGPT 账号",
-                )}
-              />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">
-                <span className="text-muted-foreground">
-                  {t("codexOauth.useDefaultAccount", "使用默认账号")}
-                </span>
-              </SelectItem>
-              {accounts.map((account) => (
-                <SelectItem key={account.id} value={account.id}>
-                  <div className="flex items-center gap-2">
-                    <User className="h-4 w-4 text-muted-foreground" />
-                    <span>{account.login}</span>
-                  </div>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      )}
-
       {/* 已登录账号列表 */}
-      {hasAnyAccount && (
+      {hasAnyAccount && showLoggedInAccounts && (
         <div className="space-y-2">
           <Label className="text-sm text-muted-foreground">
             {t("codexOauth.loggedInAccounts", "已登录账号")}
@@ -150,11 +119,13 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             {accounts.map((account) => (
               <div
                 key={account.id}
-                className="flex items-center justify-between p-2 rounded-md border bg-muted/30"
+                className="flex items-center justify-between rounded-md border bg-muted/30 p-2"
               >
-                <div className="flex items-center gap-2">
-                  <User className="h-5 w-5 text-muted-foreground" />
-                  <span className="text-sm font-medium">{account.login}</span>
+                <div className="flex min-w-0 items-center gap-2">
+                  <User className="h-5 w-5 shrink-0 text-muted-foreground" />
+                  <span className="truncate text-sm font-medium">
+                    {account.login}
+                  </span>
                   {defaultAccountId === account.id && (
                     <Badge variant="secondary" className="text-xs">
                       {t("codexOauth.defaultAccount", "默认")}
@@ -166,7 +137,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
                     </Badge>
                   )}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex shrink-0 items-center gap-1">
                   {defaultAccountId !== account.id && (
                     <Button
                       type="button"
@@ -194,6 +165,48 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* 账号选择器 */}
+      {hasAnyAccount && onAccountSelect && (
+        <div className="space-y-2">
+          <Label className="text-sm text-muted-foreground">
+            {t("codexOauth.selectAccount", "选择账号")}
+          </Label>
+          <Select
+            value={
+              selectedAccountId ??
+              (allowDefaultAccountOption ? "none" : undefined)
+            }
+            onValueChange={handleAccountSelect}
+          >
+            <SelectTrigger>
+              <SelectValue
+                placeholder={t(
+                  "codexOauth.selectAccountPlaceholder",
+                  "选择一个 ChatGPT 账号",
+                )}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {allowDefaultAccountOption && (
+                <SelectItem value="none">
+                  <span className="text-muted-foreground">
+                    {t("codexOauth.useDefaultAccount", "使用默认账号")}
+                  </span>
+                </SelectItem>
+              )}
+              {accounts.map((account) => (
+                <SelectItem key={account.id} value={account.id}>
+                  <div className="flex items-center gap-2">
+                    <User className="h-4 w-4 text-muted-foreground" />
+                    <span>{account.login}</span>
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )}
 

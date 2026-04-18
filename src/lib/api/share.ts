@@ -3,7 +3,7 @@ export interface ShareRecord {
   id: string;
   name: string;
   description?: string | null;
-  forSale: "Yes" | "No";
+  forSale: "Yes" | "No" | "Free";
   shareToken: string;
   appType: string;
   providerId?: string | null;
@@ -23,7 +23,7 @@ export interface ShareRecord {
 export interface CreateShareParams {
   name: string;
   description?: string;
-  forSale: "Yes" | "No";
+  forSale: "Yes" | "No" | "Free";
   tokenLimit: number;
   expiresInSecs: number;
   subdomain?: string;
@@ -52,7 +52,7 @@ export interface UpdateShareDescriptionParams {
 
 export interface UpdateShareForSaleParams {
   shareId: string;
-  forSale: "Yes" | "No";
+  forSale: "Yes" | "No" | "Free";
 }
 
 export interface UpdateShareExpirationParams {

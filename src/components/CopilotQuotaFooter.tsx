@@ -3,6 +3,7 @@ import { RefreshCw, AlertCircle, Clock } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ProviderMeta } from "@/types";
 import { useCopilotQuota } from "@/lib/query/copilot";
+import type { AppId } from "@/lib/api";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
 import {
@@ -12,6 +13,8 @@ import {
 
 interface CopilotQuotaFooterProps {
   meta?: ProviderMeta;
+  appId?: AppId;
+  providerId?: string;
   inline?: boolean;
   /** 是否为当前激活的供应商 */
   isCurrent?: boolean;
@@ -35,7 +38,6 @@ function formatRelativeTime(
 const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
   meta,
   inline = false,
-  isCurrent = false,
 }) => {
   const { t } = useTranslation();
   const accountId = resolveManagedAccountId(
@@ -47,7 +49,11 @@ const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
     data: quota,
     isFetching: loading,
     refetch,
-  } = useCopilotQuota(accountId, { enabled: true, autoQuery: isCurrent });
+  } = useCopilotQuota(accountId, { enabled: true });
+  const effectiveLoading = loading;
+  const handleRefresh = React.useCallback(async () => {
+    await refetch();
+  }, [refetch]);
 
   const [now, setNow] = React.useState(Date.now());
   React.useEffect(() => {
@@ -68,12 +74,12 @@ const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
             <span>{quota.error || t("subscription.queryFailed")}</span>
           </div>
           <button
-            onClick={() => refetch()}
-            disabled={loading}
+            onClick={() => handleRefresh()}
+            disabled={effectiveLoading}
             className="p-1 rounded hover:bg-muted transition-colors disabled:opacity-50 flex-shrink-0"
             title={t("subscription.refresh")}
           >
-            <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
+            <RefreshCw size={12} className={effectiveLoading ? "animate-spin" : ""} />
           </button>
         </div>
       );
@@ -102,13 +108,13 @@ const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              refetch();
+              handleRefresh();
             }}
-            disabled={loading}
+            disabled={effectiveLoading}
             className="p-1 rounded hover:bg-muted transition-colors disabled:opacity-50 flex-shrink-0 text-muted-foreground"
             title={t("subscription.refresh")}
           >
-            <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
+            <RefreshCw size={12} className={effectiveLoading ? "animate-spin" : ""} />
           </button>
         </div>
 
@@ -136,12 +142,12 @@ const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
             </span>
           )}
           <button
-            onClick={() => refetch()}
-            disabled={loading}
+            onClick={() => handleRefresh()}
+            disabled={effectiveLoading}
             className="p-1 rounded hover:bg-muted transition-colors disabled:opacity-50"
             title={t("subscription.refresh")}
           >
-            <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
+            <RefreshCw size={12} className={effectiveLoading ? "animate-spin" : ""} />
           </button>
         </div>
       </div>

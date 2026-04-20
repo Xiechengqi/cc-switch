@@ -839,6 +839,34 @@ pub fn run() {
                 log::info!("✓ ClaudeOAuthManager initialized");
             }
 
+            // 初始化 OAuth 订阅额度后台刷新服务
+            {
+                use commands::OauthQuotaState;
+
+                let service = Arc::new(crate::services::OauthQuotaService::new());
+                crate::services::oauth_quota::set_global_oauth_quota_service(Arc::clone(
+                    &service,
+                ));
+                app.manage(OauthQuotaState(Arc::clone(&service)));
+
+                let db = app.state::<AppState>().db.clone();
+                let codex_state = app.state::<commands::CodexOAuthState>();
+                let claude_state = app.state::<commands::ClaudeOAuthState>();
+                let copilot_state = app.state::<commands::CopilotAuthState>();
+                let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
+                    &codex_state,
+                    &claude_state,
+                    &copilot_state,
+                );
+                crate::services::oauth_quota::spawn_oauth_quota_refresher(
+                    app.handle().clone(),
+                    db,
+                    service,
+                    managers,
+                );
+                log::info!("✓ OAuth quota refresh service initialized");
+            }
+
             // 初始化全局出站代理 HTTP 客户端
             {
                 let db = &app.state::<AppState>().db;
@@ -1111,6 +1139,7 @@ pub fn run() {
             commands::get_subscription_quota,
             commands::get_codex_oauth_quota,
             commands::get_claude_oauth_quota,
+            commands::get_cached_oauth_quota,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // New MCP via config.json (SSOT)

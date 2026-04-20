@@ -27,11 +27,15 @@ interface BasicFormFieldsProps {
   form: UseFormReturn<ProviderFormData>;
   /** Slot to render content between icon and name fields */
   beforeNameSlot?: ReactNode;
+  isNameReadOnly?: boolean;
+  isWebsiteUrlReadOnly?: boolean;
 }
 
 export function BasicFormFields({
   form,
   beforeNameSlot,
+  isNameReadOnly = false,
+  isWebsiteUrlReadOnly = false,
 }: BasicFormFieldsProps) {
   const { t } = useTranslation();
   const [iconDialogOpen, setIconDialogOpen] = useState(false);
@@ -130,8 +134,25 @@ export function BasicFormFields({
             <FormItem>
               <FormLabel>{t("provider.name")}</FormLabel>
               <FormControl>
-                <Input {...field} placeholder={t("provider.namePlaceholder")} />
+                <Input
+                  {...field}
+                  placeholder={t("provider.namePlaceholder")}
+                  readOnly={isNameReadOnly}
+                  className={
+                    isNameReadOnly
+                      ? "cursor-not-allowed bg-muted/50 text-muted-foreground"
+                      : undefined
+                  }
+                />
               </FormControl>
+              {isNameReadOnly && (
+                <p className="text-xs text-muted-foreground">
+                  {t("provider.managedOauthNameLockedHint", {
+                    defaultValue:
+                      "OAuth account provider names are managed by the preset and cannot be edited.",
+                  })}
+                </p>
+              )}
               <FormMessage />
             </FormItem>
           )}
@@ -165,8 +186,22 @@ export function BasicFormFields({
               <Input
                 {...field}
                 placeholder={t("providerForm.websiteUrlPlaceholder")}
+                readOnly={isWebsiteUrlReadOnly}
+                className={
+                  isWebsiteUrlReadOnly
+                    ? "cursor-not-allowed bg-muted/50 text-muted-foreground"
+                    : undefined
+                }
               />
             </FormControl>
+            {isWebsiteUrlReadOnly && (
+              <p className="text-xs text-muted-foreground">
+                {t("provider.managedOauthWebsiteLockedHint", {
+                  defaultValue:
+                    "OAuth account provider website links are managed by the preset and cannot be edited.",
+                })}
+              </p>
+            )}
             <FormMessage />
           </FormItem>
         )}

@@ -85,6 +85,18 @@ pub struct StreamCheckResult {
 pub struct StreamCheckService;
 
 impl StreamCheckService {
+    fn maybe_add_share_api_key_header(
+        request_builder: reqwest::RequestBuilder,
+        base_url: &str,
+        api_key: &str,
+    ) -> reqwest::RequestBuilder {
+        if crate::tunnel::config::is_share_tunnel_url(base_url) {
+            request_builder.header("x-api-key", api_key)
+        } else {
+            request_builder
+        }
+    }
+
     fn unsupported_official_provider_message(
         app_type: &AppType,
         provider: &Provider,
@@ -556,6 +568,9 @@ impl StreamCheckService {
             }
         }
 
+        let request_builder =
+            Self::maybe_add_share_api_key_header(request_builder, base_url, &auth.api_key);
+
         let response = request_builder
             .timeout(timeout)
             .json(&body)
@@ -649,6 +664,9 @@ impl StreamCheckService {
                 request_builder = request_builder.header("chatgpt-account-id", account_id);
             }
 
+            let request_builder =
+                Self::maybe_add_share_api_key_header(request_builder, base_url, &auth.api_key);
+
             let response = request_builder
                 .json(&body)
                 .send()
@@ -729,6 +747,9 @@ impl StreamCheckService {
                 }
             }
         }
+
+        let request_builder =
+            Self::maybe_add_share_api_key_header(request_builder, base_url, &auth.api_key);
 
         let response = request_builder
             .timeout(timeout)
@@ -1475,7 +1496,7 @@ impl StreamCheckService {
         if base.ends_with("/v1") {
             vec![format!("{base}/responses")]
         } else {
-            vec![format!("{base}/responses"), format!("{base}/v1/responses")]
+            vec![format!("{base}/v1/responses"), format!("{base}/responses")]
         }
     }
 
@@ -1951,9 +1972,37 @@ mod tests {
         assert_eq!(
             urls,
             vec![
-                "https://api.openai.com/responses",
                 "https://api.openai.com/v1/responses",
+                "https://api.openai.com/responses",
             ]
         );
+    }
+
+    #[test]
+    fn test_resolve_codex_stream_urls_for_share_origin_prefers_v1() {
+        let urls =
+            StreamCheckService::resolve_codex_stream_urls("https://alpha.share.example.com", false);
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://alpha.share.example.com/v1/responses",
+                "https://alpha.share.example.com/responses",
+            ]
+        );
+    }
+
+    #[test]
+    fn detects_share_tunnel_subdomain_from_configured_domain() {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.portr_domain = Some("share.example.com".to_string());
+        crate::settings::update_settings(settings).unwrap();
+
+        assert!(crate::tunnel::config::is_share_tunnel_url(
+            "https://alpha.share.example.com/v1"
+        ));
+        assert!(!crate::tunnel::config::is_share_tunnel_url(
+            "https://api.openai.com/v1"
+        ));
     }
 }

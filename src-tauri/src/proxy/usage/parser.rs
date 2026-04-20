@@ -340,6 +340,20 @@ impl TokenUsage {
             }
         }
 
+        // 某些 Responses 兼容后端会把 SSE event 名放在 `event: response.completed`
+        // 行里，而 `data:` 直接放 response 对象本身（包含 usage），不是
+        // `{"type":"response.completed","response":{...}}` 包装形态。
+        // collector 目前只保存 data JSON，不保存 event 名；这里反向扫描所有事件，
+        // 兜底识别顶层 usage，避免 Codex Official/share 记录落成 0 tokens。
+        for event in events.iter().rev() {
+            if event.get("usage").is_some() {
+                if let Some(usage) = Self::from_codex_response_auto(event) {
+                    log::debug!("[Codex] 从顶层 usage 流式事件解析到使用量");
+                    return Some(usage);
+                }
+            }
+        }
+
         // 回退到 OpenAI Chat Completions 格式 (最后一个 chunk 包含 usage)
         log::debug!("[Codex] 尝试 OpenAI 流式格式");
         Self::from_openai_stream_events(events)
@@ -906,6 +920,38 @@ mod tests {
         assert_eq!(usage.output_tokens, 500);
         assert_eq!(usage.cache_read_tokens, 200);
         assert_eq!(usage.model, Some("o3".to_string()));
+    }
+
+    #[test]
+    fn test_codex_stream_events_auto_top_level_response_usage() {
+        // Some Responses-compatible SSE streams carry the event name in the
+        // `event:` line and put the response object itself in `data:`.
+        let events = vec![
+            json!({
+                "id": "resp_123",
+                "model": "gpt-5.4",
+                "status": "in_progress"
+            }),
+            json!({
+                "id": "resp_123",
+                "model": "gpt-5.4",
+                "status": "completed",
+                "usage": {
+                    "input_tokens": 1200,
+                    "output_tokens": 80,
+                    "input_tokens_details": {
+                        "cached_tokens": 256
+                    }
+                }
+            }),
+        ];
+
+        let usage = TokenUsage::from_codex_stream_events_auto(&events).unwrap();
+
+        assert_eq!(usage.input_tokens, 1200);
+        assert_eq!(usage.output_tokens, 80);
+        assert_eq!(usage.cache_read_tokens, 256);
+        assert_eq!(usage.model, Some("gpt-5.4".to_string()));
     }
 
     #[test]

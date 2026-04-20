@@ -173,7 +173,26 @@ pub(crate) async fn read_decoded_body(
 /// 检测响应是否为 SSE 流式响应
 #[inline]
 pub fn is_sse_response(response: &ProxyResponse) -> bool {
-    response.is_sse()
+    response
+        .content_type()
+        .map(|ct| ct.contains("text/event-stream"))
+        .unwrap_or(false)
+}
+
+#[inline]
+fn should_handle_as_streaming_response(response: &ProxyResponse, ctx: &RequestContext) -> bool {
+    is_sse_response(response) || ctx.request_is_streaming
+}
+
+#[cfg(test)]
+fn should_handle_as_streaming_response_parts(
+    content_type: Option<&str>,
+    request_is_streaming: bool,
+) -> bool {
+    content_type
+        .map(|ct| ct.contains("text/event-stream"))
+        .unwrap_or(false)
+        || request_is_streaming
 }
 
 /// 处理流式响应
@@ -207,6 +226,12 @@ pub async fn handle_streaming(
     // 复制响应头
     for (key, value) in &response_headers {
         builder = builder.header(key, value);
+    }
+    if !response_headers.contains_key(axum::http::header::CONTENT_TYPE) {
+        builder = builder.header(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/event-stream"),
+        );
     }
 
     // 创建字节流
@@ -337,7 +362,7 @@ pub async fn process_response(
     state: &ProxyState,
     parser_config: &UsageParserConfig,
 ) -> Result<Response, ProxyError> {
-    if is_sse_response(&response) {
+    if should_handle_as_streaming_response(&response, ctx) {
         Ok(handle_streaming(response, ctx, state, parser_config).await)
     } else {
         handle_non_streaming(response, ctx, state, parser_config).await
@@ -990,6 +1015,19 @@ mod tests {
             headers.get(axum::http::header::CONTENT_TYPE),
             Some(&axum::http::HeaderValue::from_static("text/event-stream"))
         );
+    }
+
+    #[test]
+    fn test_streaming_detection_uses_request_flag_when_content_type_missing() {
+        assert!(should_handle_as_streaming_response_parts(None, true));
+        assert!(should_handle_as_streaming_response_parts(
+            Some("text/event-stream"),
+            false
+        ));
+        assert!(!should_handle_as_streaming_response_parts(
+            Some("application/json"),
+            false
+        ));
     }
 
     fn build_state(db: Arc<Database>) -> ProxyState {

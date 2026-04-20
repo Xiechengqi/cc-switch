@@ -43,10 +43,16 @@ pub async fn fetch_models(
     let models_url = build_models_url(base_url, is_full_url)?;
     let client = crate::proxy::http_client::get();
 
-    let response = client
+    let mut request = client
         .get(&models_url)
         .header("Authorization", format!("Bearer {api_key}"))
-        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS));
+
+    if crate::tunnel::config::is_share_tunnel_url(base_url) {
+        request = request.header("X-API-Key", api_key);
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|e| format!("Request failed: {e}"))?;
@@ -175,5 +181,19 @@ mod tests {
         let json = r#"{"object":"list","data":[]}"#;
         let resp: ModelsResponse = serde_json::from_str(json).unwrap();
         assert!(resp.data.unwrap().is_empty());
+    }
+
+    #[test]
+    fn detects_share_tunnel_subdomain_from_configured_domain() {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.portr_domain = Some("share.example.com".to_string());
+        crate::settings::update_settings(settings).unwrap();
+
+        assert!(crate::tunnel::config::is_share_tunnel_url(
+            "https://alpha.share.example.com/v1"
+        ));
+        assert!(!crate::tunnel::config::is_share_tunnel_url(
+            "https://api.openai.com/v1"
+        ));
     }
 }

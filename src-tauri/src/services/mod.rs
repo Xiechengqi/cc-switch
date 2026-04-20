@@ -5,6 +5,7 @@ pub mod env_checker;
 pub mod env_manager;
 pub mod mcp;
 pub mod model_fetch;
+pub mod oauth_quota;
 pub mod omo;
 pub mod prompt;
 pub mod provider;
@@ -24,6 +25,7 @@ pub mod webdav_sync;
 
 pub use config::ConfigService;
 pub use mcp::McpService;
+pub use oauth_quota::OauthQuotaService;
 pub use omo::OmoService;
 pub use prompt::PromptService;
 pub use provider::{ProviderService, ProviderSortUpdate, SwitchResult};

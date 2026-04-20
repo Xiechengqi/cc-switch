@@ -103,13 +103,6 @@ impl ProxyResponse {
             .and_then(|v| v.to_str().ok())
     }
 
-    /// Check if the response is an SSE stream.
-    pub fn is_sse(&self) -> bool {
-        self.content_type()
-            .map(|ct| ct.contains("text/event-stream"))
-            .unwrap_or(false)
-    }
-
     /// Consume the response and collect the full body into `Bytes`.
     pub async fn bytes(self) -> Result<Bytes, ProxyError> {
         match self {

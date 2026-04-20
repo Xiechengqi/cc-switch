@@ -384,6 +384,22 @@ impl CopilotAuthManager {
         accounts.get(account_id).map(GitHubAccount::from)
     }
 
+    /// 解析当前默认账号 ID（公开版本，供 forwarder 401 重试路径使用）。
+    pub async fn default_account_id(&self) -> Option<String> {
+        self.resolve_default_account_id().await
+    }
+
+    /// 作废指定账号的 Copilot token 缓存。
+    ///
+    /// 用于上游返回 401 时，由 forwarder 触发，使下一次 `get_valid_token_for_account`
+    /// 走 refresh 分支去拿新的 Copilot token。不动 GitHub oauth_token。
+    pub async fn invalidate_cached_token(&self, account_id: &str) {
+        let mut tokens = self.copilot_tokens.write().await;
+        if tokens.remove(account_id).is_some() {
+            log::info!("[CopilotAuth] 已作废 copilot_token 缓存 (account={account_id})");
+        }
+    }
+
     /// 移除指定账号
     pub async fn remove_account(&self, account_id: &str) -> Result<(), CopilotAuthError> {
         log::info!("[CopilotAuth] 移除账号: {account_id}");

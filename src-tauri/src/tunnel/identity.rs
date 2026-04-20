@@ -114,6 +114,21 @@ pub fn sign_lease_payload(
     base64::engine::general_purpose::STANDARD.encode(signature.to_bytes())
 }
 
+pub fn sign_action_payload<T: Serialize>(
+    identity: &TunnelIdentity,
+    installation_id: &str,
+    action: &str,
+    payload: &T,
+    timestamp_ms: i64,
+    nonce: &str,
+) -> Result<String, TunnelError> {
+    let payload_json = serde_json::to_string(payload)
+        .map_err(|e| TunnelError::Other(format!("serialize signed payload failed: {e}")))?;
+    let body = format!("{installation_id}\n{action}\n{payload_json}\n{timestamp_ms}\n{nonce}");
+    let signature = identity.signing_key.sign(body.as_bytes());
+    Ok(base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()))
+}
+
 fn load_identity() -> Result<Option<TunnelIdentity>, TunnelError> {
     let path = identity_path()?;
     if !path.exists() {

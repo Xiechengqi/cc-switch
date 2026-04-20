@@ -2081,6 +2081,22 @@ model = "gpt-5.1-codex"
         assert_eq!(base_url, new_url);
     }
 
+    #[test]
+    fn update_toml_base_url_creates_base_url_for_empty_config() {
+        let new_url = "http://127.0.0.1:5000/v1";
+        let output = ProxyService::update_toml_base_url("", new_url);
+
+        let parsed: toml::Value =
+            toml::from_str(&output).expect("updated config should be valid TOML");
+
+        let base_url = parsed
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .expect("base_url should exist");
+
+        assert_eq!(base_url, new_url);
+    }
+
     #[tokio::test]
     #[serial]
     async fn sync_claude_token_does_not_add_anthropic_api_key() {

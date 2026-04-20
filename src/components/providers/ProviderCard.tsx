@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -6,7 +7,9 @@ import type {
   DraggableSyntheticListeners,
 } from "@dnd-kit/core";
 import type { Provider } from "@/types";
-import type { AppId } from "@/lib/api";
+import { authApi, type AppId } from "@/lib/api";
+import type { ManagedAuthProvider, ManagedAuthStatus } from "@/lib/api";
+import { PROVIDER_TYPES } from "@/config/constants";
 import { cn } from "@/lib/utils";
 import { ProviderActions } from "@/components/providers/ProviderActions";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -26,6 +29,7 @@ import {
 } from "@/utils/providerMetaUtils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
+import { resolveManagedAccountId } from "@/lib/authBinding";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -121,6 +125,42 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
   return fallbackText;
 };
 
+const quotaSourceToAuthProvider = (
+  quotaSource: ReturnType<typeof getProviderQuotaSource>,
+): ManagedAuthProvider | null => {
+  if (quotaSource === "copilot") return PROVIDER_TYPES.GITHUB_COPILOT;
+  if (quotaSource === "codex_oauth") return PROVIDER_TYPES.CODEX_OAUTH;
+  if (quotaSource === "claude_oauth") return PROVIDER_TYPES.CLAUDE_OAUTH;
+  return null;
+};
+
+function useManagedOauthAccountLogin(
+  provider: Provider,
+  quotaSource: ReturnType<typeof getProviderQuotaSource>,
+) {
+  const authProvider = quotaSourceToAuthProvider(quotaSource);
+  const { data: authStatus } = useQuery<ManagedAuthStatus>({
+    queryKey: ["managed-auth-status", authProvider],
+    queryFn: () => authApi.authGetStatus(authProvider!),
+    enabled: authProvider !== null,
+    staleTime: 30000,
+  });
+
+  if (!authProvider) {
+    return null;
+  }
+
+  const accountId =
+    resolveManagedAccountId(provider.meta, authProvider) ??
+    authStatus?.default_account_id ??
+    null;
+  const account = accountId
+    ? authStatus?.accounts.find((item) => item.id === accountId)
+    : undefined;
+
+  return account?.login ?? null;
+}
+
 export function ProviderCard({
   provider,
   isCurrent,
@@ -164,12 +204,27 @@ export function ProviderCard({
   const fallbackUrlText = t("provider.notConfigured", {
     defaultValue: "未配置接口地址",
   });
+  const quotaSource = getProviderQuotaSource(provider, appId);
+  const oauthAccountLogin = useManagedOauthAccountLogin(provider, quotaSource);
 
   const displayUrl = useMemo(() => {
+    if (isManagedOauthProvider(provider, appId)) {
+      return oauthAccountLogin
+        ? t("provider.oauthAccountDisplay", {
+            account: oauthAccountLogin,
+            defaultValue: `OAuth account: ${oauthAccountLogin}`,
+          })
+        : t("provider.oauthAccountResolving", {
+            defaultValue: "OAuth account",
+          });
+    }
     return extractApiUrl(provider, fallbackUrlText);
-  }, [provider, fallbackUrlText]);
+  }, [appId, oauthAccountLogin, provider, fallbackUrlText, t]);
 
   const isClickableUrl = useMemo(() => {
+    if (isManagedOauthProvider(provider, appId)) {
+      return false;
+    }
     if (provider.notes?.trim()) {
       return false;
     }
@@ -177,11 +232,10 @@ export function ProviderCard({
       return false;
     }
     return true;
-  }, [provider.notes, displayUrl, fallbackUrlText]);
+  }, [appId, provider, displayUrl, fallbackUrlText]);
 
   const usageEnabled = provider.meta?.usage_script?.enabled ?? false;
   const isOfficial = isOfficialProvider(provider, appId);
-  const quotaSource = getProviderQuotaSource(provider, appId);
   const isManagedOauth = isManagedOauthProvider(provider, appId);
   const isOfficialBlockedByProxy = isOfficialBlockedByProxyTakeover(
     provider,
@@ -367,18 +421,24 @@ export function ProviderCard({
               {quotaSource === "copilot" ? (
                 <CopilotQuotaFooter
                   meta={provider.meta}
+                  appId={appId}
+                  providerId={provider.id}
                   inline={true}
                   isCurrent={isCurrent}
                 />
               ) : quotaSource === "codex_oauth" ? (
                 <CodexOauthQuotaFooter
                   meta={provider.meta}
+                  appId={appId}
+                  providerId={provider.id}
                   inline={true}
                   isCurrent={isCurrent}
                 />
               ) : quotaSource === "claude_oauth" ? (
                 <ClaudeOauthQuotaFooter
                   meta={provider.meta}
+                  appId={appId}
+                  providerId={provider.id}
                   inline={true}
                   isCurrent={isCurrent}
                 />

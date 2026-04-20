@@ -246,12 +246,37 @@ fn handle_provider_click(
             .set_proxy_flags_sync(app_type_str, proxy_enabled, false)?;
 
         // 切换供应商
-        crate::commands::switch_provider(
-            app_state.clone(),
-            app_type_str.to_string(),
-            provider_id.to_string(),
-        )
-        .map_err(AppError::Message)?;
+        crate::commands::switch_provider_internal(
+            app_state.inner(),
+            app_type.clone(),
+            provider_id,
+        )?;
+
+        if let (
+            Some(oauth_quota_state),
+            Some(codex_state),
+            Some(claude_state),
+            Some(copilot_state),
+        ) = (
+            app.try_state::<crate::commands::OauthQuotaState>(),
+            app.try_state::<crate::commands::CodexOAuthState>(),
+            app.try_state::<crate::commands::ClaudeOAuthState>(),
+            app.try_state::<crate::commands::CopilotAuthState>(),
+        ) {
+            let app_handle = app.clone();
+            let db = app_state.db.clone();
+            let service = std::sync::Arc::clone(&oauth_quota_state.0);
+            let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
+                &codex_state,
+                &claude_state,
+                &copilot_state,
+            );
+            tauri::async_runtime::spawn(async move {
+                service
+                    .refresh_selected_targets(Some(&app_handle), &db, &managers, "switch")
+                    .await;
+            });
+        }
 
         // 更新托盘菜单
         if let Ok(new_menu) = create_tray_menu(app, app_state.inner()) {

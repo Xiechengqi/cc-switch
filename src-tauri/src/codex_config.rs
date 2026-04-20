@@ -146,9 +146,13 @@ pub fn read_and_validate_codex_config_text() -> Result<String, AppError> {
 ///
 /// Empty value removes the field.
 pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Result<String, String> {
-    let mut doc = toml_str
-        .parse::<DocumentMut>()
-        .map_err(|e| format!("TOML parse error: {e}"))?;
+    let mut doc = if toml_str.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        toml_str
+            .parse::<DocumentMut>()
+            .map_err(|e| format!("TOML parse error: {e}"))?
+    };
 
     let trimmed = value.trim();
 
@@ -318,6 +322,18 @@ model = "gpt-4"
             .and_then(|v| v.as_str())
             .expect("should set top-level base_url");
         assert_eq!(base_url, "https://fallback.api/v1");
+    }
+
+    #[test]
+    fn base_url_creates_top_level_field_for_empty_toml() {
+        let result = update_codex_toml_field("", "base_url", "http://127.0.0.1:5000/v1").unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+
+        let base_url = parsed
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .expect("should create top-level base_url for empty toml");
+        assert_eq!(base_url, "http://127.0.0.1:5000/v1");
     }
 
     #[test]

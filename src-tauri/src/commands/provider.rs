@@ -81,7 +81,7 @@ pub fn remove_provider_from_live_config(
         .map_err(|e| e.to_string())
 }
 
-fn switch_provider_internal(
+pub(crate) fn switch_provider_internal(
     state: &AppState,
     app_type: AppType,
     id: &str,
@@ -100,12 +100,30 @@ pub fn switch_provider_test_hook(
 
 #[tauri::command]
 pub fn switch_provider(
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
+    oauth_quota_state: State<'_, crate::commands::OauthQuotaState>,
+    codex_state: State<'_, crate::commands::CodexOAuthState>,
+    claude_state: State<'_, crate::commands::ClaudeOAuthState>,
+    copilot_state: State<'_, crate::commands::CopilotAuthState>,
     app: String,
     id: String,
 ) -> Result<SwitchResult, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    switch_provider_internal(&state, app_type, &id).map_err(|e| e.to_string())
+    let result = switch_provider_internal(&state, app_type, &id).map_err(|e| e.to_string())?;
+    let service = std::sync::Arc::clone(&oauth_quota_state.0);
+    let db = state.db.clone();
+    let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
+        &codex_state,
+        &claude_state,
+        &copilot_state,
+    );
+    tauri::async_runtime::spawn(async move {
+        service
+            .refresh_selected_targets(Some(&app_handle), &db, &managers, "switch")
+            .await;
+    });
+    Ok(result)
 }
 
 fn import_default_config_internal(state: &AppState, app_type: AppType) -> Result<bool, AppError> {

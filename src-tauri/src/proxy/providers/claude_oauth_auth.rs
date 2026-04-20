@@ -704,6 +704,17 @@ impl ClaudeOAuthManager {
         Self::sorted_accounts(&accounts, default_id.as_deref())
     }
 
+    /// 作废指定账号的 access_token 缓存。
+    ///
+    /// 用于上游返回 401 时，由 forwarder 触发，使下一次 `get_valid_token_for_account`
+    /// 走 refresh 分支去拿新 token。不动 `accounts` 里的 refresh_token。
+    pub async fn invalidate_cached_token(&self, account_id: &str) {
+        let mut tokens = self.access_tokens.write().await;
+        if tokens.remove(account_id).is_some() {
+            log::info!("[ClaudeOAuth] 已作废 access_token 缓存 (account={account_id})");
+        }
+    }
+
     pub async fn remove_account(&self, account_id: &str) -> Result<(), ClaudeOAuthError> {
         log::info!("[ClaudeOAuth] 移除账号: {account_id}");
 

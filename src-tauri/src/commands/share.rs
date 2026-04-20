@@ -3,9 +3,7 @@ use crate::error::AppError;
 use crate::proxy::ProxyConfig;
 use crate::services::share::ShareService;
 use crate::store::AppState;
-use crate::tunnel::config::{
-    ShareTunnelMetadata, TunnelConfig, TunnelInfo, TunnelRequest, TunnelType,
-};
+use crate::tunnel::config::{TunnelConfig, TunnelInfo, TunnelRequest, TunnelType};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::net::TcpStream;
@@ -240,8 +238,7 @@ pub async fn disable_share(state: State<'_, AppState>, share_id: String) -> Resu
     ShareService::pause(&state.db, &share_id).map_err(|e: AppError| e.to_string())?;
 
     if let Ok(Some(share)) = state.db.get_share_by_id(&share_id) {
-        let mut metadata = crate::tunnel::sync::share_metadata_from_record(&share);
-        metadata.support = crate::tunnel::sync::query_share_support(&state.db).await;
+        let metadata = crate::tunnel::sync::share_metadata_with_runtime(&share, &state.db).await;
         if let Err(err) = crate::tunnel::sync::sync_share_metadata_now(metadata).await {
             log::warn!(
                 "[Share] immediate remote sync after disable failed for {}: {}",
@@ -307,7 +304,6 @@ async fn start_share_tunnel_inner(
 ) -> Result<TunnelInfo, AppError> {
     let share = ShareService::get_detail(&state.db, share_id)?
         .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
-    let support = crate::tunnel::sync::query_share_support(&state.db).await;
 
     let subdomain = share
         .subdomain
@@ -320,27 +316,15 @@ async fn start_share_tunnel_inner(
     let local_addr = current_proxy_local_addr(state).await?;
     ensure_proxy_reachable(&local_addr).await?;
 
+    let mut share_metadata =
+        crate::tunnel::sync::share_metadata_with_runtime(&share, &state.db).await;
+    share_metadata.subdomain = subdomain.clone();
+
     let req = TunnelRequest {
         tunnel_type: TunnelType::Http,
         subdomain: subdomain.clone(),
         local_addr,
-        share_metadata: Some(ShareTunnelMetadata {
-            share_id: share.id.clone(),
-            share_name: share.name.clone(),
-            description: share.description.clone(),
-            for_sale: share.for_sale.clone(),
-            subdomain: subdomain.clone(),
-            share_token: share.share_token.clone(),
-            app_type: share.app_type.clone(),
-            provider_id: share.provider_id.clone(),
-            token_limit: share.token_limit,
-            tokens_used: share.tokens_used,
-            requests_count: share.requests_count,
-            share_status: share.status.clone(),
-            created_at: share.created_at.clone(),
-            expires_at: share.expires_at.clone(),
-            support,
-        }),
+        share_metadata: Some(share_metadata),
     };
 
     let mut mgr = state.tunnel_manager.write().await;

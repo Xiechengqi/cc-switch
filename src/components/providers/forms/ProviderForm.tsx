@@ -96,6 +96,7 @@ import {
 } from "./helpers/opencodeFormUtils";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { useOpenClawLiveProviderIds } from "@/hooks/useOpenClaw";
+import { PROVIDER_TYPES } from "@/config/constants";
 
 type PresetEntry = {
   id: string;
@@ -503,6 +504,13 @@ export function ProviderForm({
     settingsConfig: form.getValues("settingsConfig"),
     onConfigChange: handleSettingsConfigChange,
   });
+  const currentProviderType =
+    templatePreset?.providerType || initialData?.meta?.providerType;
+  const isManagedOauthNameReadOnly =
+    currentProviderType === PROVIDER_TYPES.GITHUB_COPILOT ||
+    currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
+    currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
+    isCodexOfficialPreset;
 
   const {
     useCommonConfig,
@@ -1444,6 +1452,8 @@ export function ProviderForm({
 
           <BasicFormFields
             form={form}
+            isNameReadOnly={isManagedOauthNameReadOnly}
+            isWebsiteUrlReadOnly={isManagedOauthNameReadOnly}
             beforeNameSlot={
               appId === "opencode" && !isAnyOmoCategory ? (
                 <div className="space-y-2">

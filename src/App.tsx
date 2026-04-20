@@ -107,6 +107,11 @@ interface WebDavSyncStatusUpdatedPayload {
   error?: string;
 }
 
+interface OauthQuotaUpdatedPayload {
+  authProvider?: string;
+  accountId?: string;
+}
+
 const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 
@@ -166,6 +171,32 @@ function App() {
   useEffect(() => {
     localStorage.setItem(VIEW_STORAGE_KEY, currentView);
   }, [currentView]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<OauthQuotaUpdatedPayload>("oauth-quota-updated", (event) => {
+      const authProvider = event.payload?.authProvider;
+      const accountId = event.payload?.accountId ?? "default";
+      if (!authProvider) return;
+      const key =
+        authProvider === "github_copilot"
+          ? ["copilot", "quota", accountId]
+          : [authProvider, "quota", accountId];
+      queryClient.invalidateQueries({ queryKey: key });
+      if (accountId !== "default") {
+        const defaultKey =
+          authProvider === "github_copilot"
+            ? ["copilot", "quota", "default"]
+            : [authProvider, "quota", "default"];
+        queryClient.invalidateQueries({ queryKey: defaultKey });
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [queryClient]);
 
   const { data: settingsData } = useSettingsQuery();
   const useAppWindowControls =

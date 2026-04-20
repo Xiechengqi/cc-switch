@@ -55,7 +55,11 @@ impl SshTunnel {
         });
 
         let (fwd_tx, fwd_rx) = mpsc::unbounded_channel();
-        let handler = TunnelHandler { fwd_tx };
+        let handler = TunnelHandler {
+            fwd_tx,
+            expected_fingerprint: lease.ssh_host_fingerprint.clone(),
+            ssh_addr: lease.ssh_addr.clone(),
+        };
 
         let ssh_addr = &lease.ssh_addr;
         let mut handle = client::connect(ssh_config, ssh_addr, handler)
@@ -178,6 +182,18 @@ impl SshTunnel {
     }
 }
 
+/// 常量时间字符串比较，避免时序侧信道。
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn describe_connect_error(ssh_addr: &str, raw: &str) -> String {
     if raw.contains("Disconnect") || raw.contains("Disconnected") {
         return format!(
@@ -190,6 +206,10 @@ fn describe_connect_error(ssh_addr: &str, raw: &str) -> String {
 /// russh client handler that receives forwarded TCP channels from the server.
 struct TunnelHandler {
     fwd_tx: mpsc::UnboundedSender<Channel<client::Msg>>,
+    /// 由 lease 响应提供的期望 host key 指纹（`SHA256:<base64-nopad>`）。
+    /// None 表示老服务端未返回指纹，为向后兼容放行但打印告警。
+    expected_fingerprint: Option<String>,
+    ssh_addr: String,
 }
 
 #[async_trait]
@@ -198,10 +218,37 @@ impl client::Handler for TunnelHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        // portr default: InsecureSkipHostKeyVerification = true
-        Ok(true)
+        let actual = format!("SHA256:{}", server_public_key.fingerprint());
+        match &self.expected_fingerprint {
+            Some(expected) => {
+                if constant_time_eq(expected.as_bytes(), actual.as_bytes()) {
+                    log::info!(
+                        "[Tunnel] SSH host key 校验通过 (addr={}, fp={})",
+                        self.ssh_addr,
+                        actual
+                    );
+                    Ok(true)
+                } else {
+                    log::error!(
+                        "[Tunnel] SSH host key 不匹配！可能存在中间人攻击 (addr={}, expected={}, actual={})",
+                        self.ssh_addr,
+                        expected,
+                        actual
+                    );
+                    Ok(false)
+                }
+            }
+            None => {
+                log::warn!(
+                    "[Tunnel] portr-rs 未返回 ssh_host_fingerprint，跳过 host key 校验 (addr={}, actual={})。请升级服务端以启用校验。",
+                    self.ssh_addr,
+                    actual
+                );
+                Ok(true)
+            }
+        }
     }
 
     async fn server_channel_open_forwarded_tcpip(

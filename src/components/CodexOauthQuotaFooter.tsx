@@ -1,10 +1,13 @@
 import React from "react";
 import type { ProviderMeta } from "@/types";
 import { useCodexOauthQuota } from "@/lib/query/subscription";
+import type { AppId } from "@/lib/api";
 import { SubscriptionQuotaView } from "@/components/SubscriptionQuotaFooter";
 
 interface CodexOauthQuotaFooterProps {
   meta?: ProviderMeta;
+  appId?: AppId;
+  providerId?: string;
   inline?: boolean;
   /** 是否为当前激活的供应商 */
   isCurrent?: boolean;
@@ -19,19 +22,21 @@ interface CodexOauthQuotaFooterProps {
 const CodexOauthQuotaFooter: React.FC<CodexOauthQuotaFooterProps> = ({
   meta,
   inline = false,
-  isCurrent = false,
 }) => {
   const {
     data: quota,
     isFetching: loading,
     refetch,
-  } = useCodexOauthQuota(meta, { enabled: true, autoQuery: isCurrent });
+  } = useCodexOauthQuota(meta, { enabled: true });
+  const handleRefresh = React.useCallback(async () => {
+    await refetch();
+  }, [refetch]);
 
   return (
     <SubscriptionQuotaView
       quota={quota}
       loading={loading}
-      refetch={refetch}
+      refetch={handleRefresh}
       appIdForExpiredHint="codex_oauth"
       inline={inline}
     />

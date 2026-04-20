@@ -267,7 +267,12 @@ pub async fn is_live_takeover_active(state: tauri::State<'_, AppState>) -> Resul
 /// 代理模式下切换供应商（热切换）
 #[tauri::command]
 pub async fn switch_proxy_provider(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    oauth_quota_state: tauri::State<'_, crate::commands::OauthQuotaState>,
+    codex_state: tauri::State<'_, crate::commands::CodexOAuthState>,
+    claude_state: tauri::State<'_, crate::commands::ClaudeOAuthState>,
+    copilot_state: tauri::State<'_, crate::commands::CopilotAuthState>,
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
@@ -287,7 +292,18 @@ pub async fn switch_proxy_provider(
     state
         .proxy_service
         .switch_proxy_target(&app_type, &provider_id)
-        .await
+        .await?;
+
+    let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
+        &codex_state,
+        &claude_state,
+        &copilot_state,
+    );
+    oauth_quota_state
+        .0
+        .refresh_selected_targets(Some(&app), &state.db, &managers, "switch")
+        .await;
+    Ok(())
 }
 
 // ==================== 故障转移相关命令 ====================

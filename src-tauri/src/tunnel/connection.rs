@@ -13,6 +13,11 @@ pub struct LeaseResponse {
     pub ssh_username: String,
     pub ssh_password: String,
     pub ssh_addr: String,
+    /// SSH host key 指纹（`SHA256:<base64-nopad>` 格式）。portr-rs ≥ 当前版本会在
+    /// /v1/tunnels/lease 响应里返回，客户端据此校验 SSH 服务端身份，防止中间人。
+    /// 老服务端没有这个字段时为 None；此时退化为 "跳过校验 + 日志告警"。
+    #[serde(default)]
+    pub ssh_host_fingerprint: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -179,11 +184,24 @@ async fn claim_share_subdomain_inner(
 ) -> Result<(), TunnelError> {
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
     let identity = identity::ensure_identity(client, config).await?;
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let signature = identity::sign_action_payload(
+        &identity,
+        &identity.installation_id,
+        "share_claim_subdomain",
+        share_metadata,
+        timestamp_ms,
+        &nonce,
+    )?;
     let resp = send_portr_request(
         client
             .post(&url)
             .json(&serde_json::json!({
                 "installationId": identity.installation_id,
+                "timestampMs": timestamp_ms,
+                "nonce": nonce,
+                "signature": signature,
                 "share": share_metadata,
             }))
             .timeout(std::time::Duration::from_secs(PORTR_REQUEST_TIMEOUT_SECS)),

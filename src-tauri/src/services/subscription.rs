@@ -45,6 +45,83 @@ pub struct ExtraUsage {
     pub currency: Option<String>,
 }
 
+/// 额度查询失败的结构化分类
+///
+/// 用于前端区分"真正过期 vs 临时限流 vs 网络错误"，从而决定是重试 / 退避 / 登录引导。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QuotaFailure {
+    /// HTTP 401/403：凭据真的失效，需要重新登录
+    Unauthorized,
+    /// HTTP 429：被上游限流，`retry_after_ms` 可能来自 Retry-After 头
+    RateLimited { retry_after_ms: i64 },
+    /// HTTP 5xx 或其它非 2xx：上游暂时性问题
+    Upstream { status: u16 },
+    /// 网络层错误：timeout / connect / DNS
+    Network { detail: String },
+    /// 响应体解析失败
+    Parse,
+}
+
+impl QuotaFailure {
+    fn from_reqwest(err: &reqwest::Error) -> Self {
+        let kind = if err.is_timeout() {
+            "timeout"
+        } else if err.is_connect() {
+            "connect"
+        } else if err.is_decode() {
+            "decode"
+        } else {
+            "other"
+        };
+        QuotaFailure::Network {
+            detail: kind.to_string(),
+        }
+    }
+}
+
+/// 解析 HTTP `Retry-After` 头，支持两种格式：
+/// - 秒整数（例如 `120`）
+/// - HTTP-date（例如 `Fri, 31 Dec 2026 23:59:59 GMT`）
+///
+/// 返回距离现在的毫秒数，若格式不识别返回 None。
+fn parse_retry_after_ms(value: &str) -> Option<i64> {
+    let trimmed = value.trim();
+    if let Ok(secs) = trimmed.parse::<i64>() {
+        if secs >= 0 {
+            return Some(secs.saturating_mul(1000));
+        }
+    }
+    if let Ok(date) = chrono::DateTime::parse_from_rfc2822(trimmed) {
+        let now = chrono::Utc::now();
+        let diff = date.with_timezone(&chrono::Utc) - now;
+        let ms = diff.num_milliseconds();
+        if ms > 0 {
+            return Some(ms);
+        }
+        return Some(0);
+    }
+    None
+}
+
+fn classify_http_failure(status: reqwest::StatusCode, retry_after: Option<&str>) -> QuotaFailure {
+    match status.as_u16() {
+        401 | 403 => QuotaFailure::Unauthorized,
+        429 => QuotaFailure::RateLimited {
+            retry_after_ms: retry_after.and_then(parse_retry_after_ms).unwrap_or(60_000),
+        },
+        s if (500..600).contains(&s) => QuotaFailure::Upstream { status: s },
+        s => QuotaFailure::Upstream { status: s },
+    }
+}
+
+fn credential_status_for_failure(failure: &QuotaFailure) -> CredentialStatus {
+    match failure {
+        QuotaFailure::Unauthorized => CredentialStatus::Expired,
+        _ => CredentialStatus::Valid,
+    }
+}
+
 /// 订阅额度查询结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +134,9 @@ pub struct SubscriptionQuota {
     pub extra_usage: Option<ExtraUsage>,
     pub error: Option<String>,
     pub queried_at: Option<i64>,
+    /// 结构化失败分类；`success == true` 时为 None
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure: Option<QuotaFailure>,
 }
 
 impl SubscriptionQuota {
@@ -70,6 +150,7 @@ impl SubscriptionQuota {
             extra_usage: None,
             error: None,
             queried_at: None,
+            failure: None,
         }
     }
 
@@ -83,6 +164,22 @@ impl SubscriptionQuota {
             extra_usage: None,
             error: Some(message),
             queried_at: Some(now_millis()),
+            failure: None,
+        }
+    }
+
+    pub(crate) fn failure(tool: &str, failure: QuotaFailure, message: String) -> Self {
+        let status = credential_status_for_failure(&failure);
+        Self {
+            tool: tool.to_string(),
+            credential_status: status,
+            credential_message: Some(message.clone()),
+            success: false,
+            tiers: vec![],
+            extra_usage: None,
+            error: Some(message),
+            queried_at: Some(now_millis()),
+            failure: Some(failure),
         }
     }
 }
@@ -327,6 +424,9 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
         .header("Authorization", format!("Bearer {access_token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("Accept", "application/json")
+        .header("accept-language", "*")
+        .header("user-agent", "claude-cli/2.1.2 (external, cli)")
+        .header("x-app", "cli")
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await;
@@ -334,9 +434,9 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
     let resp = match resp {
         Ok(r) => r,
         Err(e) => {
-            return SubscriptionQuota::error(
+            return SubscriptionQuota::failure(
                 "claude",
-                CredentialStatus::Valid,
+                QuotaFailure::from_reqwest(&e),
                 format!("Network error: {e}"),
             );
         }
@@ -344,29 +444,36 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
 
     let status = resp.status();
 
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return SubscriptionQuota::error(
-            "claude",
-            CredentialStatus::Expired,
-            format!("Authentication failed (HTTP {status}). Please re-login with Claude CLI."),
-        );
-    }
-
     if !status.is_success() {
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let failure = classify_http_failure(status, retry_after.as_deref());
         let body = resp.text().await.unwrap_or_default();
-        return SubscriptionQuota::error(
-            "claude",
-            CredentialStatus::Valid,
-            format!("API error (HTTP {status}): {body}"),
-        );
+        let message = match &failure {
+            QuotaFailure::Unauthorized => {
+                format!("Authentication failed (HTTP {status}). Please re-login with Claude CLI.")
+            }
+            QuotaFailure::RateLimited { retry_after_ms } => format!(
+                "Rate limited by Anthropic (HTTP {status}, retry after {}s)",
+                retry_after_ms / 1000
+            ),
+            _ => format!(
+                "API error (HTTP {status}): {}",
+                truncate_for_log(&body, 200)
+            ),
+        };
+        return SubscriptionQuota::failure("claude", failure, message);
     }
 
     let body: serde_json::Value = match resp.json().await {
         Ok(v) => v,
         Err(e) => {
-            return SubscriptionQuota::error(
+            return SubscriptionQuota::failure(
                 "claude",
-                CredentialStatus::Valid,
+                QuotaFailure::Parse,
                 format!("Failed to parse API response: {e}"),
             );
         }
@@ -428,6 +535,7 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
         extra_usage,
         error: None,
         queried_at: Some(now_millis()),
+        failure: None,
     }
 }
 
@@ -666,9 +774,9 @@ pub(crate) async fn query_codex_quota(
     let resp = match req.timeout(std::time::Duration::from_secs(10)).send().await {
         Ok(r) => r,
         Err(e) => {
-            return SubscriptionQuota::error(
+            return SubscriptionQuota::failure(
                 tool_label,
-                CredentialStatus::Valid,
+                QuotaFailure::from_reqwest(&e),
                 format!("Network error: {e}"),
             );
         }
@@ -676,29 +784,34 @@ pub(crate) async fn query_codex_quota(
 
     let status = resp.status();
 
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return SubscriptionQuota::error(
-            tool_label,
-            CredentialStatus::Expired,
-            format!("{expired_message} (HTTP {status})"),
-        );
-    }
-
     if !status.is_success() {
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let failure = classify_http_failure(status, retry_after.as_deref());
         let body = resp.text().await.unwrap_or_default();
-        return SubscriptionQuota::error(
-            tool_label,
-            CredentialStatus::Valid,
-            format!("API error (HTTP {status}): {body}"),
-        );
+        let message = match &failure {
+            QuotaFailure::Unauthorized => format!("{expired_message} (HTTP {status})"),
+            QuotaFailure::RateLimited { retry_after_ms } => format!(
+                "Rate limited by Codex upstream (HTTP {status}, retry after {}s)",
+                retry_after_ms / 1000
+            ),
+            _ => format!(
+                "API error (HTTP {status}): {}",
+                truncate_for_log(&body, 200)
+            ),
+        };
+        return SubscriptionQuota::failure(tool_label, failure, message);
     }
 
     let body: CodexUsageResponse = match resp.json().await {
         Ok(v) => v,
         Err(e) => {
-            return SubscriptionQuota::error(
+            return SubscriptionQuota::failure(
                 tool_label,
-                CredentialStatus::Valid,
+                QuotaFailure::Parse,
                 format!("Failed to parse API response: {e}"),
             );
         }
@@ -733,6 +846,7 @@ pub(crate) async fn query_codex_quota(
         extra_usage: None,
         error: None,
         queried_at: Some(now_millis()),
+        failure: None,
     }
 }
 
@@ -1198,6 +1312,7 @@ async fn query_gemini_quota(access_token: &str) -> SubscriptionQuota {
         extra_usage: None,
         error: None,
         queried_at: Some(now_millis()),
+        failure: None,
     }
 }
 
@@ -1319,6 +1434,14 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
 }
 
 // ── 辅助函数 ──────────────────────────────────────────────
+
+fn truncate_for_log(body: &str, max_chars: usize) -> String {
+    if body.chars().count() <= max_chars {
+        return body.to_string();
+    }
+    let prefix: String = body.chars().take(max_chars).collect();
+    format!("{prefix}… (truncated)")
+}
 
 fn now_millis() -> i64 {
     SystemTime::now()

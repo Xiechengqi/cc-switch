@@ -34,12 +34,50 @@ impl TunnelConfig {
         let proto = if self.is_local() { "http" } else { "https" };
         format!("{proto}://{subdomain}.{}", self.domain)
     }
+
+    pub fn matches_tunnel_url(&self, url_or_host: &str) -> bool {
+        let Some(authority) = extract_authority(url_or_host) else {
+            return false;
+        };
+
+        authority == self.domain || authority.ends_with(&format!(".{}", self.domain))
+    }
 }
 
 impl Default for TunnelConfig {
     fn default() -> Self {
         Self::default_public_service()
     }
+}
+
+pub fn current_tunnel_config() -> Option<TunnelConfig> {
+    crate::settings::get_settings()
+        .portr_domain
+        .map(|domain| TunnelConfig { domain })
+}
+
+pub fn is_share_tunnel_url(url_or_host: &str) -> bool {
+    current_tunnel_config()
+        .map(|config| config.matches_tunnel_url(url_or_host))
+        .unwrap_or(false)
+}
+
+fn extract_authority(url_or_host: &str) -> Option<String> {
+    let trimmed = url_or_host.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return reqwest::Url::parse(trimmed).ok().and_then(|url| {
+            url.host_str().map(|host| match url.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host.to_string(),
+            })
+        });
+    }
+
+    Some(trimmed.split('/').next()?.to_string())
 }
 
 /// Request to start a new tunnel
@@ -87,6 +125,38 @@ pub struct ShareSupport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ShareUpstreamQuotaTier {
+    pub label: String,
+    pub utilization: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareUpstreamQuota {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queried_at: Option<i64>,
+    #[serde(default)]
+    pub tiers: Vec<ShareUpstreamQuotaTier>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareUpstreamProvider {
+    pub kind: String,
+    pub app: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<ShareUpstreamQuota>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ShareTunnelMetadata {
     pub share_id: String,
     pub share_name: String,
@@ -105,6 +175,8 @@ pub struct ShareTunnelMetadata {
     pub expires_at: String,
     #[serde(default)]
     pub support: ShareSupport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_provider: Option<ShareUpstreamProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,4 +202,20 @@ pub struct ShareTunnelRequestLog {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub created_at: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_share_subdomain() {
+        let config = TunnelConfig {
+            domain: "share.example.com".to_string(),
+        };
+
+        assert!(config.matches_tunnel_url("https://alpha.share.example.com/v1"));
+        assert!(config.matches_tunnel_url("alpha.share.example.com"));
+        assert!(!config.matches_tunnel_url("https://api.openai.com/v1"));
+    }
 }

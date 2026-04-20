@@ -49,6 +49,11 @@ pub struct RequestContext {
     pub current_provider_id: String,
     /// 请求中的模型名称
     pub request_model: String,
+    /// 请求体是否明确要求流式响应。
+    ///
+    /// 部分官方/反代端点会返回 SSE 文本但遗漏 `content-type:
+    /// text/event-stream`，因此响应处理不能只依赖响应头判断流式。
+    pub request_is_streaming: bool,
     /// 日志标签（如 "Claude"、"Codex"、"Gemini"）
     pub tag: &'static str,
     /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
@@ -114,6 +119,10 @@ impl RequestContext {
             .and_then(|m| m.as_str())
             .unwrap_or("unknown")
             .to_string();
+        let request_is_streaming = body
+            .get("stream")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
 
         // 提取 Session ID
         let session_result = extract_session_id(headers, body, app_type_str);
@@ -162,6 +171,7 @@ impl RequestContext {
             providers,
             current_provider_id,
             request_model,
+            request_is_streaming,
             tag,
             app_type_str,
             app_type,

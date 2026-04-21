@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-04-21
+
+- **上游分支：** `main`
+- **上游 HEAD：** `c5b15dd2`
+- **共同祖先：** `1126c745`
+- **合并提交数：** 9
+- **主要变更：**
+  - feat(copilot): 新增 GitHub Enterprise Server 支持 (#2175) — `GitHubAccount` 增加 `github_domain` 字段，`useCopilotAuth` 支持传入 domain
+  - feat(ui): 模型映射字段新增快速设置按钮 (#2179)
+  - fix(skills): 导入 skills 后同步到应用目录 (#2101)
+  - Add OpenClaw config directory settings (#1518)
+  - Fix Ghostty session restore launch path (#1976)
+  - fix(tray): 使用应用专属 tray id (#1978)
+  - Add StepFun and StepFun en Step Plan presets (#2155)
+  - fix: Codex/Claude/Gemini 公共配置复选框状态持久化 (#2191)
+  - fix(claude-plugin): 当前 provider 配置同步到 settings.json (#1905)
+- **冲突解决：**
+  - `src/components/providers/forms/CopilotAuthSection.tsx` — 合并上游 GitHub Enterprise 部署选择器与 `github_domain` 徽章，保留本仓 `showLoggedInAccounts` prop 以及位置前置的已登录账号列表；`useCopilotAuth(effectiveGithubDomain)` 保留本仓解构的 `removeAccount` / `setDefaultAccount`
+  - `src-tauri/src/proxy/providers/claude_oauth_auth.rs` — `GitHubAccount` 结构体新增 `github_domain` 字段导致本仓的 Claude OAuth 账号 `From<&ClaudeAccountData>` 初始化缺字段，补齐为默认值 `"github.com"`
+- **其余冲突：** Git 三方合并自动处理（`src-tauri/src/commands/auth.rs`、`lib.rs`、`proxy/providers/codex_oauth_auth.rs`、`proxy/providers/copilot_auth.rs`、`tray.rs`、`src/components/providers/forms/ClaudeFormFields.tsx`、`src/i18n/locales/{en,ja,zh}.json`、`src/lib/api/auth.ts`、`src/lib/schemas/settings.ts` 等 31 个文件）
+- **验证：** `pnpm typecheck`、`pnpm test:unit`（247 通过）、`cargo check`、`cargo test --lib copilot_auth`（20 通过）
+
+---
+
 ## 2026-04-18
 
 - **上游分支：** `main`

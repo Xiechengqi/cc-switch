@@ -1,7 +1,7 @@
 use super::config::TunnelConfig;
 use super::error::TunnelError;
 use base64::Engine;
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -39,8 +39,13 @@ pub async fn ensure_identity(
     client: &reqwest::Client,
     config: &TunnelConfig,
 ) -> Result<TunnelIdentity, TunnelError> {
-    if let Some(identity) = load_identity()? {
-        return Ok(identity);
+    match load_identity() {
+        Ok(Some(identity)) => return Ok(identity),
+        Ok(None) => {}
+        Err(err) => {
+            log::warn!("[TunnelIdentity] invalid stored identity, resetting: {err}");
+            reset_identity()?;
+        }
     }
 
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -129,6 +134,10 @@ pub fn sign_action_payload<T: Serialize>(
     Ok(base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()))
 }
 
+pub fn should_reset_identity_for_api_error(message: &str) -> bool {
+    message.contains("installation not found") || message.contains("signature verification failed")
+}
+
 fn load_identity() -> Result<Option<TunnelIdentity>, TunnelError> {
     let path = identity_path()?;
     if !path.exists() {
@@ -139,16 +148,47 @@ fn load_identity() -> Result<Option<TunnelIdentity>, TunnelError> {
     let stored: StoredIdentity = serde_json::from_str(&raw)
         .map_err(|e| TunnelError::Other(format!("parse tunnel identity failed: {e}")))?;
     let private_bytes = base64::engine::general_purpose::STANDARD
-        .decode(stored.private_key_base64)
+        .decode(&stored.private_key_base64)
         .map_err(|e| TunnelError::Other(format!("decode tunnel private key failed: {e}")))?;
     let private_array: [u8; 32] = private_bytes
         .try_into()
         .map_err(|_| TunnelError::Other("invalid tunnel private key length".into()))?;
     let signing_key = SigningKey::from_bytes(&private_array);
+    validate_stored_identity(&stored, &signing_key)?;
     Ok(Some(TunnelIdentity {
         installation_id: stored.installation_id,
         signing_key,
     }))
+}
+
+fn validate_stored_identity(
+    stored: &StoredIdentity,
+    signing_key: &SigningKey,
+) -> Result<(), TunnelError> {
+    let derived_public_key_base64 = base64::engine::general_purpose::STANDARD
+        .encode(signing_key.verifying_key().to_bytes());
+    if stored.public_key_base64 != derived_public_key_base64 {
+        return Err(TunnelError::Other(
+            "stored tunnel identity is inconsistent: public key does not match private key".into(),
+        ));
+    }
+
+    let public_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&stored.public_key_base64)
+        .map_err(|e| TunnelError::Other(format!("decode tunnel public key failed: {e}")))?;
+    let public_array: [u8; 32] = public_bytes
+        .try_into()
+        .map_err(|_| TunnelError::Other("invalid tunnel public key length".into()))?;
+    VerifyingKey::from_bytes(&public_array)
+        .map_err(|e| TunnelError::Other(format!("parse tunnel public key failed: {e}")))?;
+
+    if stored.installation_id.trim().is_empty() {
+        return Err(TunnelError::Other(
+            "stored tunnel identity is inconsistent: installation id is empty".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn save_identity(stored: &StoredIdentity) -> Result<(), TunnelError> {
@@ -207,5 +247,50 @@ fn create_identity_file(path: &std::path::Path) -> Result<std::fs::File, TunnelE
             .write(true)
             .open(path)
             .map_err(|e| TunnelError::Other(format!("open tunnel identity file failed: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_stored_identity(signing_key: &SigningKey) -> StoredIdentity {
+        StoredIdentity {
+            installation_id: "installation-1".to_string(),
+            private_key_base64: base64::engine::general_purpose::STANDARD
+                .encode(signing_key.to_bytes()),
+            public_key_base64: base64::engine::general_purpose::STANDARD
+                .encode(signing_key.verifying_key().to_bytes()),
+        }
+    }
+
+    #[test]
+    fn validates_consistent_stored_identity() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let stored = sample_stored_identity(&signing_key);
+        assert!(validate_stored_identity(&stored, &signing_key).is_ok());
+    }
+
+    #[test]
+    fn rejects_mismatched_public_key() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let other_key = SigningKey::generate(&mut OsRng);
+        let mut stored = sample_stored_identity(&signing_key);
+        stored.public_key_base64 = base64::engine::general_purpose::STANDARD
+            .encode(other_key.verifying_key().to_bytes());
+
+        let err = validate_stored_identity(&stored, &signing_key).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("public key does not match private key"));
+    }
+
+    #[test]
+    fn resets_identity_for_signature_or_installation_errors() {
+        assert!(should_reset_identity_for_api_error("installation not found"));
+        assert!(should_reset_identity_for_api_error(
+            "claim subdomain failed: signature verification failed"
+        ));
+        assert!(!should_reset_identity_for_api_error("share subdomain is not claimed"));
     }
 }

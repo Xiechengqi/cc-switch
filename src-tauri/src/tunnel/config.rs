@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+const KNOWN_PUBLIC_SHARE_ROUTER_DOMAINS: &[&str] = &["jptokenswitch.cc", "sgptokenswitch.cc"];
+
 /// Portr server configuration — stored in AppSettings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,9 +59,31 @@ pub fn current_tunnel_config() -> Option<TunnelConfig> {
 }
 
 pub fn is_share_tunnel_url(url_or_host: &str) -> bool {
-    current_tunnel_config()
-        .map(|config| config.matches_tunnel_url(url_or_host))
-        .unwrap_or(false)
+    let Some(authority) = extract_authority(url_or_host) else {
+        return false;
+    };
+
+    share_router_domains().into_iter().any(|domain| {
+        authority == domain || authority.ends_with(&format!(".{domain}"))
+    })
+}
+
+fn share_router_domains() -> Vec<String> {
+    let mut domains = KNOWN_PUBLIC_SHARE_ROUTER_DOMAINS
+        .iter()
+        .map(|domain| domain.to_string())
+        .collect::<Vec<_>>();
+
+    if let Some(config) = current_tunnel_config() {
+        let Some(configured) = extract_authority(&config.domain) else {
+            return domains;
+        };
+        if !configured.is_empty() && !domains.iter().any(|domain| domain == &configured) {
+            domains.push(configured);
+        }
+    }
+
+    domains
 }
 
 fn extract_authority(url_or_host: &str) -> Option<String> {
@@ -68,16 +92,20 @@ fn extract_authority(url_or_host: &str) -> Option<String> {
         return None;
     }
 
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return reqwest::Url::parse(trimmed).ok().and_then(|url| {
-            url.host_str().map(|host| match url.port() {
-                Some(port) => format!("{host}:{port}"),
-                None => host.to_string(),
+    let lower_trimmed = trimmed.to_ascii_lowercase();
+    if lower_trimmed.starts_with("http://") || lower_trimmed.starts_with("https://") {
+        return reqwest::Url::parse(trimmed)
+            .ok()
+            .and_then(|url| {
+                url.host_str().map(|host| match url.port() {
+                    Some(port) => format!("{host}:{port}"),
+                    None => host.to_string(),
+                })
             })
-        });
+            .map(|authority| authority.to_ascii_lowercase());
     }
 
-    Some(trimmed.split('/').next()?.to_string())
+    Some(trimmed.split('/').next()?.to_ascii_lowercase())
 }
 
 /// Request to start a new tunnel
@@ -166,6 +194,7 @@ pub struct ShareTunnelMetadata {
     pub subdomain: String,
     pub share_token: String,
     pub app_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
     pub token_limit: i64,
     pub tokens_used: i64,
@@ -207,6 +236,7 @@ pub struct ShareTunnelRequestLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn matches_share_subdomain() {
@@ -217,5 +247,70 @@ mod tests {
         assert!(config.matches_tunnel_url("https://alpha.share.example.com/v1"));
         assert!(config.matches_tunnel_url("alpha.share.example.com"));
         assert!(!config.matches_tunnel_url("https://api.openai.com/v1"));
+    }
+
+    #[test]
+    fn detects_known_public_share_router_domains() {
+        assert!(is_share_tunnel_url("https://alpha.jptokenswitch.cc/v1"));
+        assert!(is_share_tunnel_url("beta.sgptokenswitch.cc"));
+        assert!(!is_share_tunnel_url("https://jptokenswitch.com/v1"));
+        assert!(!is_share_tunnel_url("https://api.openai.com/v1"));
+    }
+
+    #[test]
+    fn detects_configured_share_router_domain_with_scheme_and_case() {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.portr_domain = Some("HTTPS://Share.Example.Com/".to_string());
+        crate::settings::update_settings(settings).unwrap();
+
+        assert!(is_share_tunnel_url("https://alpha.share.example.com/v1"));
+        assert!(is_share_tunnel_url("ALPHA.SHARE.EXAMPLE.COM"));
+        assert!(!is_share_tunnel_url("https://alpha.other-example.com/v1"));
+    }
+
+    #[test]
+    fn omits_null_provider_id_when_serializing_share_metadata() {
+        let metadata = ShareTunnelMetadata {
+            share_id: "share-1".to_string(),
+            share_name: "Test".to_string(),
+            description: None,
+            for_sale: "No".to_string(),
+            subdomain: "demo".to_string(),
+            share_token: "token".to_string(),
+            app_type: "codex".to_string(),
+            provider_id: None,
+            token_limit: 100,
+            tokens_used: 0,
+            requests_count: 0,
+            share_status: "active".to_string(),
+            created_at: "2026-04-21T00:00:00Z".to_string(),
+            expires_at: "2026-04-22T00:00:00Z".to_string(),
+            support: ShareSupport::default(),
+            upstream_provider: None,
+        };
+
+        let value = serde_json::to_value(&metadata).expect("serialize share metadata");
+        assert_eq!(
+            value,
+            json!({
+                "shareId": "share-1",
+                "shareName": "Test",
+                "forSale": "No",
+                "subdomain": "demo",
+                "shareToken": "token",
+                "appType": "codex",
+                "tokenLimit": 100,
+                "tokensUsed": 0,
+                "requestsCount": 0,
+                "shareStatus": "active",
+                "createdAt": "2026-04-21T00:00:00Z",
+                "expiresAt": "2026-04-22T00:00:00Z",
+                "support": {
+                    "claude": false,
+                    "codex": false,
+                    "gemini": false
+                }
+            })
+        );
     }
 }

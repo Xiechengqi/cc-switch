@@ -1176,6 +1176,8 @@ impl RequestForwarder {
                 Vec::new()
             };
 
+            maybe_add_share_auth_header(&mut auth_headers, &base_url);
+
             // 注入 Codex OAuth 的 ChatGPT-Account-Id header（如果有 account_id）
             if let Some(ref account_id) = codex_oauth_account_id {
                 if let Ok(hv) = http::HeaderValue::from_str(account_id) {
@@ -2016,6 +2018,36 @@ fn normalize_codex_oauth_responses_body(mut body: Value) -> Value {
     body
 }
 
+fn maybe_add_share_auth_header(
+    auth_headers: &mut Vec<(http::HeaderName, http::HeaderValue)>,
+    base_url: &str,
+) {
+    if !crate::tunnel::config::is_share_tunnel_url(base_url) {
+        return;
+    }
+
+    let already_has_share_header = auth_headers
+        .iter()
+        .any(|(name, _)| name.as_str().eq_ignore_ascii_case("x-api-key"));
+    if already_has_share_header {
+        return;
+    }
+
+    let bearer_value = auth_headers
+        .iter()
+        .find(|(name, _)| name.as_str().eq_ignore_ascii_case("authorization"))
+        .and_then(|(_, value)| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if let Some(token) = bearer_value {
+        if let Ok(header_value) = http::HeaderValue::from_str(token) {
+            auth_headers.push((http::HeaderName::from_static("x-api-key"), header_value));
+        }
+    }
+}
+
 fn should_force_identity_encoding(
     endpoint: &str,
     body: &Value,
@@ -2059,6 +2091,16 @@ mod tests {
     use axum::http::header::{HeaderValue, ACCEPT};
     use axum::http::HeaderMap;
     use serde_json::json;
+
+    fn find_header_value<'a>(
+        headers: &'a [(http::HeaderName, http::HeaderValue)],
+        name: &str,
+    ) -> Option<&'a str> {
+        headers
+            .iter()
+            .find(|(header_name, _)| header_name.as_str().eq_ignore_ascii_case(name))
+            .and_then(|(_, value)| value.to_str().ok())
+    }
 
     #[test]
     fn single_provider_retryable_log_uses_single_provider_code() {
@@ -2365,6 +2407,47 @@ mod tests {
         assert!(normalized.get("max_output_tokens").is_none());
         assert!(normalized.get("temperature").is_none());
         assert!(normalized.get("top_p").is_none());
+    }
+
+    #[test]
+    fn share_urls_copy_bearer_token_into_x_api_key() {
+        let mut auth_headers = vec![(
+            http::HeaderName::from_static("authorization"),
+            HeaderValue::from_static("Bearer share-token-123"),
+        )];
+
+        maybe_add_share_auth_header(&mut auth_headers, "https://alpha.jptokenswitch.cc/v1");
+
+        assert_eq!(
+            find_header_value(&auth_headers, "authorization"),
+            Some("Bearer share-token-123")
+        );
+        assert_eq!(
+            find_header_value(&auth_headers, "x-api-key"),
+            Some("share-token-123")
+        );
+    }
+
+    #[test]
+    fn share_urls_do_not_duplicate_existing_x_api_key() {
+        let mut auth_headers = vec![
+            (
+                http::HeaderName::from_static("authorization"),
+                HeaderValue::from_static("Bearer share-token-123"),
+            ),
+            (
+                http::HeaderName::from_static("x-api-key"),
+                HeaderValue::from_static("share-token-123"),
+            ),
+        ];
+
+        maybe_add_share_auth_header(&mut auth_headers, "https://alpha.jptokenswitch.cc/v1");
+
+        let x_api_key_count = auth_headers
+            .iter()
+            .filter(|(name, _)| name.as_str().eq_ignore_ascii_case("x-api-key"))
+            .count();
+        assert_eq!(x_api_key_count, 1);
     }
 
     #[test]

@@ -25,6 +25,13 @@ struct ErrorResponse {
     message: String,
 }
 
+async fn read_error_message(resp: reqwest::Response) -> String {
+    let status = resp.status();
+    let body: Result<ErrorResponse, _> = resp.json().await;
+    body.map(|b| b.message)
+        .unwrap_or_else(|_| format!("HTTP {status}"))
+}
+
 fn describe_portr_send_error(operation: &str, url: &str, err: reqwest::Error) -> String {
     if err.is_timeout() {
         return format!(
@@ -122,16 +129,13 @@ async fn issue_lease_inner(
             .map_err(|e| TunnelError::Api(format!("parse response: {e}")));
     }
 
-    let status = resp.status();
-    let body: Result<ErrorResponse, _> = resp.json().await;
-    let msg = body
-        .map(|b| b.message)
-        .unwrap_or_else(|_| format!("HTTP {status}"));
+    let msg = read_error_message(resp).await;
 
-    if allow_identity_reset_retry && msg.contains("installation not found") {
+    if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&msg) {
         log::warn!(
-            "[Tunnel] portr-rs no longer recognizes installation {}, re-registering identity",
-            identity.installation_id
+            "[Tunnel] lease request rejected for installation {}, resetting identity and retrying once: {}",
+            identity.installation_id,
+            msg
         );
         identity::reset_identity()?;
         if let Some(ref share) = share_metadata {
@@ -214,25 +218,13 @@ async fn claim_share_subdomain_inner(
         return Ok(());
     }
 
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .unwrap_or_else(|_| format!("HTTP {status}"));
-    let message = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("message")
-                .and_then(|msg| msg.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or(text);
+    let message = read_error_message(resp).await;
 
-    if allow_identity_reset_retry && message.contains("installation not found") {
+    if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
         log::warn!(
-            "[Tunnel] portr-rs no longer recognizes installation {}, re-registering identity before subdomain claim",
-            identity.installation_id
+            "[Tunnel] share subdomain claim rejected for installation {}, resetting identity and retrying once: {}",
+            identity.installation_id,
+            message
         );
         identity::reset_identity()?;
         return Box::pin(claim_share_subdomain_inner(

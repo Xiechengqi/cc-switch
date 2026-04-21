@@ -623,6 +623,7 @@ impl StreamCheckService {
         // 获取本地系统信息
         let os_name = Self::get_os_name();
         let arch_name = Self::get_arch_name();
+        let is_codex_oauth = auth.strategy == AuthStrategy::CodexOAuth;
 
         // Responses API 请求体格式 (input 必须是数组)
         let mut body = json!({
@@ -655,9 +656,9 @@ impl StreamCheckService {
                 .header("accept-encoding", "identity")
                 .header(
                     "user-agent",
-                    format!("codex_cli_rs/0.80.0 ({os_name} 15.7.2; {arch_name}) Terminal"),
+                    Self::codex_stream_user_agent(is_codex_oauth, &os_name, &arch_name),
                 )
-                .header("originator", "codex_cli_rs")
+                .header("originator", Self::codex_stream_originator(is_codex_oauth))
                 .timeout(timeout);
 
             if let Some(account_id) = codex_oauth_account_id {
@@ -1293,6 +1294,22 @@ impl StreamCheckService {
         (model.to_string(), None)
     }
 
+    fn codex_stream_originator(is_codex_oauth: bool) -> &'static str {
+        if is_codex_oauth {
+            "cc-switch"
+        } else {
+            "codex_cli_rs"
+        }
+    }
+
+    fn codex_stream_user_agent(is_codex_oauth: bool, os_name: &str, arch_name: &str) -> String {
+        if is_codex_oauth {
+            format!("cc-switch/{} ({os_name}; {arch_name})", env!("CARGO_PKG_VERSION"))
+        } else {
+            format!("codex_cli_rs/0.80.0 ({os_name} 15.7.2; {arch_name}) Terminal")
+        }
+    }
+
     fn should_retry(msg: &str) -> bool {
         let lower = msg.to_lowercase();
         lower.contains("timeout") || lower.contains("abort") || lower.contains("timed out")
@@ -1495,6 +1512,8 @@ impl StreamCheckService {
 
         if base.ends_with("/v1") {
             vec![format!("{base}/responses")]
+        } else if base.contains("/backend-api/codex") {
+            vec![format!("{base}/responses"), format!("{base}/v1/responses")]
         } else {
             vec![format!("{base}/v1/responses"), format!("{base}/responses")]
         }
@@ -1709,6 +1728,25 @@ mod tests {
         let (model, effort) = StreamCheckService::parse_model_with_effort("gpt-4o-mini");
         assert_eq!(model, "gpt-4o-mini");
         assert_eq!(effort, None);
+    }
+
+    #[test]
+    fn test_codex_oauth_stream_identity_matches_forwarder() {
+        assert_eq!(StreamCheckService::codex_stream_originator(true), "cc-switch");
+        let ua = StreamCheckService::codex_stream_user_agent(true, "linux", "x86_64");
+        assert!(ua.starts_with("cc-switch/"));
+        assert!(ua.contains("(linux; x86_64)"));
+    }
+
+    #[test]
+    fn test_regular_codex_stream_identity_stays_cli_like() {
+        assert_eq!(
+            StreamCheckService::codex_stream_originator(false),
+            "codex_cli_rs"
+        );
+        let ua = StreamCheckService::codex_stream_user_agent(false, "macOS", "arm64");
+        assert!(ua.starts_with("codex_cli_rs/0.80.0"));
+        assert!(ua.contains("(macOS 15.7.2; arm64) Terminal"));
     }
 
     #[test]
@@ -1963,6 +2001,22 @@ mod tests {
             StreamCheckService::resolve_codex_stream_urls("https://api.openai.com/v1", false);
 
         assert_eq!(urls, vec!["https://api.openai.com/v1/responses"]);
+    }
+
+    #[test]
+    fn test_resolve_codex_stream_urls_for_chatgpt_codex_base_prefers_non_v1() {
+        let urls = StreamCheckService::resolve_codex_stream_urls(
+            "https://chatgpt.com/backend-api/codex",
+            false,
+        );
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://chatgpt.com/backend-api/codex/responses",
+                "https://chatgpt.com/backend-api/codex/v1/responses"
+            ]
+        );
     }
 
     #[test]

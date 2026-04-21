@@ -379,11 +379,13 @@ async fn claim_share_subdomain_inner(
     match handle_claim_response(resp, &identity.installation_id).await {
         Ok(()) => Ok(()),
         Err(message)
-            if allow_identity_reset_retry && message.contains("installation not found") =>
+            if allow_identity_reset_retry
+                && identity::should_reset_identity_for_api_error(&message) =>
         {
             log::warn!(
-                "[TunnelSync] portr-rs no longer recognizes installation {}, re-registering identity before subdomain claim",
-                identity.installation_id
+                "[TunnelSync] share subdomain claim rejected for installation {}, resetting identity and retrying once: {}",
+                identity.installation_id,
+                message
             );
             identity::reset_identity().map_err(|e| e.to_string())?;
             Box::pin(claim_share_subdomain_inner(share, db, false)).await
@@ -421,6 +423,23 @@ async fn handle_claim_response(
     ))
 }
 
+async fn read_error_message(resp: reqwest::Response) -> String {
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .unwrap_or_else(|_| format!("HTTP {status}"));
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(|msg| msg.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or(text)
+}
+
 pub fn schedule_delete_share(share_id: String) {
     tauri::async_runtime::spawn(async move {
         if let Err(err) = enqueue_op(ShareSyncOp::Delete { share_id }).await {
@@ -442,6 +461,15 @@ pub async fn sync_recent_share_request_logs(
     share_id: &str,
     limit: usize,
 ) -> Result<(), String> {
+    sync_recent_share_request_logs_inner(db, share_id, limit, true).await
+}
+
+async fn sync_recent_share_request_logs_inner(
+    db: &crate::database::Database,
+    share_id: &str,
+    limit: usize,
+    allow_identity_reset_retry: bool,
+) -> Result<(), String> {
     let logs = db
         .get_recent_share_request_logs(share_id, limit)
         .map_err(|e| e.to_string())?;
@@ -460,15 +488,32 @@ pub async fn sync_recent_share_request_logs(
     );
     let request_payload =
         build_signed_request_payload(&identity, "share_request_logs_batch_sync", "logs", &logs)?;
-    send_portr_request(
+    let resp = send_portr_request(
         client.post(&url).json(&request_payload),
         "sync share request logs",
         &url,
     )
-    .await?
-    .error_for_status()
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    .await?;
+
+    if resp.status().is_success() {
+        return Ok(());
+    }
+
+    let message = read_error_message(resp).await;
+    if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
+        log::warn!(
+            "[TunnelSync] share request log sync rejected for installation {}, resetting identity and retrying once: {}",
+            identity.installation_id,
+            message
+        );
+        identity::reset_identity().map_err(|e| e.to_string())?;
+        return Box::pin(sync_recent_share_request_logs_inner(db, share_id, limit, false)).await;
+    }
+
+    Err(format!(
+        "share request log sync request for installation {} failed: {}",
+        identity.installation_id, message
+    ))
 }
 
 async fn sync_share_metadata_now_inner(
@@ -493,25 +538,13 @@ async fn sync_share_metadata_now_inner(
         return Ok(());
     }
 
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .unwrap_or_else(|_| format!("HTTP {status}"));
-    let message = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("message")
-                .and_then(|msg| msg.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or(text);
+    let message = read_error_message(resp).await;
 
-    if allow_identity_reset_retry && message.contains("installation not found") {
+    if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
         log::warn!(
-            "[TunnelSync] portr-rs no longer recognizes installation {}, re-registering identity before direct share sync",
-            identity.installation_id
+            "[TunnelSync] direct share sync rejected for installation {}, resetting identity and retrying once: {}",
+            identity.installation_id,
+            message
         );
         identity::reset_identity().map_err(|e| e.to_string())?;
         return Box::pin(sync_share_metadata_now_inner(share, false)).await;
@@ -562,6 +595,10 @@ async fn enqueue_request_log(log: ShareTunnelRequestLog) -> Result<(), String> {
 }
 
 async fn flush_pending() -> Result<(), String> {
+    flush_pending_inner(true).await
+}
+
+async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), String> {
     let config = load_config();
     let client = portr_client()?;
     let identity = identity::ensure_identity(&client, &config)
@@ -587,7 +624,7 @@ async fn flush_pending() -> Result<(), String> {
 
     if !ops.is_empty() {
         let payload_ops = ops
-            .into_iter()
+            .iter()
             .map(|op| match op {
                 ShareSyncOp::Upsert(share) => serde_json::json!({
                     "kind": "upsert",
@@ -603,14 +640,42 @@ async fn flush_pending() -> Result<(), String> {
         let url = format!("{}/v1/shares/batch-sync", config.get_server_addr());
         let request_payload =
             build_signed_request_payload(&identity, "share_batch_sync", "ops", &payload_ops)?;
-        send_portr_request(
+        let resp = send_portr_request(
             client.post(&url).json(&request_payload),
             "batch sync shares",
             &url,
         )
-        .await?
-        .error_for_status()
-        .map_err(|e| e.to_string())?;
+        .await?;
+        if !resp.status().is_success() {
+            let message = read_error_message(resp).await;
+            if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message)
+            {
+                log::warn!(
+                    "[TunnelSync] batch share sync rejected for installation {}, resetting identity and retrying once: {}",
+                    identity.installation_id,
+                    message
+                );
+                identity::reset_identity().map_err(|e| e.to_string())?;
+                let state = global_state();
+                let mut guard = state.lock().await;
+                for op in ops {
+                    let key = match &op {
+                        ShareSyncOp::Upsert(share) => share.share_id.clone(),
+                        ShareSyncOp::Delete { share_id } => share_id.clone(),
+                    };
+                    guard.pending.insert(key, op);
+                }
+                for log in request_logs {
+                    guard.pending_request_logs.insert(log.request_id.clone(), log);
+                }
+                return Box::pin(flush_pending_inner(false)).await;
+            }
+
+            return Err(format!(
+                "batch share sync request for installation {} failed: {}",
+                identity.installation_id, message
+            ));
+        }
     }
 
     if !request_logs.is_empty() {
@@ -624,14 +689,35 @@ async fn flush_pending() -> Result<(), String> {
             "logs",
             &request_logs,
         )?;
-        send_portr_request(
+        let resp = send_portr_request(
             client.post(&url).json(&request_payload),
             "batch sync share request logs",
             &url,
         )
-        .await?
-        .error_for_status()
-        .map_err(|e| e.to_string())?;
+        .await?;
+        if !resp.status().is_success() {
+            let message = read_error_message(resp).await;
+            if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message)
+            {
+                log::warn!(
+                    "[TunnelSync] batch share request log sync rejected for installation {}, resetting identity and retrying once: {}",
+                    identity.installation_id,
+                    message
+                );
+                identity::reset_identity().map_err(|e| e.to_string())?;
+                let state = global_state();
+                let mut guard = state.lock().await;
+                for log in request_logs {
+                    guard.pending_request_logs.insert(log.request_id.clone(), log);
+                }
+                return Box::pin(flush_pending_inner(false)).await;
+            }
+
+            return Err(format!(
+                "batch share request log sync request for installation {} failed: {}",
+                identity.installation_id, message
+            ));
+        }
     }
     Ok(())
 }

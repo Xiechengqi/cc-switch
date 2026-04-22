@@ -46,7 +46,9 @@ export function ShareEmailLoginCard() {
             })}
           </p>
         </div>
-        <Badge variant={emailAuthStatus?.authenticated ? "default" : "secondary"}>
+        <Badge
+          variant={emailAuthStatus?.authenticated ? "default" : "secondary"}
+        >
           {emailAuthStatus?.authenticated
             ? t("common.connected", { defaultValue: "已连接" })
             : t("common.notConnected", { defaultValue: "未连接" })}
@@ -98,7 +100,9 @@ export function ShareEmailLoginCard() {
         <Button
           type="button"
           disabled={
-            !emailInput.trim() || !codeInput.trim() || verifyCodeMutation.isPending
+            !emailInput.trim() ||
+            !codeInput.trim() ||
+            verifyCodeMutation.isPending
           }
           onClick={() =>
             verifyCodeMutation.mutate({

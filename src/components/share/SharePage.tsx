@@ -111,8 +111,7 @@ export function SharePage(_props: SharePageProps) {
   const connectShare =
     shares.find((share) => share.id === connectShareId) ?? null;
   const primaryShare = shares[0] ?? null;
-  const shouldShowLoginOnly =
-    !primaryShare && !emailAuthStatus?.authenticated;
+  const shouldShowLoginOnly = !primaryShare && !emailAuthStatus?.authenticated;
 
   const handleCreate = async (
     params: Parameters<typeof createMutation.mutateAsync>[0],

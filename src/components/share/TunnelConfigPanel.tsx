@@ -4,7 +4,13 @@ import { RefreshCw, Save } from "lucide-react";
 import type { TunnelConfig } from "@/lib/api";
 import { tunnelConfigSchema } from "@/lib/schemas/share";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -34,7 +40,9 @@ export function TunnelConfigPanel({
   const handleSubmit = async () => {
     const result = tunnelConfigSchema.safeParse(draft);
     if (!result.success) {
-      setError(t(result.error.issues[0]?.message || "share.validation.required"));
+      setError(
+        t(result.error.issues[0]?.message || "share.validation.required"),
+      );
       return;
     }
 
@@ -85,7 +93,11 @@ export function TunnelConfigPanel({
             <RefreshCw className="h-4 w-4" />
             {t("common.reset")}
           </Button>
-          <Button type="button" onClick={() => void handleSubmit()} disabled={isSaving}>
+          <Button
+            type="button"
+            onClick={() => void handleSubmit()}
+            disabled={isSaving}
+          >
             <Save className="h-4 w-4" />
             {t("common.save")}
           </Button>

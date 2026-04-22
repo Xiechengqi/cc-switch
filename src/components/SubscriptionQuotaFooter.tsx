@@ -281,8 +281,8 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
         {tiers
           .filter((tier) => !SUPPRESSED_TIERS.has(tier.name))
           .map((tier) => (
-          <TierBar key={tier.name} tier={tier} t={t} />
-        ))}
+            <TierBar key={tier.name} tier={tier} t={t} />
+          ))}
       </div>
 
       {/* 超额使用 */}

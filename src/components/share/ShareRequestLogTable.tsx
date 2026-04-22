@@ -134,7 +134,10 @@ export function ShareRequestLogTable({
                 <TableBody>
                   {isLoading ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
+                      <TableCell
+                        colSpan={9}
+                        className="h-24 text-center text-muted-foreground"
+                      >
                         {t("common.loading")}
                       </TableCell>
                     </TableRow>
@@ -166,7 +169,10 @@ export function ShareRequestLogTable({
                     ))
                   ) : (
                     <TableRow>
-                      <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
+                      <TableCell
+                        colSpan={9}
+                        className="h-24 text-center text-muted-foreground"
+                      >
                         {t("share.requestLogsEmpty")}
                       </TableCell>
                     </TableRow>

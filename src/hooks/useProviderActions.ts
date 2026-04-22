@@ -17,9 +17,7 @@ import {
   useSwitchProviderMutation,
 } from "@/lib/query";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import {
-  isOfficialBlockedByProxyTakeover,
-} from "@/utils/providerMetaUtils";
+import { isOfficialBlockedByProxyTakeover } from "@/utils/providerMetaUtils";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 
 /**

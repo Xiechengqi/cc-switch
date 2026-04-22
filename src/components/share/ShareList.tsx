@@ -46,7 +46,9 @@ export function ShareList({
       <Card className="border-red-500/30 bg-red-500/5">
         <CardContent className="flex flex-col items-start gap-4 px-6 py-6">
           <div>
-            <div className="text-base font-medium">{t("share.error.title")}</div>
+            <div className="text-base font-medium">
+              {t("share.error.title")}
+            </div>
             <div className="mt-1 text-sm text-muted-foreground">{error}</div>
           </div>
           <Button variant="outline" onClick={onRetry}>

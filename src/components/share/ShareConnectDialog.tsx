@@ -30,7 +30,9 @@ export function ShareConnectDialog({
 }: ShareConnectDialogProps) {
   const { t } = useTranslation();
   const { data, isLoading } = useShareConnectInfoQuery(share?.id, open);
-  const tunnelDisplay = share ? resolveShareTunnelInfo(share, tunnelConfig) : null;
+  const tunnelDisplay = share
+    ? resolveShareTunnelInfo(share, tunnelConfig)
+    : null;
 
   const handleCopy = async (value: string, key: string) => {
     await copyText(value);
@@ -66,7 +68,9 @@ export function ShareConnectDialog({
               label={t("share.apiKey")}
               value={data.apiKey}
               copyLabel={t("share.copyApiKey")}
-              onCopy={() => void handleCopy(data.apiKey, "share.toast.copyApiKey")}
+              onCopy={() =>
+                void handleCopy(data.apiKey, "share.toast.copyApiKey")
+              }
             />
             <ConnectRow
               label={t("share.subdomain")}
@@ -88,7 +92,10 @@ export function ShareConnectDialog({
                 variant="outline"
                 size="sm"
                 onClick={() =>
-                  void handleCopy(buildShareCurlExample(data), "share.toast.copyCurl")
+                  void handleCopy(
+                    buildShareCurlExample(data),
+                    "share.toast.copyCurl",
+                  )
                 }
               >
                 <Copy className="h-4 w-4" />

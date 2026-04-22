@@ -353,8 +353,7 @@ export function ShareDetailDrawer({
                   value={shareToInput}
                   onChange={(event) => setShareToInput(event.target.value)}
                   placeholder={t("share.sharedWithEmailsPlaceholder", {
-                    defaultValue:
-                      "friend@example.com, teammate@example.com",
+                    defaultValue: "friend@example.com, teammate@example.com",
                   })}
                 />
                 <div className="text-xs text-muted-foreground">

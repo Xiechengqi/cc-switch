@@ -51,19 +51,25 @@ export function ShareToolbar({
           <SelectItem value="exhausted">
             {t("share.statuses.exhausted")}
           </SelectItem>
-          </SelectContent>
+        </SelectContent>
       </Select>
       <Select value={sortBy} onValueChange={onSortByChange}>
         <SelectTrigger>
           <SelectValue placeholder={t("share.sort")} />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="createdAtDesc">{t("share.sortOptions.createdAtDesc")}</SelectItem>
-          <SelectItem value="expiresAtAsc">{t("share.sortOptions.expiresAtAsc")}</SelectItem>
+          <SelectItem value="createdAtDesc">
+            {t("share.sortOptions.createdAtDesc")}
+          </SelectItem>
+          <SelectItem value="expiresAtAsc">
+            {t("share.sortOptions.expiresAtAsc")}
+          </SelectItem>
           <SelectItem value="tokensUsedDesc">
             {t("share.sortOptions.tokensUsedDesc")}
           </SelectItem>
-          <SelectItem value="nameAsc">{t("share.sortOptions.nameAsc")}</SelectItem>
+          <SelectItem value="nameAsc">
+            {t("share.sortOptions.nameAsc")}
+          </SelectItem>
         </SelectContent>
       </Select>
     </div>

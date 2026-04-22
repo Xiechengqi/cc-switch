@@ -13,9 +13,7 @@ import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSectio
 import { ClaudeOAuthSection } from "@/components/providers/forms/ClaudeOAuthSection";
 import { ShareEmailLoginCard } from "@/components/settings/ShareEmailLoginCard";
 import { settingsApi } from "@/lib/api";
-import {
-  useSettingsQuery,
-} from "@/lib/query";
+import { useSettingsQuery } from "@/lib/query";
 import {
   DEFAULT_OAUTH_QUOTA_REFRESH_INTERVAL_MINUTES,
   getOauthQuotaRefreshIntervalMinutes,

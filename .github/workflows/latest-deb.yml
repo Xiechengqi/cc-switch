@@ -86,15 +86,18 @@ jobs:
         run: |
           set -euxo pipefail
           # latest-deb 是非签名的开发频道构建，fork 没有 TAURI_SIGNING_PRIVATE_KEY。
-          # `pnpm tauri build --config` 的覆盖不会传到 signing 步骤，直接删 updater
-          # 又会让 bundler 报 "plugins > updater doesn't exist"。所以保留 updater
-          # 配置块，只把 pubkey 置空、endpoints 清空，让 Tauri 跳过签名。
-          # 正式签名版本仍走 release.yml。
+          # Tauri v2 的 `sign_updaters()` 只有在 `bundle.createUpdaterArtifacts`
+          # 为 true 时才会运行，空 pubkey 并不会触发跳过。所以这里把该字段翻成
+          # false，同时顺手把 pubkey / endpoints 清空避免残留。
+          # `pnpm tauri build --config` 的覆盖不会传到 signing 步骤，必须原地改
+          # 配置文件。正式签名版本仍走 release.yml。
           CFG=src-tauri/tauri.conf.json
-          jq '.plugins.updater.pubkey = "" | .plugins.updater.endpoints = []' \
+          jq '.bundle.createUpdaterArtifacts = false
+              | .plugins.updater.pubkey = ""
+              | .plugins.updater.endpoints = []' \
             "$CFG" > "$CFG.tmp"
           mv "$CFG.tmp" "$CFG"
-          jq '.plugins.updater' "$CFG"
+          jq '{createUpdaterArtifacts: .bundle.createUpdaterArtifacts, updater: .plugins.updater}' "$CFG"
 
       - name: Build deb package
         shell: bash

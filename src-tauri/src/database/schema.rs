@@ -358,6 +358,8 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS shares (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                owner_email TEXT NOT NULL DEFAULT '',
+                shared_with_emails_json TEXT NOT NULL DEFAULT '[]',
                 description TEXT,
                 share_token TEXT NOT NULL UNIQUE,
                 app_type TEXT NOT NULL,
@@ -365,6 +367,7 @@ impl Database {
                 api_key TEXT NOT NULL,
                 settings_config TEXT,
                 token_limit INTEGER NOT NULL,
+                parallel_limit INTEGER NOT NULL DEFAULT 3,
                 tokens_used INTEGER NOT NULL DEFAULT 0,
                 requests_count INTEGER NOT NULL DEFAULT 0,
                 expires_at TEXT NOT NULL,
@@ -476,6 +479,16 @@ impl Database {
                         log::info!("迁移数据库从 v12 到 v13（Share 出售意愿）");
                         Self::migrate_v12_to_v13(conn)?;
                         Self::set_user_version(conn, 13)?;
+                    }
+                    13 => {
+                        log::info!("迁移数据库从 v13 到 v14（Share 最大并发数）");
+                        Self::migrate_v13_to_v14(conn)?;
+                        Self::set_user_version(conn, 14)?;
+                    }
+                    14 => {
+                        log::info!("迁移数据库从 v14 到 v15（Share owner/sharing ACL）");
+                        Self::migrate_v14_to_v15(conn)?;
+                        Self::set_user_version(conn, 15)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1231,6 +1244,8 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS shares (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                owner_email TEXT NOT NULL DEFAULT '',
+                shared_with_emails_json TEXT NOT NULL DEFAULT '[]',
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
                 share_token TEXT NOT NULL UNIQUE,
@@ -1239,6 +1254,7 @@ impl Database {
                 api_key TEXT NOT NULL,
                 settings_config TEXT,
                 token_limit INTEGER NOT NULL,
+                parallel_limit INTEGER NOT NULL DEFAULT 3,
                 tokens_used INTEGER NOT NULL DEFAULT 0,
                 requests_count INTEGER NOT NULL DEFAULT 0,
                 expires_at TEXT NOT NULL,
@@ -1301,6 +1317,37 @@ impl Database {
         }
 
         log::info!("v12 -> v13 迁移完成：shares 表增加 for_sale 字段");
+        Ok(())
+    }
+
+    /// v13 -> v14 迁移：shares 增加 parallel_limit 字段
+    fn migrate_v13_to_v14(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(
+                conn,
+                "shares",
+                "parallel_limit",
+                "INTEGER NOT NULL DEFAULT 3",
+            )?;
+        }
+
+        log::info!("v13 -> v14 迁移完成：shares 表增加 parallel_limit 字段");
+        Ok(())
+    }
+
+    /// v14 -> v15 迁移：shares 增加 owner / sharing ACL 字段
+    fn migrate_v14_to_v15(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(conn, "shares", "owner_email", "TEXT NOT NULL DEFAULT ''")?;
+            Self::add_column_if_missing(
+                conn,
+                "shares",
+                "shared_with_emails_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )?;
+        }
+
+        log::info!("v14 -> v15 迁移完成：shares 表增加 owner/sharing ACL 字段");
         Ok(())
     }
 

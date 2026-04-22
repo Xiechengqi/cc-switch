@@ -28,10 +28,51 @@ export function formatShareStatus(status: string): string {
   return status.replace(/_/g, " ");
 }
 
+export const UNLIMITED_TOKEN_LIMIT = -1;
+export const UNLIMITED_PARALLEL_LIMIT = -1;
+export const DEFAULT_PARALLEL_LIMIT = 3;
+export const MIN_PARALLEL_LIMIT = 3;
+
+export function isUnlimitedTokenLimit(tokenLimit?: number | null): boolean {
+  return tokenLimit === UNLIMITED_TOKEN_LIMIT;
+}
+
+export function isUnlimitedParallelLimit(
+  parallelLimit?: number | null,
+): boolean {
+  return parallelLimit === UNLIMITED_PARALLEL_LIMIT;
+}
+
+export function formatCompactTokenCount(value?: number | null): string {
+  const amount = value ?? 0;
+  if (amount >= 1_000_000) {
+    return `${(amount / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (amount >= 10_000) {
+    return `${(amount / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  }
+  return String(amount);
+}
+
+export function formatShareTokenUsage(
+  share: Pick<ShareRecord, "tokenLimit" | "tokensUsed">,
+): string {
+  if (isUnlimitedTokenLimit(share.tokenLimit)) {
+    return `${formatCompactTokenCount(share.tokensUsed)}/∞`;
+  }
+  return `${formatCompactTokenCount(share.tokensUsed)}/${formatCompactTokenCount(share.tokenLimit)}`;
+}
+
 export function getShareUsageRatio(
   share: Pick<ShareRecord, "tokenLimit" | "tokensUsed">,
 ): number {
-  if (!share.tokenLimit || share.tokenLimit <= 0) return 0;
+  if (
+    !share.tokenLimit ||
+    share.tokenLimit <= 0 ||
+    isUnlimitedTokenLimit(share.tokenLimit)
+  ) {
+    return 0;
+  }
   return Math.max(0, Math.min(share.tokensUsed / share.tokenLimit, 1));
 }
 

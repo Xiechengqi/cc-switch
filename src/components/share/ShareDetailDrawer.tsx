@@ -24,14 +24,21 @@ import { Label } from "@/components/ui/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ShareDisplayStatusBadge } from "./ShareDisplayStatusBadge";
 import {
+  DEFAULT_PARALLEL_LIMIT,
+  formatShareTokenUsage,
   formatUtcDateTime,
   getShareDisplayStatus,
   getShareTunnelRuntimeStatus,
   getShareUsageRatio,
+  isUnlimitedParallelLimit,
   isPermanentExpiry,
+  isUnlimitedTokenLimit,
   maskSensitive,
+  MIN_PARALLEL_LIMIT,
   PERMANENT_EXPIRES_AT,
   resolveShareTunnelInfo,
+  UNLIMITED_PARALLEL_LIMIT,
+  UNLIMITED_TOKEN_LIMIT,
 } from "@/utils/shareUtils";
 
 interface ShareDetailDrawerProps {
@@ -42,11 +49,13 @@ interface ShareDetailDrawerProps {
   onOpenChange: (open: boolean) => void;
   onResetUsage: (share: ShareRecord) => void;
   onUpdateTokenLimit: (share: ShareRecord, tokenLimit: number) => void;
+  onUpdateParallelLimit: (share: ShareRecord, parallelLimit: number) => void;
   onUpdateSubdomain: (share: ShareRecord, subdomain: string) => void;
   onUpdateApiKey: (share: ShareRecord, apiKey: string) => void;
   onUpdateDescription: (share: ShareRecord, description: string) => void;
   onUpdateForSale: (share: ShareRecord, forSale: "Yes" | "No" | "Free") => void;
   onUpdateExpiration: (share: ShareRecord, expiresAt: string) => void;
+  onUpdateAcl: (share: ShareRecord, sharedWithEmails: string[]) => void;
   busy?: boolean;
 }
 
@@ -58,11 +67,13 @@ export function ShareDetailDrawer({
   onOpenChange,
   onResetUsage,
   onUpdateTokenLimit,
+  onUpdateParallelLimit,
   onUpdateSubdomain,
   onUpdateApiKey,
   onUpdateDescription,
   onUpdateForSale,
   onUpdateExpiration,
+  onUpdateAcl,
   busy = false,
 }: ShareDetailDrawerProps) {
   const { t } = useTranslation();
@@ -71,18 +82,42 @@ export function ShareDetailDrawer({
   const [subdomainInput, setSubdomainInput] = useState("");
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [descriptionInput, setDescriptionInput] = useState("");
+  const [shareToInput, setShareToInput] = useState("");
   const [forSaleInput, setForSaleInput] = useState<"Yes" | "No" | "Free">("No");
   const [confirmFreeOpen, setConfirmFreeOpen] = useState(false);
   const [expiryDateInput, setExpiryDateInput] = useState("");
   const [expiryHourInput, setExpiryHourInput] = useState("");
   const [expiryMinuteInput, setExpiryMinuteInput] = useState("");
   const [expiryPermanent, setExpiryPermanent] = useState(false);
+  const [tokenLimitUnlimited, setTokenLimitUnlimited] = useState(false);
+  const [lastFiniteTokenLimit, setLastFiniteTokenLimit] = useState(100000);
+  const [parallelLimitInput, setParallelLimitInput] = useState("");
+  const [parallelLimitUnlimited, setParallelLimitUnlimited] = useState(false);
+  const [lastFiniteParallelLimit, setLastFiniteParallelLimit] = useState(
+    DEFAULT_PARALLEL_LIMIT,
+  );
 
   useEffect(() => {
     setTokenLimitInput(share ? String(share.tokenLimit) : "");
+    setTokenLimitUnlimited(isUnlimitedTokenLimit(share?.tokenLimit));
+    setLastFiniteTokenLimit(
+      share && !isUnlimitedTokenLimit(share.tokenLimit) && share.tokenLimit > 0
+        ? share.tokenLimit
+        : 100000,
+    );
+    setParallelLimitInput(share ? String(share.parallelLimit) : "");
+    setParallelLimitUnlimited(isUnlimitedParallelLimit(share?.parallelLimit));
+    setLastFiniteParallelLimit(
+      share &&
+        !isUnlimitedParallelLimit(share.parallelLimit) &&
+        share.parallelLimit >= MIN_PARALLEL_LIMIT
+        ? share.parallelLimit
+        : DEFAULT_PARALLEL_LIMIT,
+    );
     setSubdomainInput(share?.subdomain ?? "");
     setApiKeyInput(share?.shareToken ?? "");
     setDescriptionInput(share?.description ?? "");
+    setShareToInput((share?.sharedWithEmails ?? []).join(", "));
     setForSaleInput(share?.forSale ?? "No");
     if (share?.expiresAt) {
       const permanent = isPermanentExpiry(share.expiresAt);
@@ -120,7 +155,16 @@ export function ShareDetailDrawer({
   const tokenLimitInvalid =
     tokenLimitInput.trim().length === 0 ||
     !Number.isFinite(parsedTokenLimit) ||
-    parsedTokenLimit <= 0;
+    (parsedTokenLimit <= 0 && parsedTokenLimit !== UNLIMITED_TOKEN_LIMIT);
+  const parsedParallelLimit = Number.parseInt(parallelLimitInput, 10);
+  const parallelLimitDirty =
+    Number.isFinite(parsedParallelLimit) &&
+    parsedParallelLimit !== share.parallelLimit;
+  const parallelLimitInvalid =
+    parallelLimitInput.trim().length === 0 ||
+    !Number.isFinite(parsedParallelLimit) ||
+    (parsedParallelLimit !== UNLIMITED_PARALLEL_LIMIT &&
+      parsedParallelLimit < MIN_PARALLEL_LIMIT);
   const subdomainDirty = subdomainInput.trim() !== (share.subdomain ?? "");
   const subdomainInvalid =
     subdomainInput.trim().length < 3 ||
@@ -133,6 +177,20 @@ export function ShareDetailDrawer({
   const normalizedDescription = descriptionInput.trim();
   const descriptionDirty = normalizedDescription !== (share.description ?? "");
   const descriptionInvalid = normalizedDescription.length > 200;
+  const normalizedShareTo = Array.from(
+    new Set(
+      shareToInput
+        .split(/[\n,]/)
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ).sort();
+  const shareToDirty =
+    JSON.stringify(normalizedShareTo) !==
+    JSON.stringify([...(share.sharedWithEmails ?? [])].sort());
+  const shareToInvalid = normalizedShareTo.some(
+    (email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
+  );
   const forSaleDirty = forSaleInput !== share.forSale;
   const parsedExpiryHour = Number.parseInt(expiryHourInput, 10);
   const parsedExpiryMinute = Number.parseInt(expiryMinuteInput, 10);
@@ -228,6 +286,20 @@ export function ShareDetailDrawer({
               value={formatUtcDateTime(share.createdAt)}
             />
             <InfoField
+              label={t("share.ownerEmail", { defaultValue: "Owner Email" })}
+              value={share.ownerEmail || "-"}
+            />
+            <InfoField
+              label={t("share.sharedWithEmails", {
+                defaultValue: "Share To",
+              })}
+              value={
+                share.sharedWithEmails.length
+                  ? share.sharedWithEmails.join(", ")
+                  : "-"
+              }
+            />
+            <InfoField
               label={t("share.description")}
               value={share.description || "-"}
             />
@@ -261,6 +333,47 @@ export function ShareDetailDrawer({
               label={t("share.tunnelHealth")}
               value={t(`share.statuses.${tunnelRuntimeStatus}`)}
             />
+          </section>
+
+          <section className="space-y-3">
+            <div className="text-sm font-medium">
+              {t("share.accessControl", {
+                defaultValue: "Access Control",
+              })}
+            </div>
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="space-y-2">
+                <Label htmlFor="share-share-to">
+                  {t("share.sharedWithEmails", {
+                    defaultValue: "Share To",
+                  })}
+                </Label>
+                <Textarea
+                  id="share-share-to"
+                  value={shareToInput}
+                  onChange={(event) => setShareToInput(event.target.value)}
+                  placeholder={t("share.sharedWithEmailsPlaceholder", {
+                    defaultValue:
+                      "friend@example.com, teammate@example.com",
+                  })}
+                />
+                <div className="text-xs text-muted-foreground">
+                  {t("share.sharedWithEmailsHint", {
+                    defaultValue:
+                      "配置多个邮箱后，这些邮箱登录 portr-rs dashboard 可以查看当前 share 的 API Key 明文。",
+                  })}
+                </div>
+              </div>
+              <Button
+                type="button"
+                className="self-start"
+                disabled={busy || !shareToDirty || shareToInvalid}
+                onClick={() => onUpdateAcl(share, normalizedShareTo)}
+              >
+                <Save className="mr-2 h-4 w-4" />
+                {t("common.save", { defaultValue: "保存" })}
+              </Button>
+            </div>
           </section>
 
           <section className="space-y-3">
@@ -495,28 +608,66 @@ export function ShareDetailDrawer({
             <div className="flex items-center justify-between">
               <div className="text-sm font-medium">{t("share.quota")}</div>
               <div className="text-sm text-muted-foreground">
-                {share.tokensUsed} / {share.tokenLimit}
+                {formatShareTokenUsage(share)}
               </div>
             </div>
-            <div className="h-2 rounded-full bg-muted">
-              <div
-                className="h-2 rounded-full bg-blue-500"
-                style={{ width: `${Math.max(4, ratio * 100)}%` }}
-              />
-            </div>
+            {!isUnlimitedTokenLimit(share.tokenLimit) ? (
+              <div className="h-2 rounded-full bg-muted">
+                <div
+                  className="h-2 rounded-full bg-blue-500"
+                  style={{ width: `${Math.max(4, ratio * 100)}%` }}
+                />
+              </div>
+            ) : null}
             <div className="text-sm font-medium">{t("share.usageActions")}</div>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
               <div className="space-y-2">
-                <div className="text-sm font-medium">
-                  {t("share.tokenLimit")}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium">
+                    {t("share.tokenLimit")}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="share-detail-token-limit-unlimited"
+                      checked={tokenLimitUnlimited}
+                      disabled={busy}
+                      onCheckedChange={(checked) => {
+                        const next = checked === true;
+                        setTokenLimitUnlimited(next);
+                        if (next) {
+                          if (
+                            Number.isFinite(parsedTokenLimit) &&
+                            parsedTokenLimit > 0
+                          ) {
+                            setLastFiniteTokenLimit(parsedTokenLimit);
+                          }
+                          setTokenLimitInput(String(UNLIMITED_TOKEN_LIMIT));
+                          return;
+                        }
+                        setTokenLimitInput(String(lastFiniteTokenLimit));
+                      }}
+                    />
+                    <Label
+                      htmlFor="share-detail-token-limit-unlimited"
+                      className="cursor-pointer text-sm font-normal"
+                    >
+                      {t("share.unlimited")}
+                    </Label>
+                  </div>
                 </div>
                 <Input
                   type="number"
                   min={1}
                   step={1}
                   value={tokenLimitInput}
-                  disabled={busy}
-                  onChange={(event) => setTokenLimitInput(event.target.value)}
+                  disabled={busy || tokenLimitUnlimited}
+                  onChange={(event) => {
+                    setTokenLimitInput(event.target.value);
+                    const next = Number.parseInt(event.target.value, 10);
+                    if (Number.isFinite(next) && next > 0) {
+                      setLastFiniteTokenLimit(next);
+                    }
+                  }}
                 />
               </div>
               <div className="flex items-end">
@@ -527,6 +678,74 @@ export function ShareDetailDrawer({
                 >
                   <Save className="h-4 w-4" />
                   {t("share.saveTokenLimit")}
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium">
+                    {t("share.parallelLimit")}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="share-detail-parallel-limit-unlimited"
+                      checked={parallelLimitUnlimited}
+                      disabled={busy}
+                      onCheckedChange={(checked) => {
+                        const next = checked === true;
+                        setParallelLimitUnlimited(next);
+                        if (next) {
+                          if (
+                            Number.isFinite(parsedParallelLimit) &&
+                            parsedParallelLimit >= MIN_PARALLEL_LIMIT
+                          ) {
+                            setLastFiniteParallelLimit(parsedParallelLimit);
+                          }
+                          setParallelLimitInput(
+                            String(UNLIMITED_PARALLEL_LIMIT),
+                          );
+                          return;
+                        }
+                        setParallelLimitInput(String(lastFiniteParallelLimit));
+                      }}
+                    />
+                    <Label
+                      htmlFor="share-detail-parallel-limit-unlimited"
+                      className="cursor-pointer text-sm font-normal"
+                    >
+                      {t("share.unlimited")}
+                    </Label>
+                  </div>
+                </div>
+                <Input
+                  type="number"
+                  min={MIN_PARALLEL_LIMIT}
+                  step={1}
+                  value={parallelLimitInput}
+                  disabled={busy || parallelLimitUnlimited}
+                  onChange={(event) => {
+                    setParallelLimitInput(event.target.value);
+                    const next = Number.parseInt(event.target.value, 10);
+                    if (Number.isFinite(next) && next >= MIN_PARALLEL_LIMIT) {
+                      setLastFiniteParallelLimit(next);
+                    }
+                  }}
+                />
+                <div className="text-xs text-muted-foreground">
+                  {t("share.parallelLimitHint")}
+                </div>
+              </div>
+              <div className="flex items-end">
+                <Button
+                  variant="outline"
+                  disabled={busy || parallelLimitInvalid || !parallelLimitDirty}
+                  onClick={() =>
+                    onUpdateParallelLimit(share, parsedParallelLimit)
+                  }
+                >
+                  <Save className="h-4 w-4" />
+                  {t("share.saveParallelLimit")}
                 </Button>
               </div>
             </div>

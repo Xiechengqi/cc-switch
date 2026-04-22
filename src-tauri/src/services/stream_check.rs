@@ -1304,7 +1304,10 @@ impl StreamCheckService {
 
     fn codex_stream_user_agent(is_codex_oauth: bool, os_name: &str, arch_name: &str) -> String {
         if is_codex_oauth {
-            format!("cc-switch/{} ({os_name}; {arch_name})", env!("CARGO_PKG_VERSION"))
+            format!(
+                "cc-switch/{} ({os_name}; {arch_name})",
+                env!("CARGO_PKG_VERSION")
+            )
         } else {
             format!("codex_cli_rs/0.80.0 ({os_name} 15.7.2; {arch_name}) Terminal")
         }
@@ -1732,7 +1735,10 @@ mod tests {
 
     #[test]
     fn test_codex_oauth_stream_identity_matches_forwarder() {
-        assert_eq!(StreamCheckService::codex_stream_originator(true), "cc-switch");
+        assert_eq!(
+            StreamCheckService::codex_stream_originator(true),
+            "cc-switch"
+        );
         let ua = StreamCheckService::codex_stream_user_agent(true, "linux", "x86_64");
         assert!(ua.starts_with("cc-switch/"));
         assert!(ua.contains("(linux; x86_64)"));

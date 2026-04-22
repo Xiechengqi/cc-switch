@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 export interface ShareRecord {
   id: string;
   name: string;
+  ownerEmail: string;
+  sharedWithEmails: string[];
   description?: string | null;
   forSale: "Yes" | "No" | "Free";
   shareToken: string;
@@ -10,6 +12,7 @@ export interface ShareRecord {
   apiKey: string;
   settingsConfig?: string | null;
   tokenLimit: number;
+  parallelLimit: number;
   tokensUsed: number;
   requestsCount: number;
   expiresAt: string;
@@ -21,18 +24,28 @@ export interface ShareRecord {
 }
 
 export interface CreateShareParams {
-  name: string;
   description?: string;
   forSale: "Yes" | "No" | "Free";
   tokenLimit: number;
+  parallelLimit: number;
   expiresInSecs: number;
   subdomain?: string;
   apiKey?: string;
 }
 
+export interface UpdateShareAclParams {
+  shareId: string;
+  sharedWithEmails: string[];
+}
+
 export interface UpdateShareTokenLimitParams {
   shareId: string;
   tokenLimit: number;
+}
+
+export interface UpdateShareParallelLimitParams {
+  shareId: string;
+  parallelLimit: number;
 }
 
 export interface UpdateShareSubdomainParams {
@@ -111,6 +124,12 @@ async function updateTokenLimit(
   return invoke<ShareRecord>("update_share_token_limit", { params });
 }
 
+async function updateParallelLimit(
+  params: UpdateShareParallelLimitParams,
+): Promise<ShareRecord> {
+  return invoke<ShareRecord>("update_share_parallel_limit", { params });
+}
+
 async function updateSubdomain(
   params: UpdateShareSubdomainParams,
 ): Promise<ShareRecord> {
@@ -139,6 +158,10 @@ async function updateExpiration(
   params: UpdateShareExpirationParams,
 ): Promise<ShareRecord> {
   return invoke<ShareRecord>("update_share_expiration", { params });
+}
+
+async function updateAcl(params: UpdateShareAclParams): Promise<ShareRecord> {
+  return invoke<ShareRecord>("update_share_acl", { params });
 }
 
 async function list(): Promise<ShareRecord[]> {
@@ -178,11 +201,13 @@ export const shareApi = {
   disable,
   resetUsage,
   updateTokenLimit,
+  updateParallelLimit,
   updateSubdomain,
   updateApiKey,
   updateDescription,
   updateForSale,
   updateExpiration,
+  updateAcl,
   list,
   getDetail,
   startTunnel,

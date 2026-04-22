@@ -1,4 +1,8 @@
 import type { AppId } from "@/lib/api/types";
+import type {
+  EmailAuthStatus,
+  EmailSessionMeResponse,
+} from "@/lib/api/emailAuth";
 import type { ShareRecord, TunnelInfo } from "@/lib/api/share";
 import type {
   McpServer,
@@ -99,6 +103,17 @@ let settingsState: Settings = {
   language: "zh",
 };
 let appConfigDirOverride: string | null = null;
+let emailAuthStatusState: EmailAuthStatus = {
+  authenticated: false,
+  email: null,
+  expiresAt: null,
+};
+let emailAuthSessionState: EmailSessionMeResponse = {
+  authenticated: false,
+  user: null,
+  expiresAt: null,
+  installationOwnerEmail: null,
+};
 const sessionMessageKey = (providerId: string, sourcePath: string) =>
   `${providerId}:${sourcePath}`;
 
@@ -214,6 +229,17 @@ export const resetProviderState = () => {
   appConfigDirOverride = null;
   sharesState = [];
   tunnelState = {};
+  emailAuthStatusState = {
+    authenticated: false,
+    email: null,
+    expiresAt: null,
+  };
+  emailAuthSessionState = {
+    authenticated: false,
+    user: null,
+    expiresAt: null,
+    installationOwnerEmail: null,
+  };
   mcpConfigs = {
     claude: {
       sample: {
@@ -339,6 +365,20 @@ export const listProviders = (appType: AppId) =>
 
 export const getSettings = () =>
   JSON.parse(JSON.stringify(settingsState)) as Settings;
+
+export const getEmailAuthStatus = () =>
+  JSON.parse(JSON.stringify(emailAuthStatusState)) as EmailAuthStatus;
+
+export const setEmailAuthStatus = (data: Partial<EmailAuthStatus>) => {
+  emailAuthStatusState = { ...emailAuthStatusState, ...data };
+};
+
+export const getEmailAuthSession = () =>
+  JSON.parse(JSON.stringify(emailAuthSessionState)) as EmailSessionMeResponse;
+
+export const setEmailAuthSession = (data: Partial<EmailSessionMeResponse>) => {
+  emailAuthSessionState = { ...emailAuthSessionState, ...data };
+};
 
 export const setSettings = (data: Partial<Settings>) => {
   settingsState = { ...settingsState, ...data };

@@ -6,6 +6,8 @@ import {
   addShare,
   deleteProvider,
   deleteSession,
+  getEmailAuthSession,
+  getEmailAuthStatus,
   getShare,
   getShareConnectInfo,
   getTunnelStatus,
@@ -27,6 +29,8 @@ import {
   setSettings,
   getAppConfigDirOverride,
   setAppConfigDirOverrideState,
+  setEmailAuthSession,
+  setEmailAuthStatus,
   getMcpConfig,
   setMcpServerEnabled,
   upsertMcpServer,
@@ -235,13 +239,49 @@ export const handlers = [
     return success(getShare(shareId));
   }),
 
+  http.post(`${TAURI_ENDPOINT}/email_auth_get_status`, () =>
+    success(getEmailAuthStatus()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/email_auth_session_me`, () =>
+    success(getEmailAuthSession()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/email_auth_request_code`, async ({ request }) => {
+    const { email } = await withJson<{ email: string }>(request);
+    return success({
+      ok: true,
+      cooldownSecs: 60,
+      maskedDestination: email || "***",
+    });
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/email_auth_verify_code`, async ({ request }) => {
+    const { email } = await withJson<{ email: string }>(request);
+    const status = {
+      authenticated: true,
+      email: email || "owner@example.com",
+      expiresAt: Date.now() / 1000 + 3600,
+    };
+    setEmailAuthStatus(status);
+    setEmailAuthSession({
+      authenticated: true,
+      user: {
+        id: "email-user-1",
+        email: status.email ?? "owner@example.com",
+      },
+      expiresAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+    });
+    return success(status);
+  }),
+
   http.post(`${TAURI_ENDPOINT}/create_share`, async ({ request }) => {
     const { params } = await withJson<{
       params: {
-        name: string;
         description?: string;
-        forSale: "Yes" | "No";
+        forSale: "Yes" | "No" | "Free";
         tokenLimit: number;
+        parallelLimit: number;
         expiresInSecs: number;
       };
     }>(request);
@@ -256,7 +296,9 @@ export const handlers = [
     const now = Date.now();
     const share = {
       id: `share-${now}`,
-      name: params.name,
+      name: "owner@example.com",
+      ownerEmail: "owner@example.com",
+      sharedWithEmails: [],
       description: params.description ?? null,
       forSale: params.forSale ?? "No",
       shareToken: `token-${now}`,
@@ -265,6 +307,7 @@ export const handlers = [
       apiKey: "",
       settingsConfig: null,
       tokenLimit: params.tokenLimit,
+      parallelLimit: params.parallelLimit,
       tokensUsed: 0,
       requestsCount: 0,
       expiresAt: new Date(now + params.expiresInSecs * 1000).toISOString(),
@@ -297,13 +340,29 @@ export const handlers = [
     return success(null);
   }),
 
-  http.post(`${TAURI_ENDPOINT}/update_share_description`, async ({ request }) => {
-    const { params } = await withJson<{
-      params: { shareId: string; description?: string };
-    }>(request);
-    updateShare(params.shareId, { description: params.description?.trim() || null });
-    return success(getShare(params.shareId));
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/update_share_description`,
+    async ({ request }) => {
+      const { params } = await withJson<{
+        params: { shareId: string; description?: string };
+      }>(request);
+      updateShare(params.shareId, {
+        description: params.description?.trim() || null,
+      });
+      return success(getShare(params.shareId));
+    },
+  ),
+
+  http.post(
+    `${TAURI_ENDPOINT}/update_share_parallel_limit`,
+    async ({ request }) => {
+      const { params } = await withJson<{
+        params: { shareId: string; parallelLimit: number };
+      }>(request);
+      updateShare(params.shareId, { parallelLimit: params.parallelLimit });
+      return success(getShare(params.shareId));
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/update_share_for_sale`, async ({ request }) => {
     const { params } = await withJson<{
@@ -355,6 +414,15 @@ export const handlers = [
     }
     return success(info);
   }),
+
+  http.post(`${TAURI_ENDPOINT}/get_request_logs`, () =>
+    success({
+      data: [],
+      total: 0,
+      page: 0,
+      pageSize: 10,
+    }),
+  ),
 
   http.post(`${TAURI_ENDPOINT}/configure_tunnel`, async ({ request }) => {
     const { config } = await withJson<{

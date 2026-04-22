@@ -115,6 +115,43 @@ pub async fn portr_recent_request_logs(
     }
 }
 
+/// Internal runtime-snapshot endpoint used by portr-rs to refresh support and quota cache.
+pub async fn portr_share_runtime(
+    State(state): State<ProxyState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let is_probe = headers
+        .get("X-Portr-Probe")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if !is_probe {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })));
+    }
+
+    let share = match crate::services::share::ShareService::list(&state.db) {
+        Ok(mut shares) => match shares.pop() {
+            Some(share) => share,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "share not found" })),
+                );
+            }
+        },
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("load share failed: {err}") })),
+            );
+        }
+    };
+
+    let snapshot = crate::tunnel::sync::build_share_runtime_snapshot(&share, &state.db).await;
+    (StatusCode::OK, Json(json!(snapshot)))
+}
+
 /// 获取服务状态
 pub async fn get_status(State(state): State<ProxyState>) -> Result<Json<ProxyStatus>, ProxyError> {
     let status = state.status.read().await.clone();

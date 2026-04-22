@@ -3,7 +3,7 @@ pub mod connection;
 pub mod error;
 mod forward;
 mod health;
-mod identity;
+pub(crate) mod identity;
 mod ssh;
 pub mod sync;
 
@@ -17,7 +17,6 @@ use crate::database::Database;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::task::JoinHandle;
 
@@ -28,7 +27,6 @@ struct TunnelHandle {
     healthy: Arc<AtomicBool>,
     _health_task: JoinHandle<()>,
     _reconnect_task: JoinHandle<()>,
-    _share_sync_task: JoinHandle<()>,
 }
 
 /// Manages multiple portr tunnels, each identified by a string key (share_id).
@@ -60,7 +58,7 @@ impl TunnelManager {
         &mut self,
         id: &str,
         req: TunnelRequest,
-        db: Arc<Database>,
+        _db: Arc<Database>,
     ) -> Result<TunnelInfo, TunnelError> {
         if self.tunnels.contains_key(id) {
             return Err(TunnelError::AlreadyExists(id.to_string()));
@@ -142,51 +140,6 @@ impl TunnelManager {
             .await;
         });
 
-        let share_sync_task = if let Some(share_metadata) = req.share_metadata.clone() {
-            let share_id_for_sync = share_metadata.share_id.clone();
-            let db_for_sync = db.clone();
-            let mut shutdown_for_share_sync = shutdown_tx.subscribe();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(30));
-                loop {
-                    tokio::select! {
-                        _ = interval.tick() => {
-                            let latest = match db_for_sync.get_share_by_id(&share_id_for_sync) {
-                                Ok(Some(share)) => {
-                                    let mut metadata = sync::share_metadata_from_record(&share);
-                                    metadata.support = sync::query_share_support(&db_for_sync).await;
-                                    metadata
-                                }
-                                Ok(None) => {
-                                    log::debug!(
-                                        "[Tunnel] share {} missing during periodic sync",
-                                        share_id_for_sync
-                                    );
-                                    continue;
-                                }
-                                Err(err) => {
-                                    log::warn!(
-                                        "[Tunnel] read share {} for periodic sync failed: {}",
-                                        share_id_for_sync, err
-                                    );
-                                    continue;
-                                }
-                            };
-                            if let Err(err) = sync::sync_share_metadata_now(latest).await {
-                                log::warn!(
-                                    "[Tunnel] periodic share sync failed for {}: {}",
-                                    share_id_for_sync, err
-                                );
-                            }
-                        }
-                        _ = shutdown_for_share_sync.recv() => break,
-                    }
-                }
-            })
-        } else {
-            tokio::spawn(async {})
-        };
-
         self.tunnels.insert(
             id.to_string(),
             TunnelHandle {
@@ -196,7 +149,6 @@ impl TunnelManager {
                 healthy,
                 _health_task: health_task,
                 _reconnect_task: reconnect_task,
-                _share_sync_task: share_sync_task,
             },
         );
 

@@ -71,6 +71,13 @@ async fn send_portr_request(
     }
 }
 
+async fn require_auth_bearer_token() -> Result<String, TunnelError> {
+    crate::email_auth::ensure_access_token()
+        .await
+        .map_err(TunnelError::Api)?
+        .ok_or_else(|| TunnelError::Api("owner email login is required".to_string()))
+}
+
 /// Request a short-lived tunnel lease from portr-rs.
 pub async fn issue_lease(
     client: &reqwest::Client,
@@ -111,12 +118,17 @@ async fn issue_lease_inner(
         ),
         "share": share_metadata,
     });
+    let mut request = client
+        .post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(PORTR_REQUEST_TIMEOUT_SECS));
+    if share_metadata.is_some() {
+        let bearer_token = require_auth_bearer_token().await?;
+        request = request.bearer_auth(bearer_token);
+    }
 
     let resp = send_portr_request(
-        client
-            .post(&url)
-            .json(&payload)
-            .timeout(std::time::Duration::from_secs(PORTR_REQUEST_TIMEOUT_SECS)),
+        request,
         "issue tunnel lease",
         &url,
     )
@@ -198,9 +210,11 @@ async fn claim_share_subdomain_inner(
         timestamp_ms,
         &nonce,
     )?;
+    let bearer_token = require_auth_bearer_token().await?;
     let resp = send_portr_request(
         client
             .post(&url)
+            .bearer_auth(bearer_token)
             .json(&serde_json::json!({
                 "installationId": identity.installation_id,
                 "timestampMs": timestamp_ms,

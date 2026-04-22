@@ -1708,7 +1708,7 @@ impl ProxyService {
 
     /// 更新 TOML 字符串中的 base_url（委托给 codex_config 共享实现）
     fn update_toml_base_url(toml_str: &str, new_url: &str) -> String {
-        crate::codex_config::update_codex_toml_field(toml_str, "base_url", new_url)
+        crate::codex_config::update_codex_toml_proxy_base_url(toml_str, new_url)
             .unwrap_or_else(|_| toml_str.to_string())
     }
 
@@ -2047,9 +2047,12 @@ requires_openai_auth = true
             .expect("model_providers.any.base_url should exist");
 
         assert_eq!(base_url, new_url);
-        assert!(
-            parsed.get("base_url").is_none(),
-            "should not write top-level base_url"
+        assert_eq!(
+            parsed
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .expect("top-level base_url should exist for legacy Codex CLI"),
+            new_url
         );
 
         let wire_api = parsed
@@ -2062,7 +2065,7 @@ requires_openai_auth = true
     }
 
     #[test]
-    fn update_toml_base_url_falls_back_to_top_level_base_url() {
+    fn update_toml_base_url_creates_proxy_model_provider_without_model_provider() {
         let input = r#"
 model = "gpt-5.1-codex"
 "#;
@@ -2079,6 +2082,32 @@ model = "gpt-5.1-codex"
             .expect("base_url should exist");
 
         assert_eq!(base_url, new_url);
+
+        assert_eq!(
+            parsed
+                .get("model_provider")
+                .and_then(|v| v.as_str())
+                .expect("model_provider should be created"),
+            "cc-switch"
+        );
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("cc-switch"))
+                .and_then(|v| v.get("base_url"))
+                .and_then(|v| v.as_str())
+                .expect("model_providers.cc-switch.base_url should exist"),
+            new_url
+        );
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("cc-switch"))
+                .and_then(|v| v.get("wire_api"))
+                .and_then(|v| v.as_str())
+                .expect("model_providers.cc-switch.wire_api should exist"),
+            "responses"
+        );
     }
 
     #[test]
@@ -2095,6 +2124,13 @@ model = "gpt-5.1-codex"
             .expect("base_url should exist");
 
         assert_eq!(base_url, new_url);
+        assert_eq!(
+            parsed
+                .get("model_provider")
+                .and_then(|v| v.as_str())
+                .expect("model_provider should be created"),
+            "cc-switch"
+        );
     }
 
     #[tokio::test]

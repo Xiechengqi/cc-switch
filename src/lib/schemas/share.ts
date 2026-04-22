@@ -1,15 +1,30 @@
 import { z } from "zod";
 
 export const createShareSchema = z.object({
-  name: z.string().trim().min(1, "share.validation.required"),
   description: z
     .string()
     .trim()
     .optional()
     .transform((value) => value ?? "")
-    .refine((value) => value.length <= 200, "share.validation.descriptionTooLong"),
+    .refine(
+      (value) => value.length <= 200,
+      "share.validation.descriptionTooLong",
+    ),
   forSale: z.enum(["Yes", "No", "Free"]),
-  tokenLimit: z.coerce.number().int().positive("share.validation.required"),
+  tokenLimit: z.coerce
+    .number()
+    .int()
+    .refine(
+      (value) => value === -1 || value > 0,
+      "share.validation.invalidTokenLimit",
+    ),
+  parallelLimit: z.coerce
+    .number()
+    .int()
+    .refine(
+      (value) => value === -1 || value >= 3,
+      "share.validation.invalidParallelLimit",
+    ),
   expiresInSecs: z.coerce.number().int().positive("share.validation.required"),
   apiKey: z
     .string()

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { describe, it, expect, vi } from "vitest";
 import { ShareCard } from "@/components/share/ShareCard";
+import type { ShareRecord } from "@/lib/api";
 import { createTestQueryClient } from "../../utils/testQueryClient";
 
 vi.mock("@/components/share/ShareRequestLogTable", () => ({
@@ -14,9 +15,11 @@ const tunnelConfig = {
   domain: "127.0.0.1:8787",
 } as const;
 
-const baseShare = {
+const baseShare: ShareRecord = {
   id: "share-1",
   name: "Demo Share",
+  ownerEmail: "owner@example.com",
+  sharedWithEmails: [],
   forSale: "No",
   shareToken: "token",
   appType: "proxy",
@@ -24,6 +27,7 @@ const baseShare = {
   apiKey: "",
   settingsConfig: null,
   tokenLimit: 1000,
+  parallelLimit: 3,
   tokensUsed: 500,
   requestsCount: 3,
   expiresAt: "2026-05-01T00:00:00.000Z",
@@ -32,7 +36,7 @@ const baseShare = {
   status: "active",
   createdAt: "2026-04-01T00:00:00.000Z",
   lastUsedAt: null,
-} as const;
+};
 
 describe("ShareCard", () => {
   const renderShareCard = (ui: ReactNode) => {
@@ -112,7 +116,9 @@ describe("ShareCard", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: "share.disable" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "share.disable" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "share.enable" })).toBeEnabled();
   });
 });

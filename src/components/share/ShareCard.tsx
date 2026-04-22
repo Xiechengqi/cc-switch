@@ -25,11 +25,13 @@ import { useProxyTakeoverStatus } from "@/lib/query/proxy";
 import { ShareDisplayStatusBadge } from "./ShareDisplayStatusBadge";
 import { ShareRequestLogTable } from "./ShareRequestLogTable";
 import {
+  formatShareTokenUsage,
   formatUtcDateTime,
   getShareDisplayStatus,
   getShareUsageRatio,
   isPermanentExpiry,
   isShareActionAllowed,
+  isUnlimitedTokenLimit,
   maskSensitive,
   resolveShareTunnelInfo,
 } from "@/utils/shareUtils";
@@ -170,14 +172,16 @@ export function ShareCard({
               {t("share.tokensUsed")}
             </div>
             <div className="mt-2 font-medium">
-              {share.tokensUsed} / {share.tokenLimit}
+              {formatShareTokenUsage(share)}
             </div>
-            <div className="mt-3 h-2 rounded-full bg-muted">
-              <div
-                className="h-2 rounded-full bg-blue-500"
-                style={{ width: `${Math.max(4, ratio * 100)}%` }}
-              />
-            </div>
+            {!isUnlimitedTokenLimit(share.tokenLimit) ? (
+              <div className="mt-3 h-2 rounded-full bg-muted">
+                <div
+                  className="h-2 rounded-full bg-blue-500"
+                  style={{ width: `${Math.max(4, ratio * 100)}%` }}
+                />
+              </div>
+            ) : null}
           </div>
           <div className="rounded-xl border border-border-default bg-muted/20 px-3 py-3">
             <div className="text-xs text-muted-foreground">

@@ -8,6 +8,7 @@ mod commands;
 mod config;
 mod database;
 mod deeplink;
+mod email_auth;
 mod error;
 mod gemini_config;
 mod gemini_mcp;
@@ -1371,11 +1372,13 @@ pub fn run() {
             commands::is_lightweight_mode,
             // Token sharing via portr tunnel
             commands::create_share,
+            commands::update_share_acl,
             commands::delete_share,
             commands::pause_share,
             commands::resume_share,
             commands::reset_share_usage,
             commands::update_share_token_limit,
+            commands::update_share_parallel_limit,
             commands::update_share_api_key,
             commands::update_share_description,
             commands::update_share_for_sale,
@@ -1390,6 +1393,11 @@ pub fn run() {
             commands::get_tunnel_status,
             commands::get_share_connect_info,
             commands::configure_tunnel,
+            commands::email_auth_request_code,
+            commands::email_auth_verify_code,
+            commands::email_auth_get_status,
+            commands::email_auth_session_me,
+            commands::email_auth_logout,
         ]);
 
     let app = builder

@@ -165,8 +165,8 @@ fn validate_stored_identity(
     stored: &StoredIdentity,
     signing_key: &SigningKey,
 ) -> Result<(), TunnelError> {
-    let derived_public_key_base64 = base64::engine::general_purpose::STANDARD
-        .encode(signing_key.verifying_key().to_bytes());
+    let derived_public_key_base64 =
+        base64::engine::general_purpose::STANDARD.encode(signing_key.verifying_key().to_bytes());
     if stored.public_key_base64 != derived_public_key_base64 {
         return Err(TunnelError::Other(
             "stored tunnel identity is inconsistent: public key does not match private key".into(),
@@ -276,8 +276,8 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let other_key = SigningKey::generate(&mut OsRng);
         let mut stored = sample_stored_identity(&signing_key);
-        stored.public_key_base64 = base64::engine::general_purpose::STANDARD
-            .encode(other_key.verifying_key().to_bytes());
+        stored.public_key_base64 =
+            base64::engine::general_purpose::STANDARD.encode(other_key.verifying_key().to_bytes());
 
         let err = validate_stored_identity(&stored, &signing_key).unwrap_err();
         assert!(err
@@ -287,10 +287,14 @@ mod tests {
 
     #[test]
     fn resets_identity_for_signature_or_installation_errors() {
-        assert!(should_reset_identity_for_api_error("installation not found"));
+        assert!(should_reset_identity_for_api_error(
+            "installation not found"
+        ));
         assert!(should_reset_identity_for_api_error(
             "claim subdomain failed: signature verification failed"
         ));
-        assert!(!should_reset_identity_for_api_error("share subdomain is not claimed"));
+        assert!(!should_reset_identity_for_api_error(
+            "share subdomain is not claimed"
+        ));
     }
 }

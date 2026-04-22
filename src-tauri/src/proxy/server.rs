@@ -286,6 +286,7 @@ impl ProxyServer {
                 "/_portr/request-logs",
                 get(handlers::portr_recent_request_logs),
             )
+            .route("/_portr/share-runtime", get(handlers::portr_share_runtime))
             .route("/status", get(handlers::get_status))
             // Claude API (支持带前缀和不带前缀两种格式)
             .route("/v1/messages", post(handlers::handle_messages))

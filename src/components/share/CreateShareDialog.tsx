@@ -29,12 +29,21 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { permanentExpiresInSecs } from "@/utils/shareUtils";
+import {
+  DEFAULT_PARALLEL_LIMIT,
+  MIN_PARALLEL_LIMIT,
+  UNLIMITED_PARALLEL_LIMIT,
+  UNLIMITED_TOKEN_LIMIT,
+  isUnlimitedParallelLimit,
+  isUnlimitedTokenLimit,
+  permanentExpiresInSecs,
+} from "@/utils/shareUtils";
 
 interface CreateShareDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   defaultApp?: AppId;
+  ownerEmail?: string | null;
   isSubmitting: boolean;
   onSubmit: (params: CreateShareParams) => Promise<void> | void;
 }
@@ -48,24 +57,31 @@ const EXPIRY_PRESETS = [
 ];
 
 const TOKEN_PRESETS = [10000, 50000, 100000, 500000];
+const DEFAULT_TOKEN_LIMIT = 100000;
 
 export function CreateShareDialog({
   open,
   onOpenChange,
+  ownerEmail,
   isSubmitting,
   onSubmit,
 }: CreateShareDialogProps) {
   const { t } = useTranslation();
   const [confirmFreeOpen, setConfirmFreeOpen] = useState(false);
   const [isPermanent, setIsPermanent] = useState(false);
+  const [lastFiniteTokenLimit, setLastFiniteTokenLimit] =
+    useState(DEFAULT_TOKEN_LIMIT);
+  const [lastFiniteParallelLimit, setLastFiniteParallelLimit] = useState(
+    DEFAULT_PARALLEL_LIMIT,
+  );
 
   const form = useForm<CreateShareFormInput, unknown, CreateShareFormValues>({
     resolver: zodResolver(createShareSchema),
     defaultValues: {
-      name: "Proxy Share",
       description: "",
       forSale: "No",
-      tokenLimit: 100000,
+      tokenLimit: DEFAULT_TOKEN_LIMIT,
+      parallelLimit: DEFAULT_PARALLEL_LIMIT,
       expiresInSecs: 24 * 3600,
       apiKey: "",
       subdomain: "",
@@ -75,23 +91,34 @@ export function CreateShareDialog({
   useEffect(() => {
     if (!open) return;
     form.reset({
-      name: "Proxy Share",
       description: "",
       forSale: "No",
-      tokenLimit: 100000,
+      tokenLimit: DEFAULT_TOKEN_LIMIT,
+      parallelLimit: DEFAULT_PARALLEL_LIMIT,
       expiresInSecs: 24 * 3600,
       apiKey: "",
       subdomain: "",
     });
     setIsPermanent(false);
+    setLastFiniteTokenLimit(DEFAULT_TOKEN_LIMIT);
+    setLastFiniteParallelLimit(DEFAULT_PARALLEL_LIMIT);
   }, [form, open]);
+
+  const tokenLimit = form.watch("tokenLimit") as number;
+  const parallelLimit = form.watch("parallelLimit") as number;
+  const unlimitedTokenLimit = isUnlimitedTokenLimit(tokenLimit);
+  const unlimitedParallelLimit = isUnlimitedParallelLimit(parallelLimit);
+  const tokenLimitField = form.register("tokenLimit", { valueAsNumber: true });
+  const parallelLimitField = form.register("parallelLimit", {
+    valueAsNumber: true,
+  });
 
   const submit = form.handleSubmit(async (values) => {
     await onSubmit({
-      name: values.name,
       description: values.description || undefined,
       forSale: values.forSale,
       tokenLimit: values.tokenLimit,
+      parallelLimit: values.parallelLimit,
       expiresInSecs: values.expiresInSecs,
       apiKey: values.apiKey || undefined,
       subdomain: values.subdomain || undefined,
@@ -108,9 +135,21 @@ export function CreateShareDialog({
 
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
           <div className="space-y-2">
-            <Label htmlFor="share-name">{t("share.name")}</Label>
-            <Input id="share-name" {...form.register("name")} />
-            <FieldError error={form.formState.errors.name?.message} />
+            <Label htmlFor="share-owner-email">
+              {t("share.ownerEmail", { defaultValue: "Owner Email" })}
+            </Label>
+            <Input
+              id="share-owner-email"
+              value={ownerEmail ?? ""}
+              readOnly
+              disabled
+            />
+            <div className="text-xs text-muted-foreground">
+              {t("share.ownerEmailCreateHint", {
+                defaultValue:
+                  "Share 名称会自动使用当前登录邮箱，创建后当前设备不能切换到其他邮箱。",
+              })}
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -147,9 +186,15 @@ export function CreateShareDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="No">{t("share.forSaleOptions.no")}</SelectItem>
-                <SelectItem value="Yes">{t("share.forSaleOptions.yes")}</SelectItem>
-                <SelectItem value="Free">{t("share.forSaleOptions.free")}</SelectItem>
+                <SelectItem value="No">
+                  {t("share.forSaleOptions.no")}
+                </SelectItem>
+                <SelectItem value="Yes">
+                  {t("share.forSaleOptions.yes")}
+                </SelectItem>
+                <SelectItem value="Free">
+                  {t("share.forSaleOptions.free")}
+                </SelectItem>
               </SelectContent>
             </Select>
             <div className="text-xs text-muted-foreground">
@@ -175,11 +220,52 @@ export function CreateShareDialog({
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="share-token-limit">{t("share.tokenLimit")}</Label>
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="share-token-limit">
+                  {t("share.tokenLimit")}
+                </Label>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="share-token-limit-unlimited"
+                    checked={unlimitedTokenLimit}
+                    onCheckedChange={(checked) => {
+                      const next = checked === true;
+                      if (next) {
+                        if (typeof tokenLimit === "number" && tokenLimit > 0) {
+                          setLastFiniteTokenLimit(tokenLimit);
+                        }
+                        form.setValue("tokenLimit", UNLIMITED_TOKEN_LIMIT, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        });
+                        return;
+                      }
+                      form.setValue("tokenLimit", lastFiniteTokenLimit, {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      });
+                    }}
+                  />
+                  <Label
+                    htmlFor="share-token-limit-unlimited"
+                    className="cursor-pointer text-sm font-normal"
+                  >
+                    {t("share.unlimited")}
+                  </Label>
+                </div>
+              </div>
               <Input
                 id="share-token-limit"
                 type="number"
-                {...form.register("tokenLimit", { valueAsNumber: true })}
+                disabled={unlimitedTokenLimit}
+                {...tokenLimitField}
+                onChange={(event) => {
+                  tokenLimitField.onChange(event);
+                  const next = Number.parseInt(event.target.value, 10);
+                  if (Number.isFinite(next) && next > 0) {
+                    setLastFiniteTokenLimit(next);
+                  }
+                }}
               />
               <div className="flex flex-wrap gap-2">
                 {TOKEN_PRESETS.map((preset) => (
@@ -188,13 +274,84 @@ export function CreateShareDialog({
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => form.setValue("tokenLimit", preset)}
+                    disabled={unlimitedTokenLimit}
+                    onClick={() => {
+                      setLastFiniteTokenLimit(preset);
+                      form.setValue("tokenLimit", preset, {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      });
+                    }}
                   >
                     {preset.toLocaleString()}
                   </Button>
                 ))}
               </div>
               <FieldError error={form.formState.errors.tokenLimit?.message} />
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="share-parallel-limit">
+                  {t("share.parallelLimit")}
+                </Label>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="share-parallel-limit-unlimited"
+                    checked={unlimitedParallelLimit}
+                    onCheckedChange={(checked) => {
+                      const next = checked === true;
+                      if (next) {
+                        if (
+                          typeof parallelLimit === "number" &&
+                          parallelLimit >= MIN_PARALLEL_LIMIT
+                        ) {
+                          setLastFiniteParallelLimit(parallelLimit);
+                        }
+                        form.setValue(
+                          "parallelLimit",
+                          UNLIMITED_PARALLEL_LIMIT,
+                          {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          },
+                        );
+                        return;
+                      }
+                      form.setValue("parallelLimit", lastFiniteParallelLimit, {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      });
+                    }}
+                  />
+                  <Label
+                    htmlFor="share-parallel-limit-unlimited"
+                    className="cursor-pointer text-sm font-normal"
+                  >
+                    {t("share.unlimited")}
+                  </Label>
+                </div>
+              </div>
+              <Input
+                id="share-parallel-limit"
+                type="number"
+                min={MIN_PARALLEL_LIMIT}
+                disabled={unlimitedParallelLimit}
+                {...parallelLimitField}
+                onChange={(event) => {
+                  parallelLimitField.onChange(event);
+                  const next = Number.parseInt(event.target.value, 10);
+                  if (Number.isFinite(next) && next >= MIN_PARALLEL_LIMIT) {
+                    setLastFiniteParallelLimit(next);
+                  }
+                }}
+              />
+              <div className="text-xs text-muted-foreground">
+                {t("share.parallelLimitHint")}
+              </div>
+              <FieldError
+                error={form.formState.errors.parallelLimit?.message}
+              />
             </div>
 
             <div className="space-y-2">
@@ -244,7 +401,9 @@ export function CreateShareDialog({
                   {t("share.expiry.permanent")}
                 </Label>
               </div>
-              <FieldError error={form.formState.errors.expiresInSecs?.message} />
+              <FieldError
+                error={form.formState.errors.expiresInSecs?.message}
+              />
             </div>
           </div>
 

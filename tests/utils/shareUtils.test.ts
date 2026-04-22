@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatShareTokenUsage,
   getShareDisplayStatus,
   getShareTunnelRuntimeStatus,
+  getShareUsageRatio,
   isShareActionAllowed,
+  isUnlimitedTokenLimit,
 } from "@/utils/shareUtils";
 import type { ShareRecord, TunnelInfo } from "@/lib/api";
 
 const baseShare: ShareRecord = {
   id: "share-1",
   name: "Demo",
+  ownerEmail: "owner@example.com",
+  sharedWithEmails: [],
   forSale: "No",
   shareToken: "token",
   appType: "proxy",
@@ -16,6 +21,7 @@ const baseShare: ShareRecord = {
   apiKey: "key",
   settingsConfig: null,
   tokenLimit: 1000,
+  parallelLimit: 3,
   tokensUsed: 0,
   requestsCount: 0,
   expiresAt: "2099-12-31T23:59:59Z",
@@ -114,5 +120,17 @@ describe("share utils", () => {
         null,
       ),
     ).toBe(false);
+  });
+
+  it("formats unlimited token limits with infinity and hides ratio", () => {
+    const unlimitedShare = {
+      ...baseShare,
+      tokenLimit: -1,
+      tokensUsed: 1_250_000,
+    };
+
+    expect(isUnlimitedTokenLimit(unlimitedShare.tokenLimit)).toBe(true);
+    expect(formatShareTokenUsage(unlimitedShare)).toBe("1.3M/∞");
+    expect(getShareUsageRatio(unlimitedShare)).toBe(0);
   });
 });

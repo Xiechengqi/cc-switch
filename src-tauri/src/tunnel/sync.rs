@@ -7,8 +7,9 @@ use crate::database::{Database, ShareRecord};
 use crate::provider::Provider;
 use crate::settings;
 use crate::tunnel::config::{
-    ShareSupport, ShareTunnelMetadata, ShareTunnelRequestLog, ShareUpstreamProvider,
-    ShareUpstreamQuota, ShareUpstreamQuotaTier, TunnelConfig,
+    ShareAppRuntimes, ShareRuntimeSnapshot, ShareSupport, ShareTunnelMetadata,
+    ShareTunnelRequestLog, ShareUpstreamProvider, ShareUpstreamQuota, ShareUpstreamQuotaTier,
+    TunnelConfig,
 };
 use crate::tunnel::identity;
 use std::sync::Arc;
@@ -107,10 +108,15 @@ fn build_signed_request_payload<T: serde::Serialize>(
     }))
 }
 
-pub fn schedule_sync_share(share: ShareRecord, db: &Arc<Database>) {
-    let db = Arc::clone(db);
+async fn require_auth_bearer_token() -> Result<String, String> {
+    crate::email_auth::ensure_access_token()
+        .await?
+        .ok_or_else(|| "owner email login is required".to_string())
+}
+
+pub fn schedule_sync_share(share: ShareRecord, _db: &Arc<Database>) {
     tauri::async_runtime::spawn(async move {
-        let metadata = share_metadata_with_runtime(&share, &db).await;
+        let metadata = share_metadata_from_record(&share);
         if let Err(err) = enqueue_op(ShareSyncOp::Upsert(metadata)).await {
             log::debug!("[TunnelSync] enqueue upsert failed: {err}");
         }
@@ -141,23 +147,40 @@ pub(crate) async fn query_share_support(db: &Database) -> ShareSupport {
     }
 }
 
-pub(crate) async fn share_metadata_with_runtime(
+pub(crate) async fn build_share_runtime_snapshot(
     share: &ShareRecord,
     db: &Database,
-) -> ShareTunnelMetadata {
+) -> ShareRuntimeSnapshot {
     let support = query_share_support(db).await;
-    let upstream_provider = build_upstream_provider_snapshot(db, &support).await;
-    let mut metadata = share_metadata_from_record(share);
-    metadata.support = support;
-    metadata.upstream_provider = upstream_provider;
-    metadata
+    let app_runtimes = build_all_upstream_provider_snapshots(db, &support).await;
+    ShareRuntimeSnapshot {
+        share_id: share.id.clone(),
+        queried_at: chrono::Utc::now().timestamp(),
+        support,
+        app_runtimes,
+    }
 }
 
-async fn build_upstream_provider_snapshot(
+async fn build_all_upstream_provider_snapshots(
     db: &Database,
     support: &ShareSupport,
+) -> ShareAppRuntimes {
+    ShareAppRuntimes {
+        claude: build_upstream_provider_snapshot_for_app(db, support.claude, AppType::Claude).await,
+        codex: build_upstream_provider_snapshot_for_app(db, support.codex, AppType::Codex).await,
+        gemini: build_upstream_provider_snapshot_for_app(db, support.gemini, AppType::Gemini).await,
+    }
+}
+
+async fn build_upstream_provider_snapshot_for_app(
+    db: &Database,
+    enabled: bool,
+    app: AppType,
 ) -> Option<ShareUpstreamProvider> {
-    let app = choose_upstream_app(support)?;
+    if !enabled {
+        return None;
+    }
+
     let provider_id = match crate::settings::get_effective_current_provider(db, &app) {
         Ok(Some(id)) => id,
         Ok(None) => {
@@ -195,18 +218,6 @@ async fn build_upstream_provider_snapshot(
         account_email: None,
         quota: None,
     })
-}
-
-fn choose_upstream_app(support: &ShareSupport) -> Option<AppType> {
-    if support.codex {
-        Some(AppType::Codex)
-    } else if support.claude {
-        Some(AppType::Claude)
-    } else if support.gemini {
-        Some(AppType::Gemini)
-    } else {
-        None
-    }
 }
 
 fn unknown_upstream_provider(app: &str) -> ShareUpstreamProvider {
@@ -366,12 +377,16 @@ async fn claim_share_subdomain_inner(
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
-    let metadata = share_metadata_with_runtime(share, db).await;
+    let metadata = share_metadata_from_record(share);
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
     let request_payload =
         build_signed_request_payload(&identity, "share_claim_subdomain", "share", &metadata)?;
+    let bearer_token = require_auth_bearer_token().await?;
     let resp = send_portr_request(
-        client.post(&url).json(&request_payload),
+        client
+            .post(&url)
+            .bearer_auth(bearer_token)
+            .json(&request_payload),
         "claim subdomain",
         &url,
     )
@@ -488,8 +503,12 @@ async fn sync_recent_share_request_logs_inner(
     );
     let request_payload =
         build_signed_request_payload(&identity, "share_request_logs_batch_sync", "logs", &logs)?;
+    let bearer_token = require_auth_bearer_token().await?;
     let resp = send_portr_request(
-        client.post(&url).json(&request_payload),
+        client
+            .post(&url)
+            .bearer_auth(bearer_token)
+            .json(&request_payload),
         "sync share request logs",
         &url,
     )
@@ -507,7 +526,10 @@ async fn sync_recent_share_request_logs_inner(
             message
         );
         identity::reset_identity().map_err(|e| e.to_string())?;
-        return Box::pin(sync_recent_share_request_logs_inner(db, share_id, limit, false)).await;
+        return Box::pin(sync_recent_share_request_logs_inner(
+            db, share_id, limit, false,
+        ))
+        .await;
     }
 
     Err(format!(
@@ -527,8 +549,12 @@ async fn sync_share_metadata_now_inner(
         .map_err(|e| e.to_string())?;
     let url = format!("{}/v1/shares/sync", config.get_server_addr());
     let request_payload = build_signed_request_payload(&identity, "share_sync", "share", &share)?;
+    let bearer_token = require_auth_bearer_token().await?;
     let resp = send_portr_request(
-        client.post(&url).json(&request_payload),
+        client
+            .post(&url)
+            .bearer_auth(bearer_token)
+            .json(&request_payload),
         "sync share metadata",
         &url,
     )
@@ -623,6 +649,7 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
     };
 
     if !ops.is_empty() {
+        let bearer_token = require_auth_bearer_token().await?;
         let payload_ops = ops
             .iter()
             .map(|op| match op {
@@ -641,7 +668,10 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
         let request_payload =
             build_signed_request_payload(&identity, "share_batch_sync", "ops", &payload_ops)?;
         let resp = send_portr_request(
-            client.post(&url).json(&request_payload),
+            client
+                .post(&url)
+                .bearer_auth(&bearer_token)
+                .json(&request_payload),
             "batch sync shares",
             &url,
         )
@@ -666,7 +696,9 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
                     guard.pending.insert(key, op);
                 }
                 for log in request_logs {
-                    guard.pending_request_logs.insert(log.request_id.clone(), log);
+                    guard
+                        .pending_request_logs
+                        .insert(log.request_id.clone(), log);
                 }
                 return Box::pin(flush_pending_inner(false)).await;
             }
@@ -679,6 +711,7 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
     }
 
     if !request_logs.is_empty() {
+        let bearer_token = require_auth_bearer_token().await?;
         let url = format!(
             "{}/v1/share-request-logs/batch-sync",
             config.get_server_addr()
@@ -690,7 +723,10 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
             &request_logs,
         )?;
         let resp = send_portr_request(
-            client.post(&url).json(&request_payload),
+            client
+                .post(&url)
+                .bearer_auth(&bearer_token)
+                .json(&request_payload),
             "batch sync share request logs",
             &url,
         )
@@ -708,7 +744,9 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
                 let state = global_state();
                 let mut guard = state.lock().await;
                 for log in request_logs {
-                    guard.pending_request_logs.insert(log.request_id.clone(), log);
+                    guard
+                        .pending_request_logs
+                        .insert(log.request_id.clone(), log);
                 }
                 return Box::pin(flush_pending_inner(false)).await;
             }
@@ -732,21 +770,19 @@ fn load_config() -> TunnelConfig {
 }
 
 pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMetadata {
-    let token = if share.for_sale == "Free" {
-        share.share_token.clone()
-    } else {
-        mask_share_token(&share.share_token)
-    };
     ShareTunnelMetadata {
         share_id: share.id.clone(),
         share_name: share.name.clone(),
+        owner_email: share.owner_email.clone(),
+        shared_with_emails: share.shared_with_emails.clone(),
         description: share.description.clone(),
         for_sale: share.for_sale.clone(),
         subdomain: share.subdomain.clone().unwrap_or_default(),
-        share_token: token,
+        share_token: share.share_token.clone(),
         app_type: share.app_type.clone(),
         provider_id: share.provider_id.clone(),
         token_limit: share.token_limit,
+        parallel_limit: share.parallel_limit,
         tokens_used: share.tokens_used,
         requests_count: share.requests_count,
         share_status: share.status.clone(),
@@ -754,14 +790,6 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         expires_at: share.expires_at.clone(),
         support: Default::default(),
         upstream_provider: None,
+        app_runtimes: Default::default(),
     }
-}
-
-fn mask_share_token(token: &str) -> String {
-    let mut chars = token.chars();
-    let Some(first) = chars.next() else {
-        return "***".to_string();
-    };
-    let last = token.chars().last().unwrap_or(first);
-    format!("{first}***{last}")
 }

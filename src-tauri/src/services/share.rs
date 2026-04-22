@@ -5,16 +5,29 @@ use std::sync::Arc;
 pub struct ShareService;
 
 impl ShareService {
+    pub const UNLIMITED_TOKEN_LIMIT: i64 = -1;
+    pub const UNLIMITED_PARALLEL_LIMIT: i64 = -1;
+    pub const DEFAULT_PARALLEL_LIMIT: i64 = 3;
+    pub const MIN_PARALLEL_LIMIT: i64 = 3;
     pub const MAX_DESCRIPTION_CHARS: usize = 200;
     pub const FOR_SALE_NO: &'static str = "No";
     pub const FOR_SALE_YES: &'static str = "Yes";
     pub const FOR_SALE_FREE: &'static str = "Free";
 
+    pub fn is_unlimited_token_limit(token_limit: i64) -> bool {
+        token_limit == Self::UNLIMITED_TOKEN_LIMIT
+    }
+
+    pub fn is_unlimited_parallel_limit(parallel_limit: i64) -> bool {
+        parallel_limit == Self::UNLIMITED_PARALLEL_LIMIT
+    }
+
     pub fn prepare_create(
-        name: String,
+        owner_email: String,
         description: Option<String>,
         for_sale: String,
         token_limit: i64,
+        parallel_limit: i64,
         expires_in_secs: i64,
         subdomain: Option<String>,
         api_key: Option<String>,
@@ -32,10 +45,14 @@ impl ShareService {
         let expires_at = now + chrono::Duration::seconds(expires_in_secs);
         let description = normalize_description(description)?;
         let for_sale = normalize_for_sale(&for_sale)?;
+        let parallel_limit = normalize_parallel_limit(parallel_limit)?;
+        let owner_email = normalize_email(&owner_email)?;
 
         let record = ShareRecord {
             id,
-            name,
+            name: owner_email.clone(),
+            owner_email,
+            shared_with_emails: Vec::new(),
             description,
             for_sale,
             share_token,
@@ -44,6 +61,7 @@ impl ShareService {
             api_key: String::new(),
             settings_config: None,
             token_limit,
+            parallel_limit,
             tokens_used: 0,
             requests_count: 0,
             expires_at: expires_at.to_rfc3339(),
@@ -131,7 +149,9 @@ impl ShareService {
         }
 
         // Check token limit
-        if share.tokens_used >= share.token_limit {
+        if !Self::is_unlimited_token_limit(share.token_limit)
+            && share.tokens_used >= share.token_limit
+        {
             let _ = db.update_share_status(&share.id, "exhausted");
             return Ok(None);
         }
@@ -151,7 +171,7 @@ impl ShareService {
         let new_used = db.increment_share_tokens(share_id, tokens)?;
 
         if let Ok(Some(share)) = db.get_share_by_id(share_id) {
-            if new_used >= share.token_limit {
+            if !Self::is_unlimited_token_limit(share.token_limit) && new_used >= share.token_limit {
                 let _ = db.update_share_status(share_id, "exhausted");
             }
         }
@@ -184,8 +204,10 @@ impl ShareService {
         share_id: &str,
         token_limit: i64,
     ) -> Result<ShareRecord, AppError> {
-        if token_limit <= 0 {
-            return Err(AppError::Message("Token limit 必须大于 0".to_string()));
+        if token_limit <= 0 && !Self::is_unlimited_token_limit(token_limit) {
+            return Err(AppError::Message(
+                "Token limit 必须大于 0，或设为 -1 表示无上限".to_string(),
+            ));
         }
 
         let share = db
@@ -194,12 +216,26 @@ impl ShareService {
 
         db.update_share_token_limit(share_id, token_limit)?;
 
-        if share.tokens_used >= token_limit {
+        if !Self::is_unlimited_token_limit(token_limit) && share.tokens_used >= token_limit {
             db.update_share_status(share_id, "exhausted")?;
         } else if share.status == "exhausted" {
             db.update_share_status(share_id, "paused")?;
         }
 
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
+    pub fn update_parallel_limit(
+        db: &Arc<Database>,
+        share_id: &str,
+        parallel_limit: i64,
+    ) -> Result<ShareRecord, AppError> {
+        let normalized = normalize_parallel_limit(parallel_limit)?;
+        db.update_share_parallel_limit(share_id, normalized)?;
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
@@ -293,6 +329,22 @@ impl ShareService {
         Ok(updated)
     }
 
+    pub fn update_acl(
+        db: &Arc<Database>,
+        share_id: &str,
+        owner_email: &str,
+        shared_with_emails: Vec<String>,
+    ) -> Result<ShareRecord, AppError> {
+        let owner_email = normalize_email(owner_email)?;
+        let shared_with_emails = normalize_email_list(shared_with_emails, &owner_email)?;
+        db.update_share_acl(share_id, &owner_email, &shared_with_emails)?;
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
     pub fn cleanup_expired(db: &Arc<Database>) -> Result<u32, AppError> {
         db.expire_shares()
     }
@@ -358,6 +410,17 @@ fn normalize_api_key(value: &str) -> Result<String, AppError> {
     Ok(value.to_string())
 }
 
+fn normalize_parallel_limit(value: i64) -> Result<i64, AppError> {
+    if ShareService::is_unlimited_parallel_limit(value) || value >= ShareService::MIN_PARALLEL_LIMIT
+    {
+        return Ok(value);
+    }
+    Err(AppError::Message(format!(
+        "最大并发数必须大于等于 {}，或设为 -1 表示无上限",
+        ShareService::MIN_PARALLEL_LIMIT
+    )))
+}
+
 fn normalize_description(description: Option<String>) -> Result<Option<String>, AppError> {
     let Some(description) = description else {
         return Ok(None);
@@ -387,4 +450,27 @@ fn normalize_for_sale(value: &str) -> Result<String, AppError> {
             "For Sale 只能是 Yes、No 或 Free".to_string(),
         )),
     }
+}
+
+fn normalize_email(value: &str) -> Result<String, AppError> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty() || !value.contains('@') {
+        return Err(AppError::Message("邮箱格式无效".to_string()));
+    }
+    Ok(value)
+}
+
+fn normalize_email_list(
+    values: Vec<String>,
+    owner_email: &str,
+) -> Result<Vec<String>, AppError> {
+    let mut result = Vec::new();
+    for value in values {
+        let email = normalize_email(&value)?;
+        if email == owner_email || result.contains(&email) {
+            continue;
+        }
+        result.push(email);
+    }
+    Ok(result)
 }

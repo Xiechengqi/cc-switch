@@ -11,8 +11,11 @@ import { ClaudeIcon, CodexIcon } from "@/components/BrandIcons";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
 import { ClaudeOAuthSection } from "@/components/providers/forms/ClaudeOAuthSection";
+import { ShareEmailLoginCard } from "@/components/settings/ShareEmailLoginCard";
 import { settingsApi } from "@/lib/api";
-import { useSettingsQuery } from "@/lib/query";
+import {
+  useSettingsQuery,
+} from "@/lib/query";
 import {
   DEFAULT_OAUTH_QUOTA_REFRESH_INTERVAL_MINUTES,
   getOauthQuotaRefreshIntervalMinutes,
@@ -144,6 +147,8 @@ export function AuthCenterPanel() {
           </div>
         </div>
       </section>
+
+      <ShareEmailLoginCard />
 
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">
         <div className="mb-4 flex items-center gap-3">

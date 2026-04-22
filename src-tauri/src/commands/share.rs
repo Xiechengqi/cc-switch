@@ -1,4 +1,5 @@
 use crate::database::ShareRecord;
+use crate::email_auth;
 use crate::error::AppError;
 use crate::proxy::ProxyConfig;
 use crate::services::share::ShareService;
@@ -12,10 +13,10 @@ use tokio::time::{timeout, Duration};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateShareParams {
-    pub name: String,
     pub description: Option<String>,
     pub for_sale: String,
     pub token_limit: i64,
+    pub parallel_limit: i64,
     pub expires_in_secs: i64,
     pub subdomain: Option<String>,
     pub api_key: Option<String>,
@@ -26,6 +27,13 @@ pub struct CreateShareParams {
 pub struct UpdateShareTokenLimitParams {
     pub share_id: String,
     pub token_limit: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateShareParallelLimitParams {
+    pub share_id: String,
+    pub parallel_limit: i64,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +71,13 @@ pub struct UpdateShareExpirationParams {
     pub expires_at: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateShareAclParams {
+    pub share_id: String,
+    pub shared_with_emails: Vec<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectInfo {
@@ -76,20 +91,70 @@ pub async fn create_share(
     state: State<'_, AppState>,
     params: CreateShareParams,
 ) -> Result<ShareRecord, String> {
-    let share = ShareService::prepare_create(
-        params.name,
-        params.description,
-        params.for_sale,
-        params.token_limit,
-        params.expires_in_secs,
-        params.subdomain,
-        params.api_key,
-    )
-    .map_err(|e: AppError| e.to_string())?;
-    crate::tunnel::sync::claim_share_subdomain(&share, &state.db)
-        .await
-        .map_err(|e| format!("claim subdomain failed: {e}"))?;
+    let owner_email = require_authenticated_email(&state.db)?;
+    let requested_subdomain = params.subdomain.clone();
+    let mut last_claim_error = None;
+    let mut share = None;
+
+    for _ in 0..5 {
+        let candidate = ShareService::prepare_create(
+            owner_email.clone(),
+            params.description.clone(),
+            params.for_sale.clone(),
+            params.token_limit,
+            params.parallel_limit,
+            params.expires_in_secs,
+            requested_subdomain.clone(),
+            params.api_key.clone(),
+        )
+        .map_err(|e: AppError| e.to_string())?;
+
+        match crate::tunnel::sync::claim_share_subdomain(&candidate, &state.db).await {
+            Ok(()) => {
+                share = Some(candidate);
+                break;
+            }
+            Err(err)
+                if requested_subdomain.is_none()
+                    && err.contains("subdomain already claimed") =>
+            {
+                last_claim_error = Some(err);
+                continue;
+            }
+            Err(err) => {
+                return Err(format!("claim subdomain failed: {err}"));
+            }
+        }
+    }
+
+    let share = share.ok_or_else(|| {
+        format!(
+            "claim subdomain failed: {}",
+            last_claim_error.unwrap_or_else(|| "unable to allocate an available subdomain".to_string())
+        )
+    })?;
     ShareService::create(&state.db, share).map_err(|e: AppError| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_share_acl(
+    state: State<'_, AppState>,
+    params: UpdateShareAclParams,
+) -> Result<ShareRecord, String> {
+    let owner_email = require_authenticated_email(&state.db)?;
+    let share = ShareService::get_detail(&state.db, &params.share_id)
+        .map_err(|e: AppError| e.to_string())?
+        .ok_or_else(|| format!("Share not found: {}", params.share_id))?;
+    if share.owner_email != owner_email {
+        return Err("只有当前 share 的 owner 才能修改分享名单".to_string());
+    }
+    ShareService::update_acl(
+        &state.db,
+        &params.share_id,
+        &owner_email,
+        params.shared_with_emails,
+    )
+    .map_err(|e: AppError| e.to_string())
 }
 
 #[tauri::command]
@@ -133,6 +198,15 @@ pub fn update_share_token_limit(
     params: UpdateShareTokenLimitParams,
 ) -> Result<ShareRecord, String> {
     ShareService::update_token_limit(&state.db, &params.share_id, params.token_limit)
+        .map_err(|e: AppError| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_share_parallel_limit(
+    state: State<'_, AppState>,
+    params: UpdateShareParallelLimitParams,
+) -> Result<ShareRecord, String> {
+    ShareService::update_parallel_limit(&state.db, &params.share_id, params.parallel_limit)
         .map_err(|e: AppError| e.to_string())
 }
 
@@ -238,7 +312,7 @@ pub async fn disable_share(state: State<'_, AppState>, share_id: String) -> Resu
     ShareService::pause(&state.db, &share_id).map_err(|e: AppError| e.to_string())?;
 
     if let Ok(Some(share)) = state.db.get_share_by_id(&share_id) {
-        let metadata = crate::tunnel::sync::share_metadata_with_runtime(&share, &state.db).await;
+        let metadata = crate::tunnel::sync::share_metadata_from_record(&share);
         if let Err(err) = crate::tunnel::sync::sync_share_metadata_now(metadata).await {
             log::warn!(
                 "[Share] immediate remote sync after disable failed for {}: {}",
@@ -275,26 +349,31 @@ pub async fn start_share_tunnel(
 }
 
 pub async fn restore_active_share_tunnel(state: &AppState) -> Result<(), AppError> {
-    let Some(share) = ShareService::list(&state.db)?.into_iter().next() else {
-        return Ok(());
-    };
-
-    if share.status != "active" {
-        return Ok(());
-    }
-
+    for share in ShareService::list(&state.db)?
+        .into_iter()
+        .filter(|share| share.status == "active")
     {
-        let mgr = state.tunnel_manager.read().await;
-        if mgr.get_info(&share.id).is_some() {
-            return Ok(());
+        let already_running = {
+            let mgr = state.tunnel_manager.read().await;
+            mgr.get_info(&share.id).is_some()
+        };
+        if already_running {
+            continue;
+        }
+
+        log::info!(
+            "[Share] Restoring active share tunnel for share_id={}",
+            share.id
+        );
+        if let Err(err) = start_share_tunnel_inner(state, &share.id).await {
+            log::warn!(
+                "[Share] Failed to restore active share tunnel for share_id={}: {}",
+                share.id,
+                err
+            );
         }
     }
 
-    log::info!(
-        "[Share] Restoring active share tunnel for share_id={}",
-        share.id
-    );
-    start_share_tunnel_inner(state, &share.id).await?;
     Ok(())
 }
 
@@ -316,8 +395,7 @@ async fn start_share_tunnel_inner(
     let local_addr = current_proxy_local_addr(state).await?;
     ensure_proxy_reachable(&local_addr).await?;
 
-    let mut share_metadata =
-        crate::tunnel::sync::share_metadata_with_runtime(&share, &state.db).await;
+    let mut share_metadata = crate::tunnel::sync::share_metadata_from_record(&share);
     share_metadata.subdomain = subdomain.clone();
 
     let req = TunnelRequest {
@@ -398,6 +476,29 @@ pub fn get_share_connect_info(
         api_key: share.share_token,
         subdomain,
     })
+}
+
+fn require_authenticated_email(db: &std::sync::Arc<crate::database::Database>) -> Result<String, String> {
+    let status = email_auth::get_status()?;
+    if !status.authenticated {
+        return Err("创建 share 前请先完成邮箱验证码登录".to_string());
+    }
+    let email = status
+        .email
+        .ok_or_else(|| "邮箱登录状态异常，请重新登录".to_string())?;
+    if let Some(existing_share) = ShareService::list(db)
+        .map_err(|e: AppError| e.to_string())?
+        .into_iter()
+        .next()
+    {
+        if existing_share.owner_email != email {
+            return Err(format!(
+                "当前设备已绑定邮箱 {}，不能切换到 {}",
+                existing_share.owner_email, email
+            ));
+        }
+    }
+    Ok(email)
 }
 
 #[tauri::command]

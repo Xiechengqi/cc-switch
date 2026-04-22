@@ -300,6 +300,20 @@ export function useUpdateShareTokenLimitMutation() {
   );
 }
 
+export function useUpdateShareParallelLimitMutation() {
+  return useShareActionMutation(
+    ({ shareId, parallelLimit }: { shareId: string; parallelLimit: number }) =>
+      shareApi.updateParallelLimit({ shareId, parallelLimit }),
+    {
+      successKey: "share.toast.updateParallelLimitSuccess",
+      successDefault: "最大并发数已更新",
+      errorKey: "share.toast.updateParallelLimitError",
+      errorDefault: "更新最大并发数失败: {{error}}",
+    },
+    ({ shareId }) => shareId,
+  );
+}
+
 export function useUpdateShareSubdomainMutation() {
   return useShareActionMutation(
     ({ shareId, subdomain }: { shareId: string; subdomain: string }) =>
@@ -370,6 +384,25 @@ export function useUpdateShareExpirationMutation() {
       successDefault: "到期时间已更新",
       errorKey: "share.toast.updateExpirationError",
       errorDefault: "更新到期时间失败: {{error}}",
+    },
+    ({ shareId }) => shareId,
+  );
+}
+
+export function useUpdateShareAclMutation() {
+  return useShareActionMutation(
+    ({
+      shareId,
+      sharedWithEmails,
+    }: {
+      shareId: string;
+      sharedWithEmails: string[];
+    }) => shareApi.updateAcl({ shareId, sharedWithEmails }),
+    {
+      successKey: "share.toast.updateAclSuccess",
+      successDefault: "分享名单已更新",
+      errorKey: "share.toast.updateAclError",
+      errorDefault: "更新分享名单失败: {{error}}",
     },
     ({ shareId }) => shareId,
   );

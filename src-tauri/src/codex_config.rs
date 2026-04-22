@@ -11,6 +11,8 @@ use std::fs;
 use std::path::Path;
 use toml_edit::DocumentMut;
 
+const PROXY_MODEL_PROVIDER_KEY: &str = "cc-switch";
+
 /// 获取 Codex 配置目录路径
 pub fn get_codex_config_dir() -> PathBuf {
     if let Some(custom) = crate::settings::get_codex_override_dir() {
@@ -201,6 +203,70 @@ pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Resu
             }
         }
         _ => return Err(format!("unsupported field: {field}")),
+    }
+
+    Ok(doc.to_string())
+}
+
+/// Update `config.toml` for live proxy takeover.
+///
+/// Newer Codex CLI builds resolve `base_url` from the selected
+/// `[model_providers.<model_provider>]` entry. Older configs may only have a
+/// top-level `base_url`, so proxy takeover writes both locations. If the user
+/// has no selected provider yet, create a dedicated `cc-switch` provider and
+/// select it for the live config. The original file is restored from backup
+/// when proxy mode stops.
+pub fn update_codex_toml_proxy_base_url(toml_str: &str, value: &str) -> Result<String, String> {
+    let mut doc = if toml_str.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        toml_str
+            .parse::<DocumentMut>()
+            .map_err(|e| format!("TOML parse error: {e}"))?
+    };
+
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return update_codex_toml_field(toml_str, "base_url", "");
+    }
+
+    doc["base_url"] = toml_edit::value(trimmed);
+
+    let provider_key = doc
+        .get("model_provider")
+        .and_then(|item| item.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            doc["model_provider"] = toml_edit::value(PROXY_MODEL_PROVIDER_KEY);
+            PROXY_MODEL_PROVIDER_KEY.to_string()
+        });
+
+    if doc.get("model_providers").is_none() || !doc["model_providers"].is_table() {
+        doc["model_providers"] = toml_edit::table();
+    }
+
+    let Some(model_providers) = doc["model_providers"].as_table_mut() else {
+        return Err("model_providers is not a table".to_string());
+    };
+
+    if !model_providers.contains_key(&provider_key) || !model_providers[&provider_key].is_table() {
+        model_providers[&provider_key] = toml_edit::table();
+    }
+
+    let Some(provider_table) = model_providers[&provider_key].as_table_mut() else {
+        return Err(format!("model_providers.{provider_key} is not a table"));
+    };
+
+    if !provider_table.contains_key("name") {
+        provider_table["name"] = toml_edit::value(provider_key.clone());
+    }
+    provider_table["base_url"] = toml_edit::value(trimmed);
+    if !provider_table.contains_key("wire_api") {
+        provider_table["wire_api"] = toml_edit::value("responses");
+    }
+    if !provider_table.contains_key("requires_openai_auth") {
+        provider_table["requires_openai_auth"] = toml_edit::value(true);
     }
 
     Ok(doc.to_string())

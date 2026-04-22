@@ -14,14 +14,17 @@ import {
   useConfigureTunnelMutation,
   useCreateShareMutation,
   useDeleteShareMutation,
+  useEmailAuthStatusQuery,
   useDisableShareMutation,
   useEnableShareMutation,
   useResetShareUsageMutation,
+  useUpdateShareAclMutation,
   useSharesQuery,
   useUpdateShareApiKeyMutation,
   useUpdateShareDescriptionMutation,
   useUpdateShareExpirationMutation,
   useUpdateShareForSaleMutation,
+  useUpdateShareParallelLimitMutation,
   useUpdateShareSubdomainMutation,
   useUpdateShareTokenLimitMutation,
 } from "@/lib/query";
@@ -32,6 +35,7 @@ import {
   getTunnelConfigFromSettings,
   isTunnelConfigured,
 } from "@/utils/shareUtils";
+import { ShareEmailLoginCard } from "@/components/settings/ShareEmailLoginCard";
 import { ShareConnectDialog } from "./ShareConnectDialog";
 import { CreateShareDialog } from "./CreateShareDialog";
 import { ShareDetailDrawer } from "./ShareDetailDrawer";
@@ -47,6 +51,7 @@ export function SharePage(_props: SharePageProps) {
   const queryClient = useQueryClient();
   const { data: shares = [], isLoading, error, refetch } = useSharesQuery();
   const { data: settings } = useSettingsQuery();
+  const { data: emailAuthStatus } = useEmailAuthStatusQuery();
   const { data: proxyStatus } = useProxyStatus();
   const tunnelConfigured = useMemo(
     () => isTunnelConfigured(settings),
@@ -73,6 +78,8 @@ export function SharePage(_props: SharePageProps) {
   const updateDescriptionMutation = useUpdateShareDescriptionMutation();
   const updateForSaleMutation = useUpdateShareForSaleMutation();
   const updateExpirationMutation = useUpdateShareExpirationMutation();
+  const updateAclMutation = useUpdateShareAclMutation();
+  const updateParallelLimitMutation = useUpdateShareParallelLimitMutation();
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
   const updateTokenLimitMutation = useUpdateShareTokenLimitMutation();
   const configureTunnelMutation = useConfigureTunnelMutation();
@@ -104,10 +111,19 @@ export function SharePage(_props: SharePageProps) {
   const connectShare =
     shares.find((share) => share.id === connectShareId) ?? null;
   const primaryShare = shares[0] ?? null;
+  const shouldShowLoginOnly =
+    !primaryShare && !emailAuthStatus?.authenticated;
 
   const handleCreate = async (
     params: Parameters<typeof createMutation.mutateAsync>[0],
   ) => {
+    if (!emailAuthStatus?.authenticated || !emailAuthStatus.email) {
+      throw new Error(
+        t("share.emailLoginRequired", {
+          defaultValue: "请先在 Auth Center 完成邮箱登录，再创建 share",
+        }),
+      );
+    }
     await createMutation.mutateAsync(params);
     setCreateOpen(false);
   };
@@ -138,6 +154,16 @@ export function SharePage(_props: SharePageProps) {
       }),
     ]);
   };
+
+  if (shouldShowLoginOnly) {
+    return (
+      <div className="px-6 py-4">
+        <div className="mx-auto max-w-3xl pb-10">
+          <ShareEmailLoginCard />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="px-6 py-4">
@@ -185,6 +211,7 @@ export function SharePage(_props: SharePageProps) {
       <CreateShareDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
+        ownerEmail={emailAuthStatus?.email ?? primaryShare?.ownerEmail ?? null}
         isSubmitting={createMutation.isPending}
         onSubmit={handleCreate}
       />
@@ -239,11 +266,27 @@ export function SharePage(_props: SharePageProps) {
             }),
           )
         }
+        onUpdateAcl={(share, sharedWithEmails) =>
+          void runShareAction(share, () =>
+            updateAclMutation.mutateAsync({
+              shareId: share.id,
+              sharedWithEmails,
+            }),
+          )
+        }
         onUpdateTokenLimit={(share, tokenLimit) =>
           void runShareAction(share, () =>
             updateTokenLimitMutation.mutateAsync({
               shareId: share.id,
               tokenLimit,
+            }),
+          )
+        }
+        onUpdateParallelLimit={(share, parallelLimit) =>
+          void runShareAction(share, () =>
+            updateParallelLimitMutation.mutateAsync({
+              shareId: share.id,
+              parallelLimit,
             }),
           )
         }

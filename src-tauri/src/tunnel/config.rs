@@ -63,9 +63,9 @@ pub fn is_share_tunnel_url(url_or_host: &str) -> bool {
         return false;
     };
 
-    share_router_domains().into_iter().any(|domain| {
-        authority == domain || authority.ends_with(&format!(".{domain}"))
-    })
+    share_router_domains()
+        .into_iter()
+        .any(|domain| authority == domain || authority.ends_with(&format!(".{domain}")))
 }
 
 fn share_router_domains() -> Vec<String> {
@@ -183,11 +183,34 @@ pub struct ShareUpstreamProvider {
     pub quota: Option<ShareUpstreamQuota>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareAppRuntimes {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<ShareUpstreamProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<ShareUpstreamProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini: Option<ShareUpstreamProvider>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareRuntimeSnapshot {
+    pub share_id: String,
+    pub queried_at: i64,
+    pub support: ShareSupport,
+    pub app_runtimes: ShareAppRuntimes,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareTunnelMetadata {
     pub share_id: String,
     pub share_name: String,
+    pub owner_email: String,
+    #[serde(default)]
+    pub shared_with_emails: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub for_sale: String,
@@ -197,6 +220,7 @@ pub struct ShareTunnelMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
     pub token_limit: i64,
+    pub parallel_limit: i64,
     pub tokens_used: i64,
     pub requests_count: i64,
     pub share_status: String,
@@ -206,6 +230,8 @@ pub struct ShareTunnelMetadata {
     pub support: ShareSupport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_provider: Option<ShareUpstreamProvider>,
+    #[serde(default)]
+    pub app_runtimes: ShareAppRuntimes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,6 +299,8 @@ mod tests {
         let metadata = ShareTunnelMetadata {
             share_id: "share-1".to_string(),
             share_name: "Test".to_string(),
+            owner_email: "owner@example.com".to_string(),
+            shared_with_emails: vec!["friend@example.com".to_string()],
             description: None,
             for_sale: "No".to_string(),
             subdomain: "demo".to_string(),
@@ -280,6 +308,7 @@ mod tests {
             app_type: "codex".to_string(),
             provider_id: None,
             token_limit: 100,
+            parallel_limit: 3,
             tokens_used: 0,
             requests_count: 0,
             share_status: "active".to_string(),
@@ -287,6 +316,7 @@ mod tests {
             expires_at: "2026-04-22T00:00:00Z".to_string(),
             support: ShareSupport::default(),
             upstream_provider: None,
+            app_runtimes: ShareAppRuntimes::default(),
         };
 
         let value = serde_json::to_value(&metadata).expect("serialize share metadata");
@@ -295,11 +325,14 @@ mod tests {
             json!({
                 "shareId": "share-1",
                 "shareName": "Test",
+                "ownerEmail": "owner@example.com",
+                "sharedWithEmails": ["friend@example.com"],
                 "forSale": "No",
                 "subdomain": "demo",
                 "shareToken": "token",
                 "appType": "codex",
                 "tokenLimit": 100,
+                "parallelLimit": 3,
                 "tokensUsed": 0,
                 "requestsCount": 0,
                 "shareStatus": "active",
@@ -309,7 +342,8 @@ mod tests {
                     "claude": false,
                     "codex": false,
                     "gemini": false
-                }
+                },
+                "appRuntimes": {}
             })
         );
     }

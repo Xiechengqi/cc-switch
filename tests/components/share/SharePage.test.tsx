@@ -3,7 +3,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, beforeEach } from "vitest";
 import { SharePage } from "@/components/share";
 import { createTestQueryClient } from "../../utils/testQueryClient";
-import { setSettings, setShares } from "../../msw/state";
+import {
+  setEmailAuthSession,
+  setEmailAuthStatus,
+  setSettings,
+  setShares,
+} from "../../msw/state";
 
 const renderPage = () => {
   const client = createTestQueryClient();
@@ -19,10 +24,23 @@ describe("SharePage", () => {
     setSettings({
       portrDomain: "server.example.com",
     });
+    setEmailAuthStatus({
+      authenticated: false,
+      email: null,
+      expiresAt: null,
+    });
+    setEmailAuthSession({
+      authenticated: false,
+      user: null,
+      expiresAt: null,
+      installationOwnerEmail: null,
+    });
     setShares([
       {
         id: "share-1",
         name: "Alpha Share",
+        ownerEmail: "alpha@example.com",
+        sharedWithEmails: [],
         forSale: "No",
         shareToken: "token-1",
         appType: "proxy",
@@ -30,6 +48,7 @@ describe("SharePage", () => {
         apiKey: "",
         settingsConfig: null,
         tokenLimit: 1000,
+        parallelLimit: 3,
         tokensUsed: 300,
         requestsCount: 2,
         expiresAt: "2026-05-01T00:00:00.000Z",
@@ -49,5 +68,18 @@ describe("SharePage", () => {
       expect(screen.getByText("Alpha Share")).toBeInTheDocument(),
     );
     expect(screen.getByText("Alpha Share")).toBeInTheDocument();
+  });
+
+  it("shows only share email login when no share is bound and user is unauthenticated", async () => {
+    setShares([]);
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Share Email Login")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Share Email Login")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha Share")).not.toBeInTheDocument();
+    expect(screen.queryByText("Router & Tunnel")).not.toBeInTheDocument();
   });
 });

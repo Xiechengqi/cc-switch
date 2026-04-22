@@ -155,6 +155,7 @@ impl TunnelManager {
         Ok(self.tunnels[id].info.clone())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn reconnect_loop(
         mut reconnect_rx: mpsc::Receiver<()>,
         tunnel: Arc<RwLock<SshTunnel>>,

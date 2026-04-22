@@ -8,7 +8,7 @@ pub enum ShareGuardResult {
     /// Not a share request (no X-Share-Token header) — proceed with normal proxy.
     NotShareRequest,
     /// Valid share — contains the share record with API key and config.
-    Valid(ShareRecord),
+    Valid(Box<ShareRecord>),
     /// Invalid/expired/exhausted — return error to caller.
     Rejected(u16, String),
 }
@@ -25,7 +25,7 @@ pub fn check_share_token(db: &Arc<Database>, headers: &HeaderMap) -> ShareGuardR
     };
 
     match ShareService::validate_token(db, token) {
-        Ok(Some(share)) => ShareGuardResult::Valid(share),
+        Ok(Some(share)) => ShareGuardResult::Valid(Box::new(share)),
         Ok(None) => ShareGuardResult::Rejected(
             403,
             "Share token invalid, expired, or exhausted".to_string(),

@@ -22,7 +22,7 @@ const PORTR_REQUEST_TIMEOUT_SECS: u64 = 20;
 
 #[derive(Clone)]
 enum ShareSyncOp {
-    Upsert(ShareTunnelMetadata),
+    Upsert(Box<ShareTunnelMetadata>),
     Delete { share_id: String },
 }
 
@@ -117,7 +117,7 @@ async fn require_auth_bearer_token() -> Result<String, String> {
 pub fn schedule_sync_share(share: ShareRecord, _db: &Arc<Database>) {
     tauri::async_runtime::spawn(async move {
         let metadata = share_metadata_from_record(&share);
-        if let Err(err) = enqueue_op(ShareSyncOp::Upsert(metadata)).await {
+        if let Err(err) = enqueue_op(ShareSyncOp::Upsert(Box::new(metadata))).await {
             log::debug!("[TunnelSync] enqueue upsert failed: {err}");
         }
     });

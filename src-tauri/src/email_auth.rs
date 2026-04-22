@@ -312,13 +312,13 @@ fn create_file(path: &Path) -> Result<fs::File, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        return fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .mode(0o600)
             .open(path)
-            .map_err(|e| format!("open email auth state file failed: {e}"));
+            .map_err(|e| format!("open email auth state file failed: {e}"))
     }
     #[cfg(not(unix))]
     {

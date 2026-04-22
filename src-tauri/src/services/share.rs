@@ -7,7 +7,6 @@ pub struct ShareService;
 impl ShareService {
     pub const UNLIMITED_TOKEN_LIMIT: i64 = -1;
     pub const UNLIMITED_PARALLEL_LIMIT: i64 = -1;
-    pub const DEFAULT_PARALLEL_LIMIT: i64 = 3;
     pub const MIN_PARALLEL_LIMIT: i64 = 3;
     pub const MAX_DESCRIPTION_CHARS: usize = 200;
     pub const FOR_SALE_NO: &'static str = "No";
@@ -22,31 +21,25 @@ impl ShareService {
         parallel_limit == Self::UNLIMITED_PARALLEL_LIMIT
     }
 
-    pub fn prepare_create(
-        owner_email: String,
-        description: Option<String>,
-        for_sale: String,
-        token_limit: i64,
-        parallel_limit: i64,
-        expires_in_secs: i64,
-        subdomain: Option<String>,
-        api_key: Option<String>,
-    ) -> Result<ShareRecord, AppError> {
+    pub fn prepare_create(params: PrepareShareParams) -> Result<ShareRecord, AppError> {
         let id = uuid::Uuid::new_v4().to_string();
-        let subdomain = subdomain
+        let subdomain = params
+            .subdomain
             .map(|value| normalize_subdomain(&value))
             .transpose()?
             .unwrap_or_else(|| format!("share-{}", &id[..8]));
-        let share_token = api_key
+        let share_token = params
+            .api_key
             .map(|value| normalize_api_key(&value))
             .transpose()?
             .unwrap_or_else(Self::generate_token);
         let now = chrono::Utc::now();
-        let expires_at = now + chrono::Duration::seconds(expires_in_secs);
-        let description = normalize_description(description)?;
-        let for_sale = normalize_for_sale(&for_sale)?;
-        let parallel_limit = normalize_parallel_limit(parallel_limit)?;
-        let owner_email = normalize_email(&owner_email)?;
+        let expires_at = now + chrono::Duration::seconds(params.expires_in_secs);
+        let description = normalize_description(params.description)?;
+        let for_sale = normalize_for_sale(&params.for_sale)?;
+        let parallel_limit = normalize_parallel_limit(params.parallel_limit)?;
+        let owner_email = normalize_email(&params.owner_email)?;
+        let token_limit = params.token_limit;
 
         let record = ShareRecord {
             id,
@@ -345,10 +338,6 @@ impl ShareService {
         Ok(updated)
     }
 
-    pub fn cleanup_expired(db: &Arc<Database>) -> Result<u32, AppError> {
-        db.expire_shares()
-    }
-
     fn primary_share(db: &Arc<Database>) -> Result<Option<ShareRecord>, AppError> {
         Ok(db.list_shares()?.into_iter().next())
     }
@@ -364,6 +353,17 @@ impl ShareService {
             })
             .collect()
     }
+}
+
+pub struct PrepareShareParams {
+    pub owner_email: String,
+    pub description: Option<String>,
+    pub for_sale: String,
+    pub token_limit: i64,
+    pub parallel_limit: i64,
+    pub expires_in_secs: i64,
+    pub subdomain: Option<String>,
+    pub api_key: Option<String>,
 }
 
 fn normalize_subdomain(value: &str) -> Result<String, AppError> {

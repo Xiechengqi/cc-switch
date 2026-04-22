@@ -600,6 +600,7 @@ impl StreamCheckService {
     /// Codex 流式检查
     ///
     /// 严格按照 Codex CLI 真实请求格式构建请求 (Responses API)
+    #[allow(clippy::too_many_arguments)]
     async fn check_codex_stream(
         client: &Client,
         base_url: &str,
@@ -656,7 +657,7 @@ impl StreamCheckService {
                 .header("accept-encoding", "identity")
                 .header(
                     "user-agent",
-                    Self::codex_stream_user_agent(is_codex_oauth, &os_name, &arch_name),
+                    Self::codex_stream_user_agent(is_codex_oauth, os_name, arch_name),
                 )
                 .header("originator", Self::codex_stream_originator(is_codex_oauth))
                 .timeout(timeout);

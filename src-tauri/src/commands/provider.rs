@@ -99,6 +99,7 @@ pub fn switch_provider_test_hook(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn switch_provider(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,

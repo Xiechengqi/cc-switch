@@ -150,7 +150,6 @@ impl CachedAccessToken {
 /// 进行中的 OAuth 流程
 #[derive(Debug, Clone)]
 struct PendingOAuthFlow {
-    state: String,
     code_verifier: String,
     /// Unix 毫秒时间戳，超时后可清理
     expires_at_ms: i64,
@@ -335,7 +334,6 @@ impl ClaudeOAuthManager {
             pending.insert(
                 state.clone(),
                 PendingOAuthFlow {
-                    state: state.clone(),
                     code_verifier,
                     expires_at_ms,
                 },

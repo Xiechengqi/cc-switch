@@ -230,13 +230,13 @@ fn create_identity_file(path: &std::path::Path) -> Result<std::fs::File, TunnelE
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        return std::fs::OpenOptions::new()
+        std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .mode(0o600)
             .open(path)
-            .map_err(|e| TunnelError::Other(format!("open tunnel identity file failed: {e}")));
+            .map_err(|e| TunnelError::Other(format!("open tunnel identity file failed: {e}")))
     }
 
     #[cfg(not(unix))]

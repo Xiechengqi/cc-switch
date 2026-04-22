@@ -2,7 +2,7 @@ use crate::database::ShareRecord;
 use crate::email_auth;
 use crate::error::AppError;
 use crate::proxy::ProxyConfig;
-use crate::services::share::ShareService;
+use crate::services::share::{PrepareShareParams, ShareService};
 use crate::store::AppState;
 use crate::tunnel::config::{TunnelConfig, TunnelInfo, TunnelRequest, TunnelType};
 use serde::{Deserialize, Serialize};
@@ -97,16 +97,16 @@ pub async fn create_share(
     let mut share = None;
 
     for _ in 0..5 {
-        let candidate = ShareService::prepare_create(
-            owner_email.clone(),
-            params.description.clone(),
-            params.for_sale.clone(),
-            params.token_limit,
-            params.parallel_limit,
-            params.expires_in_secs,
-            requested_subdomain.clone(),
-            params.api_key.clone(),
-        )
+        let candidate = ShareService::prepare_create(PrepareShareParams {
+            owner_email: owner_email.clone(),
+            description: params.description.clone(),
+            for_sale: params.for_sale.clone(),
+            token_limit: params.token_limit,
+            parallel_limit: params.parallel_limit,
+            expires_in_secs: params.expires_in_secs,
+            subdomain: requested_subdomain.clone(),
+            api_key: params.api_key.clone(),
+        })
         .map_err(|e: AppError| e.to_string())?;
 
         match crate::tunnel::sync::claim_share_subdomain(&candidate, &state.db).await {
@@ -414,8 +414,7 @@ async fn start_share_tunnel_inner(
     // Update share with tunnel info
     state
         .db
-        .update_share_tunnel(share_id, &info.subdomain, &info.tunnel_url)
-        .map_err(AppError::from)?;
+        .update_share_tunnel(share_id, &info.subdomain, &info.tunnel_url)?;
 
     if let Err(e) =
         crate::tunnel::sync::sync_recent_share_request_logs(&state.db, share_id, 50).await
@@ -533,7 +532,7 @@ fn current_tunnel_config() -> TunnelConfig {
 }
 
 async fn current_proxy_local_addr(state: &AppState) -> Result<String, AppError> {
-    let config = state.db.get_proxy_config().await.map_err(AppError::from)?;
+    let config = state.db.get_proxy_config().await?;
     Ok(proxy_local_addr_from_config(&config))
 }
 

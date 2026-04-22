@@ -249,6 +249,7 @@ pub async fn is_live_takeover_active(state: tauri::State<'_, AppState>) -> Resul
 
 /// 代理模式下切换供应商（热切换）
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn switch_proxy_provider(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,

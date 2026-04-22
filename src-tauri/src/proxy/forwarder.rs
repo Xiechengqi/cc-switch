@@ -1256,7 +1256,7 @@ impl RequestForwarder {
             // 预计算 anthropic-beta 值（仅 Claude）
             let anthropic_beta_value = if should_send_anthropic_headers {
                 Some(build_anthropic_beta_value(
-                    &headers,
+                    headers,
                     is_claude_oauth_provider,
                 ))
             } else {

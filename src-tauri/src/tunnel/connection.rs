@@ -163,25 +163,23 @@ async fn issue_lease_inner(
         .await;
     }
 
-    if allow_identity_reset_retry
-        && msg.contains("share subdomain is not claimed")
-        && share_metadata.is_some()
-    {
-        let share = share_metadata.as_ref().expect("checked is_some");
-        log::warn!(
-            "[Tunnel] share subdomain {} is no longer claimed on portr-rs, reclaiming before retry",
-            share.subdomain
-        );
-        claim_share_subdomain_inner(client, config, share, true).await?;
-        return Box::pin(issue_lease_inner(
-            client,
-            config,
-            tunnel_type,
-            subdomain,
-            share_metadata,
-            false,
-        ))
-        .await;
+    if allow_identity_reset_retry && msg.contains("share subdomain is not claimed") {
+        if let Some(share) = share_metadata.as_ref() {
+            log::warn!(
+                "[Tunnel] share subdomain {} is no longer claimed on portr-rs, reclaiming before retry",
+                share.subdomain
+            );
+            claim_share_subdomain_inner(client, config, share, true).await?;
+            return Box::pin(issue_lease_inner(
+                client,
+                config,
+                tunnel_type,
+                subdomain,
+                share_metadata,
+                false,
+            ))
+            .await;
+        }
     }
 
     Err(TunnelError::Api(msg))

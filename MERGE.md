@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-04-22
+
+- **上游分支：** `main`
+- **上游 HEAD：** `c7ba3cf5`
+- **共同祖先：** `c5b15dd2`
+- **合并提交数：** 60
+- **主要变更：**
+  - feat(hermes): 全新引入 Hermes Agent 作为第 6 个支持的应用（Phase 1–8）
+    - 新增 `src-tauri/src/hermes_config.rs`、`commands/hermes.rs`、`mcp/hermes.rs`、`session_manager/providers/hermes.rs`
+    - 数据库迁移新增 `enabled_hermes` 列（mcp_servers、skills）
+    - 新增前端 `components/hermes/HermesHealthBanner.tsx`、`HermesMemoryPanel.tsx`、`HermesFormFields.tsx`、`useHermesFormState.ts` 等
+    - 统一 Skills 管理支持 Hermes、Usage 查询弹窗支持 Hermes 与 OpenClaw
+  - feat(presets): Claude Opus 4.7 全面替换聚合器/Bedrock presets、加入自适应思考与 Bedrock SKU
+  - feat(presets): 新增 LemonData（六个应用）、DDSHub Codex、Kimi K2.6 升级
+  - feat(copilot): 转发前剥离 thinking blocks 以节省 premium 配额
+  - feat(claude): effort 切换上限从 "high" 提升为 "max"
+  - fix(header): 最大化后 auto-compact 不再保持锁定
+  - fix(providers): Claude quick-set 移除过时的 `ANTHROPIC_REASONING_MODEL`
+  - chore(release): 版本号 bump 到 3.14.0
+- **冲突解决（数据库 schema 版本号冲突）：**
+  - `src-tauri/src/database/mod.rs` — 上游把 `SCHEMA_VERSION` 升到 10，本仓已经到 15（Token 分享相关 v9→v15 迁移）。采用把上游的 Hermes 迁移挂在本仓链尾的方案：新增 `migrate_v15_to_v16`（添加 `enabled_hermes` 列），`SCHEMA_VERSION` 升到 16
+  - `src-tauri/src/database/schema.rs` — 保留本仓 v9→v15 的全部迁移函数，把上游的 v9→v10（Hermes 列）重命名为 `migrate_v15_to_v16`；match 表新增 `15 =>` 分支
+- **冲突解决（前端 import 与 helper 重构）：**
+  - `src/App.tsx` — import 块合并：同时保留本仓 `SharePage` 与上游 Hermes 组件
+  - `src/components/providers/ProviderCard.tsx` — 上游引入 `isCopilot` / `isCodexOauth` 内联判定替代本仓的 `isManagedOauthProvider` helper，同时移除 helper 导入。保留本仓 `isManagedOauthProvider` / `isOfficialBlockedByProxyTakeover` / `ClaudeOauthQuotaFooter` / `canTestProvider`，只拉入上游的 `isHermesReadOnly`（被 `isReadOnly={isHermesReadOnly}` 用到）。丢弃上游未用到的 `isCopilot` / `isCodexOauth`（本仓已由 helper 覆盖）
+  - `src/components/providers/forms/ProviderForm.tsx` — import 块合并：保留本仓 `PROVIDER_TYPES`、拉入上游 `useHermesLiveProviderIds`
+  - `tests/msw/state.ts` — `LiveProviderIdsByApp` 合并为 `"opencode" | "openclaw" | "hermes"`，保留本仓 `ShareConnectInfo`
+- **其余冲突：** Git 三方合并自动处理（约 120 个文件）
+- **验证：** `pnpm typecheck`、`pnpm test:unit`（254 通过）、`cargo check`、`cargo test --lib`（995 通过）、`cargo test --test hermes_roundtrip`（2 通过）、`cargo test --test skill_sync --test import_export_sync --test mcp_commands`（24 通过）。其余 integration 测试因主机磁盘满（`/dev/mapper/ubuntu--vg-ubuntu--lv` 100%）导致 `ld` 链接阶段 bus error，非合并问题
+
+---
+
 ## 2026-04-21
 
 - **上游分支：** `main`

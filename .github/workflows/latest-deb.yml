@@ -81,15 +81,24 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
+      - name: Disable updater signing for dev-channel build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # latest-deb 是非签名的开发频道构建，fork 没有 TAURI_SIGNING_PRIVATE_KEY。
+          # `pnpm tauri build --config` 的覆盖在 signing 步骤并不生效，所以这里直接
+          # 把 updater 插件从 tauri.conf.json 里整块摘掉，让 Tauri 跳过签名要求。
+          # 正式签名版本仍走 release.yml。
+          CFG=src-tauri/tauri.conf.json
+          jq 'del(.plugins.updater)' "$CFG" > "$CFG.tmp"
+          mv "$CFG.tmp" "$CFG"
+          grep -q '"updater"' "$CFG" && { echo "updater still present"; exit 1; } || echo "updater removed"
+
       - name: Build deb package
         shell: bash
         run: |
           set -euxo pipefail
-          # latest-deb 是非签名的开发频道构建；用 --config 覆盖掉 tauri.conf.json
-          # 里的 updater.pubkey，跳过 TAURI_SIGNING_PRIVATE_KEY 的强制要求。
-          # 正式签名走 release.yml。
-          pnpm tauri build --bundles deb \
-            --config '{"plugins":{"updater":{"pubkey":"","endpoints":[]}}}'
+          pnpm tauri build --bundles deb
 
       - name: Prepare release asset
         id: asset

@@ -460,10 +460,7 @@ fn normalize_email(value: &str) -> Result<String, AppError> {
     Ok(value)
 }
 
-fn normalize_email_list(
-    values: Vec<String>,
-    owner_email: &str,
-) -> Result<Vec<String>, AppError> {
+fn normalize_email_list(values: Vec<String>, owner_email: &str) -> Result<Vec<String>, AppError> {
     let mut result = Vec::new();
     for value in values {
         let email = normalize_email(&value)?;

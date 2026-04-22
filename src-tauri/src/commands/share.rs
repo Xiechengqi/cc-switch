@@ -115,8 +115,7 @@ pub async fn create_share(
                 break;
             }
             Err(err)
-                if requested_subdomain.is_none()
-                    && err.contains("subdomain already claimed") =>
+                if requested_subdomain.is_none() && err.contains("subdomain already claimed") =>
             {
                 last_claim_error = Some(err);
                 continue;
@@ -130,7 +129,8 @@ pub async fn create_share(
     let share = share.ok_or_else(|| {
         format!(
             "claim subdomain failed: {}",
-            last_claim_error.unwrap_or_else(|| "unable to allocate an available subdomain".to_string())
+            last_claim_error
+                .unwrap_or_else(|| "unable to allocate an available subdomain".to_string())
         )
     })?;
     ShareService::create(&state.db, share).map_err(|e: AppError| e.to_string())
@@ -478,7 +478,9 @@ pub fn get_share_connect_info(
     })
 }
 
-fn require_authenticated_email(db: &std::sync::Arc<crate::database::Database>) -> Result<String, String> {
+fn require_authenticated_email(
+    db: &std::sync::Arc<crate::database::Database>,
+) -> Result<String, String> {
     let status = email_auth::get_status()?;
     if !status.authenticated {
         return Err("创建 share 前请先完成邮箱验证码登录".to_string());

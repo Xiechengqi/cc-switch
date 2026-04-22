@@ -263,8 +263,8 @@ impl Database {
         shared_with_emails: &[String],
     ) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
-        let shared_with_emails_json =
-            serde_json::to_string(shared_with_emails).map_err(|e| AppError::Database(e.to_string()))?;
+        let shared_with_emails_json = serde_json::to_string(shared_with_emails)
+            .map_err(|e| AppError::Database(e.to_string()))?;
         conn.execute(
             "UPDATE shares
              SET name = ?2,

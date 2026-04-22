@@ -127,12 +127,7 @@ async fn issue_lease_inner(
         request = request.bearer_auth(bearer_token);
     }
 
-    let resp = send_portr_request(
-        request,
-        "issue tunnel lease",
-        &url,
-    )
-    .await?;
+    let resp = send_portr_request(request, "issue tunnel lease", &url).await?;
 
     if resp.status().is_success() {
         return resp

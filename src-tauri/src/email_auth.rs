@@ -90,7 +90,8 @@ fn write_state(state: &EmailAuthState) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create email auth dir failed: {e}"))?;
     }
-    let raw = serde_json::to_vec_pretty(state).map_err(|e| format!("serialize email auth failed: {e}"))?;
+    let raw = serde_json::to_vec_pretty(state)
+        .map_err(|e| format!("serialize email auth failed: {e}"))?;
     atomic_write(&path, &raw)
 }
 
@@ -247,12 +248,11 @@ pub async fn session_me() -> Result<EmailSessionMeResponse, String> {
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
-    let mut request = client
-        .get(format!(
-            "{}/v1/auth/session/me?installationId={}",
-            config.get_server_addr(),
-            identity.installation_id
-        ));
+    let mut request = client.get(format!(
+        "{}/v1/auth/session/me?installationId={}",
+        config.get_server_addr(),
+        identity.installation_id
+    ));
     if let Some(token) = ensure_access_token().await? {
         request = request.bearer_auth(token);
     }

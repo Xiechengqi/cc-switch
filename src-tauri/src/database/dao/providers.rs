@@ -570,7 +570,9 @@ impl Database {
         Ok(max.map(|v| (v + 1) as usize).unwrap_or(0))
     }
 
-    /// 启动时调用：补齐缺失的官方预设供应商（Claude / Codex / Gemini）。
+    /// 补齐缺失的官方预设供应商（Claude / Codex / Gemini）。
+    ///
+    /// 当前默认启动流程不会自动调用；保留该方法供未来显式迁移或手动触发场景使用。
     ///
     /// 使用 settings flag `official_providers_seeded` 保证每个数据库只执行一次：
     /// - 全新用户：seed 三条官方预设

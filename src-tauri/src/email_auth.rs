@@ -24,6 +24,7 @@ pub struct EmailAuthState {
     pub expires_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_expires_at: Option<i64>,
+    #[serde(default)]
     pub verified_at: i64,
 }
 
@@ -483,7 +484,7 @@ fn create_file(path: &Path) -> Result<fs::File, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::humanize_remote_owner_binding_error;
+    use super::{humanize_remote_owner_binding_error, EmailAuthState};
 
     #[test]
     fn humanize_remote_owner_binding_error_maps_expired_proof() {
@@ -499,5 +500,19 @@ mod tests {
             "this installation is locked to a different owner email",
         );
         assert!(message.contains("当前设备已绑定其他邮箱"));
+    }
+
+    #[test]
+    fn deserialize_legacy_email_auth_state_without_verified_at() {
+        let raw = r#"{
+  "email": "owner@example.com",
+  "accessToken": null,
+  "refreshToken": null,
+  "expiresAt": null,
+  "refreshExpiresAt": null
+}"#;
+        let state: EmailAuthState = serde_json::from_str(raw).expect("deserialize legacy state");
+        assert_eq!(state.email, "owner@example.com");
+        assert_eq!(state.verified_at, 0);
     }
 }

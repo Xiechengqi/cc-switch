@@ -123,8 +123,8 @@ impl Database {
         // 8. Proxy Config 表（三行结构，app_type 主键）
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
             app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
-            proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
-            listen_port INTEGER NOT NULL DEFAULT 3000, enable_logging INTEGER NOT NULL DEFAULT 1,
+            proxy_enabled INTEGER NOT NULL DEFAULT 1, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+            listen_port INTEGER NOT NULL DEFAULT 53000, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
@@ -298,7 +298,7 @@ impl Database {
 
         // 尝试添加基础配置列到 proxy_config 表（兼容 v3.9.0-2 升级）
         let _ = conn.execute(
-            "ALTER TABLE proxy_config ADD COLUMN proxy_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE proxy_config ADD COLUMN proxy_enabled INTEGER NOT NULL DEFAULT 1",
             [],
         );
         let _ = conn.execute(
@@ -306,7 +306,7 @@ impl Database {
             [],
         );
         let _ = conn.execute(
-            "ALTER TABLE proxy_config ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 3000",
+            "ALTER TABLE proxy_config ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 53000",
             [],
         );
         let _ = conn.execute(
@@ -608,7 +608,7 @@ impl Database {
                 conn,
                 "proxy_config",
                 "proxy_enabled",
-                "INTEGER NOT NULL DEFAULT 0",
+                "INTEGER NOT NULL DEFAULT 1",
             )?;
             Self::add_column_if_missing(
                 conn,
@@ -620,7 +620,7 @@ impl Database {
                 conn,
                 "proxy_config",
                 "listen_port",
-                "INTEGER NOT NULL DEFAULT 3000",
+                "INTEGER NOT NULL DEFAULT 53000",
             )?;
             Self::add_column_if_missing(
                 conn,
@@ -818,8 +818,8 @@ impl Database {
         conn.execute("DROP TABLE IF EXISTS proxy_config_new", [])?;
         conn.execute("CREATE TABLE proxy_config_new (
             app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
-            proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
-            listen_port INTEGER NOT NULL DEFAULT 3000, enable_logging INTEGER NOT NULL DEFAULT 1,
+            proxy_enabled INTEGER NOT NULL DEFAULT 1, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+            listen_port INTEGER NOT NULL DEFAULT 53000, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,

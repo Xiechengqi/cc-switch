@@ -76,7 +76,7 @@ export function ShareRouterBar({
         <div className="mt-3 text-xs text-amber-600 dark:text-amber-400">
           {t("share.proxyCompactWarning", {
             address: proxyAddress || "127.0.0.1",
-            port: proxyPort || 3000,
+            port: proxyPort || 53000,
           })}
         </div>
       ) : null}

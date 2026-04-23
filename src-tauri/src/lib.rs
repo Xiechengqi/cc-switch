@@ -1619,6 +1619,18 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
     }
 
     if apps_to_restore.is_empty() {
+        // 无接管需求时，若 global proxy_enabled 仍为 true（用户上次退出时
+        // 开着路由总开关，或首次启动时数据库默认值为 1），则直接启动代理
+        // 服务，使 "路由总开关" 默认处于开启状态。
+        if let Ok(global_config) = state.db.get_global_proxy_config().await {
+            if global_config.proxy_enabled {
+                match state.proxy_service.start().await {
+                    Ok(_) => log::info!("✓ 已根据 global proxy_enabled 自动启动代理服务"),
+                    Err(e) => log::warn!("✗ 自动启动代理服务失败: {e}"),
+                }
+                return;
+            }
+        }
         log::debug!("启动时无需恢复代理状态");
         return;
     }

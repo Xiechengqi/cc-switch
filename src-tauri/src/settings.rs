@@ -193,8 +193,8 @@ pub struct AppSettings {
     /// 静默启动（程序启动时不显示主窗口，仅托盘运行）
     #[serde(default)]
     pub silent_startup: bool,
-    /// 是否在主页面启用本地代理功能（默认关闭）
-    #[serde(default)]
+    /// 是否在主页面启用本地代理功能（默认开启）
+    #[serde(default = "default_enable_local_proxy")]
     pub enable_local_proxy: bool,
     /// User has confirmed the local proxy first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -206,7 +206,7 @@ pub struct AppSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_check_confirmed: Option<bool>,
     /// Whether to show the failover toggle independently on the main page
-    #[serde(default)]
+    #[serde(default = "default_enable_failover_toggle")]
     pub enable_failover_toggle: bool,
     /// User has confirmed the failover toggle first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -321,6 +321,14 @@ fn default_oauth_quota_refresh_interval_minutes() -> u32 {
     5
 }
 
+fn default_enable_local_proxy() -> bool {
+    true
+}
+
+fn default_enable_failover_toggle() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -331,11 +339,11 @@ impl Default for AppSettings {
             skip_claude_onboarding: false,
             launch_on_startup: false,
             silent_startup: false,
-            enable_local_proxy: false,
+            enable_local_proxy: default_enable_local_proxy(),
             proxy_confirmed: None,
             usage_confirmed: None,
             stream_check_confirmed: None,
-            enable_failover_toggle: false,
+            enable_failover_toggle: default_enable_failover_toggle(),
             failover_confirmed: None,
             first_run_notice_confirmed: None,
             common_config_confirmed: None,

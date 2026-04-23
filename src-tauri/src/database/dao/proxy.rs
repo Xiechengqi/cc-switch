@@ -100,9 +100,9 @@ impl Database {
                 // 如果不存在，创建默认配置
                 self.init_proxy_config_rows().await?;
                 Ok(GlobalProxyConfig {
-                    proxy_enabled: false,
+                    proxy_enabled: true,
                     listen_address: "127.0.0.1".to_string(),
-                    listen_port: 3000,
+                    listen_port: 53000,
                     enable_logging: true,
                 })
             }

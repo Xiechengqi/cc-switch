@@ -120,7 +120,7 @@ export function ProxyTabContent({
           </AccordionTrigger>
           <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
             <ProxyPanel
-              enableLocalProxy={settings?.enableLocalProxy ?? false}
+              enableLocalProxy={settings?.enableLocalProxy ?? true}
               onEnableLocalProxyChange={(checked) =>
                 onAutoSave({ enableLocalProxy: checked })
               }
@@ -156,7 +156,7 @@ export function ProxyTabContent({
                 description={t(
                   "settings.advanced.proxy.enableFailoverToggleDescription",
                 )}
-                checked={settings?.enableFailoverToggle ?? false}
+                checked={settings?.enableFailoverToggle ?? true}
                 onCheckedChange={handleFailoverToggleChange}
               />
 

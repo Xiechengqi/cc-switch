@@ -1,6 +1,4 @@
 use crate::config::get_app_config_dir;
-use crate::tunnel::config::{current_tunnel_config, TunnelConfig};
-use crate::tunnel::identity;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -8,15 +6,21 @@ use std::path::{Path, PathBuf};
 
 const AUTH_REQUEST_TIMEOUT_SECS: u64 = 20;
 const LOGIN_PURPOSE: &str = "login";
+const VERIFICATION_SERVICE_BASE_URL: &str = "https://tokenswitch.org";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmailAuthState {
     pub email: String,
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expires_at: i64,
-    pub refresh_expires_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_expires_at: Option<i64>,
+    pub verified_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,11 +44,10 @@ pub struct EmailCodeRequestResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VerifyEmailCodeResponse {
-    user: EmailAuthUser,
-    access_token: String,
-    refresh_token: String,
-    expires_at: String,
-    refresh_expires_at: String,
+    ok: bool,
+    verified: bool,
+    email: String,
+    purpose: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,11 +114,10 @@ pub fn get_status() -> Result<EmailAuthStatus, String> {
             expires_at: None,
         });
     };
-    let now = chrono::Utc::now().timestamp();
     Ok(EmailAuthStatus {
-        authenticated: state.refresh_expires_at > now,
+        authenticated: !state.email.trim().is_empty(),
         email: Some(state.email),
-        expires_at: Some(state.expires_at),
+        expires_at: state.expires_at,
     })
 }
 
@@ -124,35 +126,16 @@ pub fn current_email() -> Result<Option<String>, String> {
 }
 
 pub async fn request_code(email: &str) -> Result<EmailCodeRequestResponse, String> {
-    let config = current_config();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("create email auth client failed: {e}"))?;
-    let identity = identity::ensure_identity(&client, &config)
-        .await
-        .map_err(|e| e.to_string())?;
-    let timestamp_ms = chrono::Utc::now().timestamp_millis();
-    let nonce = uuid::Uuid::new_v4().to_string();
-    let signature = identity::sign_action_payload(
-        &identity,
-        &identity.installation_id,
-        "auth_request_code",
-        &serde_json::json!({ "email": email.trim().to_ascii_lowercase(), "purpose": LOGIN_PURPOSE }),
-        timestamp_ms,
-        &nonce,
-    )
-    .map_err(|e| e.to_string())?;
-
-    let url = format!("{}/v1/auth/email/request-code", config.get_server_addr());
+    let url = format!("{VERIFICATION_SERVICE_BASE_URL}/v1/verification/email/send");
     let response = client
         .post(&url)
         .json(&serde_json::json!({
             "email": email,
-            "installationId": identity.installation_id,
-            "timestampMs": timestamp_ms,
-            "nonce": nonce,
-            "signature": signature,
+            "purpose": LOGIN_PURPOSE,
         }))
         .send()
         .await
@@ -161,38 +144,38 @@ pub async fn request_code(email: &str) -> Result<EmailCodeRequestResponse, Strin
 }
 
 pub async fn verify_code(email: &str, code: &str) -> Result<EmailAuthStatus, String> {
-    let config = current_config();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("create email auth client failed: {e}"))?;
-    let identity = identity::ensure_identity(&client, &config)
-        .await
-        .map_err(|e| e.to_string())?;
-    let url = format!("{}/v1/auth/email/verify-code", config.get_server_addr());
+    let url = format!("{VERIFICATION_SERVICE_BASE_URL}/v1/verification/email/verify");
     let response = client
         .post(&url)
         .json(&serde_json::json!({
             "email": email,
+            "purpose": LOGIN_PURPOSE,
             "code": code,
-            "installationId": identity.installation_id,
         }))
         .send()
         .await
         .map_err(|e| format!("verify email code failed: {e}"))?;
     let body: VerifyEmailCodeResponse = handle_json_response(response).await?;
+    if !body.ok || !body.verified {
+        return Err("email verification was not accepted".to_string());
+    }
     let state = EmailAuthState {
-        email: body.user.email,
-        access_token: body.access_token,
-        refresh_token: body.refresh_token,
-        expires_at: parse_timestamp(&body.expires_at)?,
-        refresh_expires_at: parse_timestamp(&body.refresh_expires_at)?,
+        email: body.email,
+        access_token: None,
+        refresh_token: None,
+        expires_at: None,
+        refresh_expires_at: None,
+        verified_at: chrono::Utc::now().timestamp(),
     };
     write_state(&state)?;
     Ok(EmailAuthStatus {
         authenticated: true,
         email: Some(state.email),
-        expires_at: Some(state.expires_at),
+        expires_at: None,
     })
 }
 
@@ -201,70 +184,31 @@ pub async fn ensure_access_token() -> Result<Option<String>, String> {
         return Ok(None);
     };
     let now = chrono::Utc::now().timestamp();
-    if state.expires_at > now + 30 {
-        return Ok(Some(state.access_token));
+    match (state.access_token, state.expires_at) {
+        (Some(token), Some(expires_at)) if expires_at > now + 30 => Ok(Some(token)),
+        _ => Ok(None),
     }
-    if state.refresh_expires_at <= now {
-        clear_state()?;
-        return Ok(None);
-    }
-
-    let config = current_config();
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| format!("create email auth client failed: {e}"))?;
-    let identity = identity::ensure_identity(&client, &config)
-        .await
-        .map_err(|e| e.to_string())?;
-    let url = format!("{}/v1/auth/session/refresh", config.get_server_addr());
-    let response = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "refreshToken": state.refresh_token,
-            "installationId": identity.installation_id,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("refresh email auth failed: {e}"))?;
-    let body: VerifyEmailCodeResponse = handle_json_response(response).await?;
-    let refreshed = EmailAuthState {
-        email: body.user.email,
-        access_token: body.access_token,
-        refresh_token: body.refresh_token,
-        expires_at: parse_timestamp(&body.expires_at)?,
-        refresh_expires_at: parse_timestamp(&body.refresh_expires_at)?,
-    };
-    write_state(&refreshed)?;
-    Ok(Some(refreshed.access_token))
 }
 
 pub async fn session_me() -> Result<EmailSessionMeResponse, String> {
-    let config = current_config();
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| format!("create email auth client failed: {e}"))?;
-    let identity = identity::ensure_identity(&client, &config)
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut request = client.get(format!(
-        "{}/v1/auth/session/me?installationId={}",
-        config.get_server_addr(),
-        identity.installation_id
-    ));
-    if let Some(token) = ensure_access_token().await? {
-        request = request.bearer_auth(token);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| format!("query email auth status failed: {e}"))?;
-    handle_json_response(response).await
-}
+    let Some(state) = read_state()? else {
+        return Ok(EmailSessionMeResponse {
+            authenticated: false,
+            user: None,
+            expires_at: None,
+            installation_owner_email: None,
+        });
+    };
 
-fn current_config() -> TunnelConfig {
-    current_tunnel_config().unwrap_or_default()
+    Ok(EmailSessionMeResponse {
+        authenticated: !state.email.trim().is_empty(),
+        user: Some(EmailAuthUser {
+            id: state.email.clone(),
+            email: state.email.clone(),
+        }),
+        expires_at: None,
+        installation_owner_email: Some(state.email),
+    })
 }
 
 async fn handle_json_response<T: for<'de> Deserialize<'de>>(
@@ -285,12 +229,6 @@ async fn handle_json_response<T: for<'de> Deserialize<'de>>(
         .map(|err| err.message)
         .map_err(|_| text)
         .and_then(Err)
-}
-
-fn parse_timestamp(value: &str) -> Result<i64, String> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|value| value.timestamp())
-        .map_err(|e| format!("parse email auth timestamp failed: {e}"))
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {

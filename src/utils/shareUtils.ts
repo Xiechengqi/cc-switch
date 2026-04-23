@@ -85,7 +85,7 @@ export function getTunnelConfigFromSettings(
   settings?: Settings | null,
 ): TunnelConfig {
   return {
-    domain: settings?.portrDomain ?? "127.0.0.1:8787",
+    domain: settings?.portrDomain ?? "jptokenswitch.cc",
   };
 }
 

@@ -108,12 +108,6 @@ fn build_signed_request_payload<T: serde::Serialize>(
     }))
 }
 
-async fn require_auth_bearer_token() -> Result<String, String> {
-    crate::email_auth::ensure_access_token()
-        .await?
-        .ok_or_else(|| "owner email login is required".to_string())
-}
-
 pub fn schedule_sync_share(share: ShareRecord, _db: &Arc<Database>) {
     tauri::async_runtime::spawn(async move {
         let metadata = share_metadata_from_record(&share);
@@ -378,15 +372,12 @@ async fn claim_share_subdomain_inner(
         .await
         .map_err(|e| e.to_string())?;
     let metadata = share_metadata_from_record(share);
+    crate::email_auth::ensure_remote_owner_binding(&config, &metadata.owner_email).await?;
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
     let request_payload =
         build_signed_request_payload(&identity, "share_claim_subdomain", "share", &metadata)?;
-    let bearer_token = require_auth_bearer_token().await?;
     let resp = send_portr_request(
-        client
-            .post(&url)
-            .bearer_auth(bearer_token)
-            .json(&request_payload),
+        client.post(&url).json(&request_payload),
         "claim subdomain",
         &url,
     )
@@ -503,12 +494,11 @@ async fn sync_recent_share_request_logs_inner(
     );
     let request_payload =
         build_signed_request_payload(&identity, "share_request_logs_batch_sync", "logs", &logs)?;
-    let bearer_token = require_auth_bearer_token().await?;
+    if let Some(owner_email) = crate::email_auth::current_email()? {
+        crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
+    }
     let resp = send_portr_request(
-        client
-            .post(&url)
-            .bearer_auth(bearer_token)
-            .json(&request_payload),
+        client.post(&url).json(&request_payload),
         "sync share request logs",
         &url,
     )
@@ -549,12 +539,9 @@ async fn sync_share_metadata_now_inner(
         .map_err(|e| e.to_string())?;
     let url = format!("{}/v1/shares/sync", config.get_server_addr());
     let request_payload = build_signed_request_payload(&identity, "share_sync", "share", &share)?;
-    let bearer_token = require_auth_bearer_token().await?;
+    crate::email_auth::ensure_remote_owner_binding(&config, &share.owner_email).await?;
     let resp = send_portr_request(
-        client
-            .post(&url)
-            .bearer_auth(bearer_token)
-            .json(&request_payload),
+        client.post(&url).json(&request_payload),
         "sync share metadata",
         &url,
     )
@@ -649,7 +636,16 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
     };
 
     if !ops.is_empty() {
-        let bearer_token = require_auth_bearer_token().await?;
+        if let Some(owner_email) = ops.iter().find_map(|op| match op {
+            ShareSyncOp::Upsert(share) => Some(share.owner_email.clone()),
+            ShareSyncOp::Delete { .. } => None,
+        }) {
+            crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
+        } else if let Some(owner_email) = crate::email_auth::current_email()? {
+            crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
+        } else {
+            return Err("请先完成邮箱验证码登录".to_string());
+        }
         let payload_ops = ops
             .iter()
             .map(|op| match op {
@@ -668,10 +664,7 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
         let request_payload =
             build_signed_request_payload(&identity, "share_batch_sync", "ops", &payload_ops)?;
         let resp = send_portr_request(
-            client
-                .post(&url)
-                .bearer_auth(&bearer_token)
-                .json(&request_payload),
+            client.post(&url).json(&request_payload),
             "batch sync shares",
             &url,
         )
@@ -711,7 +704,11 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
     }
 
     if !request_logs.is_empty() {
-        let bearer_token = require_auth_bearer_token().await?;
+        if let Some(owner_email) = crate::email_auth::current_email()? {
+            crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
+        } else {
+            return Err("请先完成邮箱验证码登录".to_string());
+        }
         let url = format!(
             "{}/v1/share-request-logs/batch-sync",
             config.get_server_addr()
@@ -723,10 +720,7 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
             &request_logs,
         )?;
         let resp = send_portr_request(
-            client
-                .post(&url)
-                .bearer_auth(&bearer_token)
-                .json(&request_payload),
+            client.post(&url).json(&request_payload),
             "batch sync share request logs",
             &url,
         )

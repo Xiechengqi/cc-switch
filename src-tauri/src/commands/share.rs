@@ -121,16 +121,15 @@ pub async fn create_share(
                 continue;
             }
             Err(err) => {
-                return Err(format!("claim subdomain failed: {err}"));
+                return Err(crate::email_auth::humanize_remote_owner_binding_error(&err));
             }
         }
     }
 
     let share = share.ok_or_else(|| {
-        format!(
-            "claim subdomain failed: {}",
-            last_claim_error
-                .unwrap_or_else(|| "unable to allocate an available subdomain".to_string())
+        crate::email_auth::humanize_remote_owner_binding_error(
+            &last_claim_error
+                .unwrap_or_else(|| "unable to allocate an available subdomain".to_string()),
         )
     })?;
     ShareService::create(&state.db, share).map_err(|e: AppError| e.to_string())
@@ -260,7 +259,7 @@ pub async fn update_share_subdomain(
 
     crate::tunnel::sync::claim_share_subdomain(&next, &state.db)
         .await
-        .map_err(|e| format!("claim subdomain failed: {e}"))?;
+        .map_err(|e| crate::email_auth::humanize_remote_owner_binding_error(&e))?;
 
     {
         let mut mgr = state.tunnel_manager.write().await;
@@ -390,7 +389,9 @@ async fn start_share_tunnel_inner(
         .unwrap_or_else(|| format!("share-{}", &share.id[..8]));
     crate::tunnel::sync::claim_share_subdomain(&share, &state.db)
         .await
-        .map_err(|e| AppError::Message(format!("claim subdomain failed: {e}")))?;
+        .map_err(|e| {
+            AppError::Message(crate::email_auth::humanize_remote_owner_binding_error(&e))
+        })?;
 
     let local_addr = current_proxy_local_addr(state).await?;
     ensure_proxy_reachable(&local_addr).await?;

@@ -42,7 +42,7 @@ export function ShareEmailLoginCard() {
           <p className="text-sm text-muted-foreground">
             {t("settings.authCenter.emailLoginDescription", {
               defaultValue:
-                "用于创建和管理 cc-switch share，并授权 portr-rs dashboard 查看明文 API Key。",
+                "用于确认当前设备的 share owner 邮箱；验证码登录成功后，创建和管理 share 时会自动绑定到分享节点。",
             })}
           </p>
         </div>

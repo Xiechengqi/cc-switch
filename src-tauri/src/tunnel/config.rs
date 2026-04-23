@@ -13,7 +13,7 @@ pub struct TunnelConfig {
 impl TunnelConfig {
     pub fn default_public_service() -> Self {
         Self {
-            domain: "127.0.0.1:8787".to_string(),
+            domain: "jptokenswitch.cc".to_string(),
         }
     }
 

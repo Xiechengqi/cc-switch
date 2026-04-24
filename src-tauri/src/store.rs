@@ -1,5 +1,5 @@
 use crate::database::Database;
-use crate::services::ProxyService;
+use crate::services::{ProxyService, UsageCache};
 use crate::tunnel::TunnelManager;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -9,6 +9,7 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub proxy_service: ProxyService,
     pub tunnel_manager: Arc<RwLock<TunnelManager>>,
+    pub usage_cache: Arc<UsageCache>,
 }
 
 impl AppState {
@@ -21,6 +22,7 @@ impl AppState {
             db,
             proxy_service,
             tunnel_manager,
+            usage_cache: Arc::new(UsageCache::new()),
         }
     }
 }

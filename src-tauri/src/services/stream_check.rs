@@ -3,7 +3,6 @@
 //! 使用流式 API 进行快速健康检查，只需接收首个 chunk 即判定成功。
 
 use futures::StreamExt;
-use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -434,15 +433,17 @@ impl StreamCheckService {
         });
         // Codex OAuth (ChatGPT Plus/Pro 反代) 需要 store:false + include 标记，
         // 否则 Stream Check 会和生产路径一样被服务端 400 拒绝。
-        let is_codex_oauth = provider
-            .meta
-            .as_ref()
-            .and_then(|m| m.provider_type.as_deref())
-            == Some("codex_oauth");
+        let is_codex_oauth = provider.is_codex_oauth();
+        let codex_fast_mode = provider.codex_fast_mode_enabled();
 
         let body = if is_openai_responses {
-            anthropic_to_responses(anthropic_body, Some(&provider.id), is_codex_oauth)
-                .map_err(|e| AppError::Message(format!("Failed to build test request: {e}")))?
+            anthropic_to_responses(
+                anthropic_body,
+                Some(&provider.id),
+                is_codex_oauth,
+                codex_fast_mode,
+            )
+            .map_err(|e| AppError::Message(format!("Failed to build test request: {e}")))?
         } else if is_gemini_native {
             anthropic_to_gemini(anthropic_body)
                 .map_err(|e| AppError::Message(format!("Failed to build test request: {e}")))?
@@ -1551,10 +1552,11 @@ impl StreamCheckService {
             return None;
         }
 
-        let re = Regex::new(r#"^model\s*=\s*["']([^"']+)["']"#).ok()?;
-        re.captures(config_text)
-            .and_then(|caps| caps.get(1))
-            .map(|m| m.as_str().trim().to_string())
+        let table = toml::from_str::<toml::Table>(config_text).ok()?;
+        table
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
             .filter(|value| !value.is_empty())
     }
 

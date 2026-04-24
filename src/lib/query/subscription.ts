@@ -7,6 +7,11 @@ import { PROVIDER_TYPES } from "@/config/constants";
 import { useSettingsQuery } from "./queries";
 import { getOauthQuotaRefreshIntervalMs } from "./oauthQuotaRefresh";
 
+export const subscriptionKeys = {
+  all: ["subscription"] as const,
+  quota: (appId: AppId) => [...subscriptionKeys.all, "quota", appId] as const,
+};
+
 export function useSubscriptionQuota(
   appId: AppId,
   enabled: boolean,
@@ -16,7 +21,7 @@ export function useSubscriptionQuota(
   const refreshInterval = getOauthQuotaRefreshIntervalMs(settings);
 
   return useQuery({
-    queryKey: ["subscription", "quota", appId],
+    queryKey: subscriptionKeys.quota(appId),
     queryFn: () => subscriptionApi.getQuota(appId),
     enabled: enabled && ["claude", "codex", "gemini"].includes(appId),
     refetchInterval: autoQuery ? refreshInterval : false,

@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-04-24
+
+- **上游分支：** `main`
+- **上游 HEAD：** `c002688a`（`v3.14.1`）
+- **共同祖先：** `c7ba3cf5`
+- **合并提交数：** 14
+- **主要变更：**
+  - feat(tray): 新增 Kimi / Zhipu / MiniMax 的 coding-plan 用量展示；托盘菜单可缓存并展示各供应商配额（引入 `services/usage_cache.rs` 与 `hooks/useUsageCacheBridge.ts`）
+  - refactor(hermes): 删除 `HermesHealthBanner`、`scan_hermes_config_health` 命令与 `useHermesHealth` hook，配置 health scanner 不再维护
+  - feat(codex): 新增 Codex OAuth FAST mode（发送 `service_tier="priority"` 降低延迟，可在 `CodexOAuthSection` 中切换），`ProviderMeta.codex_fast_mode` 字段随之入库
+  - feat(codex): 稳定 Codex OAuth 缓存路由 —— 透传客户端提供的 `session_id` 到上游并补充 `x-client-request-id` / `x-codex-window-id` header；非流式请求遇到 Codex OAuth SSE 时聚合为 Responses JSON 再走非流式转换
+  - fix(proxy): Codex OAuth 响应路径统一走流式兜底（`ProxyResponse::is_sse()` 判断 + 异常回放）
+  - fix(skill): 通过 `resolve_root_level_repo_skills` 解决 root-level repo skills 一致性；修复 import 按钮连点导致重复导入的问题
+  - feat(codex): TOML parser 替代正则抽取 Codex 模型（#2222）
+  - fix(provider): "一键配置" 失效回归（#2249）
+  - fix(gemini-cli): resume session 携带 `project_dir`（#2240）
+  - chore(release): 版本号 bump 到 3.14.1
+- **冲突解决（Rust 后端）：**
+  - `src-tauri/src/provider.rs` — 保留本仓 OAuth 判定族（`is_codex_oauth_provider` / `is_claude_oauth_provider` / `is_codex_official_with_managed_auth` / `is_managed_oauth_provider` / `supports_stream_check` / `stream_check_base_url_override` 等），新增上游的 `is_codex_oauth`（代理到 `is_codex_oauth_provider`）、`codex_fast_mode_enabled`、`has_usage_script_enabled`
+  - `src-tauri/src/proxy/forwarder.rs` — 保留本仓 OAuth 401 单次重试 `loop` 结构与 Claude OAuth 动态 token 注入；在 loop 内部加入 `should_send_codex_oauth_session_headers` 标志位（CodexOAuth token 获取成功时置 true）并在 body 序列化前注入 `build_codex_oauth_session_headers` 产出的三个 header；测试保留本仓 `anthropic_beta_*` 三个用例并补充上游 `codex_oauth_session_headers_match_codex_cache_identity`
+  - `src-tauri/src/proxy/handlers.rs` — 非流式响应解析兼容 `aggregate_codex_oauth_responses_sse`，保留本仓 `upstream_response_for_usage = upstream_response.clone()` 供 usage 统计回退
+  - `src-tauri/src/proxy/hyper_client.rs` — 自动合并漏掉了 `ProxyResponse::is_sse()` 方法，手动补齐（与上游实现一致）
+  - `src-tauri/src/services/subscription.rs` — `KNOWN_TIERS` 合并：保留本仓 `"seven_day_omelette"`（Anthropic endpoint 历史兼容），其余四项采用上游常量
+  - `src-tauri/src/services/usage_cache.rs` / `src-tauri/src/tray.rs` — 新建 `SubscriptionQuota` 时补齐本仓新增字段 `failure: None`
+  - `src-tauri/src/store.rs` — `AppState` 同时持有本仓 `tunnel_manager: Arc<RwLock<TunnelManager>>` 和上游 `usage_cache: Arc<UsageCache>`
+- **冲突解决（前端）：**
+  - `src/App.tsx` — 移除上游已删除的 `HermesHealthBanner` import（auto-merge 已清理 `useHermesHealth` / `hermesKeys.health` 失效调用与 banner 渲染），保留本仓 `SharePage` import 与 upstream 新引入的 `useUsageCacheBridge`
+  - `src/components/providers/forms/ClaudeFormFields.tsx` / `ProviderForm.tsx` — 同时接入本仓 `isClaudeOauthPreset` / `selectedClaudeAccountId` / `onClaudeAccountSelect` 与上游 `codexFastMode` / `onCodexFastModeChange`
+  - `src/components/providers/forms/CodexOAuthSection.tsx` — Props 合并：保留本仓 `allowDefaultAccountOption` / `showLoggedInAccounts` 与上游 `fastModeEnabled` / `onFastModeChange`；布局采用本仓顺序（FAST mode 开关放在已登录账号列表之前，账号选择器延后），删除上游重复的早期账号选择器块
+- **其余冲突：** Git 三方合并自动处理 10+ 个文件（`Cargo.toml/lock`、`package.json`、`lib.rs`、`providers/claude.rs`、`services/stream_check.rs`、`handler_context.rs`、i18n JSON 等）
+- **验证：** `cargo check --lib`、`cargo check --bins --tests`、`cargo test --lib`（1023 通过）、`cargo test --test hermes_roundtrip --test skill_sync --test import_export_sync --test mcp_commands`（24 通过）、`pnpm typecheck`、`pnpm test:unit`（259 通过）
+
+---
+
 ## 2026-04-22
 
 - **上游分支：** `main`

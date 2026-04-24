@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -34,6 +35,10 @@ interface CodexOAuthSectionProps {
   allowDefaultAccountOption?: boolean;
   /** 是否显示已登录账号管理列表 */
   showLoggedInAccounts?: boolean;
+  /** 是否开启 Codex FAST mode */
+  fastModeEnabled?: boolean;
+  /** FAST mode 切换回调 */
+  onFastModeChange?: (enabled: boolean) => void;
 }
 
 /**
@@ -48,6 +53,8 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
   onAccountSelect,
   allowDefaultAccountOption = true,
   showLoggedInAccounts = false,
+  fastModeEnabled = false,
+  onFastModeChange,
 }) => {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
@@ -108,6 +115,27 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             : t("codexOauth.notAuthenticated", "未认证")}
         </Badge>
       </div>
+
+      {onFastModeChange && (
+        <div className="flex items-center justify-between rounded-md border bg-muted/30 p-3">
+          <div className="space-y-1 pr-4">
+            <Label className="text-sm font-medium">
+              {t("codexOauth.fastMode", "FAST mode")}
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              {t("codexOauth.fastModeDescription", {
+                defaultValue:
+                  'Send service_tier="priority" for lower latency. Turn it off if the ChatGPT Codex backend rejects the parameter.',
+              })}
+            </p>
+          </div>
+          <Switch
+            checked={fastModeEnabled}
+            onCheckedChange={onFastModeChange}
+            aria-label={t("codexOauth.fastMode", "FAST mode")}
+          />
+        </div>
+      )}
 
       {/* 已登录账号列表 */}
       {hasAnyAccount && showLoggedInAccounts && (

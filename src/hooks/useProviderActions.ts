@@ -10,6 +10,7 @@ import type {
   OpenClawDefaultModel,
 } from "@/types";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
+import { injectCodingPlanUsageScript } from "@/config/codingPlanProviders";
 import {
   useAddProviderMutation,
   useUpdateProviderMutation,
@@ -73,7 +74,8 @@ export function useProviderActions(
         addToLive?: boolean;
       },
     ) => {
-      await addProviderMutation.mutateAsync(provider);
+      const enhanced = injectCodingPlanUsageScript(activeApp, provider);
+      await addProviderMutation.mutateAsync(enhanced);
 
       // OpenClaw: register models to allowlist after adding provider
       if (activeApp === "openclaw" && provider.suggestedDefaults) {

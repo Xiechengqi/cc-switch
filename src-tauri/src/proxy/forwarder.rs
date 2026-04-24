@@ -58,6 +58,8 @@ pub struct RequestForwarder {
     current_provider_id_at_start: String,
     /// 代理会话 ID（用于 Gemini Native shadow replay）
     session_id: String,
+    /// Session ID 是否由客户端提供；生成值不能作为上游缓存身份。
+    session_client_provided: bool,
     /// 整流器配置
     rectifier_config: RectifierConfig,
     /// 优化器配置
@@ -80,6 +82,7 @@ impl RequestForwarder {
         app_handle: Option<tauri::AppHandle>,
         current_provider_id_at_start: String,
         session_id: String,
+        session_client_provided: bool,
         _streaming_first_byte_timeout: u64,
         _streaming_idle_timeout: u64,
         rectifier_config: RectifierConfig,
@@ -95,6 +98,7 @@ impl RequestForwarder {
             app_handle,
             current_provider_id_at_start,
             session_id,
+            session_client_provided,
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,
@@ -978,7 +982,8 @@ impl RequestForwarder {
                     mapped_body,
                     provider,
                     api_format,
-                    Some(&self.session_id),
+                    self.session_client_provided
+                        .then_some(self.session_id.as_str()),
                     Some(self.gemini_shadow.as_ref()),
                 )?
             } else {
@@ -1013,6 +1018,7 @@ impl RequestForwarder {
         let response: ProxyResponse = loop {
             // Codex OAuth 需要注入的 ChatGPT-Account-Id（在动态 token 获取期间填充）
             let mut codex_oauth_account_id: Option<String> = None;
+            let mut should_send_codex_oauth_session_headers = false;
             // 本次 attempt 实际使用的 OAuth 账号（用于 401 重试时精准作废缓存）
             let mut oauth_kind_used: Option<(OAuthKind, String)> = None;
 
@@ -1103,6 +1109,7 @@ impl RequestForwarder {
                         match token_result {
                             Ok(token) => {
                                 auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
+                                should_send_codex_oauth_session_headers = true;
                                 // 解析使用的 account_id（用于注入 ChatGPT-Account-Id header）
                                 codex_oauth_account_id = match account_id {
                                     Some(id) => Some(id),
@@ -1190,6 +1197,13 @@ impl RequestForwarder {
                     auth_headers.push((http::HeaderName::from_static("chatgpt-account-id"), hv));
                 }
             }
+
+            let codex_oauth_session_headers =
+                if should_send_codex_oauth_session_headers && self.session_client_provided {
+                    build_codex_oauth_session_headers(&self.session_id)
+                } else {
+                    Vec::new()
+                };
 
             // --- Copilot 优化器：动态 header 注入 ---
             if let Some((ref classification, ref det_request_id, ref interaction_id)) =
@@ -1419,6 +1433,12 @@ impl RequestForwarder {
                     "anthropic-version",
                     http::HeaderValue::from_static("2023-06-01"),
                 );
+            }
+
+            // Codex OAuth 反代尽量对齐官方 Codex CLI 的会话路由信号。
+            // 只发送客户端提供的 session_id；生成的 UUID 每次不同，反而会破坏前缀缓存。
+            for (name, value) in codex_oauth_session_headers {
+                ordered_headers.insert(name, value);
             }
 
             // 序列化请求体
@@ -2054,6 +2074,28 @@ fn maybe_add_share_auth_header(
     }
 }
 
+fn build_codex_oauth_session_headers(
+    session_id: &str,
+) -> Vec<(http::HeaderName, http::HeaderValue)> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Vec::new();
+    }
+
+    let mut headers = Vec::new();
+    if let Ok(value) = http::HeaderValue::from_str(session_id) {
+        headers.push((http::HeaderName::from_static("session_id"), value.clone()));
+        headers.push((http::HeaderName::from_static("x-client-request-id"), value));
+    }
+
+    let window_id = format!("{session_id}:0");
+    if let Ok(value) = http::HeaderValue::from_str(&window_id) {
+        headers.push((http::HeaderName::from_static("x-codex-window-id"), value));
+    }
+
+    headers
+}
+
 fn should_force_identity_encoding(
     endpoint: &str,
     body: &Value,
@@ -2208,6 +2250,28 @@ mod tests {
         let beta = build_anthropic_beta_value(&headers, false);
 
         assert_eq!(beta, "claude-code-20250219");
+    }
+
+    #[test]
+    fn codex_oauth_session_headers_match_codex_cache_identity() {
+        let headers = build_codex_oauth_session_headers("session-123");
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.insert(name, value);
+        }
+
+        assert_eq!(
+            map.get("session_id"),
+            Some(&HeaderValue::from_static("session-123"))
+        );
+        assert_eq!(
+            map.get("x-client-request-id"),
+            Some(&HeaderValue::from_static("session-123"))
+        );
+        assert_eq!(
+            map.get("x-codex-window-id"),
+            Some(&HeaderValue::from_static("session-123:0"))
+        );
     }
 
     #[test]

@@ -359,7 +359,7 @@ export function ShareDetailDrawer({
                 <div className="text-xs text-muted-foreground">
                   {t("share.sharedWithEmailsHint", {
                     defaultValue:
-                      "配置多个邮箱后，这些邮箱登录 portr-rs dashboard 可以查看当前 share 的 API Key 明文。",
+                      "配置多个邮箱后，这些邮箱登录 cc-switch-router dashboard 可以查看当前 share 的 API Key 明文。",
                   })}
                 </div>
               </div>

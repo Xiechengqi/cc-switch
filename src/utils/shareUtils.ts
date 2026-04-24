@@ -85,7 +85,10 @@ export function getTunnelConfigFromSettings(
   settings?: Settings | null,
 ): TunnelConfig {
   return {
-    domain: settings?.portrDomain ?? "jptokenswitch.cc",
+    domain:
+      settings?.shareRouterDomain ??
+      settings?.portrDomain ??
+      "jptokenswitch.cc",
   };
 }
 

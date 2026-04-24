@@ -4,7 +4,7 @@ use super::identity;
 use serde::Deserialize;
 use tokio::time::sleep;
 
-const PORTR_REQUEST_TIMEOUT_SECS: u64 = 20;
+const SHARE_ROUTER_REQUEST_TIMEOUT_SECS: u64 = 20;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,7 +13,7 @@ pub struct LeaseResponse {
     pub ssh_username: String,
     pub ssh_password: String,
     pub ssh_addr: String,
-    /// SSH host key 指纹（`SHA256:<base64-nopad>` 格式）。portr-rs ≥ 当前版本会在
+    /// SSH host key 指纹（`SHA256:<base64-nopad>` 格式）。cc-switch-router ≥ 当前版本会在
     /// /v1/tunnels/lease 响应里返回，客户端据此校验 SSH 服务端身份，防止中间人。
     /// 老服务端没有这个字段时为 None；此时退化为 "跳过校验 + 日志告警"。
     #[serde(default)]
@@ -32,10 +32,10 @@ async fn read_error_message(resp: reqwest::Response) -> String {
         .unwrap_or_else(|_| format!("HTTP {status}"))
 }
 
-fn describe_portr_send_error(operation: &str, url: &str, err: reqwest::Error) -> String {
+fn describe_share_router_send_error(operation: &str, url: &str, err: reqwest::Error) -> String {
     if err.is_timeout() {
         return format!(
-            "{operation} timed out after {PORTR_REQUEST_TIMEOUT_SECS}s: {url}. 请检查分享节点是否可访问，或切换到其他分享节点后重试"
+            "{operation} timed out after {SHARE_ROUTER_REQUEST_TIMEOUT_SECS}s: {url}. 请检查分享节点是否可访问，或切换到其他分享节点后重试"
         );
     }
     if err.is_connect() {
@@ -46,7 +46,7 @@ fn describe_portr_send_error(operation: &str, url: &str, err: reqwest::Error) ->
     format!("{operation} request failed: {url}: {err}")
 }
 
-async fn send_portr_request(
+async fn send_share_router_request(
     request: reqwest::RequestBuilder,
     operation: &str,
     url: &str,
@@ -62,16 +62,16 @@ async fn send_portr_request(
                 .send()
                 .await
                 .map_err(|retry_err| {
-                    TunnelError::Api(describe_portr_send_error(operation, url, retry_err))
+                    TunnelError::Api(describe_share_router_send_error(operation, url, retry_err))
                 })
         }
-        Err(err) => Err(TunnelError::Api(describe_portr_send_error(
+        Err(err) => Err(TunnelError::Api(describe_share_router_send_error(
             operation, url, err,
         ))),
     }
 }
 
-/// Request a short-lived tunnel lease from portr-rs.
+/// Request a short-lived tunnel lease from the cc-switch-router service.
 pub async fn issue_lease(
     client: &reqwest::Client,
     config: &TunnelConfig,
@@ -119,9 +119,11 @@ async fn issue_lease_inner(
     let request = client
         .post(&url)
         .json(&payload)
-        .timeout(std::time::Duration::from_secs(PORTR_REQUEST_TIMEOUT_SECS));
+        .timeout(std::time::Duration::from_secs(
+            SHARE_ROUTER_REQUEST_TIMEOUT_SECS,
+        ));
 
-    let resp = send_portr_request(request, "issue tunnel lease", &url).await?;
+    let resp = send_share_router_request(request, "issue tunnel lease", &url).await?;
 
     if resp.status().is_success() {
         return resp
@@ -160,7 +162,7 @@ async fn issue_lease_inner(
     if allow_identity_reset_retry && msg.contains("share subdomain is not claimed") {
         if let Some(share) = share_metadata.as_ref() {
             log::warn!(
-                "[Tunnel] share subdomain {} is no longer claimed on portr-rs, reclaiming before retry",
+                "[Tunnel] share subdomain {} is no longer claimed on cc-switch-router, reclaiming before retry",
                 share.subdomain
             );
             claim_share_subdomain_inner(client, config, share, true).await?;
@@ -200,7 +202,7 @@ async fn claim_share_subdomain_inner(
     crate::email_auth::ensure_remote_owner_binding(config, &share_metadata.owner_email)
         .await
         .map_err(TunnelError::Api)?;
-    let resp = send_portr_request(
+    let resp = send_share_router_request(
         client
             .post(&url)
             .json(&serde_json::json!({
@@ -210,7 +212,9 @@ async fn claim_share_subdomain_inner(
                 "signature": signature,
                 "share": share_metadata,
             }))
-            .timeout(std::time::Duration::from_secs(PORTR_REQUEST_TIMEOUT_SECS)),
+            .timeout(std::time::Duration::from_secs(
+                SHARE_ROUTER_REQUEST_TIMEOUT_SECS,
+            )),
         "claim share subdomain",
         &url,
     )

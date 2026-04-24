@@ -421,7 +421,8 @@ pub fn run() {
             // 从 AppSettings 恢复 portr 隧道配置（重启后仍然可用）
             {
                 let settings = crate::settings::get_settings();
-                let cfg = if let Some(domain) = settings.portr_domain.clone() {
+                let cfg = if let Some(domain) = settings.current_share_router_domain() {
+                    let domain = domain.to_string();
                     crate::tunnel::config::TunnelConfig { domain }
                 } else {
                     crate::tunnel::config::TunnelConfig::default_public_service()
@@ -430,7 +431,7 @@ pub fn run() {
                 tauri::async_runtime::block_on(async move {
                     tunnel_manager.write().await.set_config(cfg);
                 });
-                log::info!("✓ 已恢复 portr-rs 隧道配置");
+                log::info!("✓ 已恢复 cc-switch-router 隧道配置");
             }
 
             // ============================================================
@@ -946,7 +947,7 @@ pub fn run() {
                 // 检查 settings 表中的代理状态，自动恢复代理服务
                 restore_proxy_state_on_startup(&state).await;
 
-                // 恢复 active share 的 tunnel，避免 portr-rs 或桌面端重启后
+                // 恢复 active share 的 tunnel，避免 cc-switch-router 或桌面端重启后
                 // 本地状态仍是 active，但真实隧道长期停留在离线状态。
                 if let Err(e) = crate::commands::share::restore_active_share_tunnel(&state).await {
                     log::warn!("恢复 active share tunnel 失败: {e}");

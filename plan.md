@@ -1,20 +1,20 @@
 # Token 分享功能实现总结
 
-基于 portr 内网穿透的 Token 分享机制，允许用户将本地代理端口（15721）以带配额限制的方式暴露给第三方使用。portr 服务端保持不变（Go），客户端用 Rust 重写并内嵌到 cc-switch。
+基于 share router 内网穿透的 Token 分享机制，允许用户将本地代理端口（15721）以带配额限制的方式暴露给第三方使用。服务端后续已演进为 `cc-switch-router`，客户端用 Rust 重写并内嵌到 cc-switch。
 
 ## 整体架构
 
 ```
-第三方用户                  portr 公网                     cc-switch (本机)
+第三方用户             cc-switch-router 公网              cc-switch (本机)
 ┌────────────┐   HTTPS    ┌─────────────┐   SSH 反向     ┌──────────────┐
-│  API 调用  │ ─────────> │ portr server│ <───────────── │ 内嵌 tunnel  │
+│  API 调用  │ ─────────> │share router │ <───────────── │ 内嵌 tunnel  │
 │ + X-Share- │            │  (Go, 不变) │                │ + share_guard│
 │   Token    │            └─────────────┘                │ + 本地代理   │
 └────────────┘                                            │   15721      │
                                                           └──────────────┘
 ```
 
-## Phase 1 — Tunnel 模块（Rust portr client）
+## Phase 1 — Tunnel 模块（Rust share router client）
 
 `src-tauri/src/tunnel/`：
 
@@ -25,14 +25,14 @@
 | `connection.rs` | `POST /api/v1/connections/` 创建 connection |
 | `forward.rs` | `io::copy_bidirectional` 双向转发 |
 | `ssh.rs` | `SshTunnel` — russh client、认证、`tcpip_forward`、accept loop、reconnect |
-| `health.rs` | 3s 间隔 HTTP 健康检查（`X-Portr-Ping-Request`）+ 10 次连续失败触发重连 |
+| `health.rs` | 3s 间隔 HTTP 健康检查（`X-Share-Router-Ping-Request`，兼容旧 `X-Portr-Ping-Request`）+ 10 次连续失败触发重连 |
 | `mod.rs` | `TunnelManager` — `HashMap<share_id, TunnelHandle>`，管理所有隧道生命周期 |
 
 协议要点：
 - SSH 认证：`user = "{connection_id}:{secret_key}"`，空密码
 - 远程端口：在 `20000–30000` 内随机尝试 10 次
 - 内部保活：russh `keepalive_interval = 15s`
-- 服务端密钥：`check_server_key` 固定返回 `Ok(true)`（匹配 portr 默认）
+- 服务端密钥：`check_server_key` 固定返回 `Ok(true)`（早期兼容 portr 默认）
 
 依赖：`russh = "0.46"`、`russh-keys = "0.46"`、`rand = "0.8"`。
 
@@ -78,10 +78,10 @@
 ### 应用状态与设置
 
 - **`store.rs`**：`AppState` 新增 `tunnel_manager: Arc<RwLock<TunnelManager>>`
-- **`settings.rs`**：`AppSettings` 新增 `portr_server_url / portr_ssh_url / portr_tunnel_url / portr_secret_key / portr_use_localhost`
+- **`settings.rs`**：`AppSettings` 新增历史兼容 `portr_*` 字段，当前正式字段为 `share_router_domain`
 - **`lib.rs`**：
   - 声明 `mod tunnel`
-  - 在 `AppState::new(db)` 之后读取 `get_settings()`，若四个核心 portr 字段齐备则 `block_on` 将配置灌入 `TunnelManager`（修复 P2 配置持久化）
+  - 在 `AppState::new(db)` 之后读取 `get_settings()`，若 share router 配置齐备则 `block_on` 将配置灌入 `TunnelManager`（修复 P2 配置持久化）
   - `invoke_handler!` 注册全部 11 个 share 命令
 
 ### 前端 API
@@ -101,5 +101,5 @@
 1. **编译验证**：本环境缺 `libglib2.0-dev` 等 GTK/WebKit 开发包，`cargo check` 无法运行，需要在具备 Tauri Linux 构建依赖的开发机上执行。
 2. **russh 版本对齐**：见 Phase 1 警告。`tunnel/ssh.rs` 与当前 Cargo.toml 不完全匹配，需要二选一调整。
 3. **前端 UI**：`src/components/share/` 尚未创建，只完成了 API 层（`src/lib/api/share.ts`）。
-4. **设置页表单**：Settings 页面尚未暴露 5 个 `portr_*` 字段的编辑入口。
+4. **设置页表单**：Settings 页面尚未暴露独立的 share router 高级字段编辑入口。
 5. **转换链路下的用量回写**：`proxy/handlers.rs::handle_claude_transform` 和部分流式 usage collector 使用的是独立的 `log_usage`（不经 `spawn_log_usage`），如果分享请求走到 OpenRouter 转换路径，这些位置还需要补充 `record_share_usage` 调用；当前版本对透传模式的 Claude/Codex/Gemini 已足够。

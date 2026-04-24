@@ -54,33 +54,7 @@ pub async fn ensure_identity(
     let private_key_base64 =
         base64::engine::general_purpose::STANDARD.encode(signing_key.to_bytes());
 
-    let payload = RegisterInstallationRequest {
-        public_key: &public_key_base64,
-        platform: std::env::consts::OS,
-        app_version: env!("CARGO_PKG_VERSION"),
-        instance_nonce: uuid::Uuid::new_v4().to_string(),
-    };
-
-    let url = format!("{}/v1/installations/register", config.get_server_addr());
-    let response = client
-        .post(url)
-        .json(&payload)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| TunnelError::Api(format!("register installation failed: {e}")))?;
-
-    if !response.status().is_success() {
-        return Err(TunnelError::Api(format!(
-            "register installation failed: HTTP {}",
-            response.status()
-        )));
-    }
-
-    let body: RegisterInstallationResponse = response
-        .json()
-        .await
-        .map_err(|e| TunnelError::Api(format!("parse installation response failed: {e}")))?;
+    let body = register_installation_with_public_key(client, config, &public_key_base64).await?;
 
     let stored = StoredIdentity {
         installation_id: body.installation_id.clone(),
@@ -93,6 +67,17 @@ pub async fn ensure_identity(
         installation_id: body.installation_id,
         signing_key,
     })
+}
+
+pub async fn refresh_installation_registration(
+    client: &reqwest::Client,
+    config: &TunnelConfig,
+) -> Result<(), TunnelError> {
+    let stored = load_stored_identity()?.ok_or_else(|| {
+        TunnelError::Other("cannot refresh installation registration without local identity".into())
+    })?;
+    register_installation_with_public_key(client, config, &stored.public_key_base64).await?;
+    Ok(())
 }
 
 pub fn reset_identity() -> Result<(), TunnelError> {
@@ -139,14 +124,9 @@ pub fn should_reset_identity_for_api_error(message: &str) -> bool {
 }
 
 fn load_identity() -> Result<Option<TunnelIdentity>, TunnelError> {
-    let path = identity_path()?;
-    if !path.exists() {
+    let Some(stored) = load_stored_identity()? else {
         return Ok(None);
-    }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| TunnelError::Other(format!("read tunnel identity failed: {e}")))?;
-    let stored: StoredIdentity = serde_json::from_str(&raw)
-        .map_err(|e| TunnelError::Other(format!("parse tunnel identity failed: {e}")))?;
+    };
     let private_bytes = base64::engine::general_purpose::STANDARD
         .decode(&stored.private_key_base64)
         .map_err(|e| TunnelError::Other(format!("decode tunnel private key failed: {e}")))?;
@@ -159,6 +139,52 @@ fn load_identity() -> Result<Option<TunnelIdentity>, TunnelError> {
         installation_id: stored.installation_id,
         signing_key,
     }))
+}
+
+fn load_stored_identity() -> Result<Option<StoredIdentity>, TunnelError> {
+    let path = identity_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| TunnelError::Other(format!("read tunnel identity failed: {e}")))?;
+    let stored: StoredIdentity = serde_json::from_str(&raw)
+        .map_err(|e| TunnelError::Other(format!("parse tunnel identity failed: {e}")))?;
+    Ok(Some(stored))
+}
+
+async fn register_installation_with_public_key(
+    client: &reqwest::Client,
+    config: &TunnelConfig,
+    public_key_base64: &str,
+) -> Result<RegisterInstallationResponse, TunnelError> {
+    let payload = RegisterInstallationRequest {
+        public_key: public_key_base64,
+        platform: std::env::consts::OS,
+        app_version: env!("CARGO_PKG_VERSION"),
+        instance_nonce: uuid::Uuid::new_v4().to_string(),
+    };
+
+    let url = format!("{}/v1/installations/register", config.get_server_addr());
+    let response = client
+        .post(url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| TunnelError::Api(format!("register installation failed: {e}")))?;
+
+    if !response.status().is_success() {
+        return Err(TunnelError::Api(format!(
+            "register installation failed: HTTP {}",
+            response.status()
+        )));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|e| TunnelError::Api(format!("parse installation response failed: {e}")))
 }
 
 fn validate_stored_identity(

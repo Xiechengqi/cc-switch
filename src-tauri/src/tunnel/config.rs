@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 
 const KNOWN_PUBLIC_SHARE_ROUTER_DOMAINS: &[&str] = &["jptokenswitch.cc", "sgptokenswitch.cc"];
 
-/// Portr server configuration — stored in AppSettings
+/// Share router configuration — stored in AppSettings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TunnelConfig {
-    /// Portr domain (e.g. "example.com" or "127.0.0.1:8787")
+    /// Share router domain (e.g. "example.com" or "127.0.0.1:8787")
     pub domain: String,
 }
 
@@ -54,8 +54,10 @@ impl Default for TunnelConfig {
 
 pub fn current_tunnel_config() -> Option<TunnelConfig> {
     crate::settings::get_settings()
-        .portr_domain
-        .map(|domain| TunnelConfig { domain })
+        .current_share_router_domain()
+        .map(|domain| TunnelConfig {
+            domain: domain.to_string(),
+        })
 }
 
 pub fn is_share_tunnel_url(url_or_host: &str) -> bool {
@@ -286,7 +288,7 @@ mod tests {
     #[test]
     fn detects_configured_share_router_domain_with_scheme_and_case() {
         let mut settings = crate::settings::AppSettings::default();
-        settings.portr_domain = Some("HTTPS://Share.Example.Com/".to_string());
+        settings.share_router_domain = Some("HTTPS://Share.Example.Com/".to_string());
         crate::settings::update_settings(settings).unwrap();
 
         assert!(is_share_tunnel_url("https://alpha.share.example.com/v1"));

@@ -334,6 +334,7 @@ export interface Settings {
   preferredTerminal?: string;
 
   // ===== Token Share / Tunnel =====
+  shareRouterDomain?: string;
   portrDomain?: string;
 }
 

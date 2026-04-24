@@ -281,12 +281,24 @@ impl ProxyServer {
         Router::new()
             // 健康检查
             .route("/health", get(handlers::health_check))
-            .route("/_portr/health", get(handlers::portr_health_probe))
+            .route(
+                "/_share-router/health",
+                get(handlers::share_router_health_probe),
+            )
+            .route("/_portr/health", get(handlers::share_router_health_probe))
+            .route(
+                "/_share-router/request-logs",
+                get(handlers::share_router_recent_request_logs),
+            )
             .route(
                 "/_portr/request-logs",
-                get(handlers::portr_recent_request_logs),
+                get(handlers::share_router_recent_request_logs),
             )
-            .route("/_portr/share-runtime", get(handlers::portr_share_runtime))
+            .route(
+                "/_share-router/share-runtime",
+                get(handlers::share_router_runtime),
+            )
+            .route("/_portr/share-runtime", get(handlers::share_router_runtime))
             .route("/status", get(handlers::get_status))
             // Claude API (支持带前缀和不带前缀两种格式)
             .route("/v1/messages", post(handlers::handle_messages))

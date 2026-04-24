@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REGIONS_URL =
-  "https://raw.githubusercontent.com/Xiechengqi/portr-rs/refs/heads/master/regions";
+  "https://raw.githubusercontent.com/Xiechengqi/cc-switch-router/refs/heads/master/regions";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUTPUT_PATH = resolve(__dirname, "../src/config/shareRegions.ts");

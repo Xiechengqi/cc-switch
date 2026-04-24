@@ -17,8 +17,8 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 const BATCH_DELAY_MS: u64 = 1500;
-const PORTR_CONNECT_TIMEOUT_SECS: u64 = 10;
-const PORTR_REQUEST_TIMEOUT_SECS: u64 = 20;
+const SHARE_ROUTER_CONNECT_TIMEOUT_SECS: u64 = 10;
+const SHARE_ROUTER_REQUEST_TIMEOUT_SECS: u64 = 20;
 
 #[derive(Clone)]
 enum ShareSyncOp {
@@ -38,18 +38,18 @@ fn global_state() -> &'static Mutex<SyncState> {
     STATE.get_or_init(|| Mutex::new(SyncState::default()))
 }
 
-fn portr_client() -> Result<reqwest::Client, String> {
+fn share_router_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(PORTR_CONNECT_TIMEOUT_SECS))
-        .timeout(Duration::from_secs(PORTR_REQUEST_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(SHARE_ROUTER_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(SHARE_ROUTER_REQUEST_TIMEOUT_SECS))
         .build()
-        .map_err(|e| format!("create portr-rs HTTP client failed: {e}"))
+        .map_err(|e| format!("create cc-switch-router HTTP client failed: {e}"))
 }
 
-fn describe_portr_send_error(operation: &str, url: &str, err: reqwest::Error) -> String {
+fn describe_share_router_send_error(operation: &str, url: &str, err: reqwest::Error) -> String {
     if err.is_timeout() {
         return format!(
-            "{operation} timed out after {PORTR_REQUEST_TIMEOUT_SECS}s: {url}. 请检查分享节点是否可访问，或切换到其他分享节点后重试"
+            "{operation} timed out after {SHARE_ROUTER_REQUEST_TIMEOUT_SECS}s: {url}. 请检查分享节点是否可访问，或切换到其他分享节点后重试"
         );
     }
     if err.is_connect() {
@@ -60,7 +60,7 @@ fn describe_portr_send_error(operation: &str, url: &str, err: reqwest::Error) ->
     format!("{operation} request failed: {url}: {err}")
 }
 
-async fn send_portr_request(
+async fn send_share_router_request(
     request: reqwest::RequestBuilder,
     operation: &str,
     url: &str,
@@ -75,9 +75,9 @@ async fn send_portr_request(
                 .expect("checked is_some")
                 .send()
                 .await
-                .map_err(|retry_err| describe_portr_send_error(operation, url, retry_err))
+                .map_err(|retry_err| describe_share_router_send_error(operation, url, retry_err))
         }
-        Err(err) => Err(describe_portr_send_error(operation, url, err)),
+        Err(err) => Err(describe_share_router_send_error(operation, url, err)),
     }
 }
 
@@ -367,7 +367,7 @@ async fn claim_share_subdomain_inner(
     allow_identity_reset_retry: bool,
 ) -> Result<(), String> {
     let config = load_config();
-    let client = portr_client()?;
+    let client = share_router_client()?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -376,7 +376,7 @@ async fn claim_share_subdomain_inner(
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
     let request_payload =
         build_signed_request_payload(&identity, "share_claim_subdomain", "share", &metadata)?;
-    let resp = send_portr_request(
+    let resp = send_share_router_request(
         client.post(&url).json(&request_payload),
         "claim subdomain",
         &url,
@@ -484,7 +484,7 @@ async fn sync_recent_share_request_logs_inner(
     }
 
     let config = load_config();
-    let client = portr_client()?;
+    let client = share_router_client()?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -497,7 +497,7 @@ async fn sync_recent_share_request_logs_inner(
     if let Some(owner_email) = crate::email_auth::current_email()? {
         crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
     }
-    let resp = send_portr_request(
+    let resp = send_share_router_request(
         client.post(&url).json(&request_payload),
         "sync share request logs",
         &url,
@@ -533,14 +533,14 @@ async fn sync_share_metadata_now_inner(
     allow_identity_reset_retry: bool,
 ) -> Result<(), String> {
     let config = load_config();
-    let client = portr_client()?;
+    let client = share_router_client()?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
     let url = format!("{}/v1/shares/sync", config.get_server_addr());
     let request_payload = build_signed_request_payload(&identity, "share_sync", "share", &share)?;
     crate::email_auth::ensure_remote_owner_binding(&config, &share.owner_email).await?;
-    let resp = send_portr_request(
+    let resp = send_share_router_request(
         client.post(&url).json(&request_payload),
         "sync share metadata",
         &url,
@@ -613,7 +613,7 @@ async fn flush_pending() -> Result<(), String> {
 
 async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), String> {
     let config = load_config();
-    let client = portr_client()?;
+    let client = share_router_client()?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -663,7 +663,7 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
         let url = format!("{}/v1/shares/batch-sync", config.get_server_addr());
         let request_payload =
             build_signed_request_payload(&identity, "share_batch_sync", "ops", &payload_ops)?;
-        let resp = send_portr_request(
+        let resp = send_share_router_request(
             client.post(&url).json(&request_payload),
             "batch sync shares",
             &url,
@@ -719,7 +719,7 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
             "logs",
             &request_logs,
         )?;
-        let resp = send_portr_request(
+        let resp = send_share_router_request(
             client.post(&url).json(&request_payload),
             "batch sync share request logs",
             &url,
@@ -756,7 +756,8 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
 
 fn load_config() -> TunnelConfig {
     let settings = settings::get_settings();
-    if let Some(domain) = settings.portr_domain {
+    if let Some(domain) = settings.current_share_router_domain() {
+        let domain = domain.to_string();
         TunnelConfig { domain }
     } else {
         TunnelConfig::default_public_service()

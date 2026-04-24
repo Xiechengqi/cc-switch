@@ -36,7 +36,19 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
-const PORTR_REQUEST_LOGS_LIMIT: usize = 10;
+const SHARE_ROUTER_REQUEST_LOGS_LIMIT: usize = 10;
+
+fn has_share_router_probe_header(headers: &axum::http::HeaderMap) -> bool {
+    ["X-Share-Router-Probe", "X-Portr-Probe"]
+        .into_iter()
+        .any(|name| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        })
+}
 
 // ============================================================================
 // 健康检查和状态查询（简单端点）
@@ -53,17 +65,12 @@ pub async fn health_check() -> (StatusCode, Json<Value>) {
     )
 }
 
-/// Internal health endpoint used by portr-rs route probing.
+/// Internal health endpoint used by cc-switch-router route probing.
 ///
 /// This endpoint is intentionally separate from the public `/health` route so
 /// probe traffic can be identified and kept out of share usage accounting.
-pub async fn portr_health_probe(headers: axum::http::HeaderMap) -> impl IntoResponse {
-    let is_probe = headers
-        .get("X-Portr-Probe")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
+pub async fn share_router_health_probe(headers: axum::http::HeaderMap) -> impl IntoResponse {
+    let is_probe = has_share_router_probe_header(&headers);
     if !is_probe {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })));
     }
@@ -78,11 +85,11 @@ pub async fn portr_health_probe(headers: axum::http::HeaderMap) -> impl IntoResp
     )
 }
 
-/// Internal request-log endpoint used by portr-rs for share log recovery.
+/// Internal request-log endpoint used by cc-switch-router for share log recovery.
 ///
 /// The request must carry a valid share token. Only logs for that share are
-/// returned, so portr-rs can backfill its local drawer state after a DB reset.
-pub async fn portr_recent_request_logs(
+/// returned, so cc-switch-router can backfill its local drawer state after a DB reset.
+pub async fn share_router_recent_request_logs(
     State(state): State<ProxyState>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
@@ -98,7 +105,7 @@ pub async fn portr_recent_request_logs(
         crate::proxy::share_guard::ShareGuardResult::Valid(share) => {
             match state
                 .db
-                .get_recent_share_request_logs(&share.id, PORTR_REQUEST_LOGS_LIMIT)
+                .get_recent_share_request_logs(&share.id, SHARE_ROUTER_REQUEST_LOGS_LIMIT)
             {
                 Ok(logs) => (
                     StatusCode::OK,
@@ -116,17 +123,12 @@ pub async fn portr_recent_request_logs(
     }
 }
 
-/// Internal runtime-snapshot endpoint used by portr-rs to refresh support and quota cache.
-pub async fn portr_share_runtime(
+/// Internal runtime-snapshot endpoint used by cc-switch-router to refresh support and quota cache.
+pub async fn share_router_runtime(
     State(state): State<ProxyState>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let is_probe = headers
-        .get("X-Portr-Probe")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
+    let is_probe = has_share_router_probe_header(&headers);
     if !is_probe {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })));
     }

@@ -431,7 +431,7 @@ export const handlers = [
       };
     }>(request);
     setSettings({
-      portrDomain: config.domain,
+      shareRouterDomain: config.domain,
     });
     return success(null);
   }),

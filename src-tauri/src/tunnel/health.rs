@@ -7,7 +7,8 @@ use tokio::sync::broadcast;
 /// HTTP health checker for an active tunnel.
 ///
 /// Sends periodic pings to `https://{subdomain}.{tunnel_url}` with the
-/// `X-Portr-Ping-Request: true` header. Consecutive failures trigger a
+/// `X-Share-Router-Ping-Request: true` header. Legacy `X-Portr-Ping-Request`
+/// is also accepted by older routers during migration. Consecutive failures trigger a
 /// reconnect callback.
 pub struct HealthChecker {
     config: TunnelConfig,
@@ -88,6 +89,7 @@ impl HealthChecker {
         let resp = self
             .http_client
             .get(&url)
+            .header("X-Share-Router-Ping-Request", "true")
             .header("X-Portr-Ping-Request", "true")
             .timeout(Duration::from_secs(5))
             .send()
@@ -96,16 +98,18 @@ impl HealthChecker {
 
         if resp
             .headers()
-            .get("X-Portr-Error")
+            .get("X-Share-Router-Error")
+            .or_else(|| resp.headers().get("X-Portr-Error"))
             .and_then(|v| v.to_str().ok())
             == Some("true")
         {
             let reason = resp
                 .headers()
-                .get("X-Portr-Error-Reason")
+                .get("X-Share-Router-Error-Reason")
+                .or_else(|| resp.headers().get("X-Portr-Error-Reason"))
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("unknown");
-            return Err(format!("portr error: {reason}"));
+            return Err(format!("share-router error: {reason}"));
         }
 
         Ok(())
@@ -113,7 +117,7 @@ impl HealthChecker {
 }
 
 fn should_reconnect_immediately(error: &str) -> bool {
-    error.contains("portr error: unregistered-subdomain")
+    error.contains("share-router error: unregistered-subdomain")
         || error.contains("connection-lost")
         || error.contains("request failed")
 }

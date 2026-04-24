@@ -449,7 +449,7 @@ export function useConfigureTunnelMutation() {
           }
           return {
             ...current,
-            portrDomain: config.domain,
+            shareRouterDomain: config.domain,
           };
         },
       );

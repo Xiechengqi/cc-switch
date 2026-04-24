@@ -510,12 +510,7 @@ pub async fn configure_tunnel(
 ) -> Result<(), String> {
     // 持久化到 AppSettings，确保应用重启后依然可用
     let mut settings = crate::settings::get_settings();
-    settings.portr_domain = Some(config.domain.clone());
-    // Clear legacy fields
-    settings.portr_server_url = None;
-    settings.portr_ssh_url = None;
-    settings.portr_tunnel_url = None;
-    settings.portr_use_localhost = None;
+    settings.set_share_router_domain(Some(config.domain.clone()));
     crate::settings::update_settings(settings).map_err(|e| e.to_string())?;
 
     let mut mgr = state.tunnel_manager.write().await;
@@ -525,7 +520,8 @@ pub async fn configure_tunnel(
 
 fn current_tunnel_config() -> TunnelConfig {
     let settings = crate::settings::get_settings();
-    if let Some(domain) = settings.portr_domain {
+    if let Some(domain) = settings.current_share_router_domain() {
+        let domain = domain.to_string();
         TunnelConfig { domain }
     } else {
         TunnelConfig::default_public_service()

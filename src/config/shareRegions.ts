@@ -1,5 +1,5 @@
 // AUTO-GENERATED at build time by scripts/fetch-regions.mjs. Do not edit manually.
-// Source: https://raw.githubusercontent.com/Xiechengqi/portr-rs/refs/heads/master/regions
+// Source: https://raw.githubusercontent.com/Xiechengqi/cc-switch-router/refs/heads/master/regions
 
 export interface ShareRegion {
   region: string;

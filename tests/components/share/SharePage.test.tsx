@@ -22,7 +22,7 @@ const renderPage = () => {
 describe("SharePage", () => {
   beforeEach(() => {
     setSettings({
-      portrDomain: "server.example.com",
+      shareRouterDomain: "server.example.com",
     });
     setEmailAuthStatus({
       authenticated: false,

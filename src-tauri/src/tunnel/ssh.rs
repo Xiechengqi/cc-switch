@@ -197,7 +197,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 fn describe_connect_error(ssh_addr: &str, raw: &str) -> String {
     if raw.contains("Disconnect") || raw.contains("Disconnected") {
         return format!(
-            "{raw}. SSH URL `{ssh_addr}` likely points to a non-SSH service, or portr-rs SSH listener is not actually running on that port"
+            "{raw}. SSH URL `{ssh_addr}` likely points to a non-SSH service, or cc-switch-router SSH listener is not actually running on that port"
         );
     }
     raw.to_string()
@@ -242,7 +242,7 @@ impl client::Handler for TunnelHandler {
             }
             None => {
                 log::warn!(
-                    "[Tunnel] portr-rs 未返回 ssh_host_fingerprint，跳过 host key 校验 (addr={}, actual={})。请升级服务端以启用校验。",
+                    "[Tunnel] cc-switch-router 未返回 ssh_host_fingerprint，跳过 host key 校验 (addr={}, actual={})。请升级服务端以启用校验。",
                     self.ssh_addr,
                     actual
                 );

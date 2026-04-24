@@ -34,6 +34,7 @@ pub struct TunnelManager {
     config: Option<TunnelConfig>,
     tunnels: HashMap<String, TunnelHandle>,
     http_client: reqwest::Client,
+    installation_registration_refreshed: bool,
 }
 
 impl TunnelManager {
@@ -42,6 +43,7 @@ impl TunnelManager {
             config: None,
             tunnels: HashMap::new(),
             http_client: reqwest::Client::new(),
+            installation_registration_refreshed: false,
         }
     }
 
@@ -84,6 +86,19 @@ impl TunnelManager {
         let (shutdown_tx, _) = broadcast::channel(16);
         let ssh_tunnel =
             SshTunnel::connect(&config, &lease, &req.local_addr, shutdown_tx.clone()).await?;
+        if !self.installation_registration_refreshed {
+            match identity::refresh_installation_registration(&self.http_client, &config).await {
+                Ok(()) => {
+                    self.installation_registration_refreshed = true;
+                    log::info!("[Tunnel] Refreshed installation version on cc-switch-router");
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[Tunnel] Failed to refresh installation version on cc-switch-router: {err}"
+                    );
+                }
+            }
+        }
 
         let remote_port = ssh_tunnel.remote_port();
         let tunnel_url = config.get_tunnel_addr(&req.subdomain);

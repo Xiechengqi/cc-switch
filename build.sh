@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+rm -f -v src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/CC*deb
+
 if [ ! -d node_modules ]; then
   echo "node_modules 不存在，请先运行: pnpm install" >&2
   exit 1

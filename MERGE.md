@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-05-02
+
+- **上游分支：** `main`
+- **上游 HEAD：** `72ab8a5c`
+- **共同祖先：** `c002688a`
+- **合并提交数：** 46
+- **主要变更：**
+  - feat(providers): 新增 Baidu Qianfan、Compshare（claude/codex/hermes/openclaw 四端 Coding Plan）、DeepSeek V4（flash/pro）等 preset
+  - feat(model-fetch): `/models` 端点候选列表化（`build_models_url_candidates`），针对 Anthropic-compat 子路径供应商（DeepSeek 等）回退到根路径或剥离已知后缀
+  - feat(copilot): Claude 模型 ID 通过 live `/models` 列表解析（不再硬编码）
+  - feat(provider-form): "save anyway" 警告替代硬性校验（#2307）
+  - feat(usage): 新增 Hermes Agent 用量追踪（一周内被回退：先 `f061b777` 加入，后 `518d945e` 撤销，仅保留间接 backfill 收益）；修复零成本与 proxy/session-log 重复计费
+  - feat(tray): 托盘图标 tooltip
+  - feat(window): 持久化 Tauri 窗口尺寸/位置（#2377）
+  - feat(launcher): 支持 launch warp 并执行 session（#2466）
+  - fix(proxy): 流式 `message_delta` 去重、tool calls scoped `reasoning_content`、preserve Vertex AI full URLs、include zero usage in final delta、strip leading billing header from system content
+  - fix(claude): 通过环境变量名推导 Claude auth 策略（修复 ANTHROPIC env var 切换后 strategy 不更新）
+  - fix(codex): 切换供应商后历史记录变化（#2349）、跳过 `environment_context` 提取 session title（#2439）、隐藏 Codex subagent sessions、隐藏 1M context window toggle
+  - fix(linux): 主题选择导致 segfault（#2502）
+  - fix(coding-plan): zhipu weekly tier 名按 reset time 矫正（#2420）
+  - fix(dashscope): usage 解析鲁棒性（防 VSCode 崩溃 #2425）
+  - fix(balance): SiliconFlow 国际站显示 USD（不再 CNY）
+  - fix(config): JSON 键按字母排序（确定性输出 #2469）
+  - fix(session): hide Codex subagent sessions、Codex usage log message
+  - chore(codex): release 改进 `commands::try_get_version` 使用默认 shell（#2286）
+  - chore(deps): GitHub Actions 升级（actions/checkout@6、softprops/action-gh-release@3、pnpm/action-setup@6、actions/stale@10）
+  - chore(ci): 引入 Claude Code Action（review-only `@claude` 触发）、模型升级到 Opus 4.7
+  - feat: import existing 改为 side-effect free（#2429）
+- **冲突解决：**
+  - `src-tauri/src/database/schema.rs` — 保留本仓 share_id index 注释，加入上游新增的 `create_request_logs_usage_indexes_if_supported(conn)?` 调用
+  - `src-tauri/src/codex_config.rs` — 同时保留本仓 `PROXY_MODEL_PROVIDER_KEY`（"cc-switch"）与上游新增的 `CC_SWITCH_CODEX_MODEL_PROVIDER_ID`（"ccswitch"）/ `CODEX_RESERVED_MODEL_PROVIDER_IDS`
+  - `src-tauri/src/services/model_fetch.rs` — 采用上游 `for url in &candidates` 候选列表回退结构，把本仓 share-tunnel `X-API-Key` header 注入逻辑挪进循环里（按 `is_share_tunnel_url(base_url)` 判断）
+  - `src-tauri/src/services/usage_stats.rs` — 采纳上游抽出的 `row_to_request_log_detail` 共用 mapper，但更新它读取 `share_id`(23) / `share_name`(24) / `data_source`(25) 三列；同步更新 `backfill_missing_usage_costs_on_conn` 的 SQL 选列以匹配
+  - `src/components/providers/forms/ProviderForm.tsx` — `handleSubmit` 与 `performSubmit` 两处都补回本仓 `isClaudeOauthProvider` 标识（`templatePreset/initialData.meta.providerType === "claude_oauth"`），用于 Claude OAuth 登录校验与 `authBinding.claude_oauth` 写入
+- **附加修复：** 编译期发现 `usage_stats.rs:1061` 缺少 `.to_string()` —— 本仓新增的 `share_id` 过滤分支 `conditions.push("l.share_id = ?")` 与上游把 `conditions` 改成 `Vec<String>` 的合并产物，补齐 `.to_string()`
+- **验证：** `cargo check --bins --tests`、`cargo test --lib`（1126 通过）、`cargo test --test hermes_roundtrip --test skill_sync --test import_export_sync --test mcp_commands`（25 通过）、`pnpm typecheck`、`pnpm test:unit`（262 通过）
+- **注：** 合并前 stash 了本地 Gemini OAuth WIP（5 个新文件 + 多文件改动），合并完成后 `git stash pop` 恢复
+
+---
+
 ## 2026-04-24
 
 - **上游分支：** `main`

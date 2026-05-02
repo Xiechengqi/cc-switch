@@ -18,6 +18,7 @@ pub mod claude_oauth_auth;
 mod codex;
 pub mod codex_oauth_auth;
 pub mod copilot_auth;
+pub mod copilot_model_map;
 mod gemini;
 pub(crate) mod gemini_schema;
 pub mod gemini_shadow;

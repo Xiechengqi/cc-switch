@@ -5,6 +5,7 @@ import { Download, Info, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import EndpointSpeedTest from "./EndpointSpeedTest";
+import GeminiOAuthSection from "./GeminiOAuthSection";
 import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
 import {
   fetchModelsForConfig,
@@ -28,6 +29,10 @@ interface GeminiFormFieldsProps {
   websiteUrl: string;
   isPartner?: boolean;
   partnerPromotionKey?: string;
+  isGeminiOfficialPreset?: boolean;
+  isGeminiOauthAuthenticated?: boolean;
+  selectedGeminiAccountId?: string | null;
+  onGeminiAccountSelect?: (accountId: string | null) => void;
 
   // Base URL
   shouldShowSpeedTest: boolean;
@@ -58,6 +63,10 @@ export function GeminiFormFields({
   websiteUrl,
   isPartner,
   partnerPromotionKey,
+  isGeminiOfficialPreset = false,
+  isGeminiOauthAuthenticated = false,
+  selectedGeminiAccountId,
+  onGeminiAccountSelect,
   shouldShowSpeedTest,
   baseUrl,
   onBaseUrlChange,
@@ -103,32 +112,47 @@ export function GeminiFormFields({
       .finally(() => setIsFetchingModels(false));
   }, [baseUrl, apiKey, t]);
 
-  // 检测是否为 Google 官方（使用 OAuth）
-  const isGoogleOfficial =
-    partnerPromotionKey?.toLowerCase() === "google-official";
+  // Google Official is identified explicitly by providerType=google_gemini_oauth.
+  const isGoogleOfficial = isGeminiOfficialPreset;
 
   return (
     <>
       {/* Google OAuth 提示 */}
       {isGoogleOfficial && (
-        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950">
-          <div className="flex gap-3">
-            <Info className="h-5 w-5 flex-shrink-0 text-blue-600 dark:text-blue-400" />
-            <div className="space-y-1">
-              <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                {t("provider.form.gemini.oauthTitle", {
-                  defaultValue: "OAuth 认证模式",
-                })}
-              </p>
-              <p className="text-sm text-blue-700 dark:text-blue-300">
-                {t("provider.form.gemini.oauthHint", {
-                  defaultValue:
-                    "Google 官方使用 OAuth 个人认证，无需填写 API Key。首次使用时会自动打开浏览器进行登录。",
-                })}
-              </p>
+        <>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950">
+            <div className="flex gap-3">
+              <Info className="h-5 w-5 flex-shrink-0 text-blue-600 dark:text-blue-400" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                  {t("provider.form.gemini.oauthTitle", {
+                    defaultValue: "OAuth 认证模式",
+                  })}
+                </p>
+                <p className="text-sm text-blue-700 dark:text-blue-300">
+                  {t("provider.form.gemini.oauthHint", {
+                    defaultValue:
+                      "Google Official 使用 cc-switch 托管的 OAuth 账号，无需填写 API Key。",
+                  })}
+                </p>
+              </div>
             </div>
           </div>
-        </div>
+
+          <GeminiOAuthSection
+            selectedAccountId={selectedGeminiAccountId}
+            onAccountSelect={onGeminiAccountSelect}
+            allowDefaultAccountOption={false}
+          />
+
+          {!isGeminiOauthAuthenticated && (
+            <p className="text-sm text-amber-600 dark:text-amber-400">
+              {t("geminiOauth.loginRequired", {
+                defaultValue: "请先登录 Google Gemini 账号",
+              })}
+            </p>
+          )}
+        </>
       )}
 
       {/* API Key 输入框 */}

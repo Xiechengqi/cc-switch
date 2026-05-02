@@ -866,6 +866,23 @@ pub fn run() {
                 log::info!("✓ ClaudeOAuthManager initialized");
             }
 
+            // 初始化 GeminiOAuthManager (Google Gemini 官方 OAuth)
+            {
+                use crate::proxy::providers::gemini_oauth_auth::{
+                    set_global_gemini_oauth_manager, GeminiOAuthManager,
+                };
+                use commands::GeminiOAuthState;
+                use tokio::sync::RwLock;
+
+                let app_config_dir = crate::config::get_app_config_dir();
+                let gemini_oauth_manager = Arc::new(RwLock::new(GeminiOAuthManager::new(
+                    app_config_dir,
+                )));
+                set_global_gemini_oauth_manager(Arc::clone(&gemini_oauth_manager));
+                app.manage(GeminiOAuthState(gemini_oauth_manager));
+                log::info!("✓ GeminiOAuthManager initialized");
+            }
+
             // 初始化 OAuth 订阅额度后台刷新服务
             {
                 use commands::OauthQuotaState;
@@ -879,10 +896,12 @@ pub fn run() {
                 let db = app.state::<AppState>().db.clone();
                 let codex_state = app.state::<commands::CodexOAuthState>();
                 let claude_state = app.state::<commands::ClaudeOAuthState>();
+                let gemini_state = app.state::<commands::GeminiOAuthState>();
                 let copilot_state = app.state::<commands::CopilotAuthState>();
                 let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
                     &codex_state,
                     &claude_state,
+                    &gemini_state,
                     &copilot_state,
                 );
                 crate::services::oauth_quota::spawn_oauth_quota_refresher(

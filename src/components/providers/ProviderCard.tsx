@@ -18,6 +18,7 @@ import SubscriptionQuotaFooter from "@/components/SubscriptionQuotaFooter";
 import CopilotQuotaFooter from "@/components/CopilotQuotaFooter";
 import CodexOauthQuotaFooter from "@/components/CodexOauthQuotaFooter";
 import ClaudeOauthQuotaFooter from "@/components/ClaudeOauthQuotaFooter";
+import GeminiOauthQuotaFooter from "@/components/GeminiOauthQuotaFooter";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
@@ -132,6 +133,8 @@ const quotaSourceToAuthProvider = (
   if (quotaSource === "copilot") return PROVIDER_TYPES.GITHUB_COPILOT;
   if (quotaSource === "codex_oauth") return PROVIDER_TYPES.CODEX_OAUTH;
   if (quotaSource === "claude_oauth") return PROVIDER_TYPES.CLAUDE_OAUTH;
+  if (quotaSource === "google_gemini_oauth")
+    return PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH;
   return null;
 };
 
@@ -460,6 +463,14 @@ export function ProviderCard({
                   appId={appId}
                   providerId={provider.id}
                   inline={true}
+                  isCurrent={isCurrent}
+                />
+              ) : quotaSource === "google_gemini_oauth" ? (
+                <GeminiOauthQuotaFooter
+                  meta={provider.meta}
+                  inline={true}
+                  appId={appId}
+                  providerId={provider.id}
                   isCurrent={isCurrent}
                 />
               ) : quotaSource === "official" || isOfficial ? (

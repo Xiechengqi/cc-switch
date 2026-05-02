@@ -7,10 +7,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ClaudeIcon, CodexIcon } from "@/components/BrandIcons";
+import { ClaudeIcon, CodexIcon, GeminiIcon } from "@/components/BrandIcons";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
 import { ClaudeOAuthSection } from "@/components/providers/forms/ClaudeOAuthSection";
+import { GeminiOAuthSection } from "@/components/providers/forms/GeminiOAuthSection";
 import { ShareEmailLoginCard } from "@/components/settings/ShareEmailLoginCard";
 import { settingsApi } from "@/lib/api";
 import { useSettingsQuery } from "@/lib/query";
@@ -64,6 +65,7 @@ export function AuthCenterPanel() {
       queryClient.invalidateQueries({ queryKey: ["subscription", "quota"] }),
       queryClient.invalidateQueries({ queryKey: ["claude_oauth", "quota"] }),
       queryClient.invalidateQueries({ queryKey: ["codex_oauth", "quota"] }),
+      queryClient.invalidateQueries({ queryKey: ["google_gemini_oauth", "quota"] }),
       queryClient.invalidateQueries({ queryKey: ["copilot", "quota"] }),
     ]);
     toast.success(
@@ -211,6 +213,24 @@ export function AuthCenterPanel() {
         </div>
 
         <CodexOAuthSection showLoggedInAccounts />
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+            <GeminiIcon size={20} />
+          </div>
+          <div>
+            <h4 className="font-medium">Google Gemini</h4>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.authCenter.geminiOauthDescription", {
+                defaultValue: "管理 Google Gemini 账号",
+              })}
+            </p>
+          </div>
+        </div>
+
+        <GeminiOAuthSection showLoggedInAccounts />
       </section>
     </div>
   );

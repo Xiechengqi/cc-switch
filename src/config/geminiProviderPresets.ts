@@ -26,6 +26,8 @@ export interface GeminiProviderPreset {
   partnerPromotionKey?: string;
   endpointCandidates?: string[];
   theme?: GeminiPresetTheme;
+  providerType?: "google_gemini_oauth";
+  requiresOAuth?: boolean;
   // 图标配置
   icon?: string; // 图标名称
   iconColor?: string; // 图标颜色
@@ -41,6 +43,8 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     },
     description: "Google 官方 Gemini API (OAuth)",
     category: "official",
+    providerType: "google_gemini_oauth",
+    requiresOAuth: true,
     partnerPromotionKey: "google-official",
     theme: {
       icon: "gemini",

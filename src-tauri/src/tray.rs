@@ -440,11 +440,13 @@ fn handle_provider_click(
             Some(oauth_quota_state),
             Some(codex_state),
             Some(claude_state),
+            Some(gemini_state),
             Some(copilot_state),
         ) = (
             app.try_state::<crate::commands::OauthQuotaState>(),
             app.try_state::<crate::commands::CodexOAuthState>(),
             app.try_state::<crate::commands::ClaudeOAuthState>(),
+            app.try_state::<crate::commands::GeminiOAuthState>(),
             app.try_state::<crate::commands::CopilotAuthState>(),
         ) {
             let app_handle = app.clone();
@@ -453,6 +455,7 @@ fn handle_provider_click(
             let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
                 &codex_state,
                 &claude_state,
+                &gemini_state,
                 &copilot_state,
             );
             tauri::async_runtime::spawn(async move {

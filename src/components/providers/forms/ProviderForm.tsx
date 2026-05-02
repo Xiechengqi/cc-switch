@@ -89,6 +89,7 @@ import {
   useCopilotAuth,
   useCodexOauth,
   useClaudeOauth,
+  useGeminiOauth,
 } from "./hooks";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useSettingsQuery } from "@/lib/query";
@@ -388,6 +389,11 @@ export function ProviderForm({
 
   // Claude OAuth 认证状态（Anthropic 官方订阅）
   const { isAuthenticated: isClaudeOauthAuthenticated } = useClaudeOauth();
+  const {
+    isAuthenticated: isGeminiOauthAuthenticated,
+    accounts: geminiOauthAccounts,
+    defaultAccountId: defaultGeminiAccountId,
+  } = useGeminiOauth();
 
   // 选中的 GitHub 账号 ID（多账号支持）
   const [selectedGitHubAccountId, setSelectedGitHubAccountId] = useState<
@@ -406,6 +412,11 @@ export function ProviderForm({
   const [selectedClaudeAccountId, setSelectedClaudeAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "claude_oauth"));
+  const [selectedGeminiAccountId, setSelectedGeminiAccountId] = useState<
+    string | null
+  >(() =>
+    resolveManagedAccountId(initialData?.meta, "google_gemini_oauth"),
+  );
 
   const isCodexOfficialPreset = appId === "codex" && category === "official";
 
@@ -529,13 +540,44 @@ export function ProviderForm({
     settingsConfig: form.getValues("settingsConfig"),
     onConfigChange: handleSettingsConfigChange,
   });
+  const currentPresetEntry = useMemo(() => {
+    if (!selectedPresetId || selectedPresetId === "custom") {
+      return null;
+    }
+    return presetEntries.find((item) => item.id === selectedPresetId) ?? null;
+  }, [presetEntries, selectedPresetId]);
+  const currentPresetProviderType =
+    currentPresetEntry && "providerType" in currentPresetEntry.preset
+      ? currentPresetEntry.preset.providerType
+      : undefined;
   const currentProviderType =
-    templatePreset?.providerType || initialData?.meta?.providerType;
+    currentPresetProviderType || initialData?.meta?.providerType;
+  const isGeminiOfficialPreset =
+    appId === "gemini" &&
+    currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH;
   const isManagedOauthNameReadOnly =
     currentProviderType === PROVIDER_TYPES.GITHUB_COPILOT ||
     currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
     currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
+    currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
     isCodexOfficialPreset;
+
+  useEffect(() => {
+    if (!isGeminiOfficialPreset || selectedGeminiAccountId) {
+      return;
+    }
+
+    const preferredAccountId =
+      defaultGeminiAccountId ?? geminiOauthAccounts[0]?.id ?? null;
+    if (preferredAccountId) {
+      setSelectedGeminiAccountId(preferredAccountId);
+    }
+  }, [
+    defaultGeminiAccountId,
+    geminiOauthAccounts,
+    isGeminiOfficialPreset,
+    selectedGeminiAccountId,
+  ]);
 
   const {
     useCommonConfig,
@@ -936,6 +978,9 @@ export function ProviderForm({
     const isClaudeOauthProvider =
       templatePreset?.providerType === "claude_oauth" ||
       initialData?.meta?.providerType === "claude_oauth";
+    const isGeminiOauthProvider =
+      templatePreset?.providerType === "google_gemini_oauth" ||
+      initialData?.meta?.providerType === "google_gemini_oauth";
     // GitHub Copilot 必须先登录才能添加
     if (isCopilotProvider && !isCopilotAuthenticated) {
       toast.error(
@@ -966,6 +1011,24 @@ export function ProviderForm({
         toast.error(
           t("codexOauth.selectAccountRequired", {
             defaultValue: "OpenAI Official 必须绑定一个 ChatGPT 账号",
+          }),
+        );
+        return;
+      }
+    }
+    if (isGeminiOfficialPreset || isGeminiOauthProvider) {
+      if (!isGeminiOauthAuthenticated) {
+        toast.error(
+          t("geminiOauth.loginRequired", {
+            defaultValue: "请先登录 Google Gemini 账号",
+          }),
+        );
+        return;
+      }
+      if (!selectedGeminiAccountId) {
+        toast.error(
+          t("geminiOauth.selectAccountRequired", {
+            defaultValue: "Google Official 必须绑定一个 Google Gemini 账号",
           }),
         );
         return;
@@ -1085,6 +1148,9 @@ export function ProviderForm({
     const isClaudeOauthProvider =
       templatePreset?.providerType === "claude_oauth" ||
       initialData?.meta?.providerType === "claude_oauth";
+    const isGeminiOauthProvider =
+      templatePreset?.providerType === "google_gemini_oauth" ||
+      initialData?.meta?.providerType === "google_gemini_oauth";
 
     let settingsConfig: string;
 
@@ -1259,6 +1325,12 @@ export function ProviderForm({
                 authProvider: "claude_oauth",
                 accountId: selectedClaudeAccountId ?? undefined,
               }
+            : isGeminiOauthProvider || isGeminiOfficialPreset
+              ? {
+                  source: "managed_account",
+                  authProvider: "google_gemini_oauth",
+                  accountId: selectedGeminiAccountId ?? undefined,
+                }
             : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
@@ -1951,6 +2023,10 @@ export function ProviderForm({
               websiteUrl={geminiWebsiteUrl}
               isPartner={isGeminiPartner}
               partnerPromotionKey={geminiPartnerPromotionKey}
+              isGeminiOfficialPreset={isGeminiOfficialPreset}
+              isGeminiOauthAuthenticated={isGeminiOauthAuthenticated}
+              selectedGeminiAccountId={selectedGeminiAccountId}
+              onGeminiAccountSelect={setSelectedGeminiAccountId}
               shouldShowSpeedTest={shouldShowSpeedTest}
               baseUrl={geminiBaseUrl}
               onBaseUrlChange={handleGeminiBaseUrlChange}

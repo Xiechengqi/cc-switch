@@ -3,6 +3,7 @@ use tauri::State;
 use crate::commands::claude_oauth::ClaudeOAuthState;
 use crate::commands::codex_oauth::CodexOAuthState;
 use crate::commands::copilot::CopilotAuthState;
+use crate::commands::gemini_oauth::GeminiOAuthState;
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthError;
 use crate::proxy::providers::copilot_auth::{
     CopilotAuthError, GitHubAccount, GitHubDeviceCodeResponse,
@@ -11,6 +12,7 @@ use crate::proxy::providers::copilot_auth::{
 const AUTH_PROVIDER_GITHUB_COPILOT: &str = "github_copilot";
 const AUTH_PROVIDER_CODEX_OAUTH: &str = "codex_oauth";
 const AUTH_PROVIDER_CLAUDE_OAUTH: &str = "claude_oauth";
+const AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH: &str = "google_gemini_oauth";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ManagedAuthAccount {
@@ -47,6 +49,7 @@ fn ensure_auth_provider(auth_provider: &str) -> Result<&'static str, String> {
         AUTH_PROVIDER_GITHUB_COPILOT => Ok(AUTH_PROVIDER_GITHUB_COPILOT),
         AUTH_PROVIDER_CODEX_OAUTH => Ok(AUTH_PROVIDER_CODEX_OAUTH),
         AUTH_PROVIDER_CLAUDE_OAUTH => Ok(AUTH_PROVIDER_CLAUDE_OAUTH),
+        AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH => Ok(AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH),
         _ => Err(format!("Unsupported auth provider: {auth_provider}")),
     }
 }
@@ -88,6 +91,7 @@ pub async fn auth_start_login(
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: State<'_, GeminiOAuthState>,
 ) -> Result<ManagedAuthDeviceCodeResponse, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -126,6 +130,21 @@ pub async fn auth_start_login(
                 interval: 5,
             })
         }
+        AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH => {
+            let auth_manager = gemini_oauth_state.0.read().await;
+            let response = auth_manager
+                .start_browser_flow()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(ManagedAuthDeviceCodeResponse {
+                provider: auth_provider.to_string(),
+                device_code: response.state,
+                user_code: String::new(),
+                verification_uri: response.auth_url,
+                expires_in: 300,
+                interval: 5,
+            })
+        }
         _ => unreachable!(),
     }
 }
@@ -138,6 +157,7 @@ pub async fn auth_poll_for_account(
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: State<'_, GeminiOAuthState>,
 ) -> Result<Option<ManagedAuthAccount>, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -187,6 +207,21 @@ pub async fn auth_poll_for_account(
                 Err(e) => Err(e.to_string()),
             }
         }
+        AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH => {
+            let auth_manager = gemini_oauth_state.0.read().await;
+            match auth_manager.poll_callback_result(&device_code).await {
+                Ok(Some(account)) => {
+                    let default_account_id = auth_manager.get_status().await.default_account_id;
+                    Ok(Some(map_account(
+                        auth_provider,
+                        account,
+                        default_account_id.as_deref(),
+                    )))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            }
+        }
         _ => unreachable!(),
     }
 }
@@ -197,6 +232,7 @@ pub async fn auth_list_accounts(
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: State<'_, GeminiOAuthState>,
 ) -> Result<Vec<ManagedAuthAccount>, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -230,6 +266,16 @@ pub async fn auth_list_accounts(
                 .map(|account| map_account(auth_provider, account, default_account_id.as_deref()))
                 .collect())
         }
+        AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH => {
+            let auth_manager = gemini_oauth_state.0.read().await;
+            let status = auth_manager.get_status().await;
+            let default_account_id = status.default_account_id.clone();
+            Ok(status
+                .accounts
+                .into_iter()
+                .map(|account| map_account(auth_provider, account, default_account_id.as_deref()))
+                .collect())
+        }
         _ => unreachable!(),
     }
 }
@@ -240,6 +286,7 @@ pub async fn auth_get_status(
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: State<'_, GeminiOAuthState>,
 ) -> Result<ManagedAuthStatus, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -297,6 +344,24 @@ pub async fn auth_get_status(
                     .collect(),
             })
         }
+        AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH => {
+            let auth_manager = gemini_oauth_state.0.read().await;
+            let status = auth_manager.get_status().await;
+            let default_account_id = status.default_account_id.clone();
+            Ok(ManagedAuthStatus {
+                provider: auth_provider.to_string(),
+                authenticated: status.authenticated,
+                default_account_id: default_account_id.clone(),
+                migration_error: None,
+                accounts: status
+                    .accounts
+                    .into_iter()
+                    .map(|account| {
+                        map_account(auth_provider, account, default_account_id.as_deref())
+                    })
+                    .collect(),
+            })
+        }
         _ => unreachable!(),
     }
 }
@@ -308,6 +373,7 @@ pub async fn auth_remove_account(
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: State<'_, GeminiOAuthState>,
 ) -> Result<(), String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -327,6 +393,13 @@ pub async fn auth_remove_account(
         }
         AUTH_PROVIDER_CLAUDE_OAUTH => {
             let auth_manager = claude_oauth_state.0.write().await;
+            auth_manager
+                .remove_account(&account_id)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH => {
+            let auth_manager = gemini_oauth_state.0.write().await;
             auth_manager
                 .remove_account(&account_id)
                 .await
@@ -343,6 +416,7 @@ pub async fn auth_set_default_account(
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: State<'_, GeminiOAuthState>,
 ) -> Result<(), String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -362,6 +436,13 @@ pub async fn auth_set_default_account(
         }
         AUTH_PROVIDER_CLAUDE_OAUTH => {
             let auth_manager = claude_oauth_state.0.write().await;
+            auth_manager
+                .set_default_account(&account_id)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH => {
+            let auth_manager = gemini_oauth_state.0.write().await;
             auth_manager
                 .set_default_account(&account_id)
                 .await
@@ -377,6 +458,7 @@ pub async fn auth_logout(
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: State<'_, GeminiOAuthState>,
 ) -> Result<(), String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -390,6 +472,10 @@ pub async fn auth_logout(
         }
         AUTH_PROVIDER_CLAUDE_OAUTH => {
             let auth_manager = claude_oauth_state.0.write().await;
+            auth_manager.clear_auth().await.map_err(|e| e.to_string())
+        }
+        AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH => {
+            let auth_manager = gemini_oauth_state.0.write().await;
             auth_manager.clear_auth().await.map_err(|e| e.to_string())
         }
         _ => unreachable!(),

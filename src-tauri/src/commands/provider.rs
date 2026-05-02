@@ -106,6 +106,7 @@ pub fn switch_provider(
     oauth_quota_state: State<'_, crate::commands::OauthQuotaState>,
     codex_state: State<'_, crate::commands::CodexOAuthState>,
     claude_state: State<'_, crate::commands::ClaudeOAuthState>,
+    gemini_state: State<'_, crate::commands::GeminiOAuthState>,
     copilot_state: State<'_, crate::commands::CopilotAuthState>,
     app: String,
     id: String,
@@ -117,6 +118,7 @@ pub fn switch_provider(
     let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
         &codex_state,
         &claude_state,
+        &gemini_state,
         &copilot_state,
     );
     tauri::async_runtime::spawn(async move {

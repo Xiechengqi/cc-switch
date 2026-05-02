@@ -39,15 +39,11 @@ use serde_json::{json, Value};
 const SHARE_ROUTER_REQUEST_LOGS_LIMIT: usize = 10;
 
 fn has_share_router_probe_header(headers: &axum::http::HeaderMap) -> bool {
-    ["X-Share-Router-Probe", "X-Portr-Probe"]
-        .into_iter()
-        .any(|name| {
-            headers
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
-        })
+    headers
+        .get("X-Share-Router-Probe")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 // ============================================================================
@@ -312,6 +308,7 @@ async fn handle_claude_transform(
             let share_id = ctx.share_id.clone();
             let share_name = ctx.share_name.clone();
             let session_id = ctx.session_id.clone();
+            let incoming_request_id = ctx.incoming_request_id.clone();
 
             SseUsageCollector::new(start_time, move |events, first_token_ms| {
                 let latency_ms = start_time.elapsed().as_millis() as u64;
@@ -334,10 +331,12 @@ async fn handle_claude_transform(
                 let share_id = share_id.clone();
                 let share_name = share_name.clone();
                 let session_id = session_id.clone();
+                let incoming_request_id = incoming_request_id.clone();
 
                 tokio::spawn(async move {
                     log_usage(
                         &state,
+                        incoming_request_id.clone(),
                         &provider_id,
                         "claude",
                         &model,
@@ -351,7 +350,9 @@ async fn handle_claude_transform(
                     .await;
 
                     if let Some(sid) = share_id {
-                        let request_id = uuid::Uuid::new_v4().to_string();
+                        let request_id = incoming_request_id
+                            .clone()
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                         crate::tunnel::sync::schedule_sync_share_request_log(
                             super::response_processor::build_share_request_log(
                                 &request_id,
@@ -467,6 +468,7 @@ async fn handle_claude_transform(
         let share_name = ctx.share_name.clone();
         let provider_name = ctx.provider.name.clone();
         let session_id = ctx.session_id.clone();
+        let incoming_request_id = ctx.incoming_request_id.clone();
         tokio::spawn({
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
@@ -474,6 +476,7 @@ async fn handle_claude_transform(
             async move {
                 log_usage(
                     &state,
+                    incoming_request_id.clone(),
                     &provider_id,
                     "claude",
                     &model,
@@ -487,7 +490,9 @@ async fn handle_claude_transform(
                 .await;
 
                 if let Some(sid) = share_id {
-                    let request_id = uuid::Uuid::new_v4().to_string();
+                    let request_id = incoming_request_id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                     crate::tunnel::sync::schedule_sync_share_request_log(
                         super::response_processor::build_share_request_log(
                             &request_id,
@@ -885,7 +890,10 @@ fn log_forward_error(
     let logger = UsageLogger::new(&state.db);
     let status_code = map_proxy_error_to_status(error);
     let error_message = get_error_message(error);
-    let request_id = uuid::Uuid::new_v4().to_string();
+    let request_id = ctx
+        .incoming_request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     if let Err(e) = logger.log_error_with_context(
         request_id,
@@ -907,6 +915,7 @@ fn log_forward_error(
 #[allow(clippy::too_many_arguments)]
 async fn log_usage(
     state: &ProxyState,
+    incoming_request_id: Option<String>,
     provider_id: &str,
     app_type: &str,
     model: &str,
@@ -929,7 +938,7 @@ async fn log_usage(
         model
     };
 
-    let request_id = usage.dedup_request_id();
+    let request_id = incoming_request_id.unwrap_or_else(|| usage.dedup_request_id());
 
     if let Err(e) = logger.log_with_calculation(
         request_id,

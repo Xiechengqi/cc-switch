@@ -3,6 +3,7 @@ export const PROVIDER_TYPES = {
   GITHUB_COPILOT: "github_copilot",
   CODEX_OAUTH: "codex_oauth",
   CLAUDE_OAUTH: "claude_oauth",
+  GOOGLE_GEMINI_OAUTH: "google_gemini_oauth",
 } as const;
 
 // 用量脚本模板类型常量

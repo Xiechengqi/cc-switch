@@ -97,6 +97,13 @@ impl Provider {
             == Some("claude_oauth")
     }
 
+    pub fn is_google_gemini_oauth_provider(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("google_gemini_oauth")
+    }
+
     /// 是否为通过代理访问的托管 OAuth 官方订阅。
     pub fn is_managed_oauth_provider(&self) -> bool {
         self.is_codex_official_with_managed_auth()
@@ -108,6 +115,7 @@ impl Provider {
             )
             || self.is_codex_oauth_provider()
             || self.is_claude_oauth_provider()
+            || self.is_google_gemini_oauth_provider()
     }
 
     /// 代理接管模式下是否应阻止切换到该供应商。

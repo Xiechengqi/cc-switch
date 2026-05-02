@@ -42,6 +42,11 @@ export interface UseClaudeOauthQuotaOptions {
   autoQuery?: boolean;
 }
 
+export interface UseGeminiOauthQuotaOptions {
+  enabled?: boolean;
+  autoQuery?: boolean;
+}
+
 export function useClaudeOauthQuota(
   meta: ProviderMeta | undefined,
   options: UseClaudeOauthQuotaOptions = {},
@@ -81,6 +86,32 @@ export function useCodexOauthQuota(
     queryFn: async () =>
       (await subscriptionApi.getCachedOauthQuota("codex_oauth", accountId))
         ?.quota,
+    enabled,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+export function useGeminiOauthQuota(
+  meta: ProviderMeta | undefined,
+  options: UseGeminiOauthQuotaOptions = {},
+) {
+  const { enabled = true } = options;
+  const accountId = resolveManagedAccountId(
+    meta,
+    PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH,
+  );
+  return useQuery({
+    queryKey: ["google_gemini_oauth", "quota", accountId ?? "default"],
+    queryFn: async () =>
+      (
+        await subscriptionApi.getCachedOauthQuota(
+          "google_gemini_oauth",
+          accountId,
+        )
+      )?.quota,
     enabled,
     refetchInterval: false,
     refetchOnWindowFocus: false,

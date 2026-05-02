@@ -60,7 +60,11 @@ export interface ProviderPreset {
   // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
   // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
   // - "claude_oauth": Claude 官方订阅 OAuth（Anthropic 官方）
-  providerType?: "github_copilot" | "codex_oauth" | "claude_oauth";
+  providerType?:
+    | "github_copilot"
+    | "codex_oauth"
+    | "claude_oauth"
+    | "google_gemini_oauth";
 
   // 是否需要 OAuth 认证（而非 API Key）
   requiresOAuth?: boolean;

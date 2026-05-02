@@ -429,6 +429,16 @@ pub async fn query_claude_quota_with_token(
     result
 }
 
+/// 使用给定的 access_token 查询 Gemini 订阅额度（公开接口，供 GeminiOAuthManager 使用）
+pub async fn query_gemini_quota_with_token(
+    access_token: &str,
+    tool_name: &str,
+) -> SubscriptionQuota {
+    let mut result = query_gemini_quota(access_token).await;
+    result.tool = tool_name.to_string();
+    result
+}
+
 /// 查询 Claude 官方订阅额度
 async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
     let client = crate::proxy::http_client::get();
@@ -890,6 +900,11 @@ type GeminiCredentials = (
 ///
 /// 仅 OAuth 认证模式（`oauth-personal`）有效；API key 模式无法查询官方用量。
 fn read_gemini_credentials() -> GeminiCredentials {
+    let file_result = read_gemini_credentials_from_file();
+    if !matches!(file_result.2, CredentialStatus::NotFound) {
+        return file_result;
+    }
+
     #[cfg(target_os = "macos")]
     {
         if let Some(result) = read_gemini_credentials_from_keychain() {
@@ -897,7 +912,7 @@ fn read_gemini_credentials() -> GeminiCredentials {
         }
     }
 
-    read_gemini_credentials_from_file()
+    file_result
 }
 
 /// 从 macOS Keychain 读取 Gemini 凭据

@@ -1,9 +1,11 @@
 //! Gemini authentication type detection
 //!
-//! Detects whether a Gemini provider uses PackyCode API Key, Google OAuth, or generic API Key.
+//! Detects whether a Gemini provider uses PackyCode API Key, explicit Google OAuth, or generic API Key.
 
 use crate::error::AppError;
 use crate::provider::Provider;
+
+const GOOGLE_GEMINI_OAUTH_PROVIDER_TYPE: &str = "google_gemini_oauth";
 
 /// Gemini authentication type enumeration
 ///
@@ -20,14 +22,12 @@ pub(crate) enum GeminiAuthType {
 
 // Partner Promotion Key constants
 const PACKYCODE_PARTNER_KEY: &str = "packycode";
-const GOOGLE_OFFICIAL_PARTNER_KEY: &str = "google-official";
-
 // PackyCode keyword constants
 const PACKYCODE_KEYWORDS: [&str; 3] = ["packycode", "packyapi", "packy"];
 
 /// Detect Gemini provider authentication type
 ///
-/// One-time detection to avoid repeated calls to `is_packycode_gemini` and `is_google_official_gemini`.
+/// One-time detection to avoid repeated provider checks.
 ///
 /// # Returns
 ///
@@ -35,24 +35,25 @@ const PACKYCODE_KEYWORDS: [&str; 3] = ["packycode", "packyapi", "packy"];
 /// - `GeminiAuthType::Packycode`: PackyCode provider, uses API Key
 /// - `GeminiAuthType::Generic`: Other generic providers, uses API Key
 pub(crate) fn detect_gemini_auth_type(provider: &Provider) -> GeminiAuthType {
-    // Priority 1: Check partner_promotion_key (most reliable)
+    // Priority 1: explicit providerType
+    if provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.provider_type.as_deref())
+        == Some(GOOGLE_GEMINI_OAUTH_PROVIDER_TYPE)
+    {
+        return GeminiAuthType::GoogleOfficial;
+    }
+
+    // Priority 2: Check partner_promotion_key for PackyCode only.
     if let Some(key) = provider
         .meta
         .as_ref()
         .and_then(|meta| meta.partner_promotion_key.as_deref())
     {
-        if key.eq_ignore_ascii_case(GOOGLE_OFFICIAL_PARTNER_KEY) {
-            return GeminiAuthType::GoogleOfficial;
-        }
         if key.eq_ignore_ascii_case(PACKYCODE_PARTNER_KEY) {
             return GeminiAuthType::Packycode;
         }
-    }
-
-    // Priority 2: Check Google Official (name matching)
-    let name_lower = provider.name.to_ascii_lowercase();
-    if name_lower == "google" || name_lower.starts_with("google ") {
-        return GeminiAuthType::GoogleOfficial;
     }
 
     // Priority 3: Check PackyCode keywords

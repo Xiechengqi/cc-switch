@@ -282,6 +282,11 @@ pub fn get_gemini_settings_path() -> PathBuf {
     get_gemini_dir().join("settings.json")
 }
 
+/// 获取 Gemini OAuth 凭据文件路径
+pub fn get_gemini_oauth_creds_path() -> PathBuf {
+    get_gemini_dir().join("oauth_creds.json")
+}
+
 /// 更新 Gemini 目录 settings.json 中的 security.auth.selectedType 字段
 ///
 /// 此函数会：
@@ -368,6 +373,27 @@ pub fn write_packycode_settings() -> Result<(), AppError> {
 /// 保留文件中的其他所有字段。
 pub fn write_google_oauth_settings() -> Result<(), AppError> {
     update_selected_type("oauth-personal")
+}
+
+/// 写入 Gemini OAuth 凭据文件（oauth_creds.json）
+pub fn write_google_oauth_creds(
+    access_token: &str,
+    refresh_token: &str,
+    expiry_date: i64,
+) -> Result<(), AppError> {
+    let creds_path = get_gemini_oauth_creds_path();
+    if let Some(parent) = creds_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+    }
+
+    let payload = serde_json::json!({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expiry_date": expiry_date,
+    });
+
+    crate::config::write_json_file(&creds_path, &payload)?;
+    Ok(())
 }
 
 #[cfg(test)]

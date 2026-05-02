@@ -256,6 +256,7 @@ pub async fn switch_proxy_provider(
     oauth_quota_state: tauri::State<'_, crate::commands::OauthQuotaState>,
     codex_state: tauri::State<'_, crate::commands::CodexOAuthState>,
     claude_state: tauri::State<'_, crate::commands::ClaudeOAuthState>,
+    gemini_state: tauri::State<'_, crate::commands::GeminiOAuthState>,
     copilot_state: tauri::State<'_, crate::commands::CopilotAuthState>,
     app_type: String,
     provider_id: String,
@@ -281,6 +282,7 @@ pub async fn switch_proxy_provider(
     let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
         &codex_state,
         &claude_state,
+        &gemini_state,
         &copilot_state,
     );
     oauth_quota_state

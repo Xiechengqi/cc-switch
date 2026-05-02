@@ -18,6 +18,7 @@ interface SubscriptionQuotaViewProps {
   /** 用于 `subscription.expiredHint` 的 {tool} 插值；解耦了 hook 的 appId */
   appIdForExpiredHint: string;
   inline?: boolean;
+  visibleTierNames?: string[];
 }
 
 /** 已知 tier 名称的显示映射（官方订阅 + Token Plan 共用） */
@@ -105,6 +106,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   refetch,
   appIdForExpiredHint,
   inline = false,
+  visibleTierNames,
 }) => {
   const { t } = useTranslation();
 
@@ -208,9 +210,11 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   }
 
   // 成功获取数据
-  const tiers = (quota.tiers || []).filter(
-    (tier) => tier.name in TIER_I18N_KEYS,
-  );
+  const tiers = (quota.tiers || []).filter((tier) => {
+    if (!(tier.name in TIER_I18N_KEYS)) return false;
+    if (visibleTierNames && !visibleTierNames.includes(tier.name)) return false;
+    return true;
+  });
   if (tiers.length === 0) return null;
 
   // ── inline 模式：紧凑两行显示 ──

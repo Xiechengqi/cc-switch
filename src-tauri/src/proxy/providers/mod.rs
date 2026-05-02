@@ -20,6 +20,7 @@ pub mod codex_oauth_auth;
 pub mod copilot_auth;
 pub mod copilot_model_map;
 mod gemini;
+pub mod gemini_oauth_auth;
 pub(crate) mod gemini_schema;
 pub mod gemini_shadow;
 pub mod models;
@@ -168,6 +169,14 @@ impl ProviderType {
             }
             AppType::Codex => ProviderType::Codex,
             AppType::Gemini => {
+                if provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.provider_type.as_deref())
+                    == Some("google_gemini_oauth")
+                {
+                    return ProviderType::GeminiCli;
+                }
                 // 检测是否为 CLI 模式（OAuth）
                 let adapter = GeminiAdapter::new();
                 if let Some(auth) = adapter.extract_auth(provider) {

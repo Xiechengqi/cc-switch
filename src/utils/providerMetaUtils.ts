@@ -90,6 +90,7 @@ export function isManagedOauthProvider(
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
     (appId === "codex" && isCodexOfficialWithManagedAuth(provider))
   );
 }
@@ -136,6 +137,7 @@ export type ProviderQuotaSource =
   | "copilot"
   | "codex_oauth"
   | "claude_oauth"
+  | "google_gemini_oauth"
   | "official"
   | "none";
 
@@ -160,6 +162,10 @@ export function getProviderQuotaSource(
     (appId === "codex" && isCodexOfficialWithManagedAuth(provider))
   ) {
     return "codex_oauth";
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH) {
+    return "google_gemini_oauth";
   }
 
   if (provider.category === "official") {

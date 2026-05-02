@@ -1137,7 +1137,7 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
 pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
     use crate::gemini_config::{
         get_gemini_settings_path, json_to_env, validate_gemini_settings_strict,
-        write_gemini_env_atomic,
+        write_gemini_env_atomic, write_google_oauth_creds,
     };
 
     // One-time auth type detection to avoid repeated detection
@@ -1190,6 +1190,40 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
             // Google Official uses OAuth, no API key validation needed.
             // Write user's env vars as-is (e.g. GEMINI_MODEL, custom vars).
             write_gemini_env_atomic(&env_map)?;
+
+            let account_id = provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.managed_account_id_for("google_gemini_oauth"))
+                .ok_or_else(|| {
+                    AppError::localized(
+                        "provider.gemini.official.account_required",
+                        "Google Official 必须绑定一个 Gemini OAuth 账号。",
+                        "Google Official requires a bound Gemini OAuth account.",
+                    )
+                })?;
+
+            let manager = crate::proxy::providers::gemini_oauth_auth::global_gemini_oauth_manager(
+            )
+            .ok_or_else(|| AppError::Message("Gemini OAuth manager unavailable".to_string()))?;
+
+            let credentials = futures::executor::block_on(async {
+                let manager = manager.read().await;
+                manager.export_cli_credentials_for_account(&account_id).await
+            })
+            .map_err(|e| {
+                AppError::localized(
+                    "provider.gemini.official.account_sync_failed",
+                    format!("同步 Gemini OAuth 账号凭据失败: {e}"),
+                    format!("Failed to sync Gemini OAuth credentials: {e}"),
+                )
+            })?;
+
+            write_google_oauth_creds(
+                &credentials.access_token,
+                &credentials.refresh_token,
+                credentials.expiry_date,
+            )?;
         }
         GeminiAuthType::Packycode | GeminiAuthType::Generic => {
             // API Key mode -- require GEMINI_API_KEY

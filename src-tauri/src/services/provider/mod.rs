@@ -2101,7 +2101,17 @@ impl ProviderService {
             }
             AppType::Gemini => {
                 use crate::gemini_config::validate_gemini_settings;
-                validate_gemini_settings(&provider.settings_config)?
+                validate_gemini_settings(&provider.settings_config)?;
+
+                if provider.is_google_gemini_oauth_provider()
+                    && !provider.has_managed_auth_binding("google_gemini_oauth")
+                {
+                    return Err(AppError::localized(
+                        "provider.gemini.official.account_required",
+                        "Google Official 必须绑定一个 Gemini OAuth 账号",
+                        "Google Official must be bound to a Gemini OAuth account",
+                    ));
+                }
             }
             AppType::OpenCode => {
                 // OpenCode uses a different config structure: { npm, options, models }

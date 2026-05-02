@@ -6,10 +6,9 @@ use tokio::sync::broadcast;
 
 /// HTTP health checker for an active tunnel.
 ///
-/// Sends periodic pings to `https://{subdomain}.{tunnel_url}` with the
-/// `X-Share-Router-Ping-Request: true` header. Legacy `X-Portr-Ping-Request`
-/// is also accepted by older routers during migration. Consecutive failures trigger a
-/// reconnect callback.
+/// Sends periodic pings to `https://{subdomain}.{tunnel_url}/_share-router/health`
+/// with the probe headers understood by cc-switch-router. Consecutive failures trigger
+/// a reconnect callback.
 pub struct HealthChecker {
     config: TunnelConfig,
     subdomain: String,
@@ -84,13 +83,15 @@ impl HealthChecker {
     }
 
     async fn check_once(&self) -> Result<(), String> {
-        let url = self.config.get_tunnel_addr(&self.subdomain);
+        let url = format!(
+            "{}/_share-router/health",
+            self.config.get_tunnel_addr(&self.subdomain)
+        );
 
         let resp = self
             .http_client
             .get(&url)
-            .header("X-Share-Router-Ping-Request", "true")
-            .header("X-Portr-Ping-Request", "true")
+            .header("X-Share-Router-Probe", "1")
             .timeout(Duration::from_secs(5))
             .send()
             .await
@@ -99,14 +100,12 @@ impl HealthChecker {
         if resp
             .headers()
             .get("X-Share-Router-Error")
-            .or_else(|| resp.headers().get("X-Portr-Error"))
             .and_then(|v| v.to_str().ok())
             == Some("true")
         {
             let reason = resp
                 .headers()
                 .get("X-Share-Router-Error-Reason")
-                .or_else(|| resp.headers().get("X-Portr-Error-Reason"))
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("unknown");
             return Err(format!("share-router error: {reason}"));

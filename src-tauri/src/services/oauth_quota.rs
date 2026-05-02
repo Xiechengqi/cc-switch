@@ -7,15 +7,16 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{broadcast, RwLock};
 
 use crate::app_config::AppType;
-use crate::commands::{ClaudeOAuthState, CodexOAuthState, CopilotAuthState};
+use crate::commands::{ClaudeOAuthState, CodexOAuthState, CopilotAuthState, GeminiOAuthState};
 use crate::database::Database;
 use crate::provider::Provider;
 use crate::proxy::providers::claude_oauth_auth::ClaudeOAuthManager;
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::{CopilotAuthManager, CopilotUsageResponse};
+use crate::proxy::providers::gemini_oauth_auth::GeminiOAuthManager;
 use crate::services::subscription::{
-    query_claude_quota_with_token, query_codex_quota, CredentialStatus, QuotaTier,
-    SubscriptionQuota,
+    query_claude_quota_with_token, query_codex_quota, query_gemini_quota_with_token,
+    CredentialStatus, QuotaTier, SubscriptionQuota,
 };
 
 const STARTUP_REFRESH_DELAY_SECS: u64 = 10;
@@ -139,7 +140,7 @@ impl OauthQuotaService {
         managers: &OauthQuotaManagers,
     ) -> Vec<OauthQuotaTarget> {
         let mut targets = Vec::new();
-        for app_type in [AppType::Claude, AppType::Codex] {
+        for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
             let current_id = match crate::settings::get_effective_current_provider(db, &app_type) {
                 Ok(Some(id)) => id,
                 Ok(None) => continue,
@@ -250,6 +251,7 @@ impl OauthQuotaService {
         let quota = match target.auth_provider.as_str() {
             "codex_oauth" => refresh_codex_quota(managers, &target.account_id).await,
             "claude_oauth" => refresh_claude_quota(managers, &target.account_id).await,
+            "google_gemini_oauth" => refresh_gemini_quota(managers, &target.account_id).await,
             "github_copilot" => refresh_copilot_quota(managers, &target.account_id).await,
             other => SubscriptionQuota::error(
                 other,
@@ -330,6 +332,7 @@ impl OauthQuotaService {
 pub struct OauthQuotaManagers {
     pub codex: Arc<RwLock<CodexOAuthManager>>,
     pub claude: Arc<RwLock<ClaudeOAuthManager>>,
+    pub gemini: Arc<RwLock<GeminiOAuthManager>>,
     pub copilot: Arc<RwLock<CopilotAuthManager>>,
 }
 
@@ -337,11 +340,13 @@ impl OauthQuotaManagers {
     pub fn from_states(
         codex: &CodexOAuthState,
         claude: &ClaudeOAuthState,
+        gemini: &GeminiOAuthState,
         copilot: &CopilotAuthState,
     ) -> Self {
         Self {
             codex: Arc::clone(&codex.0),
             claude: Arc::clone(&claude.0),
+            gemini: Arc::clone(&gemini.0),
             copilot: Arc::clone(&copilot.0),
         }
     }
@@ -388,6 +393,9 @@ fn provider_auth_provider(app_type: &AppType, provider: &Provider) -> Option<Str
     {
         return Some("codex_oauth".to_string());
     }
+    if matches!(app_type, AppType::Gemini) && provider_type == Some("google_gemini_oauth") {
+        return Some("google_gemini_oauth".to_string());
+    }
     None
 }
 
@@ -407,6 +415,7 @@ async fn resolve_provider_account_id(
     match auth_provider {
         "codex_oauth" => managers.codex.read().await.default_account_id().await,
         "claude_oauth" => managers.claude.read().await.default_account_id().await,
+        "google_gemini_oauth" => managers.gemini.read().await.default_account_id().await,
         "github_copilot" => managers
             .copilot
             .read()
@@ -432,6 +441,7 @@ pub async fn resolve_account_id_for_auth_provider(
     match auth_provider {
         "codex_oauth" => managers.codex.read().await.default_account_id().await,
         "claude_oauth" => managers.claude.read().await.default_account_id().await,
+        "google_gemini_oauth" => managers.gemini.read().await.default_account_id().await,
         "github_copilot" => managers
             .copilot
             .read()
@@ -490,6 +500,21 @@ async fn refresh_copilot_quota(
             "github_copilot",
             CredentialStatus::Expired,
             format!("Copilot usage unavailable: {err}"),
+        ),
+    }
+}
+
+async fn refresh_gemini_quota(
+    managers: &OauthQuotaManagers,
+    account_id: &str,
+) -> SubscriptionQuota {
+    let manager = managers.gemini.read().await;
+    match manager.get_valid_token_for_account(account_id).await {
+        Ok(token) => query_gemini_quota_with_token(&token, "google_gemini_oauth").await,
+        Err(err) => SubscriptionQuota::error(
+            "google_gemini_oauth",
+            CredentialStatus::Expired,
+            format!("Gemini OAuth token unavailable: {err}"),
         ),
     }
 }

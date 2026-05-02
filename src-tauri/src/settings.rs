@@ -296,20 +296,6 @@ pub struct AppSettings {
     // ===== Token 分享（share router 内网穿透）=====
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_router_domain: Option<String>,
-    // 旧字段：仅用于反序列化迁移，不再写入
-    #[serde(default, skip_serializing)]
-    pub portr_domain: Option<String>,
-    // 旧字段：仅用于反序列化迁移，不再写入
-    #[serde(default, skip_serializing)]
-    pub portr_server_url: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub portr_ssh_url: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub portr_tunnel_url: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub portr_secret_key: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub portr_use_localhost: Option<bool>,
 }
 
 fn default_show_in_tray() -> bool {
@@ -373,12 +359,6 @@ impl Default for AppSettings {
             backup_retain_count: None,
             preferred_terminal: None,
             share_router_domain: None,
-            portr_domain: None,
-            portr_server_url: None,
-            portr_ssh_url: None,
-            portr_tunnel_url: None,
-            portr_secret_key: None,
-            portr_use_localhost: None,
         }
     }
 }
@@ -451,42 +431,12 @@ impl AppSettings {
         }
     }
 
-    fn clear_legacy_share_router_fields(&mut self) {
-        self.portr_domain = None;
-        self.portr_server_url = None;
-        self.portr_ssh_url = None;
-        self.portr_tunnel_url = None;
-        self.portr_secret_key = None;
-        self.portr_use_localhost = None;
-    }
-
     pub fn current_share_router_domain(&self) -> Option<&str> {
-        self.share_router_domain
-            .as_deref()
-            .or(self.portr_domain.as_deref())
+        self.share_router_domain.as_deref()
     }
 
     pub fn set_share_router_domain(&mut self, domain: Option<String>) {
         self.share_router_domain = domain;
-        self.clear_legacy_share_router_fields();
-    }
-
-    /// Migrate legacy portr_server_url / portr_tunnel_url to the share router domain field.
-    fn migrate_portr_domain(&mut self) {
-        if self.share_router_domain.is_some() {
-            self.clear_legacy_share_router_fields();
-            return;
-        }
-        let domain = self
-            .portr_domain
-            .clone()
-            .or_else(|| self.portr_tunnel_url.clone())
-            .or_else(|| self.portr_server_url.clone())
-            .filter(|value| !value.trim().is_empty());
-        if let Some(domain) = domain {
-            self.share_router_domain = Some(domain);
-        }
-        self.clear_legacy_share_router_fields();
     }
 
     fn load_from_file() -> Self {
@@ -497,7 +447,6 @@ impl AppSettings {
             match serde_json::from_str::<AppSettings>(&content) {
                 Ok(mut settings) => {
                     settings.normalize_paths();
-                    settings.migrate_portr_domain();
                     settings
                 }
                 Err(err) => {
@@ -597,7 +546,6 @@ pub fn get_settings_for_frontend() -> AppSettings {
 
 pub fn update_settings(mut new_settings: AppSettings) -> Result<(), AppError> {
     new_settings.normalize_paths();
-    new_settings.migrate_portr_domain();
     save_settings_file(&new_settings)?;
 
     let mut guard = settings_store().write().unwrap_or_else(|e| {
@@ -619,7 +567,6 @@ where
     let mut next = guard.clone();
     mutator(&mut next);
     next.normalize_paths();
-    next.migrate_portr_domain();
     save_settings_file(&next)?;
     *guard = next;
     Ok(())

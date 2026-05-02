@@ -469,6 +469,7 @@ fn create_usage_collector(
     let session_id = ctx.session_id.clone();
     let share_id = ctx.share_id.clone();
     let share_name = ctx.share_name.clone();
+    let incoming_request_id = ctx.incoming_request_id.clone();
 
     SseUsageCollector::new(start_time, move |events, first_token_ms| {
         if let Some(usage) = stream_parser(&events) {
@@ -481,11 +482,14 @@ fn create_usage_collector(
             let request_model = request_model.clone();
             let share_id = share_id.clone();
             let share_name = share_name.clone();
+            let incoming_request_id = incoming_request_id.clone();
             let total_tokens = i64::from(usage.input_tokens)
                 + i64::from(usage.output_tokens)
                 + i64::from(usage.cache_read_tokens)
                 + i64::from(usage.cache_creation_tokens);
-            let request_id = uuid::Uuid::new_v4().to_string();
+            let request_id = incoming_request_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let usage_for_log = usage.clone();
             let usage_for_sync = usage.clone();
             let session_id_for_log = session_id.clone();
@@ -543,7 +547,10 @@ fn create_usage_collector(
             let request_model = request_model.clone();
             let share_id = share_id.clone();
             let share_name = share_name.clone();
-            let request_id = uuid::Uuid::new_v4().to_string();
+            let incoming_request_id = incoming_request_id.clone();
+            let request_id = incoming_request_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let session_id_for_log = session_id.clone();
             let session_id_for_sync = session_id.clone();
             let share_name_for_log = share_name.clone();
@@ -621,12 +628,15 @@ fn spawn_log_usage(
     let session_id = ctx.session_id.clone();
     let share_id = ctx.share_id.clone();
     let share_name = ctx.share_name.clone();
+    let incoming_request_id = ctx.incoming_request_id.clone();
     let total_tokens = i64::from(usage.input_tokens)
         + i64::from(usage.output_tokens)
         + i64::from(usage.cache_read_tokens)
         + i64::from(usage.cache_creation_tokens);
     let should_log_request = enable_logging || share_id.is_some();
-    let request_id = uuid::Uuid::new_v4().to_string();
+    let request_id = incoming_request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let usage_for_log = usage.clone();
     let usage_for_sync = usage.clone();
     let session_id_for_log = session_id.clone();
@@ -682,7 +692,7 @@ fn spawn_log_usage(
 #[allow(clippy::too_many_arguments)]
 async fn log_usage_internal(
     state: &ProxyState,
-    _request_id: &str,
+    request_id: &str,
     provider_id: &str,
     app_type: &str,
     model: &str,
@@ -707,7 +717,11 @@ async fn log_usage_internal(
         model
     };
 
-    let request_id = usage.dedup_request_id();
+    let request_id = if request_id.trim().is_empty() {
+        usage.dedup_request_id()
+    } else {
+        request_id.to_string()
+    };
 
     log::debug!(
         "[{app_type}] 记录请求日志: id={request_id}, provider={provider_id}, model={model}, streaming={is_streaming}, status={status_code}, latency_ms={latency_ms}, first_token_ms={first_token_ms:?}, session={}, input={}, output={}, cache_read={}, cache_creation={}",

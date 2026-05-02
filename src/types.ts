@@ -335,7 +335,6 @@ export interface Settings {
 
   // ===== Token Share / Tunnel =====
   shareRouterDomain?: string;
-  portrDomain?: string;
 }
 
 export interface SessionMeta {

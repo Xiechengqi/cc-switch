@@ -75,6 +75,9 @@ pub struct RequestContext {
     pub share_id: Option<String>,
     /// 共享 token 请求对应的 share 名称，用于请求明细落库
     pub share_name: Option<String>,
+    /// 由 cc-switch-router 透传的请求 ID，用于让 live ticker 与 share request log
+    /// 共享同一个 request identity。
+    pub incoming_request_id: Option<String>,
 }
 
 impl RequestContext {
@@ -166,6 +169,13 @@ impl RequestContext {
             session_id
         );
 
+        let incoming_request_id = headers
+            .get("x-cc-switch-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
         let mut this = Self {
             start_time,
             app_config,
@@ -184,6 +194,7 @@ impl RequestContext {
             copilot_optimizer_config,
             share_id: None,
             share_name: None,
+            incoming_request_id,
         };
 
         // 共享 Token 拦截：若请求带 X-Share-Token，则校验设备级分享并记录 share_id

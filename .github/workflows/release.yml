@@ -190,8 +190,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build & upload via tauri-action
+        id: tauri
         uses: tauri-apps/tauri-action@v0
         timeout-minutes: 60
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -202,6 +204,37 @@ jobs:
           prerelease: ${{ inputs.prerelease }}
           includeUpdaterJson: false
           args: ${{ runner.os == 'macOS' && '--target universal-apple-darwin' || (runner.os == 'Linux' && '--bundles appimage,deb,rpm' || '') }}
+
+      - name: Verify build produced bundles (fail if true build error)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d "src-tauri/target/release/bundle" ] || \
+             [ -d "src-tauri/target/universal-apple-darwin/release/bundle" ] || \
+             [ -d "src-tauri/target/aarch64-apple-darwin/release/bundle" ] || \
+             [ -d "src-tauri/target/x86_64-apple-darwin/release/bundle" ]; then
+            echo "✅ bundle dir present, build succeeded"
+          else
+            echo "❌ no bundle dir found — actual build failure" >&2
+            exit 1
+          fi
+
+      - name: Ensure draft release exists (fallback if tauri-action upload failed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-tag.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "✅ release $TAG already exists"
+          else
+            echo "ℹ️  creating draft release $TAG"
+            args=(--draft --title "CC Switch $TAG" --notes "")
+            if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${args[@]}"
+          fi
 
       - name: Delete original-named assets uploaded by tauri-action
         env:

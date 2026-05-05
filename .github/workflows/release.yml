@@ -57,16 +57,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fail if tag already exists
+      - name: Delete existing tag & release if present
         env:
           TAG: ${{ steps.compute.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git fetch --tags --quiet
-          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "❌ Tag ${TAG} 已存在，先删除或换一个版本号" >&2
-            exit 1
+          # Delete any existing release (draft or published) for this tag
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "⚠️  Existing release for ${TAG} found, deleting..."
+            gh release delete "$TAG" --yes --repo "$GITHUB_REPOSITORY" || true
           fi
+          # Delete remote tag if present
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "⚠️  Remote tag ${TAG} exists, deleting..."
+            git push origin --delete "refs/tags/${TAG}" || true
+          fi
+          # Delete local tag if present
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            git tag -d "$TAG" || true
+          fi
+          echo "✅ Cleared any prior tag/release named ${TAG}"
 
       - name: Bump version files & push tag (orphan commit, main untouched)
         env:

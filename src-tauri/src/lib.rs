@@ -1422,6 +1422,8 @@ pub fn run() {
             commands::is_lightweight_mode,
             // Token sharing via portr tunnel
             commands::create_share,
+            commands::list_share_markets,
+            commands::authorize_share_market,
             commands::update_share_acl,
             commands::delete_share,
             commands::pause_share,

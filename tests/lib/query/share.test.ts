@@ -80,6 +80,7 @@ describe("share query hooks", () => {
 
     const { result } = renderHook(() => useCreateShareMutation(), { wrapper });
     await result.current.mutateAsync({
+      appType: "claude",
       forSale: "No",
       tokenLimit: 1000,
       parallelLimit: 3,

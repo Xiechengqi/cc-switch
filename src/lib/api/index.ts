@@ -21,6 +21,7 @@ export type { ProviderSwitchEvent } from "./providers";
 export type { Prompt } from "./prompts";
 export type {
   ShareRecord,
+  PublicMarket,
   CreateShareParams,
   UpdateShareAclParams,
   UpdateShareTokenLimitParams,

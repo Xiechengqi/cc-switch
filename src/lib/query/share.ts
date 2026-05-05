@@ -5,6 +5,7 @@ import {
   shareApi,
   type ConnectInfo,
   type CreateShareParams,
+  type PublicMarket,
   type ShareRecord,
   type TunnelConfig,
 } from "@/lib/api";
@@ -24,6 +25,7 @@ export const shareKeys = {
     [...shareKeys.all, "tunnel-status", shareId] as const,
   connectInfo: (shareId: string) =>
     [...shareKeys.all, "connect-info", shareId] as const,
+  markets: () => [...shareKeys.all, "markets"] as const,
 };
 
 type ShareMutationMessages = {
@@ -98,6 +100,15 @@ export function useShareConnectInfoQuery(
       : [...shareKeys.all, "connect-info"],
     queryFn: () => shareApi.getConnectInfo(shareId!),
     enabled: Boolean(shareId) && enabled,
+  });
+}
+
+export function useShareMarketsQuery(enabled = true) {
+  return useQuery<PublicMarket[]>({
+    queryKey: shareKeys.markets(),
+    queryFn: shareApi.listMarkets,
+    enabled,
+    staleTime: 60_000,
   });
 }
 

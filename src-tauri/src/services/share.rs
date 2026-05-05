@@ -69,6 +69,7 @@ impl ShareService {
         let expires_at = now + chrono::Duration::seconds(params.expires_in_secs);
         let description = normalize_description(params.description)?;
         let for_sale = normalize_for_sale(&params.for_sale)?;
+        let app_type = normalize_share_app_type(&params.app_type)?;
         let parallel_limit = normalize_parallel_limit(params.parallel_limit)?;
         let owner_email = normalize_email(&params.owner_email)?;
         let token_limit = params.token_limit;
@@ -81,7 +82,7 @@ impl ShareService {
             description,
             for_sale,
             share_token,
-            app_type: "proxy".to_string(),
+            app_type,
             provider_id: None,
             api_key: String::new(),
             settings_config: None,
@@ -436,6 +437,7 @@ impl ShareService {
 
 pub struct PrepareShareParams {
     pub owner_email: String,
+    pub app_type: String,
     pub description: Option<String>,
     pub for_sale: String,
     pub token_limit: i64,
@@ -443,6 +445,16 @@ pub struct PrepareShareParams {
     pub expires_in_secs: i64,
     pub subdomain: Option<String>,
     pub api_key: Option<String>,
+}
+
+fn normalize_share_app_type(value: &str) -> Result<String, AppError> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "claude" | "codex" | "gemini" => Ok(value),
+        _ => Err(AppError::Message(
+            "Share app_type 只支持 claude、codex、gemini".to_string(),
+        )),
+    }
 }
 
 fn normalize_subdomain(value: &str) -> Result<String, AppError> {

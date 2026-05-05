@@ -63,6 +63,7 @@ const DEFAULT_TOKEN_LIMIT = 100000;
 export function CreateShareDialog({
   open,
   onOpenChange,
+  defaultApp,
   ownerEmail,
   isSubmitting,
   submitLabel,
@@ -117,6 +118,7 @@ export function CreateShareDialog({
 
   const submit = form.handleSubmit(async (values) => {
     await onSubmit({
+      appType: toShareAppType(defaultApp),
       description: values.description || undefined,
       forSale: values.forSale,
       tokenLimit: values.tokenLimit,
@@ -452,6 +454,11 @@ export function CreateShareDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function toShareAppType(app?: AppId): "claude" | "codex" | "gemini" {
+  if (app === "codex" || app === "gemini") return app;
+  return "claude";
 }
 
 function FieldError({ error }: { error?: string }) {

@@ -24,6 +24,7 @@ export interface ShareRecord {
 }
 
 export interface CreateShareParams {
+  appType: "claude" | "codex" | "gemini";
   description?: string;
   forSale: "Yes" | "No" | "Free";
   tokenLimit: number;
@@ -31,6 +32,15 @@ export interface CreateShareParams {
   expiresInSecs: number;
   subdomain?: string;
   apiKey?: string;
+}
+
+export interface PublicMarket {
+  id: string;
+  displayName: string;
+  email: string;
+  subdomain: string;
+  publicBaseUrl: string;
+  status: string;
 }
 
 export interface UpdateShareAclParams {
@@ -164,6 +174,20 @@ async function updateAcl(params: UpdateShareAclParams): Promise<ShareRecord> {
   return invoke<ShareRecord>("update_share_acl", { params });
 }
 
+async function listMarkets(): Promise<PublicMarket[]> {
+  return invoke<PublicMarket[]>("list_share_markets");
+}
+
+async function authorizeMarket(
+  shareId: string,
+  marketEmail: string,
+): Promise<ShareRecord> {
+  return invoke<ShareRecord>("authorize_share_market", {
+    shareId,
+    marketEmail,
+  });
+}
+
 async function list(): Promise<ShareRecord[]> {
   return invoke<ShareRecord[]>("list_shares");
 }
@@ -208,6 +232,8 @@ export const shareApi = {
   updateForSale,
   updateExpiration,
   updateAcl,
+  listMarkets,
+  authorizeMarket,
   list,
   getDetail,
   startTunnel,

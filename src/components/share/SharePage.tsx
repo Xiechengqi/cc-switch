@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQueries, useQueryClient, type Query } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import {
+  settingsApi,
   shareApi,
   type AppId,
   type ShareRecord,
@@ -16,6 +18,7 @@ import {
   useCreateShareMutation,
   useDeleteShareMutation,
   useEmailAuthStatusQuery,
+  useShareMarketsQuery,
   useDisableShareMutation,
   useEnableShareMutation,
   useResetShareUsageMutation,
@@ -43,12 +46,19 @@ import { ShareList } from "./ShareList";
 import { ShareOwnerChangeEmailDialog } from "./ShareOwnerChangeEmailDialog";
 import { ShareOwnerLoginDialog } from "./ShareOwnerLoginDialog";
 import { ShareRouterBar } from "./ShareRouterBar";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface SharePageProps {
   defaultApp?: AppId;
 }
 
-export function SharePage(_props: SharePageProps) {
+export function SharePage({ defaultApp }: SharePageProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: shares = [], isLoading, error, refetch } = useSharesQuery();
@@ -75,6 +85,8 @@ export function SharePage(_props: SharePageProps) {
   const [pendingOwnerLoginShareId, setPendingOwnerLoginShareId] = useState<
     string | null
   >(null);
+  const [selectedMarketEmail, setSelectedMarketEmail] = useState("");
+  const [marketActionPending, setMarketActionPending] = useState(false);
 
   const createMutation = useCreateShareMutation();
   const deleteMutation = useDeleteShareMutation();
@@ -90,6 +102,12 @@ export function SharePage(_props: SharePageProps) {
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
   const updateTokenLimitMutation = useUpdateShareTokenLimitMutation();
   const configureTunnelMutation = useConfigureTunnelMutation();
+  const {
+    data: markets = [],
+    isLoading: marketsLoading,
+    error: marketsError,
+    refetch: refetchMarkets,
+  } = useShareMarketsQuery(Boolean(tunnelConfig.domain));
 
   const tunnelQueries = useQueries({
     queries: shares.map((share) => ({
@@ -118,6 +136,15 @@ export function SharePage(_props: SharePageProps) {
   const connectShare =
     shares.find((share) => share.id === connectShareId) ?? null;
   const primaryShare = shares[0] ?? null;
+  const selectedMarket =
+    markets.find((market) => market.email === selectedMarketEmail) ?? null;
+  const authorizedMarket = primaryShare
+    ? markets.find((market) =>
+        primaryShare.sharedWithEmails
+          .map((email) => email.toLowerCase())
+          .includes(market.email.toLowerCase()),
+      ) ?? null
+    : null;
   const canChangeOwner =
     Boolean(emailAuthStatus?.authenticated) &&
     Boolean(primaryShare?.ownerEmail) &&
@@ -150,6 +177,45 @@ export function SharePage(_props: SharePageProps) {
     }
     await createMutation.mutateAsync(params);
     setCreateOpen(false);
+  };
+
+  const handleAuthorizeMarket = async () => {
+    if (!primaryShare || !selectedMarket) return;
+    setMarketActionPending(true);
+    try {
+      const updated = await shareApi.authorizeMarket(
+        primaryShare.id,
+        selectedMarket.email,
+      );
+      queryClient.setQueryData<ShareRecord[] | undefined>(
+        shareKeys.list(),
+        (current) =>
+          current?.map((share) => (share.id === updated.id ? updated : share)),
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: shareKeys.list() }),
+        queryClient.invalidateQueries({
+          queryKey: shareKeys.detail(primaryShare.id),
+        }),
+      ]);
+      toast.success(
+        t("share.market.authorizeSuccess", {
+          defaultValue: "Market authorized",
+        }),
+      );
+    } catch (error) {
+      if (isOwnerAuthExpiredError(error)) {
+        openOwnerReverify(primaryShare);
+      }
+      toast.error(
+        t("share.market.authorizeError", {
+          defaultValue: "Authorize market failed: {{error}}",
+          error: extractErrorMessage(error),
+        }),
+      );
+    } finally {
+      setMarketActionPending(false);
+    }
   };
 
   const runShareAction = async (
@@ -293,11 +359,102 @@ export function SharePage(_props: SharePageProps) {
           }
           onRefresh={(share) => void handleRefresh(share)}
         />
+
+        {primaryShare && (
+          <div className="rounded-lg border border-border-default bg-card p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+              <div className="min-w-0 space-y-1">
+                <div className="text-sm font-semibold">
+                  {t("share.market.title", {
+                    defaultValue: "Market",
+                  })}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {authorizedMarket
+                    ? t("share.market.authorized", {
+                        defaultValue: "Authorized: {{market}}",
+                        market: authorizedMarket.displayName,
+                      })
+                    : t("share.market.description", {
+                        defaultValue:
+                          "Choose a market to sell this share and claim earnings there.",
+                      })}
+                </div>
+              </div>
+              <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[360px] md:flex-row">
+                <Select
+                  value={selectedMarketEmail}
+                  onValueChange={setSelectedMarketEmail}
+                  disabled={marketsLoading || markets.length === 0}
+                >
+                  <SelectTrigger className="md:w-[220px]">
+                    <SelectValue
+                      placeholder={
+                        marketsLoading
+                          ? t("common.loading", { defaultValue: "Loading" })
+                          : t("share.market.select", {
+                              defaultValue: "Select market",
+                            })
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {markets.map((market) => (
+                      <SelectItem key={market.id} value={market.email}>
+                        {market.displayName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  onClick={() => void handleAuthorizeMarket()}
+                  disabled={
+                    !selectedMarket ||
+                    marketActionPending ||
+                    primaryShare.sharedWithEmails
+                      .map((email) => email.toLowerCase())
+                      .includes(selectedMarket.email.toLowerCase())
+                  }
+                >
+                  {t("share.market.authorize", {
+                    defaultValue: "Authorize",
+                  })}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!authorizedMarket}
+                  onClick={() => {
+                    if (!authorizedMarket) return;
+                    void settingsApi.openExternal(
+                      `${authorizedMarket.publicBaseUrl.replace(/\/$/, "")}/claim`,
+                    );
+                  }}
+                >
+                  {t("share.market.claim", {
+                    defaultValue: "Claim earnings",
+                  })}
+                </Button>
+              </div>
+            </div>
+            {marketsError && (
+              <button
+                type="button"
+                className="mt-2 text-xs text-destructive underline"
+                onClick={() => void refetchMarkets()}
+              >
+                {extractErrorMessage(marketsError)}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <CreateShareDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
+        defaultApp={defaultApp}
         ownerEmail={emailAuthStatus?.email ?? primaryShare?.ownerEmail ?? null}
         isSubmitting={createMutation.isPending}
         onSubmit={handleCreate}

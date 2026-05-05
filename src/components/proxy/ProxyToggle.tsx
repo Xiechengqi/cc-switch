@@ -378,6 +378,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
           }
         }}
         ownerEmail={emailAuthStatus?.email ?? null}
+        defaultApp={activeApp}
         isSubmitting={
           createShareMutation.isPending || stage === "creating-share"
         }

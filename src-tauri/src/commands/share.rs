@@ -13,6 +13,7 @@ use tokio::time::{timeout, Duration};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateShareParams {
+    pub app_type: String,
     pub description: Option<String>,
     pub for_sale: String,
     pub token_limit: i64,
@@ -20,6 +21,23 @@ pub struct CreateShareParams {
     pub expires_in_secs: i64,
     pub subdomain: Option<String>,
     pub api_key: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicMarket {
+    pub id: String,
+    pub display_name: String,
+    pub email: String,
+    pub subdomain: String,
+    pub public_base_url: String,
+    pub status: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketsResponse {
+    markets: Vec<PublicMarket>,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +117,7 @@ pub async fn create_share(
     for _ in 0..5 {
         let candidate = ShareService::prepare_create(PrepareShareParams {
             owner_email: owner_email.clone(),
+            app_type: params.app_type.clone(),
             description: params.description.clone(),
             for_sale: params.for_sale.clone(),
             token_limit: params.token_limit,
@@ -133,6 +152,44 @@ pub async fn create_share(
         )
     })?;
     ShareService::create(&state.db, share).map_err(|e: AppError| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_share_markets() -> Result<Vec<PublicMarket>, String> {
+    let config = current_tunnel_config();
+    let url = format!("{}/v1/markets", config.get_server_addr());
+    let response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("获取 market 列表失败: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("获取 market 列表失败: HTTP {}", response.status()));
+    }
+    let body = response
+        .json::<MarketsResponse>()
+        .await
+        .map_err(|e| format!("解析 market 列表失败: {e}"))?;
+    Ok(body.markets)
+}
+
+#[tauri::command]
+pub fn authorize_share_market(
+    state: State<'_, AppState>,
+    share_id: String,
+    market_email: String,
+) -> Result<ShareRecord, String> {
+    let owner_email = require_authenticated_email(&state.db)?;
+    let share = ShareService::get_detail(&state.db, &share_id)
+        .map_err(|e: AppError| e.to_string())?
+        .ok_or_else(|| format!("Share not found: {share_id}"))?;
+    if share.owner_email != owner_email {
+        return Err("只有当前 share 的 owner 才能授权 market".to_string());
+    }
+    let mut emails = share.shared_with_emails;
+    emails.push(market_email);
+    ShareService::update_acl(&state.db, &share_id, &owner_email, emails)
+        .map_err(|e: AppError| e.to_string())
 }
 
 #[tauri::command]

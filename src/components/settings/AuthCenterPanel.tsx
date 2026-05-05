@@ -12,7 +12,6 @@ import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSect
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
 import { ClaudeOAuthSection } from "@/components/providers/forms/ClaudeOAuthSection";
 import { GeminiOAuthSection } from "@/components/providers/forms/GeminiOAuthSection";
-import { ShareEmailLoginCard } from "@/components/settings/ShareEmailLoginCard";
 import { settingsApi } from "@/lib/api";
 import { useSettingsQuery } from "@/lib/query";
 import {
@@ -65,7 +64,9 @@ export function AuthCenterPanel() {
       queryClient.invalidateQueries({ queryKey: ["subscription", "quota"] }),
       queryClient.invalidateQueries({ queryKey: ["claude_oauth", "quota"] }),
       queryClient.invalidateQueries({ queryKey: ["codex_oauth", "quota"] }),
-      queryClient.invalidateQueries({ queryKey: ["google_gemini_oauth", "quota"] }),
+      queryClient.invalidateQueries({
+        queryKey: ["google_gemini_oauth", "quota"],
+      }),
       queryClient.invalidateQueries({ queryKey: ["copilot", "quota"] }),
     ]);
     toast.success(
@@ -147,8 +148,6 @@ export function AuthCenterPanel() {
           </div>
         </div>
       </section>
-
-      <ShareEmailLoginCard />
 
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">
         <div className="mb-4 flex items-center gap-3">

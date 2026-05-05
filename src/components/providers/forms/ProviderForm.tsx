@@ -49,7 +49,10 @@ import {
   applyTemplateValues,
   hasApiKeyField,
 } from "@/utils/providerConfigUtils";
-import { mergeProviderMeta } from "@/utils/providerMetaUtils";
+import {
+  hasManagedAuthBinding,
+  mergeProviderMeta,
+} from "@/utils/providerMetaUtils";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
 import CodexConfigEditor from "./CodexConfigEditor";
 import { CommonConfigEditor } from "./CommonConfigEditor";
@@ -414,9 +417,7 @@ export function ProviderForm({
   >(() => resolveManagedAccountId(initialData?.meta, "claude_oauth"));
   const [selectedGeminiAccountId, setSelectedGeminiAccountId] = useState<
     string | null
-  >(() =>
-    resolveManagedAccountId(initialData?.meta, "google_gemini_oauth"),
-  );
+  >(() => resolveManagedAccountId(initialData?.meta, "google_gemini_oauth"));
 
   const isCodexOfficialPreset = appId === "codex" && category === "official";
 
@@ -550,8 +551,16 @@ export function ProviderForm({
     currentPresetEntry && "providerType" in currentPresetEntry.preset
       ? currentPresetEntry.preset.providerType
       : undefined;
+  const hasGoogleGeminiAuthBinding = hasManagedAuthBinding(
+    initialData?.meta,
+    PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH,
+  );
   const currentProviderType =
-    currentPresetProviderType || initialData?.meta?.providerType;
+    currentPresetProviderType ||
+    initialData?.meta?.providerType ||
+    (appId === "gemini" && category === "official" && hasGoogleGeminiAuthBinding
+      ? PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH
+      : undefined);
   const isGeminiOfficialPreset =
     appId === "gemini" &&
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH;
@@ -1331,7 +1340,7 @@ export function ProviderForm({
                   authProvider: "google_gemini_oauth",
                   accountId: selectedGeminiAccountId ?? undefined,
                 }
-            : undefined,
+              : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         isCopilotProvider && selectedGitHubAccountId
@@ -2035,7 +2044,7 @@ export function ProviderForm({
               onCustomEndpointsChange={setDraftCustomEndpoints}
               autoSelect={endpointAutoSelect}
               onAutoSelectChange={setEndpointAutoSelect}
-              shouldShowModelField={true}
+              shouldShowModelField={category !== "official"}
               model={geminiModel}
               onModelChange={handleGeminiModelChange}
               speedTestEndpoints={speedTestEndpoints}

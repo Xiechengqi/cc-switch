@@ -277,6 +277,22 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_shares_owner_email(
+        &self,
+        old_email: &str,
+        new_email: &str,
+    ) -> Result<usize, AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE shares
+             SET name = ?2,
+                 owner_email = ?2
+             WHERE owner_email = ?1",
+            params![old_email, new_email],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))
+    }
+
     pub fn update_share_for_sale(&self, id: &str, for_sale: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(

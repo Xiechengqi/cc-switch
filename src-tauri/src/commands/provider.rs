@@ -112,7 +112,9 @@ pub fn switch_provider(
     id: String,
 ) -> Result<SwitchResult, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    let result = switch_provider_internal(&state, app_type, &id).map_err(|e| e.to_string())?;
+    let result =
+        switch_provider_internal(&state, app_type.clone(), &id).map_err(|e| e.to_string())?;
+    let refresh_app_type = app_type.clone();
     let service = std::sync::Arc::clone(&oauth_quota_state.0);
     let db = state.db.clone();
     let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
@@ -125,6 +127,10 @@ pub fn switch_provider(
         service
             .refresh_selected_targets(Some(&app_handle), &db, &managers, "switch")
             .await;
+        crate::tunnel::sync::schedule_share_runtime_refresh_after_provider_switch(
+            db,
+            refresh_app_type,
+        );
     });
     Ok(result)
 }

@@ -136,14 +136,14 @@ async fn issue_lease_inner(
 
     if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&msg) {
         log::warn!(
-            "[Tunnel] lease request rejected for installation {}, resetting identity and retrying once: {}",
+            "[Tunnel] lease request rejected for installation {}, refreshing identity and retrying once: {}",
             identity.installation_id,
             msg
         );
-        identity::reset_identity()?;
+        identity::refresh_installation_registration(client, config).await?;
         if let Some(ref share) = share_metadata {
             log::warn!(
-                "[Tunnel] Re-claiming share subdomain {} after installation reset",
+                "[Tunnel] Re-claiming share subdomain {} after installation refresh",
                 share.subdomain
             );
             claim_share_subdomain_inner(client, config, share, false).await?;
@@ -228,11 +228,11 @@ async fn claim_share_subdomain_inner(
 
     if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
         log::warn!(
-            "[Tunnel] share subdomain claim rejected for installation {}, resetting identity and retrying once: {}",
+            "[Tunnel] share subdomain claim rejected for installation {}, refreshing identity and retrying once: {}",
             identity.installation_id,
             message
         );
-        identity::reset_identity()?;
+        identity::refresh_installation_registration(client, config).await?;
         return Box::pin(claim_share_subdomain_inner(
             client,
             config,

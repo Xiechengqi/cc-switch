@@ -8,6 +8,7 @@
 use crate::database::Database;
 use crate::error::AppError;
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
@@ -108,6 +109,51 @@ impl FailoverSwitchManager {
 
                 if !switched {
                     return Ok(false);
+                }
+
+                if let Ok(app_enum) = crate::app_config::AppType::from_str(app_type) {
+                    let db = self.db.clone();
+                    if let (
+                        Some(oauth_quota_state),
+                        Some(codex_state),
+                        Some(claude_state),
+                        Some(gemini_state),
+                        Some(copilot_state),
+                    ) = (
+                        app.try_state::<crate::commands::OauthQuotaState>(),
+                        app.try_state::<crate::commands::CodexOAuthState>(),
+                        app.try_state::<crate::commands::ClaudeOAuthState>(),
+                        app.try_state::<crate::commands::GeminiOAuthState>(),
+                        app.try_state::<crate::commands::CopilotAuthState>(),
+                    ) {
+                        let service = std::sync::Arc::clone(&oauth_quota_state.0);
+                        let managers =
+                            crate::services::oauth_quota::OauthQuotaManagers::from_states(
+                                &codex_state,
+                                &claude_state,
+                                &gemini_state,
+                                &copilot_state,
+                            );
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            service
+                                .refresh_selected_targets(
+                                    Some(&app_handle),
+                                    &db,
+                                    &managers,
+                                    "switch",
+                                )
+                                .await;
+                            crate::tunnel::sync::schedule_share_runtime_refresh_after_provider_switch(
+                                db,
+                                app_enum,
+                            );
+                        });
+                    } else {
+                        crate::tunnel::sync::schedule_share_runtime_refresh_after_provider_switch(
+                            db, app_enum,
+                        );
+                    }
                 }
 
                 if let Ok(new_menu) = crate::tray::create_tray_menu(app, app_state.inner()) {

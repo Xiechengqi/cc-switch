@@ -79,6 +79,11 @@ impl Provider {
         self.category.as_deref() == Some("official") && self.has_managed_auth_binding("codex_oauth")
     }
 
+    pub fn is_google_gemini_official_with_managed_auth(&self) -> bool {
+        self.category.as_deref() == Some("official")
+            && self.has_managed_auth_binding("google_gemini_oauth")
+    }
+
     pub fn is_codex_oauth_provider(&self) -> bool {
         self.meta
             .as_ref()
@@ -116,6 +121,7 @@ impl Provider {
             || self.is_codex_oauth_provider()
             || self.is_claude_oauth_provider()
             || self.is_google_gemini_oauth_provider()
+            || self.is_google_gemini_official_with_managed_auth()
     }
 
     /// 代理接管模式下是否应阻止切换到该供应商。
@@ -132,6 +138,10 @@ impl Provider {
         match app_type {
             AppType::Claude => self.is_claude_oauth_provider(),
             AppType::Codex => self.is_codex_official_with_managed_auth(),
+            AppType::Gemini => {
+                self.is_google_gemini_oauth_provider()
+                    || self.is_google_gemini_official_with_managed_auth()
+            }
             _ => false,
         }
     }
@@ -141,6 +151,12 @@ impl Provider {
             AppType::Claude if self.is_claude_oauth_provider() => Some("https://api.anthropic.com"),
             AppType::Codex if self.is_codex_official_with_managed_auth() => {
                 Some("https://chatgpt.com/backend-api/codex")
+            }
+            AppType::Gemini
+                if self.is_google_gemini_oauth_provider()
+                    || self.is_google_gemini_official_with_managed_auth() =>
+            {
+                Some("https://generativelanguage.googleapis.com")
             }
             _ => None,
         }
@@ -870,7 +886,12 @@ mod tests {
 
     #[test]
     fn managed_oauth_official_providers_are_allowed_during_proxy_takeover() {
-        for provider_type in ["github_copilot", "codex_oauth", "claude_oauth"] {
+        for provider_type in [
+            "github_copilot",
+            "codex_oauth",
+            "claude_oauth",
+            "google_gemini_oauth",
+        ] {
             let provider = Provider {
                 id: format!("provider-{provider_type}"),
                 name: provider_type.to_string(),
@@ -950,6 +971,36 @@ mod tests {
             provider.stream_check_base_url_override(&AppType::Codex),
             Some("https://chatgpt.com/backend-api/codex")
         );
+    }
+
+    #[test]
+    fn google_gemini_official_with_managed_auth_is_allowed_during_proxy_takeover() {
+        let provider = Provider {
+            id: "google-official".to_string(),
+            name: "Google Official".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("google_gemini_oauth".to_string()),
+                    account_id: Some("gemini-acct-1".to_string()),
+                }),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert!(provider.is_google_gemini_official_with_managed_auth());
+        assert!(provider.is_managed_oauth_provider());
+        assert!(provider.can_switch_during_proxy_takeover());
+        assert!(!provider.is_blocked_by_proxy_takeover());
     }
 
     #[test]

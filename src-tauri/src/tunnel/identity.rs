@@ -72,12 +72,20 @@ pub async fn ensure_identity(
 pub async fn refresh_installation_registration(
     client: &reqwest::Client,
     config: &TunnelConfig,
-) -> Result<(), TunnelError> {
+) -> Result<TunnelIdentity, TunnelError> {
     let stored = load_stored_identity()?.ok_or_else(|| {
         TunnelError::Other("cannot refresh installation registration without local identity".into())
     })?;
-    register_installation_with_public_key(client, config, &stored.public_key_base64).await?;
-    Ok(())
+    let body =
+        register_installation_with_public_key(client, config, &stored.public_key_base64).await?;
+    let next = StoredIdentity {
+        installation_id: body.installation_id,
+        private_key_base64: stored.private_key_base64,
+        public_key_base64: stored.public_key_base64,
+    };
+    save_identity(&next)?;
+    load_identity()?
+        .ok_or_else(|| TunnelError::Other("refreshed tunnel identity could not be loaded".into()))
 }
 
 pub fn reset_identity() -> Result<(), TunnelError> {

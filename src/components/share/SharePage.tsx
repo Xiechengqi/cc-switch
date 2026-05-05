@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQueries, useQueryClient, type Query } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -7,6 +7,7 @@ import {
   type ShareRecord,
   type TunnelInfo,
 } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useSettingsQuery } from "@/lib/query";
 import { useProxyStatus } from "@/lib/query/proxy";
@@ -35,11 +36,12 @@ import {
   getTunnelConfigFromSettings,
   isTunnelConfigured,
 } from "@/utils/shareUtils";
-import { ShareEmailLoginCard } from "@/components/settings/ShareEmailLoginCard";
 import { ShareConnectDialog } from "./ShareConnectDialog";
 import { CreateShareDialog } from "./CreateShareDialog";
 import { ShareDetailDrawer } from "./ShareDetailDrawer";
 import { ShareList } from "./ShareList";
+import { ShareOwnerChangeEmailDialog } from "./ShareOwnerChangeEmailDialog";
+import { ShareOwnerLoginDialog } from "./ShareOwnerLoginDialog";
 import { ShareRouterBar } from "./ShareRouterBar";
 
 interface SharePageProps {
@@ -62,10 +64,15 @@ export function SharePage(_props: SharePageProps) {
     [settings],
   );
   const [createOpen, setCreateOpen] = useState(false);
+  const [ownerLoginOpen, setOwnerLoginOpen] = useState(false);
+  const [ownerChangeOpen, setOwnerChangeOpen] = useState(false);
   const [detailShareId, setDetailShareId] = useState<string | null>(null);
   const [connectShareId, setConnectShareId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ShareRecord | null>(null);
   const [pendingActionShareId, setPendingActionShareId] = useState<
+    string | null
+  >(null);
+  const [pendingOwnerLoginShareId, setPendingOwnerLoginShareId] = useState<
     string | null
   >(null);
 
@@ -111,15 +118,33 @@ export function SharePage(_props: SharePageProps) {
   const connectShare =
     shares.find((share) => share.id === connectShareId) ?? null;
   const primaryShare = shares[0] ?? null;
+  const canChangeOwner =
+    Boolean(emailAuthStatus?.authenticated) &&
+    Boolean(primaryShare?.ownerEmail) &&
+    emailAuthStatus?.email === primaryShare?.ownerEmail;
   const shouldShowLoginOnly = !primaryShare && !emailAuthStatus?.authenticated;
+  const openOwnerReverify = (share?: ShareRecord | null) => {
+    setPendingOwnerLoginShareId(share?.id ?? null);
+    setOwnerLoginOpen(true);
+  };
+
+  const isOwnerAuthExpiredError = (error: unknown) => {
+    const message = extractErrorMessage(error);
+    return (
+      message.includes("当前邮箱登录凭证已过期") ||
+      message.includes("请重新登录") ||
+      message.includes("请先完成邮箱验证码登录")
+    );
+  };
 
   const handleCreate = async (
     params: Parameters<typeof createMutation.mutateAsync>[0],
   ) => {
     if (!emailAuthStatus?.authenticated || !emailAuthStatus.email) {
+      setOwnerLoginOpen(true);
       throw new Error(
         t("share.emailLoginRequired", {
-          defaultValue: "请先在 Auth Center 完成邮箱登录，再创建 share",
+          defaultValue: "请先完成 share owner 邮箱登录，再创建 share",
         }),
       );
     }
@@ -134,10 +159,25 @@ export function SharePage(_props: SharePageProps) {
     setPendingActionShareId(share.id);
     try {
       await action();
+    } catch (error) {
+      if (isOwnerAuthExpiredError(error)) {
+        openOwnerReverify(share);
+      }
+      throw error;
     } finally {
       setPendingActionShareId(null);
     }
   };
+
+  useEffect(() => {
+    if (!pendingOwnerLoginShareId || !emailAuthStatus?.authenticated) return;
+    const share = shares.find((item) => item.id === pendingOwnerLoginShareId);
+    if (!share || emailAuthStatus.email !== share.ownerEmail) return;
+    setPendingOwnerLoginShareId(null);
+    if (share.status !== "active") {
+      void runShareAction(share, () => enableMutation.mutateAsync(share.id));
+    }
+  }, [emailAuthStatus, enableMutation, pendingOwnerLoginShareId, shares]);
 
   const handleRefresh = async (share: ShareRecord) => {
     await Promise.all([
@@ -157,9 +197,41 @@ export function SharePage(_props: SharePageProps) {
   if (shouldShowLoginOnly) {
     return (
       <div className="px-6 py-4">
-        <div className="mx-auto max-w-3xl pb-10">
-          <ShareEmailLoginCard />
+        <div className="mx-auto flex max-w-3xl flex-col gap-4 pb-10">
+          <div className="rounded-xl border border-border-default/70 bg-card/80 p-6">
+            <div className="space-y-2">
+              <h3 className="text-lg font-semibold">
+                {t("share.ownerLogin.emptyTitle", {
+                  defaultValue: "Login to create a share",
+                })}
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {t("share.ownerLogin.emptyDescription", {
+                  defaultValue:
+                    "Choose a share router and verify the owner email before creating a share.",
+                })}
+              </p>
+            </div>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Button type="button" onClick={() => setOwnerLoginOpen(true)}>
+                {t("share.ownerLogin.action", {
+                  defaultValue: "Login Share Owner",
+                })}
+              </Button>
+            </div>
+          </div>
         </div>
+        <ShareOwnerLoginDialog
+          open={ownerLoginOpen}
+          onOpenChange={setOwnerLoginOpen}
+          tunnelConfig={tunnelConfig}
+          tunnelConfigSaving={configureTunnelMutation.isPending}
+          currentEmail={emailAuthStatus?.email ?? null}
+          lockedOwnerEmail={null}
+          onSaveTunnelConfig={(config) =>
+            configureTunnelMutation.mutateAsync(config)
+          }
+        />
       </div>
     );
   }
@@ -174,7 +246,17 @@ export function SharePage(_props: SharePageProps) {
           proxyAddress={proxyStatus?.address ?? null}
           proxyPort={proxyStatus?.port ?? null}
           hasShare={shares.length > 0}
-          onCreate={() => setCreateOpen(true)}
+          ownerEmail={primaryShare?.ownerEmail ?? null}
+          ownerAuthenticated={canChangeOwner}
+          onCreate={() => {
+            if (!emailAuthStatus?.authenticated) {
+              setOwnerLoginOpen(true);
+              return;
+            }
+            setCreateOpen(true);
+          }}
+          onChangeOwner={() => setOwnerChangeOpen(true)}
+          onVerifyOwner={() => openOwnerReverify(primaryShare)}
           onSaveTunnelConfig={(config) =>
             configureTunnelMutation.mutateAsync(config)
           }
@@ -189,19 +271,25 @@ export function SharePage(_props: SharePageProps) {
           error={error ? extractErrorMessage(error) : null}
           pendingAction={pendingActionShareId}
           onRetry={() => void refetch()}
-          onCreate={() => setCreateOpen(true)}
+          onCreate={() => {
+            if (!emailAuthStatus?.authenticated) {
+              setOwnerLoginOpen(true);
+              return;
+            }
+            setCreateOpen(true);
+          }}
           onOpenDetail={(share) => setDetailShareId(share.id)}
           onOpenConnect={(share) => setConnectShareId(share.id)}
           onDelete={(share) => setDeleteTarget(share)}
           onEnable={(share) =>
             void runShareAction(share, () =>
               enableMutation.mutateAsync(share.id),
-            )
+            ).catch(() => undefined)
           }
           onDisable={(share) =>
             void runShareAction(share, () =>
               disableMutation.mutateAsync(share.id),
-            )
+            ).catch(() => undefined)
           }
           onRefresh={(share) => void handleRefresh(share)}
         />
@@ -213,6 +301,31 @@ export function SharePage(_props: SharePageProps) {
         ownerEmail={emailAuthStatus?.email ?? primaryShare?.ownerEmail ?? null}
         isSubmitting={createMutation.isPending}
         onSubmit={handleCreate}
+      />
+
+      <ShareOwnerLoginDialog
+        open={ownerLoginOpen}
+        onOpenChange={setOwnerLoginOpen}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigSaving={configureTunnelMutation.isPending}
+        currentEmail={
+          emailAuthStatus?.email ?? primaryShare?.ownerEmail ?? null
+        }
+        lockedOwnerEmail={primaryShare?.ownerEmail ?? null}
+        onSaveTunnelConfig={(config) =>
+          configureTunnelMutation.mutateAsync(config)
+        }
+      />
+
+      <ShareOwnerChangeEmailDialog
+        open={ownerChangeOpen}
+        onOpenChange={setOwnerChangeOpen}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigSaving={configureTunnelMutation.isPending}
+        currentEmail={primaryShare?.ownerEmail ?? emailAuthStatus?.email ?? null}
+        onSaveTunnelConfig={(config) =>
+          configureTunnelMutation.mutateAsync(config)
+        }
       />
 
       <ShareDetailDrawer

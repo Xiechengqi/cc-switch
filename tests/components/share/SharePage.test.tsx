@@ -1,13 +1,17 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, it, expect, beforeEach } from "vitest";
 import { SharePage } from "@/components/share";
+import { server } from "../../msw/server";
 import { createTestQueryClient } from "../../utils/testQueryClient";
 import {
   setEmailAuthSession,
   setEmailAuthStatus,
   setSettings,
   setShares,
+  listShares,
 } from "../../msw/state";
 
 const renderPage = () => {
@@ -70,16 +74,157 @@ describe("SharePage", () => {
     expect(screen.getByText("Alpha Share")).toBeInTheDocument();
   });
 
-  it("shows only share email login when no share is bound and user is unauthenticated", async () => {
+  it("shows only share owner login entry when no share is bound and user is unauthenticated", async () => {
     setShares([]);
 
     renderPage();
 
     await waitFor(() =>
-      expect(screen.getByText("Share Email Login")).toBeInTheDocument(),
+      expect(screen.getByText("Login Share Owner")).toBeInTheDocument(),
     );
-    expect(screen.getByText("Share Email Login")).toBeInTheDocument();
+    expect(screen.getByText("Login Share Owner")).toBeInTheDocument();
     expect(screen.queryByText("Alpha Share")).not.toBeInTheDocument();
     expect(screen.queryByText("Router & Tunnel")).not.toBeInTheDocument();
+  });
+
+  it("opens owner login dialog and sends email code through selected router", async () => {
+    setShares([]);
+    setSettings({
+      shareRouterDomain: "jptokenswitch.cc",
+    });
+    let requestBody: { routerDomain?: string; email?: string } | null = null;
+    server.use(
+      http.post("http://tauri.local/email_auth_request_code", async ({ request }) => {
+        requestBody = (await request.json()) as typeof requestBody;
+        return HttpResponse.json({
+          ok: true,
+          cooldownSecs: 60,
+          maskedDestination: requestBody?.email ?? "***",
+        });
+      }),
+    );
+
+    renderPage();
+
+    fireEvent.click(await screen.findByText("Login Share Owner"));
+    expect(screen.getByText("Share Owner Login")).toBeInTheDocument();
+    expect(screen.getByText(/1\. Router/)).toHaveClass("text-foreground");
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Continue"));
+    const emailInput = await screen.findByLabelText("Email");
+    fireEvent.change(emailInput, {
+      target: { value: "owner@example.com" },
+    });
+    fireEvent.click(screen.getByText("发送验证码"));
+
+    await waitFor(() =>
+      expect(requestBody).toEqual({
+        routerDomain: "jptokenswitch.cc",
+        email: "owner@example.com",
+      }),
+    );
+    expect(screen.getByLabelText("Verification Code")).toBeInTheDocument();
+  });
+
+  it("reverifies the locked share owner email from the share page", async () => {
+    const user = userEvent.setup();
+    let requestBody: { routerDomain?: string; email?: string } | null = null;
+    server.use(
+      http.post("http://tauri.local/email_auth_request_code", async ({ request }) => {
+        requestBody = (await request.json()) as typeof requestBody;
+        return HttpResponse.json({
+          ok: true,
+          cooldownSecs: 60,
+          maskedDestination: requestBody?.email ?? "***",
+        });
+      }),
+    );
+
+    renderPage();
+
+    await user.click(await screen.findByText("重新验证 Owner 邮箱"));
+    await user.click(screen.getByText("Continue"));
+    const emailInput = await screen.findByLabelText("Email");
+    expect(emailInput).toHaveValue("alpha@example.com");
+    expect(emailInput).toBeDisabled();
+    await user.click(screen.getByText("发送验证码"));
+
+    await waitFor(() =>
+      expect(requestBody).toEqual({
+        routerDomain: "server.example.com",
+        email: "alpha@example.com",
+      }),
+    );
+    expect(screen.getByLabelText("Verification Code")).toBeInTheDocument();
+  });
+
+  it("changes owner email by verifying the new owner email", async () => {
+    const user = userEvent.setup();
+    setEmailAuthStatus({
+      authenticated: true,
+      email: "alpha@example.com",
+      expiresAt: Date.now() / 1000 + 3600,
+    });
+    setEmailAuthSession({
+      authenticated: true,
+      user: {
+        id: "email-user-1",
+        email: "alpha@example.com",
+      },
+      expiresAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+      installationOwnerEmail: "alpha@example.com",
+    });
+    let ownerCodeRequest: {
+      routerDomain?: string;
+      currentEmail?: string;
+      newEmail?: string;
+    } | null = null;
+    server.use(
+      http.post(
+        "http://tauri.local/email_auth_request_owner_change_code",
+        async ({ request }) => {
+          ownerCodeRequest = (await request.json()) as typeof ownerCodeRequest;
+          return HttpResponse.json({
+            ok: true,
+            cooldownSecs: 60,
+            maskedDestination: ownerCodeRequest?.newEmail ?? "***",
+          });
+        },
+      ),
+    );
+
+    renderPage();
+
+    await screen.findByText("Alpha Share");
+    await user.click(screen.getByRole("button", { name: "Change Owner Email" }));
+    await waitFor(() =>
+      expect(screen.getAllByText("Change Owner Email").length).toBeGreaterThan(
+        1,
+      ),
+    );
+    expect(screen.getByText("alpha@example.com")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Continue"));
+    await user.type(
+      await screen.findByLabelText("New owner email"),
+      "new-owner@example.com",
+    );
+    await user.click(screen.getByText("发送验证码"));
+    await waitFor(() =>
+      expect(screen.getByText(/new-owner@example.com/)).toBeInTheDocument(),
+    );
+    expect(ownerCodeRequest).toEqual({
+      routerDomain: "server.example.com",
+      currentEmail: "alpha@example.com",
+      newEmail: "new-owner@example.com",
+    });
+
+    await user.type(await screen.findByLabelText("Verification Code"), "123456");
+    await user.click(screen.getByText("Change Owner"));
+
+    await waitFor(() =>
+      expect(listShares()[0]?.ownerEmail).toBe("new-owner@example.com"),
+    );
   });
 });

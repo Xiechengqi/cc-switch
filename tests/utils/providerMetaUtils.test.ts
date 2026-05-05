@@ -7,6 +7,7 @@ import {
   isManagedOauthProvider,
   isOfficialBlockedByProxyTakeover,
   isCodexOfficialWithManagedAuth,
+  isGoogleGeminiOfficialWithManagedAuth,
   mergeProviderMeta,
 } from "@/utils/providerMetaUtils";
 
@@ -142,6 +143,37 @@ describe("isCodexOfficialWithManagedAuth", () => {
   });
 });
 
+describe("isGoogleGeminiOfficialWithManagedAuth", () => {
+  it("detects managed Google Gemini official providers", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "official",
+      meta: {
+        authBinding: {
+          source: "managed_account",
+          authProvider: "google_gemini_oauth",
+          accountId: "gemini-acct-1",
+        },
+      },
+    };
+
+    expect(isGoogleGeminiOfficialWithManagedAuth(provider)).toBe(true);
+  });
+
+  it("rejects unbound Google official providers", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "official",
+      meta: {
+        authBinding: {
+          source: "managed_account",
+          authProvider: "google_gemini_oauth",
+        },
+      },
+    };
+
+    expect(isGoogleGeminiOfficialWithManagedAuth(provider)).toBe(false);
+  });
+});
+
 describe("getProviderQuotaSource", () => {
   it("uses codex oauth quota source for managed Codex official", () => {
     const provider: Pick<Provider, "category" | "meta"> = {
@@ -167,6 +199,23 @@ describe("getProviderQuotaSource", () => {
     };
 
     expect(getProviderQuotaSource(provider, "claude")).toBe("claude_oauth");
+  });
+
+  it("uses google gemini oauth quota source for managed Google official", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "official",
+      meta: {
+        authBinding: {
+          source: "managed_account",
+          authProvider: "google_gemini_oauth",
+          accountId: "gemini-acct-1",
+        },
+      },
+    };
+
+    expect(getProviderQuotaSource(provider, "gemini")).toBe(
+      "google_gemini_oauth",
+    );
   });
 
   it("uses copilot quota source for github copilot providers", () => {
@@ -223,6 +272,21 @@ describe("isManagedOauthProvider", () => {
 
     expect(isManagedOauthProvider(provider, "codex")).toBe(true);
   });
+
+  it("detects managed Google Gemini official providers", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "official",
+      meta: {
+        authBinding: {
+          source: "managed_account",
+          authProvider: "google_gemini_oauth",
+          accountId: "gemini-acct-1",
+        },
+      },
+    };
+
+    expect(isManagedOauthProvider(provider, "gemini")).toBe(true);
+  });
 });
 
 describe("isOfficialBlockedByProxyTakeover", () => {
@@ -244,6 +308,23 @@ describe("isOfficialBlockedByProxyTakeover", () => {
     };
 
     expect(isOfficialBlockedByProxyTakeover(provider, "claude", true)).toBe(
+      false,
+    );
+  });
+
+  it("does not block managed Google official providers during proxy takeover", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "official",
+      meta: {
+        authBinding: {
+          source: "managed_account",
+          authProvider: "google_gemini_oauth",
+          accountId: "gemini-acct-1",
+        },
+      },
+    };
+
+    expect(isOfficialBlockedByProxyTakeover(provider, "gemini", true)).toBe(
       false,
     );
   });
@@ -272,6 +353,21 @@ describe("canTestProvider", () => {
     };
 
     expect(canTestProvider(provider, "codex")).toBe(true);
+  });
+
+  it("allows managed Google Gemini official providers", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "official",
+      meta: {
+        authBinding: {
+          source: "managed_account",
+          authProvider: "google_gemini_oauth",
+          accountId: "gemini-acct-1",
+        },
+      },
+    };
+
+    expect(canTestProvider(provider, "gemini")).toBe(true);
   });
 
   it("rejects plain official providers", () => {

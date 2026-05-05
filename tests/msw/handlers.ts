@@ -247,14 +247,17 @@ export const handlers = [
     success(getEmailAuthSession()),
   ),
 
-  http.post(`${TAURI_ENDPOINT}/email_auth_request_code`, async ({ request }) => {
-    const { email } = await withJson<{ email: string }>(request);
-    return success({
-      ok: true,
-      cooldownSecs: 60,
-      maskedDestination: email || "***",
-    });
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/email_auth_request_code`,
+    async ({ request }) => {
+      const { email } = await withJson<{ email: string }>(request);
+      return success({
+        ok: true,
+        cooldownSecs: 60,
+        maskedDestination: email || "***",
+      });
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/email_auth_verify_code`, async ({ request }) => {
     const { email } = await withJson<{ email: string }>(request);
@@ -274,6 +277,52 @@ export const handlers = [
     });
     return success(status);
   }),
+
+  http.post(
+    `${TAURI_ENDPOINT}/email_auth_request_owner_change_code`,
+    async ({ request }) => {
+      const { newEmail } = await withJson<{ newEmail: string }>(request);
+      return success({
+        ok: true,
+        cooldownSecs: 60,
+        maskedDestination: newEmail || "***",
+      });
+    },
+  ),
+
+  http.post(
+    `${TAURI_ENDPOINT}/email_auth_change_owner_email`,
+    async ({ request }) => {
+      const { currentEmail, newEmail } = await withJson<{
+        currentEmail: string;
+        newEmail: string;
+      }>(request);
+      listShares()
+        .filter((share) => share.ownerEmail === currentEmail)
+        .forEach((share) =>
+          updateShare(share.id, {
+            name: newEmail,
+            ownerEmail: newEmail,
+          }),
+        );
+      const status = {
+        authenticated: true,
+        email: newEmail || "new-owner@example.com",
+        expiresAt: Date.now() / 1000 + 3600,
+      };
+      setEmailAuthStatus(status);
+      setEmailAuthSession({
+        authenticated: true,
+        user: {
+          id: "email-user-2",
+          email: status.email ?? "new-owner@example.com",
+        },
+        expiresAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+        installationOwnerEmail: status.email,
+      });
+      return success(status);
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/create_share`, async ({ request }) => {
     const { params } = await withJson<{
@@ -393,6 +442,37 @@ export const handlers = [
     });
 
     return success(info);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/enable_share`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    const share = getShare(shareId);
+    if (!share) {
+      return HttpResponse.json("Share not found", { status: 404 });
+    }
+
+    const info = {
+      tunnelUrl: `https://${shareId}.example.test`,
+      subdomain: share.subdomain ?? `${shareId}-sub`,
+      remotePort: 443,
+      healthy: true,
+    };
+
+    setTunnelStatus(shareId, info);
+    updateShare(shareId, {
+      status: "active",
+      tunnelUrl: info.tunnelUrl,
+      subdomain: info.subdomain,
+    });
+
+    return success(info);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/disable_share`, async ({ request }) => {
+    const { shareId } = await withJson<{ shareId: string }>(request);
+    setTunnelStatus(shareId, null);
+    updateShare(shareId, { status: "paused", tunnelUrl: null });
+    return success(null);
   }),
 
   http.post(`${TAURI_ENDPOINT}/stop_share_tunnel`, async ({ request }) => {
@@ -554,6 +634,17 @@ export const handlers = [
       codex: false,
       gemini: false,
     }),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/start_proxy_server`, () =>
+    success({
+      address: "127.0.0.1",
+      port: 53000,
+    }),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/set_proxy_takeover_for_app`, () =>
+    success(true),
   ),
 
   http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () => success(false)),

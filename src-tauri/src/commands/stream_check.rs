@@ -4,6 +4,7 @@ use crate::app_config::AppType;
 use crate::commands::claude_oauth::ClaudeOAuthState;
 use crate::commands::codex_oauth::CodexOAuthState;
 use crate::commands::copilot::CopilotAuthState;
+use crate::commands::gemini_oauth::GeminiOAuthState;
 use crate::error::AppError;
 use crate::services::stream_check::{
     HealthStatus, StreamCheckConfig, StreamCheckResult, StreamCheckService,
@@ -19,6 +20,7 @@ pub async fn stream_check_provider(
     copilot_state: State<'_, CopilotAuthState>,
     codex_oauth_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: State<'_, GeminiOAuthState>,
     app_type: AppType,
     provider_id: String,
 ) -> Result<StreamCheckResult, AppError> {
@@ -32,10 +34,12 @@ pub async fn stream_check_provider(
     let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
         .await?
         .or(resolve_codex_oauth_auth_override(&app_type, provider, &codex_oauth_state).await?)
-        .or(resolve_claude_oauth_auth_override(provider, &claude_oauth_state).await?);
+        .or(resolve_claude_oauth_auth_override(provider, &claude_oauth_state).await?)
+        .or(resolve_gemini_oauth_auth_override(&app_type, provider, &gemini_oauth_state).await?);
     let base_url_override = resolve_codex_oauth_base_url_override(&app_type, provider)
         .or(resolve_copilot_base_url_override(provider, &copilot_state).await?)
-        .or(resolve_claude_oauth_base_url_override(provider));
+        .or(resolve_claude_oauth_base_url_override(provider))
+        .or(resolve_gemini_oauth_base_url_override(&app_type, provider));
     let claude_api_format_override = resolve_claude_api_format_override(
         &app_type,
         provider,
@@ -70,6 +74,7 @@ pub async fn stream_check_all_providers(
     copilot_state: State<'_, CopilotAuthState>,
     codex_oauth_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: State<'_, GeminiOAuthState>,
     app_type: AppType,
     proxy_targets_only: bool,
 ) -> Result<Vec<(String, StreamCheckResult)>, AppError> {
@@ -102,10 +107,15 @@ pub async fn stream_check_all_providers(
         let auth_override = resolve_copilot_auth_override(&provider, &copilot_state)
             .await?
             .or(resolve_codex_oauth_auth_override(&app_type, &provider, &codex_oauth_state).await?)
-            .or(resolve_claude_oauth_auth_override(&provider, &claude_oauth_state).await?);
+            .or(resolve_claude_oauth_auth_override(&provider, &claude_oauth_state).await?)
+            .or(
+                resolve_gemini_oauth_auth_override(&app_type, &provider, &gemini_oauth_state)
+                    .await?,
+            );
         let base_url_override = resolve_codex_oauth_base_url_override(&app_type, &provider)
             .or(resolve_copilot_base_url_override(&provider, &copilot_state).await?)
-            .or(resolve_claude_oauth_base_url_override(&provider));
+            .or(resolve_claude_oauth_base_url_override(&provider))
+            .or(resolve_gemini_oauth_base_url_override(&app_type, &provider));
         let claude_api_format_override = resolve_claude_api_format_override(
             &app_type,
             &provider,
@@ -350,6 +360,68 @@ fn is_claude_oauth_provider(provider: &crate::provider::Provider) -> bool {
 fn resolve_claude_oauth_base_url_override(provider: &crate::provider::Provider) -> Option<String> {
     provider
         .stream_check_base_url_override(&AppType::Claude)
+        .map(str::to_string)
+}
+
+async fn resolve_gemini_oauth_auth_override(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+    gemini_oauth_state: &State<'_, GeminiOAuthState>,
+) -> Result<Option<crate::proxy::providers::AuthInfo>, AppError> {
+    if !matches!(app_type, AppType::Gemini)
+        || !(provider.is_google_gemini_oauth_provider()
+            || provider.is_google_gemini_official_with_managed_auth())
+    {
+        return Ok(None);
+    }
+
+    let auth_manager = gemini_oauth_state.0.read().await;
+    let account_id = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("google_gemini_oauth"));
+
+    let (token, resolved_account_id) = match account_id.as_deref() {
+        Some(id) => (
+            auth_manager
+                .get_valid_token_for_account(id)
+                .await
+                .map_err(|e| AppError::Message(format!("Google Gemini OAuth 认证失败: {e}")))?,
+            Some(id.to_string()),
+        ),
+        None => {
+            let resolved = auth_manager.default_account_id().await;
+            let Some(id) = resolved.clone() else {
+                return Err(AppError::Message(
+                    "Google Gemini OAuth 认证失败: 未找到可用账号".to_string(),
+                ));
+            };
+            (
+                auth_manager
+                    .get_valid_token_for_account(&id)
+                    .await
+                    .map_err(|e| AppError::Message(format!("Google Gemini OAuth 认证失败: {e}")))?,
+                Some(id),
+            )
+        }
+    };
+
+    Ok(Some(
+        crate::proxy::providers::AuthInfo::with_access_token(token.clone(), token)
+            .with_managed_account_id(resolved_account_id),
+    ))
+}
+
+fn resolve_gemini_oauth_base_url_override(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+) -> Option<String> {
+    if !matches!(app_type, AppType::Gemini) {
+        return None;
+    }
+
+    provider
+        .stream_check_base_url_override(app_type)
         .map(str::to_string)
 }
 

@@ -6,12 +6,13 @@ use std::path::{Path, PathBuf};
 
 const AUTH_REQUEST_TIMEOUT_SECS: u64 = 20;
 const LOGIN_PURPOSE: &str = "login";
-const VERIFICATION_SERVICE_BASE_URL: &str = "https://tokenswitch.org";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmailAuthState {
     pub email: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_domain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,6 +37,8 @@ pub struct EmailAuthStatus {
     pub email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_domain: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,13 +51,22 @@ pub struct EmailCodeRequestResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct VerifyEmailCodeResponse {
-    ok: bool,
-    verified: bool,
-    email: String,
-    purpose: String,
-    verification_token: String,
-    verification_token_expires_at: i64,
+struct RouterVerifyEmailCodeResponse {
+    user: EmailAuthUser,
+    access_token: String,
+    refresh_token: String,
+    expires_at: String,
+    refresh_expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RouterRefreshSessionResponse {
+    user: EmailAuthUser,
+    access_token: String,
+    refresh_token: String,
+    expires_at: String,
+    refresh_expires_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +94,28 @@ struct BindOwnerEmailResponse {
     ok: bool,
     owner_email: String,
     already_bound: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangeOwnerEmailResponse {
+    ok: bool,
+    old_email: String,
+    new_email: String,
+    updated_shares: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangeOwnerEmailSignaturePayload<'a> {
+    old_email: &'a str,
+    new_email: &'a str,
+}
+
+#[derive(Debug)]
+struct BindOwnerEmailError {
+    status: reqwest::StatusCode,
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,12 +198,14 @@ pub fn get_status() -> Result<EmailAuthStatus, String> {
             authenticated: false,
             email: None,
             expires_at: None,
+            router_domain: None,
         });
     };
     Ok(EmailAuthStatus {
         authenticated: !state.email.trim().is_empty(),
         email: Some(state.email),
         expires_at: state.expires_at,
+        router_domain: state.router_domain,
     })
 }
 
@@ -177,17 +213,41 @@ pub fn current_email() -> Result<Option<String>, String> {
     Ok(read_state()?.map(|state| state.email))
 }
 
-pub async fn request_code(email: &str) -> Result<EmailCodeRequestResponse, String> {
+pub async fn request_code(
+    config: &crate::tunnel::config::TunnelConfig,
+    email: &str,
+) -> Result<EmailCodeRequestResponse, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("create email auth client failed: {e}"))?;
-    let url = format!("{VERIFICATION_SERVICE_BASE_URL}/v1/verification/email/send");
+    let identity = crate::tunnel::identity::ensure_identity(&client, config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let payload = serde_json::json!({ "email": email, "purpose": LOGIN_PURPOSE });
+    let signature = crate::tunnel::identity::sign_action_payload(
+        &identity,
+        &identity.installation_id,
+        "auth_request_code",
+        &payload,
+        timestamp_ms,
+        &nonce,
+    )
+    .map_err(|e| e.to_string())?;
+    let url = format!(
+        "{}/v1/auth/email/request-code",
+        config.get_server_addr().trim_end_matches('/')
+    );
     let response = client
         .post(&url)
         .json(&serde_json::json!({
             "email": email,
-            "purpose": LOGIN_PURPOSE,
+            "installationId": identity.installation_id,
+            "timestampMs": timestamp_ms,
+            "nonce": nonce,
+            "signature": signature,
         }))
         .send()
         .await
@@ -195,41 +255,129 @@ pub async fn request_code(email: &str) -> Result<EmailCodeRequestResponse, Strin
     handle_json_response(response).await
 }
 
-pub async fn verify_code(email: &str, code: &str) -> Result<EmailAuthStatus, String> {
+pub async fn verify_code(
+    config: &crate::tunnel::config::TunnelConfig,
+    email: &str,
+    code: &str,
+) -> Result<EmailAuthStatus, String> {
+    let body = verify_code_with_router(config, email, code).await?;
+    let email = body.user.email.trim().to_ascii_lowercase();
+    let state = state_from_router_session(config, email.clone(), body)?;
+    write_state(&state)?;
+    ensure_remote_owner_binding(config, &email).await?;
+    Ok(EmailAuthStatus {
+        authenticated: true,
+        email: Some(email),
+        expires_at: state.expires_at,
+        router_domain: state.router_domain,
+    })
+}
+
+pub async fn change_owner_email(
+    config: &crate::tunnel::config::TunnelConfig,
+    old_email: &str,
+    new_email: &str,
+    code: &str,
+) -> Result<EmailAuthStatus, String> {
+    let old_email = old_email.trim().to_ascii_lowercase();
+    let new_email = new_email.trim().to_ascii_lowercase();
+    if old_email.is_empty() || new_email.is_empty() {
+        return Err("邮箱不能为空".to_string());
+    }
+    if old_email == new_email {
+        return Err("新 owner 邮箱必须不同于当前 owner 邮箱".to_string());
+    }
+    let Some(state) = read_state()? else {
+        return Err("换绑前请先完成当前 share owner 邮箱登录".to_string());
+    };
+    if state.email.trim().to_ascii_lowercase() != old_email {
+        return Err("当前邮箱登录状态与 share owner 不一致，请重新登录".to_string());
+    }
+    if let Some(router_domain) = state.router_domain.as_deref() {
+        if router_domain != config.domain {
+            return Err("当前邮箱登录所属分享节点与所选分享节点不一致，请重新登录".to_string());
+        }
+    }
+    let remote_owner = fetch_remote_owner_binding(config).await?;
+    if remote_owner.as_deref() != Some(old_email.as_str()) {
+        return Err("当前分享节点绑定的 owner 与本地状态不一致，请刷新后重试".to_string());
+    }
+
+    let body = verify_code_with_router(config, &new_email, code)
+        .await
+        .map_err(|err| humanize_email_code_error(&err))?;
+    let verified_email = body.user.email.trim().to_ascii_lowercase();
+    if verified_email != new_email {
+        return Err("验证码验证邮箱与新 owner 邮箱不一致".to_string());
+    }
+    let access_token = body.access_token.clone();
+    change_remote_owner_email(config, &old_email, &new_email, &access_token).await?;
+
+    let next_state = state_from_router_session(config, new_email.clone(), body)?;
+    write_state(&next_state)?;
+    Ok(EmailAuthStatus {
+        authenticated: true,
+        email: Some(new_email),
+        expires_at: next_state.expires_at,
+        router_domain: next_state.router_domain,
+    })
+}
+
+fn humanize_email_code_error(message: &str) -> String {
+    let normalized = message.trim().to_ascii_lowercase();
+    if normalized.contains("verification code expired or not found") {
+        return "验证码已过期或不存在，请重新发送验证码".to_string();
+    }
+    if normalized.contains("invalid verification code") {
+        return "验证码不正确，请检查后重试".to_string();
+    }
+    message.to_string()
+}
+
+async fn verify_code_with_router(
+    config: &crate::tunnel::config::TunnelConfig,
+    email: &str,
+    code: &str,
+) -> Result<RouterVerifyEmailCodeResponse, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("create email auth client failed: {e}"))?;
-    let url = format!("{VERIFICATION_SERVICE_BASE_URL}/v1/verification/email/verify");
+    let identity = crate::tunnel::identity::ensure_identity(&client, config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "{}/v1/auth/email/verify-code",
+        config.get_server_addr().trim_end_matches('/')
+    );
     let response = client
         .post(&url)
         .json(&serde_json::json!({
             "email": email,
-            "purpose": LOGIN_PURPOSE,
             "code": code,
+            "installationId": identity.installation_id,
         }))
         .send()
         .await
         .map_err(|e| format!("verify email code failed: {e}"))?;
-    let body: VerifyEmailCodeResponse = handle_json_response(response).await?;
-    if !body.ok || !body.verified {
-        return Err("email verification was not accepted".to_string());
-    }
-    let state = EmailAuthState {
-        email: body.email,
-        verification_token: Some(body.verification_token),
-        verification_token_expires_at: Some(body.verification_token_expires_at),
-        access_token: None,
-        refresh_token: None,
-        expires_at: None,
-        refresh_expires_at: None,
+    handle_json_response(response).await
+}
+
+fn state_from_router_session(
+    config: &crate::tunnel::config::TunnelConfig,
+    email: String,
+    body: RouterVerifyEmailCodeResponse,
+) -> Result<EmailAuthState, String> {
+    Ok(EmailAuthState {
+        email,
+        router_domain: Some(config.domain.clone()),
+        verification_token: None,
+        verification_token_expires_at: None,
+        access_token: Some(body.access_token),
+        refresh_token: Some(body.refresh_token),
+        expires_at: Some(parse_rfc3339_timestamp(&body.expires_at)?),
+        refresh_expires_at: Some(parse_rfc3339_timestamp(&body.refresh_expires_at)?),
         verified_at: chrono::Utc::now().timestamp(),
-    };
-    write_state(&state)?;
-    Ok(EmailAuthStatus {
-        authenticated: true,
-        email: Some(state.email),
-        expires_at: None,
     })
 }
 
@@ -319,7 +467,9 @@ async fn fetch_remote_owner_binding_inner(
         if allow_identity_reset_retry
             && crate::tunnel::identity::should_reset_identity_for_api_error(&message)
         {
-            crate::tunnel::identity::reset_identity().map_err(|e| e.to_string())?;
+            crate::tunnel::identity::refresh_installation_registration(&client, config)
+                .await
+                .map_err(|e| e.to_string())?;
             return Box::pin(fetch_remote_owner_binding_inner(config, false)).await;
         }
         return Err(message);
@@ -340,7 +490,7 @@ pub async fn ensure_remote_owner_binding(
     config: &crate::tunnel::config::TunnelConfig,
     expected_email: &str,
 ) -> Result<(), String> {
-    let Some(state) = read_state()? else {
+    let Some(mut state) = read_state()? else {
         return Err("创建 share 前请先完成邮箱验证码登录".to_string());
     };
     let email = state.email.trim().to_ascii_lowercase();
@@ -348,69 +498,132 @@ pub async fn ensure_remote_owner_binding(
     if email.is_empty() || email != expected_email {
         return Err("当前邮箱登录状态与 share owner 不一致，请重新登录".to_string());
     }
+    if let Some(router_domain) = state.router_domain.as_deref() {
+        if router_domain != config.domain {
+            return Err("当前邮箱登录所属分享节点与所选分享节点不一致，请重新登录".to_string());
+        }
+    }
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("create bind owner client failed: {e}"))?;
-    let identity = crate::tunnel::identity::ensure_identity(&client, config)
+    let mut identity = crate::tunnel::identity::ensure_identity(&client, config)
         .await
         .map_err(|e| e.to_string())?;
-    let timestamp_ms = chrono::Utc::now().timestamp_millis();
-    let nonce = uuid::Uuid::new_v4().to_string();
     let verification_token = state
         .verification_token
-        .as_deref()
-        .filter(|value| !value.trim().is_empty());
-    let payload = serde_json::json!({
-        "email": email,
-        "verificationToken": verification_token,
-    });
-    let signature = crate::tunnel::identity::sign_action_payload(
-        &identity,
-        &identity.installation_id,
-        "bind_installation_owner_email",
-        &payload,
-        timestamp_ms,
-        &nonce,
-    )
-    .map_err(|e| e.to_string())?;
-    let url = format!(
-        "{}/v1/installations/bind-owner-email",
-        config.get_server_addr()
-    );
-    let response = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "installationId": identity.installation_id,
-            "email": email,
-            "verificationToken": verification_token,
-            "timestampMs": timestamp_ms,
-            "nonce": nonce,
-            "signature": signature,
-        }))
-        .send()
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned();
+
+    let body = if let Some(verification_token) = verification_token.as_deref() {
+        match send_bind_owner_request(
+            &client,
+            config,
+            &identity,
+            &email,
+            Some(verification_token),
+            None,
+        )
         .await
-        .map_err(|e| {
-            humanize_remote_owner_binding_error(&format!(
-                "bind installation owner email failed: {e}"
-            ))
-        })?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| format!("HTTP {status}"));
-        let message = serde_json::from_str::<ErrorResponse>(&text)
-            .map(|err| err.message)
-            .unwrap_or(text);
-        return Err(humanize_remote_owner_binding_error(&message));
-    }
-    let body: BindOwnerEmailResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("parse bind owner response failed: {e}"))?;
+        {
+            Ok(body) => body,
+            Err(err) => {
+                if crate::tunnel::identity::should_reset_identity_for_api_error(&err.message) {
+                    identity =
+                        crate::tunnel::identity::refresh_installation_registration(&client, config)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    match send_bind_owner_request(
+                        &client,
+                        config,
+                        &identity,
+                        &email,
+                        Some(verification_token),
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(body) => body,
+                        Err(retry_err) if retry_err.status == reqwest::StatusCode::UNAUTHORIZED => {
+                            let access_token =
+                                match valid_access_token(config, &mut state, &client).await {
+                                    Ok(token) => token,
+                                    Err(_) if remote_owner_matches(config, &email).await? => {
+                                        return Ok(());
+                                    }
+                                    Err(err) => return Err(err),
+                                };
+                            send_bind_owner_request(
+                                &client,
+                                config,
+                                &identity,
+                                &email,
+                                None,
+                                Some(&access_token),
+                            )
+                            .await
+                            .map_err(|err| humanize_remote_owner_binding_error(&err.message))?
+                        }
+                        Err(retry_err) => {
+                            return Err(humanize_remote_owner_binding_error(&retry_err.message));
+                        }
+                    }
+                } else if err.status == reqwest::StatusCode::UNAUTHORIZED {
+                    let access_token = match valid_access_token(config, &mut state, &client).await {
+                        Ok(token) => token,
+                        Err(_) if remote_owner_matches(config, &email).await? => {
+                            return Ok(());
+                        }
+                        Err(err) => return Err(err),
+                    };
+                    send_bind_owner_request(
+                        &client,
+                        config,
+                        &identity,
+                        &email,
+                        None,
+                        Some(&access_token),
+                    )
+                    .await
+                    .map_err(|err| humanize_remote_owner_binding_error(&err.message))?
+                } else {
+                    return Err(humanize_remote_owner_binding_error(&err.message));
+                }
+            }
+        }
+    } else {
+        match send_bind_owner_request(&client, config, &identity, &email, None, None).await {
+            Ok(body) => body,
+            Err(err) if err.status == reqwest::StatusCode::UNAUTHORIZED => {
+                let access_token = match valid_access_token(config, &mut state, &client).await {
+                    Ok(token) => token,
+                    Err(_) if remote_owner_matches(config, &email).await? => {
+                        return Ok(());
+                    }
+                    Err(err) => return Err(err),
+                };
+                if crate::tunnel::identity::should_reset_identity_for_api_error(&err.message) {
+                    identity =
+                        crate::tunnel::identity::refresh_installation_registration(&client, config)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                }
+                send_bind_owner_request(
+                    &client,
+                    config,
+                    &identity,
+                    &email,
+                    None,
+                    Some(&access_token),
+                )
+                .await
+                .map_err(|err| humanize_remote_owner_binding_error(&err.message))?
+            }
+            Err(err) => return Err(humanize_remote_owner_binding_error(&err.message)),
+        }
+    };
     if !body.ok || body.owner_email.trim().to_ascii_lowercase() != email {
         return Err("绑定设备邮箱失败，请重新发送并验证邮箱验证码后重试".to_string());
     }
@@ -422,6 +635,194 @@ pub async fn ensure_remote_owner_binding(
         write_state(&next_state)?;
     }
     Ok(())
+}
+
+async fn remote_owner_matches(
+    config: &crate::tunnel::config::TunnelConfig,
+    email: &str,
+) -> Result<bool, String> {
+    Ok(fetch_remote_owner_binding(config).await?.as_deref() == Some(email))
+}
+
+async fn send_bind_owner_request(
+    client: &reqwest::Client,
+    config: &crate::tunnel::config::TunnelConfig,
+    identity: &crate::tunnel::identity::TunnelIdentity,
+    email: &str,
+    verification_token: Option<&str>,
+    bearer_token: Option<&str>,
+) -> Result<BindOwnerEmailResponse, BindOwnerEmailError> {
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let mut payload = serde_json::json!({ "email": email });
+    if let Some(token) = verification_token {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "verificationToken".to_string(),
+                serde_json::Value::String(token.to_string()),
+            );
+        }
+    }
+    let signature = crate::tunnel::identity::sign_action_payload(
+        identity,
+        &identity.installation_id,
+        "bind_installation_owner_email",
+        &payload,
+        timestamp_ms,
+        &nonce,
+    )
+    .map_err(|e| BindOwnerEmailError {
+        status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        message: e.to_string(),
+    })?;
+    let url = format!(
+        "{}/v1/installations/bind-owner-email",
+        config.get_server_addr()
+    );
+    let mut request = client.post(&url).json(&serde_json::json!({
+            "installationId": identity.installation_id,
+            "email": email,
+            "verificationToken": verification_token,
+            "timestampMs": timestamp_ms,
+            "nonce": nonce,
+            "signature": signature,
+    }));
+    if let Some(token) = bearer_token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await.map_err(|e| BindOwnerEmailError {
+        status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        message: format!("bind installation owner email failed: {e}"),
+    })?;
+    if response.status().is_success() {
+        return response.json().await.map_err(|e| BindOwnerEmailError {
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("parse bind owner response failed: {e}"),
+        });
+    }
+
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .unwrap_or_else(|_| format!("HTTP {status}"));
+    let message = serde_json::from_str::<ErrorResponse>(&text)
+        .map(|err| err.message)
+        .unwrap_or(text);
+    Err(BindOwnerEmailError { status, message })
+}
+
+async fn change_remote_owner_email(
+    config: &crate::tunnel::config::TunnelConfig,
+    old_email: &str,
+    new_email: &str,
+    access_token: &str,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("create change owner client failed: {e}"))?;
+    let identity = crate::tunnel::identity::ensure_identity(&client, config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let payload = ChangeOwnerEmailSignaturePayload {
+        old_email,
+        new_email,
+    };
+    let signature = crate::tunnel::identity::sign_action_payload(
+        &identity,
+        &identity.installation_id,
+        "change_installation_owner_email",
+        &payload,
+        timestamp_ms,
+        &nonce,
+    )
+    .map_err(|e| e.to_string())?;
+    let url = format!(
+        "{}/v1/installations/change-owner-email",
+        config.get_server_addr()
+    );
+    let response = client
+        .post(&url)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "installationId": identity.installation_id,
+            "oldEmail": old_email,
+            "newEmail": new_email,
+            "timestampMs": timestamp_ms,
+            "nonce": nonce,
+            "signature": signature,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("change owner email failed: {e}"))?;
+    let body: ChangeOwnerEmailResponse = handle_json_response(response).await?;
+    if !body.ok
+        || body.old_email.trim().to_ascii_lowercase() != old_email
+        || body.new_email.trim().to_ascii_lowercase() != new_email
+    {
+        return Err("换绑 share owner 邮箱失败，请重新验证新邮箱后重试".to_string());
+    }
+    let _ = body.updated_shares;
+    Ok(())
+}
+
+async fn valid_access_token(
+    config: &crate::tunnel::config::TunnelConfig,
+    state: &mut EmailAuthState,
+    client: &reqwest::Client,
+) -> Result<String, String> {
+    let now = chrono::Utc::now().timestamp();
+    if let (Some(token), Some(expires_at)) = (state.access_token.as_deref(), state.expires_at) {
+        if !token.trim().is_empty() && expires_at > now + 60 {
+            return Ok(token.to_string());
+        }
+    }
+
+    let refresh_token = state
+        .refresh_token
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "当前邮箱登录凭证已过期，请重新登录".to_string())?;
+    if let Some(refresh_expires_at) = state.refresh_expires_at {
+        if refresh_expires_at <= now {
+            return Err("当前邮箱登录凭证已过期，请重新登录".to_string());
+        }
+    }
+
+    let identity = crate::tunnel::identity::ensure_identity(client, config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "{}/v1/auth/session/refresh",
+        config.get_server_addr().trim_end_matches('/')
+    );
+    let response = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "refreshToken": refresh_token,
+            "installationId": identity.installation_id,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("refresh email auth session failed: {e}"))?;
+    let body: RouterRefreshSessionResponse = handle_json_response(response).await?;
+    state.email = body.user.email.trim().to_ascii_lowercase();
+    state.router_domain = Some(config.domain.clone());
+    state.access_token = Some(body.access_token.clone());
+    state.refresh_token = Some(body.refresh_token);
+    state.expires_at = Some(parse_rfc3339_timestamp(&body.expires_at)?);
+    state.refresh_expires_at = Some(parse_rfc3339_timestamp(&body.refresh_expires_at)?);
+    write_state(state)?;
+    Ok(body.access_token)
+}
+
+fn parse_rfc3339_timestamp(value: &str) -> Result<i64, String> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.timestamp())
+        .map_err(|e| format!("parse auth timestamp failed: {e}"))
 }
 
 async fn handle_json_response<T: for<'de> Deserialize<'de>>(

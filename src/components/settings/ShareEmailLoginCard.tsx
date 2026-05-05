@@ -10,14 +10,18 @@ import {
   useEmailAuthSessionMeQuery,
   useEmailAuthStatusQuery,
   useEmailAuthVerifyCodeMutation,
+  useSettingsQuery,
 } from "@/lib/query";
+import { getTunnelConfigFromSettings } from "@/utils/shareUtils";
 
 export function ShareEmailLoginCard() {
   const { t } = useTranslation();
   const { data: emailAuthStatus } = useEmailAuthStatusQuery();
   const { data: emailSession } = useEmailAuthSessionMeQuery();
+  const { data: settings } = useSettingsQuery();
   const requestCodeMutation = useEmailAuthRequestCodeMutation();
   const verifyCodeMutation = useEmailAuthVerifyCodeMutation();
+  const routerDomain = getTunnelConfigFromSettings(settings).domain;
   const [emailInput, setEmailInput] = useState("");
   const [codeInput, setCodeInput] = useState("");
 
@@ -91,7 +95,12 @@ export function ShareEmailLoginCard() {
           type="button"
           variant="secondary"
           disabled={!emailInput.trim() || requestCodeMutation.isPending}
-          onClick={() => requestCodeMutation.mutate(emailInput)}
+          onClick={() =>
+            requestCodeMutation.mutate({
+              routerDomain,
+              email: emailInput,
+            })
+          }
         >
           {t("settings.authCenter.sendEmailCode", {
             defaultValue: "发送验证码",
@@ -106,6 +115,7 @@ export function ShareEmailLoginCard() {
           }
           onClick={() =>
             verifyCodeMutation.mutate({
+              routerDomain,
               email: emailInput,
               code: codeInput,
             })

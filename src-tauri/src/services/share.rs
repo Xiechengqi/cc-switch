@@ -4,6 +4,38 @@ use std::sync::Arc;
 
 pub struct ShareService;
 
+pub struct ShareTokenValidation {
+    pub share: Option<ShareRecord>,
+    pub rejection: Option<ShareTokenRejectReason>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareTokenRejectReason {
+    NotFound,
+    Inactive,
+    Expired,
+    Exhausted,
+}
+
+impl ShareTokenValidation {
+    fn valid(share: ShareRecord) -> Self {
+        Self {
+            share: Some(share),
+            rejection: None,
+            message: None,
+        }
+    }
+
+    fn rejected(reason: ShareTokenRejectReason, message: impl Into<String>) -> Self {
+        Self {
+            share: None,
+            rejection: Some(reason),
+            message: Some(message.into()),
+        }
+    }
+}
+
 impl ShareService {
     pub const UNLIMITED_TOKEN_LIMIT: i64 = -1;
     pub const UNLIMITED_PARALLEL_LIMIT: i64 = -1;
@@ -113,31 +145,51 @@ impl ShareService {
         Ok(Self::primary_share(db)?.filter(|share| share.id == share_id))
     }
 
-    pub fn validate_token(
+    pub fn validate_token_with_reason(
         db: &Arc<Database>,
         token: &str,
-    ) -> Result<Option<ShareRecord>, AppError> {
+    ) -> Result<Option<ShareTokenValidation>, AppError> {
         let share = match db.get_share_by_token(token)? {
             Some(s) => s,
-            None => return Ok(None),
+            None => {
+                return Ok(Some(ShareTokenValidation::rejected(
+                    ShareTokenRejectReason::NotFound,
+                    "Share token not found on this cc-switch. Copy the latest API Key from Share > Connect Info.",
+                )));
+            }
         };
 
         let Some(primary_share) = Self::primary_share(db)? else {
-            return Ok(None);
+            return Ok(Some(ShareTokenValidation::rejected(
+                ShareTokenRejectReason::NotFound,
+                "No share exists on this cc-switch.",
+            )));
         };
         if share.id != primary_share.id {
-            return Ok(None);
+            return Ok(Some(ShareTokenValidation::rejected(
+                ShareTokenRejectReason::NotFound,
+                "Share token belongs to a non-primary share on this cc-switch.",
+            )));
         }
 
         if share.status != "active" {
-            return Ok(None);
+            return Ok(Some(ShareTokenValidation::rejected(
+                ShareTokenRejectReason::Inactive,
+                format!(
+                    "Share is not active (current status: {}). Start the share first.",
+                    share.status
+                ),
+            )));
         }
 
         // Check expiry
         if let Ok(expires) = chrono::DateTime::parse_from_rfc3339(&share.expires_at) {
             if chrono::Utc::now() > expires {
                 let _ = db.update_share_status(&share.id, "expired");
-                return Ok(None);
+                return Ok(Some(ShareTokenValidation::rejected(
+                    ShareTokenRejectReason::Expired,
+                    "Share token has expired. Extend the share expiration or create a new share.",
+                )));
             }
         }
 
@@ -146,10 +198,13 @@ impl ShareService {
             && share.tokens_used >= share.token_limit
         {
             let _ = db.update_share_status(&share.id, "exhausted");
-            return Ok(None);
+            return Ok(Some(ShareTokenValidation::rejected(
+                ShareTokenRejectReason::Exhausted,
+                "Share token quota has been exhausted. Reset usage or increase the token limit.",
+            )));
         }
 
-        Ok(Some(share))
+        Ok(Some(ShareTokenValidation::valid(share)))
     }
 
     pub fn record_request(db: &Arc<Database>, share_id: &str) -> Result<(), AppError> {
@@ -335,6 +390,30 @@ impl ShareService {
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
         crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
+    pub fn change_owner_email(
+        db: &Arc<Database>,
+        old_email: &str,
+        new_email: &str,
+    ) -> Result<Vec<ShareRecord>, AppError> {
+        let old_email = normalize_email(old_email)?;
+        let new_email = normalize_email(new_email)?;
+        if old_email == new_email {
+            return Err(AppError::Message(
+                "新 owner 邮箱必须不同于当前 owner 邮箱".to_string(),
+            ));
+        }
+        db.update_shares_owner_email(&old_email, &new_email)?;
+        let updated = db
+            .list_shares()?
+            .into_iter()
+            .filter(|share| share.owner_email == new_email)
+            .collect::<Vec<_>>();
+        for share in &updated {
+            crate::tunnel::sync::schedule_sync_share(share.clone(), db);
+        }
         Ok(updated)
     }
 

@@ -1203,13 +1203,14 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
                     )
                 })?;
 
-            let manager = crate::proxy::providers::gemini_oauth_auth::global_gemini_oauth_manager(
-            )
-            .ok_or_else(|| AppError::Message("Gemini OAuth manager unavailable".to_string()))?;
+            let manager = crate::proxy::providers::gemini_oauth_auth::global_gemini_oauth_manager()
+                .ok_or_else(|| AppError::Message("Gemini OAuth manager unavailable".to_string()))?;
 
             let credentials = futures::executor::block_on(async {
                 let manager = manager.read().await;
-                manager.export_cli_credentials_for_account(&account_id).await
+                manager
+                    .export_cli_credentials_for_account(&account_id)
+                    .await
             })
             .map_err(|e| {
                 AppError::localized(

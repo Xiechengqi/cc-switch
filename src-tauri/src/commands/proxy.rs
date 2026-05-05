@@ -6,6 +6,7 @@ use crate::error::AppError;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
+use std::str::FromStr;
 
 /// 启动代理服务器（仅启动服务，不接管 Live 配置）
 #[tauri::command]
@@ -278,6 +279,7 @@ pub async fn switch_proxy_provider(
         .proxy_service
         .switch_proxy_target(&app_type, &provider_id)
         .await?;
+    let switched_app_type = crate::app_config::AppType::from_str(&app_type).ok();
 
     let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
         &codex_state,
@@ -289,6 +291,12 @@ pub async fn switch_proxy_provider(
         .0
         .refresh_selected_targets(Some(&app), &state.db, &managers, "switch")
         .await;
+    if let Some(app_enum) = switched_app_type {
+        crate::tunnel::sync::schedule_share_runtime_refresh_after_provider_switch(
+            state.db.clone(),
+            app_enum,
+        );
+    }
     Ok(())
 }
 

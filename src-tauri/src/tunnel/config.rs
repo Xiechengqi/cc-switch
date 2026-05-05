@@ -182,6 +182,8 @@ pub struct ShareUpstreamProvider {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<ShareUpstreamQuota>,
 }
 

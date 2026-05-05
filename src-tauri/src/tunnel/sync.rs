@@ -121,6 +121,93 @@ pub async fn sync_share_metadata_now(share: ShareTunnelMetadata) -> Result<(), S
     sync_share_metadata_now_inner(share, true).await
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareRuntimeRefreshPayload {
+    share_id: String,
+    subdomain: String,
+}
+
+pub fn schedule_share_runtime_refresh_after_provider_switch(db: Arc<Database>, app: AppType) {
+    if !matches!(app, AppType::Claude | AppType::Codex | AppType::Gemini) {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = refresh_share_runtime_after_provider_switch(&db, &app, true).await {
+            log::debug!(
+                "[TunnelSync] share runtime refresh after {} provider switch skipped/failed: {err}",
+                app.as_str()
+            );
+        }
+    });
+}
+
+async fn refresh_share_runtime_after_provider_switch(
+    db: &Database,
+    app: &AppType,
+    allow_identity_reset_retry: bool,
+) -> Result<(), String> {
+    let Some(share) = db
+        .list_shares()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|share| share.status == "active" && share.subdomain.is_some())
+    else {
+        return Ok(());
+    };
+    let Some(subdomain) = share.subdomain.clone() else {
+        return Ok(());
+    };
+
+    let config = load_config();
+    let client = share_router_client()?;
+    crate::email_auth::ensure_remote_owner_binding(&config, &share.owner_email).await?;
+    let identity = identity::ensure_identity(&client, &config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let payload = ShareRuntimeRefreshPayload {
+        share_id: share.id.clone(),
+        subdomain,
+    };
+    let url = format!("{}/v1/shares/runtime-refresh", config.get_server_addr());
+    let request_payload =
+        build_signed_request_payload(&identity, "share_runtime_refresh", "refresh", &payload)?;
+    let resp = send_share_router_request(
+        client.post(&url).json(&request_payload),
+        "refresh share runtime",
+        &url,
+    )
+    .await?;
+
+    if resp.status().is_success() {
+        log::debug!(
+            "[TunnelSync] refreshed share runtime after {} provider switch for share {}",
+            app.as_str(),
+            share.id
+        );
+        return Ok(());
+    }
+
+    let message = read_error_message(resp).await;
+    if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
+        log::warn!(
+            "[TunnelSync] share runtime refresh rejected for installation {}, refreshing identity and retrying once: {}",
+            identity.installation_id,
+            message
+        );
+        identity::refresh_installation_registration(&client, &config)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Box::pin(refresh_share_runtime_after_provider_switch(db, app, false)).await;
+    }
+
+    Err(format!(
+        "share runtime refresh request for installation {} failed: {}",
+        identity.installation_id, message
+    ))
+}
+
 pub(crate) async fn query_share_support(db: &Database) -> ShareSupport {
     ShareSupport {
         claude: db
@@ -208,8 +295,9 @@ async fn build_upstream_provider_snapshot_for_app(
     Some(ShareUpstreamProvider {
         kind: "custom_provider".to_string(),
         app: app.as_str().to_string(),
-        provider_name: Some(provider.name),
+        provider_name: Some(provider.name.clone()),
         account_email: None,
+        api_url: custom_provider_api_url(&app, &provider),
         quota: None,
     })
 }
@@ -220,8 +308,67 @@ fn unknown_upstream_provider(app: &str) -> ShareUpstreamProvider {
         app: app.to_string(),
         provider_name: None,
         account_email: None,
+        api_url: None,
         quota: None,
     }
+}
+
+fn custom_provider_api_url(app: &AppType, provider: &Provider) -> Option<String> {
+    let settings = &provider.settings_config;
+    let raw = match app {
+        AppType::Claude => settings
+            .pointer("/env/ANTHROPIC_BASE_URL")
+            .and_then(|v| v.as_str())
+            .or_else(|| settings.get("base_url").and_then(|v| v.as_str()))
+            .or_else(|| settings.get("baseURL").and_then(|v| v.as_str()))
+            .or_else(|| settings.get("apiEndpoint").and_then(|v| v.as_str())),
+        AppType::Codex => settings
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .or_else(|| settings.get("baseURL").and_then(|v| v.as_str()))
+            .or_else(|| {
+                settings
+                    .pointer("/config/base_url")
+                    .and_then(|v| v.as_str())
+            })
+            .or_else(|| {
+                settings
+                    .get("config")
+                    .and_then(|v| v.as_str())
+                    .and_then(extract_codex_toml_base_url)
+            }),
+        AppType::Gemini => settings
+            .pointer("/env/GOOGLE_GEMINI_BASE_URL")
+            .and_then(|v| v.as_str())
+            .or_else(|| settings.get("base_url").and_then(|v| v.as_str()))
+            .or_else(|| settings.get("baseURL").and_then(|v| v.as_str())),
+        _ => None,
+    }?;
+
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn extract_codex_toml_base_url(config: &str) -> Option<&str> {
+    for marker in ["base_url = \"", "base_url = '"] {
+        let Some(start) = config.find(marker) else {
+            continue;
+        };
+        let quote = marker.chars().last()?;
+        let rest = &config[start + marker.len()..];
+        let Some(end) = rest.find(quote) else {
+            continue;
+        };
+        let value = rest[..end].trim();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
 }
 
 async fn build_official_oauth_snapshot(
@@ -237,6 +384,12 @@ async fn build_official_oauth_snapshot(
         }
         AppType::Claude if provider.is_claude_oauth_provider() => {
             build_claude_oauth_snapshot(provider).await
+        }
+        AppType::Gemini
+            if provider.is_google_gemini_oauth_provider()
+                || provider.is_google_gemini_official_with_managed_auth() =>
+        {
+            build_gemini_oauth_snapshot(provider).await
         }
         _ => None,
     }
@@ -268,6 +421,7 @@ async fn build_codex_oauth_snapshot(provider: &Provider) -> Option<ShareUpstream
         app: "codex".to_string(),
         provider_name: Some(provider.name.clone()),
         account_email,
+        api_url: None,
         quota,
     })
 }
@@ -298,6 +452,38 @@ async fn build_claude_oauth_snapshot(provider: &Provider) -> Option<ShareUpstrea
         app: "claude".to_string(),
         provider_name: Some(provider.name.clone()),
         account_email,
+        api_url: None,
+        quota,
+    })
+}
+
+async fn build_gemini_oauth_snapshot(provider: &Provider) -> Option<ShareUpstreamProvider> {
+    use crate::proxy::providers::gemini_oauth_auth::GeminiOAuthManager;
+
+    let manager = GeminiOAuthManager::new(crate::config::get_app_config_dir());
+    let bound_account_id = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("google_gemini_oauth"));
+    let account_id = match bound_account_id {
+        Some(id) if !id.trim().is_empty() => Some(id),
+        _ => manager.default_account_id().await,
+    };
+    let accounts = manager.list_accounts().await;
+    let account_email = account_id
+        .as_deref()
+        .and_then(|id| account_login(&accounts, id));
+    let quota = match account_id.as_deref() {
+        Some(id) => cached_upstream_quota("google_gemini_oauth", id).await,
+        None => None,
+    };
+
+    Some(ShareUpstreamProvider {
+        kind: "official_oauth".to_string(),
+        app: "gemini".to_string(),
+        provider_name: Some(provider.name.clone()),
+        account_email,
+        api_url: None,
         quota,
     })
 }
@@ -368,11 +554,11 @@ async fn claim_share_subdomain_inner(
 ) -> Result<(), String> {
     let config = load_config();
     let client = share_router_client()?;
+    let metadata = share_metadata_from_record(share);
+    crate::email_auth::ensure_remote_owner_binding(&config, &metadata.owner_email).await?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
-    let metadata = share_metadata_from_record(share);
-    crate::email_auth::ensure_remote_owner_binding(&config, &metadata.owner_email).await?;
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
     let request_payload =
         build_signed_request_payload(&identity, "share_claim_subdomain", "share", &metadata)?;
@@ -389,11 +575,13 @@ async fn claim_share_subdomain_inner(
                 && identity::should_reset_identity_for_api_error(&message) =>
         {
             log::warn!(
-                "[TunnelSync] share subdomain claim rejected for installation {}, resetting identity and retrying once: {}",
+                "[TunnelSync] share subdomain claim rejected for installation {}, refreshing identity and retrying once: {}",
                 identity.installation_id,
                 message
             );
-            identity::reset_identity().map_err(|e| e.to_string())?;
+            identity::refresh_installation_registration(&client, &config)
+                .await
+                .map_err(|e| e.to_string())?;
             Box::pin(claim_share_subdomain_inner(share, db, false)).await
         }
         Err(message) => Err(message),
@@ -485,6 +673,9 @@ async fn sync_recent_share_request_logs_inner(
 
     let config = load_config();
     let client = share_router_client()?;
+    if let Some(owner_email) = crate::email_auth::current_email()? {
+        crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
+    }
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -494,9 +685,6 @@ async fn sync_recent_share_request_logs_inner(
     );
     let request_payload =
         build_signed_request_payload(&identity, "share_request_logs_batch_sync", "logs", &logs)?;
-    if let Some(owner_email) = crate::email_auth::current_email()? {
-        crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
-    }
     let resp = send_share_router_request(
         client.post(&url).json(&request_payload),
         "sync share request logs",
@@ -511,11 +699,13 @@ async fn sync_recent_share_request_logs_inner(
     let message = read_error_message(resp).await;
     if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
         log::warn!(
-            "[TunnelSync] share request log sync rejected for installation {}, resetting identity and retrying once: {}",
+            "[TunnelSync] share request log sync rejected for installation {}, refreshing identity and retrying once: {}",
             identity.installation_id,
             message
         );
-        identity::reset_identity().map_err(|e| e.to_string())?;
+        identity::refresh_installation_registration(&client, &config)
+            .await
+            .map_err(|e| e.to_string())?;
         return Box::pin(sync_recent_share_request_logs_inner(
             db, share_id, limit, false,
         ))
@@ -534,12 +724,12 @@ async fn sync_share_metadata_now_inner(
 ) -> Result<(), String> {
     let config = load_config();
     let client = share_router_client()?;
+    crate::email_auth::ensure_remote_owner_binding(&config, &share.owner_email).await?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
     let url = format!("{}/v1/shares/sync", config.get_server_addr());
     let request_payload = build_signed_request_payload(&identity, "share_sync", "share", &share)?;
-    crate::email_auth::ensure_remote_owner_binding(&config, &share.owner_email).await?;
     let resp = send_share_router_request(
         client.post(&url).json(&request_payload),
         "sync share metadata",
@@ -555,11 +745,13 @@ async fn sync_share_metadata_now_inner(
 
     if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
         log::warn!(
-            "[TunnelSync] direct share sync rejected for installation {}, resetting identity and retrying once: {}",
+            "[TunnelSync] direct share sync rejected for installation {}, refreshing identity and retrying once: {}",
             identity.installation_id,
             message
         );
-        identity::reset_identity().map_err(|e| e.to_string())?;
+        identity::refresh_installation_registration(&client, &config)
+            .await
+            .map_err(|e| e.to_string())?;
         return Box::pin(sync_share_metadata_now_inner(share, false)).await;
     }
 
@@ -614,9 +806,6 @@ async fn flush_pending() -> Result<(), String> {
 async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), String> {
     let config = load_config();
     let client = share_router_client()?;
-    let identity = identity::ensure_identity(&client, &config)
-        .await
-        .map_err(|e| e.to_string())?;
 
     let (ops, request_logs) = {
         let state = global_state();
@@ -646,6 +835,9 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
         } else {
             return Err("请先完成邮箱验证码登录".to_string());
         }
+        let identity = identity::ensure_identity(&client, &config)
+            .await
+            .map_err(|e| e.to_string())?;
         let payload_ops = ops
             .iter()
             .map(|op| match op {
@@ -674,11 +866,13 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
             if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message)
             {
                 log::warn!(
-                    "[TunnelSync] batch share sync rejected for installation {}, resetting identity and retrying once: {}",
+                    "[TunnelSync] batch share sync rejected for installation {}, refreshing identity and retrying once: {}",
                     identity.installation_id,
                     message
                 );
-                identity::reset_identity().map_err(|e| e.to_string())?;
+                identity::refresh_installation_registration(&client, &config)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let state = global_state();
                 let mut guard = state.lock().await;
                 for op in ops {
@@ -709,6 +903,9 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
         } else {
             return Err("请先完成邮箱验证码登录".to_string());
         }
+        let identity = identity::ensure_identity(&client, &config)
+            .await
+            .map_err(|e| e.to_string())?;
         let url = format!(
             "{}/v1/share-request-logs/batch-sync",
             config.get_server_addr()
@@ -730,11 +927,13 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
             if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message)
             {
                 log::warn!(
-                    "[TunnelSync] batch share request log sync rejected for installation {}, resetting identity and retrying once: {}",
+                    "[TunnelSync] batch share request log sync rejected for installation {}, refreshing identity and retrying once: {}",
                     identity.installation_id,
                     message
                 );
-                identity::reset_identity().map_err(|e| e.to_string())?;
+                identity::refresh_installation_registration(&client, &config)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let state = global_state();
                 let mut guard = state.lock().await;
                 for log in request_logs {
@@ -786,5 +985,68 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         support: Default::default(),
         upstream_provider: None,
         app_runtimes: Default::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn provider(settings_config: serde_json::Value) -> Provider {
+        Provider {
+            id: "provider-id".to_string(),
+            name: "Provider".to_string(),
+            settings_config,
+            website_url: Some("https://website.example".to_string()),
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        }
+    }
+
+    #[test]
+    fn extracts_claude_custom_api_url_from_env() {
+        let provider = provider(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://claude-api.example/v1/"
+            }
+        }));
+
+        assert_eq!(
+            custom_provider_api_url(&AppType::Claude, &provider).as_deref(),
+            Some("https://claude-api.example/v1")
+        );
+    }
+
+    #[test]
+    fn extracts_gemini_custom_api_url_from_env() {
+        let provider = provider(json!({
+            "env": {
+                "GOOGLE_GEMINI_BASE_URL": "https://gemini-api.example/v1beta/"
+            }
+        }));
+
+        assert_eq!(
+            custom_provider_api_url(&AppType::Gemini, &provider).as_deref(),
+            Some("https://gemini-api.example/v1beta")
+        );
+    }
+
+    #[test]
+    fn extracts_codex_custom_api_url_from_toml() {
+        let provider = provider(json!({
+            "config": "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = 'https://codex-api.example/v1/'\n"
+        }));
+
+        assert_eq!(
+            custom_provider_api_url(&AppType::Codex, &provider).as_deref(),
+            Some("https://codex-api.example/v1")
+        );
     }
 }

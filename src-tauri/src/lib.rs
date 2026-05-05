@@ -1445,6 +1445,8 @@ pub fn run() {
             commands::configure_tunnel,
             commands::email_auth_request_code,
             commands::email_auth_verify_code,
+            commands::email_auth_request_owner_change_code,
+            commands::email_auth_change_owner_email,
             commands::email_auth_get_status,
             commands::email_auth_session_me,
             commands::email_auth_logout,

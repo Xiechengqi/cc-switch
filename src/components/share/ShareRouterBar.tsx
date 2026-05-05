@@ -18,7 +18,11 @@ interface ShareRouterBarProps {
   proxyAddress?: string | null;
   proxyPort?: number | null;
   hasShare: boolean;
+  ownerEmail?: string | null;
+  ownerAuthenticated?: boolean;
   onCreate: () => void;
+  onChangeOwner?: () => void;
+  onVerifyOwner?: () => void;
   onSaveTunnelConfig: (config: TunnelConfig) => Promise<void> | void;
 }
 
@@ -29,7 +33,11 @@ export function ShareRouterBar({
   proxyAddress,
   proxyPort,
   hasShare,
+  ownerEmail,
+  ownerAuthenticated = false,
   onCreate,
+  onChangeOwner,
+  onVerifyOwner,
   onSaveTunnelConfig,
 }: ShareRouterBarProps) {
   const { t } = useTranslation();
@@ -65,11 +73,37 @@ export function ShareRouterBar({
           </Select>
         </div>
 
-        {!hasShare ? (
-          <Button onClick={onCreate} className="w-full sm:w-auto">
-            {t("share.create")}
-          </Button>
-        ) : null}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          {hasShare && ownerEmail && ownerAuthenticated ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onChangeOwner}
+              className="w-full sm:w-auto"
+            >
+              {t("share.ownerChange.action", {
+                defaultValue: "Change Owner Email",
+              })}
+            </Button>
+          ) : null}
+          {hasShare && ownerEmail && !ownerAuthenticated ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onVerifyOwner}
+              className="w-full sm:w-auto"
+            >
+              {t("share.ownerLogin.reverifyAction", {
+                defaultValue: "重新验证 Owner 邮箱",
+              })}
+            </Button>
+          ) : null}
+          {!hasShare ? (
+            <Button onClick={onCreate} className="w-full sm:w-auto">
+              {t("share.create")}
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       {!proxyRunning ? (

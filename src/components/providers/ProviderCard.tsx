@@ -95,15 +95,7 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
   return false;
 }
 
-const extractApiUrl = (provider: Provider, fallbackText: string) => {
-  if (provider.notes?.trim()) {
-    return provider.notes.trim();
-  }
-
-  if (provider.websiteUrl) {
-    return provider.websiteUrl;
-  }
-
+const extractConfiguredApiUrl = (provider: Provider) => {
   const config = provider.settingsConfig;
 
   if (config && typeof config === "object") {
@@ -122,6 +114,27 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
         return extractedBaseUrl;
       }
     }
+  }
+
+  return null;
+};
+
+const extractApiUrl = (provider: Provider, fallbackText: string) => {
+  const configuredApiUrl = extractConfiguredApiUrl(provider);
+  if (provider.category !== "official" && configuredApiUrl) {
+    return configuredApiUrl;
+  }
+
+  if (provider.notes?.trim()) {
+    return provider.notes.trim();
+  }
+
+  if (provider.websiteUrl) {
+    return provider.websiteUrl;
+  }
+
+  if (configuredApiUrl) {
+    return configuredApiUrl;
   }
 
   return fallbackText;

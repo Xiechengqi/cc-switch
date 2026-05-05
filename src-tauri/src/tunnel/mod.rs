@@ -88,7 +88,7 @@ impl TunnelManager {
             SshTunnel::connect(&config, &lease, &req.local_addr, shutdown_tx.clone()).await?;
         if !self.installation_registration_refreshed {
             match identity::refresh_installation_registration(&self.http_client, &config).await {
-                Ok(()) => {
+                Ok(_) => {
                     self.installation_registration_refreshed = true;
                     log::info!("[Tunnel] Refreshed installation version on cc-switch-router");
                 }

@@ -82,6 +82,15 @@ export function isCodexOfficialWithManagedAuth(
   );
 }
 
+export function isGoogleGeminiOfficialWithManagedAuth(
+  provider: Pick<Provider, "category" | "meta">,
+): boolean {
+  return (
+    provider.category === "official" &&
+    hasManagedAuthBinding(provider.meta, "google_gemini_oauth")
+  );
+}
+
 export function isManagedOauthProvider(
   provider: Pick<Provider, "category" | "meta">,
   appId: AppId,
@@ -91,7 +100,8 @@ export function isManagedOauthProvider(
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
-    (appId === "codex" && isCodexOfficialWithManagedAuth(provider))
+    (appId === "codex" && isCodexOfficialWithManagedAuth(provider)) ||
+    (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider))
   );
 }
 
@@ -116,6 +126,13 @@ export function canTestProvider(
   }
 
   if (appId === "codex" && isCodexOfficialWithManagedAuth(provider)) {
+    return true;
+  }
+
+  if (
+    provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
+    (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider))
+  ) {
     return true;
   }
 
@@ -165,6 +182,10 @@ export function getProviderQuotaSource(
   }
 
   if (provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH) {
+    return "google_gemini_oauth";
+  }
+
+  if (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider)) {
     return "google_gemini_oauth";
   }
 

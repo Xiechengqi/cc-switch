@@ -32,7 +32,6 @@ const GeminiOauthQuotaFooter: React.FC<GeminiOauthQuotaFooterProps> = ({
       refetch={handleRefresh}
       appIdForExpiredHint="google_gemini_oauth"
       inline={inline}
-      visibleTierNames={["gemini_pro"]}
     />
   );
 };

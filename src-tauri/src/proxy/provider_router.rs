@@ -7,6 +7,7 @@ use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
+use crate::proxy::types::ProxyConfig;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -38,6 +39,7 @@ impl ProviderRouter {
         let mut result = Vec::new();
         let mut total_providers = 0usize;
         let mut circuit_open_count = 0usize;
+        let proxy_config = self.db.get_proxy_config().await.ok();
 
         // 检查该应用的自动故障转移开关是否开启（从 proxy_config 表读取）
         let auto_failover_enabled = match self.db.get_proxy_config_for_app(app_type).await {
@@ -66,6 +68,14 @@ impl ProviderRouter {
                 let Some(provider) = all_providers.get(&provider_id).cloned() else {
                     continue;
                 };
+                if is_self_proxy_provider(&provider, proxy_config.as_ref()) {
+                    log::warn!(
+                        "[{app_type}] 跳过自指本地代理 Provider: {} ({})",
+                        provider.name,
+                        provider.id
+                    );
+                    continue;
+                }
 
                 let circuit_key = format!("{app_type}:{}", provider.id);
                 let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
@@ -88,9 +98,25 @@ impl ProviderRouter {
                 .or_else(|| self.db.get_current_provider(app_type).ok().flatten());
 
             if let Some(current_id) = current_id {
-                if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
+                let all_providers = self.db.get_all_providers(app_type)?;
+                if let Some(current) = all_providers.get(&current_id).cloned() {
                     total_providers = 1;
-                    result.push(current);
+                    if is_self_proxy_provider(&current, proxy_config.as_ref()) {
+                        log::warn!(
+                            "[{app_type}] 当前 Provider 指向本机代理自身，改用真实上游 Provider: {} ({})",
+                            current.name,
+                            current.id
+                        );
+                        if let Some(fallback) = best_non_self_proxy_provider(
+                            all_providers.values().cloned().collect(),
+                            proxy_config.as_ref(),
+                            &current.id,
+                        ) {
+                            result.push(fallback);
+                        }
+                    } else {
+                        result.push(current);
+                    }
                 }
             }
         }
@@ -258,6 +284,107 @@ impl ProviderRouter {
     }
 }
 
+fn best_non_self_proxy_provider(
+    providers: Vec<Provider>,
+    proxy_config: Option<&ProxyConfig>,
+    excluded_id: &str,
+) -> Option<Provider> {
+    let mut candidates = providers
+        .into_iter()
+        .filter(|provider| provider.id != excluded_id)
+        .filter(|provider| !is_self_proxy_provider(provider, proxy_config))
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|a, b| {
+        provider_route_priority(a)
+            .cmp(&provider_route_priority(b))
+            .then_with(|| {
+                a.sort_index
+                    .unwrap_or(usize::MAX)
+                    .cmp(&b.sort_index.unwrap_or(usize::MAX))
+            })
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    candidates.into_iter().next()
+}
+
+fn provider_route_priority(provider: &Provider) -> u8 {
+    if provider.is_managed_oauth_provider() {
+        0
+    } else if provider.category.as_deref() == Some("official") {
+        1
+    } else {
+        2
+    }
+}
+
+fn is_self_proxy_provider(provider: &Provider, proxy_config: Option<&ProxyConfig>) -> bool {
+    let Some(config) = proxy_config else {
+        return false;
+    };
+    provider_base_url_candidates(provider)
+        .iter()
+        .any(|base_url| is_same_local_proxy_url(base_url, config.listen_port))
+}
+
+fn provider_base_url_candidates(provider: &Provider) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(env) = provider.settings_config.get("env") {
+        for key in [
+            "ANTHROPIC_BASE_URL",
+            "GOOGLE_GEMINI_BASE_URL",
+            "OPENAI_BASE_URL",
+        ] {
+            if let Some(url) = env.get(key).and_then(|value| value.as_str()) {
+                urls.push(url.to_string());
+            }
+        }
+    }
+
+    for key in ["baseURL", "baseUrl", "base_url"] {
+        if let Some(url) = provider
+            .settings_config
+            .get(key)
+            .and_then(|value| value.as_str())
+        {
+            urls.push(url.to_string());
+        }
+    }
+    urls
+}
+
+fn is_same_local_proxy_url(raw_url: &str, listen_port: u16) -> bool {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let candidate = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+
+    let Ok(parsed) = url::Url::parse(&candidate) else {
+        return false;
+    };
+    if parsed.port_or_known_default() != Some(listen_port) {
+        return false;
+    }
+
+    parsed
+        .host_str()
+        .map(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host == "127.0.0.1"
+                || host == "0.0.0.0"
+                || host == "::1"
+                || host == "[::1]"
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +474,99 @@ mod tests {
 
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_failover_disabled_skips_current_self_proxy_provider() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut config = db.get_proxy_config().await.unwrap();
+        config.listen_port = 3000;
+        db.update_proxy_config(config).await.unwrap();
+
+        let self_proxy = Provider::with_id(
+            "localhost".to_string(),
+            "localhost".to_string(),
+            json!({
+                "env": {
+                    "GOOGLE_GEMINI_BASE_URL": "http://localhost:3000"
+                },
+                "apiKey": "local-key"
+            }),
+            None,
+        );
+        let upstream = Provider::with_id(
+            "google-official".to_string(),
+            "Google Official".to_string(),
+            json!({
+                "env": {
+                    "GOOGLE_GEMINI_BASE_URL": "https://generativelanguage.googleapis.com"
+                },
+                "apiKey": "upstream-key"
+            }),
+            None,
+        );
+
+        db.save_provider("gemini", &self_proxy).unwrap();
+        db.save_provider("gemini", &upstream).unwrap();
+        db.set_current_provider("gemini", "localhost").unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router.select_providers("gemini").await.unwrap();
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "google-official");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_failover_enabled_skips_self_proxy_queue_item() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut proxy_config = db.get_proxy_config().await.unwrap();
+        proxy_config.listen_port = 3000;
+        db.update_proxy_config(proxy_config).await.unwrap();
+
+        let self_proxy = Provider::with_id(
+            "localhost".to_string(),
+            "localhost".to_string(),
+            json!({
+                "env": {
+                    "GOOGLE_GEMINI_BASE_URL": "http://127.0.0.1:3000/v1beta"
+                },
+                "apiKey": "local-key"
+            }),
+            None,
+        );
+        let upstream = Provider::with_id(
+            "upstream".to_string(),
+            "Upstream".to_string(),
+            json!({
+                "env": {
+                    "GOOGLE_GEMINI_BASE_URL": "https://generativelanguage.googleapis.com"
+                },
+                "apiKey": "upstream-key"
+            }),
+            None,
+        );
+
+        db.save_provider("gemini", &self_proxy).unwrap();
+        db.save_provider("gemini", &upstream).unwrap();
+        db.add_to_failover_queue("gemini", "localhost").unwrap();
+        db.add_to_failover_queue("gemini", "upstream").unwrap();
+
+        let mut app_config = db.get_proxy_config_for_app("gemini").await.unwrap();
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router.select_providers("gemini").await.unwrap();
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "upstream");
     }
 
     #[tokio::test]

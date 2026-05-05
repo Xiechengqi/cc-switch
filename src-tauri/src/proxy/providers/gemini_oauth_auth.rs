@@ -264,7 +264,9 @@ impl GeminiOAuthManager {
         let manager = self.clone();
         let state_clone = state.clone();
         let handle = tokio::spawn(async move {
-            let result = manager.run_callback_on_listener(listener, &state_clone).await;
+            let result = manager
+                .run_callback_on_listener(listener, &state_clone)
+                .await;
             let mut results = manager.flow_results.write().await;
             results.insert(
                 state_clone,
@@ -449,7 +451,10 @@ impl GeminiOAuthManager {
             .map_err(|e| GeminiOAuthError::ParseError(e.to_string()))
     }
 
-    async fn fetch_user_info(&self, access_token: &str) -> Result<UserInfoResponse, GeminiOAuthError> {
+    async fn fetch_user_info(
+        &self,
+        access_token: &str,
+    ) -> Result<UserInfoResponse, GeminiOAuthError> {
         let response = self
             .http_client
             .get(GEMINI_USERINFO_URL)
@@ -942,7 +947,9 @@ fn parse_callback_request(request: &str) -> Result<(String, String), GeminiOAuth
             .to_string();
         let state = params
             .get("state")
-            .ok_or_else(|| GeminiOAuthError::CallbackServerError("回调缺少 state 参数".to_string()))?
+            .ok_or_else(|| {
+                GeminiOAuthError::CallbackServerError("回调缺少 state 参数".to_string())
+            })?
             .to_string();
 
         let code = urlencoding::decode(&code)

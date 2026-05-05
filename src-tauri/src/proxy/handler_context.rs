@@ -244,11 +244,7 @@ impl RequestContext {
             .map(|pq| pq.as_str())
             .unwrap_or(uri.path());
 
-        self.request_model = endpoint
-            .split('/')
-            .find(|s| s.starts_with("models/"))
-            .and_then(|s| s.strip_prefix("models/"))
-            .map(|s| s.split(':').next().unwrap_or(s))
+        self.request_model = extract_gemini_model_from_endpoint(endpoint)
             .unwrap_or("unknown")
             .to_string();
 
@@ -335,7 +331,49 @@ impl RequestContext {
     }
 }
 
+fn extract_gemini_model_from_endpoint(endpoint: &str) -> Option<&str> {
+    let path = endpoint.split('?').next().unwrap_or(endpoint);
+    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+
+    while let Some(segment) = segments.next() {
+        if segment == "models" {
+            return segments
+                .next()
+                .and_then(|model| model.split(':').next())
+                .filter(|model| !model.is_empty());
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    // share 已改为设备级代理穿透，相关 provider 重写逻辑已移除。
+    use super::extract_gemini_model_from_endpoint;
+
+    #[test]
+    fn extracts_gemini_model_from_native_stream_path() {
+        assert_eq!(
+            extract_gemini_model_from_endpoint(
+                "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+            ),
+            Some("gemini-2.5-flash")
+        );
+    }
+
+    #[test]
+    fn extracts_gemini_model_from_prefixed_native_path() {
+        assert_eq!(
+            extract_gemini_model_from_endpoint(
+                "/gemini/v1beta/models/gemini-2.5-flash-lite:generateContent"
+            ),
+            Some("gemini-2.5-flash-lite")
+        );
+    }
+
+    #[test]
+    fn returns_none_when_gemini_model_is_absent() {
+        assert_eq!(extract_gemini_model_from_endpoint("/v1beta/models"), None);
+        assert_eq!(extract_gemini_model_from_endpoint("/health"), None);
+    }
 }

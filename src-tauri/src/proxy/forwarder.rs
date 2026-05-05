@@ -20,7 +20,7 @@ use super::{
     types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
-use crate::commands::{ClaudeOAuthState, CodexOAuthState, CopilotAuthState};
+use crate::commands::{ClaudeOAuthState, CodexOAuthState, CopilotAuthState, GeminiOAuthState};
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{app_config::AppType, provider::Provider};
@@ -32,6 +32,10 @@ use std::{hash::Hasher, sync::OnceLock};
 use tauri::Manager;
 use tokio::sync::RwLock;
 use twox_hash::XxHash64;
+
+const GEMINI_CODE_ASSIST_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
+const GEMINI_CLI_VERSION: &str = "0.31.0";
+const GEMINI_CLI_API_CLIENT_HEADER: &str = "google-genai-sdk/1.41.0 gl-node/v22.19.0";
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -193,6 +197,7 @@ impl RequestForwarder {
             // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
             match self
                 .forward(
+                    app_type,
                     provider,
                     endpoint,
                     &provider_body,
@@ -323,6 +328,7 @@ impl RequestForwarder {
                                 // 使用同一供应商重试（不计入熔断器）
                                 match self
                                     .forward(
+                                        app_type,
                                         provider,
                                         endpoint,
                                         &provider_body,
@@ -522,6 +528,7 @@ impl RequestForwarder {
                             // 使用同一供应商重试（不计入熔断器）
                             match self
                                 .forward(
+                                    app_type,
                                     provider,
                                     endpoint,
                                     &provider_body,
@@ -761,6 +768,7 @@ impl RequestForwarder {
     /// 转发单个请求（使用适配器）
     async fn forward(
         &self,
+        app_type: &AppType,
         provider: &Provider,
         endpoint: &str,
         body: &Value,
@@ -768,8 +776,9 @@ impl RequestForwarder {
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
     ) -> Result<(ProxyResponse, Option<String>), ProxyError> {
-        // 使用适配器提取 base_url
-        let mut base_url = adapter.extract_base_url(provider)?;
+        // Gemini Official/OAuth 对齐 Claude/Codex official：本地代理不要求用户配置
+        // base_url，后续会直接改写到 Code Assist 内部接口。
+        let mut base_url = extract_forward_base_url(app_type, provider, adapter)?;
 
         let is_full_url = provider
             .meta
@@ -1012,6 +1021,16 @@ impl RequestForwarder {
         let force_identity_encoding = needs_transform
             || should_force_identity_encoding(&effective_endpoint, &filtered_body, headers);
 
+        let gemini_code_assist_model = if is_gemini_code_assist_provider(app_type, provider) {
+            let (code_assist_url, code_assist_body, model) =
+                build_gemini_code_assist_forward_request(&effective_endpoint, &filtered_body)?;
+            url = code_assist_url;
+            filtered_body = code_assist_body;
+            Some(model)
+        } else {
+            None
+        };
+
         // OAuth 401 重试：如果上游返回 401 且本次请求使用了 OAuth 账号注入，
         // 作废该账号的缓存 access_token 后重试一次（仅一次，避免雪崩）。
         #[derive(Debug, Clone, Copy)]
@@ -1019,6 +1038,7 @@ impl RequestForwarder {
             Claude,
             Codex,
             Copilot,
+            Gemini,
         }
         let mut oauth_retried = false;
 
@@ -1026,11 +1046,16 @@ impl RequestForwarder {
             // Codex OAuth 需要注入的 ChatGPT-Account-Id（在动态 token 获取期间填充）
             let mut codex_oauth_account_id: Option<String> = None;
             let mut should_send_codex_oauth_session_headers = false;
+            let mut gemini_oauth_access_token: Option<String> = None;
             // 本次 attempt 实际使用的 OAuth 账号（用于 401 重试时精准作废缓存）
             let mut oauth_kind_used: Option<(OAuthKind, String)> = None;
 
             // 获取认证头（提前准备，用于内联替换）
-            let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
+            let extracted_auth = adapter.extract_auth(provider).or_else(|| {
+                is_gemini_code_assist_provider(app_type, provider)
+                    .then(|| AuthInfo::with_access_token(String::new(), String::new()))
+            });
+            let mut auth_headers = if let Some(mut auth) = extracted_auth {
                 // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
                 if auth.strategy == AuthStrategy::GitHubCopilot {
                     if let Some(app_handle) = &self.app_handle {
@@ -1191,12 +1216,89 @@ impl RequestForwarder {
                     }
                 }
 
+                // Google Gemini OAuth: 从 GeminiOAuthManager 获取真实 access_token。
+                // 本地代理端口转发到 Google Official 时不能沿用客户端传入的
+                // x-goog-api-key，需要在这里按当前绑定账号动态注入 OAuth token。
+                if auth.strategy == AuthStrategy::GoogleOAuth
+                    && is_gemini_code_assist_provider(app_type, provider)
+                {
+                    if let Some(app_handle) = &self.app_handle {
+                        let gemini_state = app_handle.state::<GeminiOAuthState>();
+                        let gemini_auth = gemini_state.0.read().await;
+
+                        let account_id = provider
+                            .meta
+                            .as_ref()
+                            .and_then(|m| m.managed_account_id_for("google_gemini_oauth"));
+
+                        let (token, resolved_account_id) = match account_id {
+                            Some(id) => {
+                                log::debug!("[GeminiOAuth] 使用指定账号 {id} 获取 token");
+                                (
+                                    gemini_auth.get_valid_token_for_account(&id).await.map_err(
+                                        |e| {
+                                            ProxyError::AuthError(format!(
+                                                "Google Gemini OAuth 认证失败: {e}"
+                                            ))
+                                        },
+                                    )?,
+                                    Some(id),
+                                )
+                            }
+                            None => {
+                                let Some(id) = gemini_auth.default_account_id().await else {
+                                    return Err(ProxyError::AuthError(
+                                        "Google Gemini OAuth 认证失败: 未找到可用账号".to_string(),
+                                    ));
+                                };
+                                log::debug!("[GeminiOAuth] 使用默认账号 {id} 获取 token");
+                                (
+                                    gemini_auth.get_valid_token_for_account(&id).await.map_err(
+                                        |e| {
+                                            ProxyError::AuthError(format!(
+                                                "Google Gemini OAuth 认证失败: {e}"
+                                            ))
+                                        },
+                                    )?,
+                                    Some(id),
+                                )
+                            }
+                        };
+
+                        auth.api_key = token.clone();
+                        auth.access_token = Some(token.clone());
+                        gemini_oauth_access_token = Some(token);
+                        if let Some(id) = resolved_account_id {
+                            oauth_kind_used = Some((OAuthKind::Gemini, id));
+                        }
+                    } else {
+                        log::error!("[GeminiOAuth] AppHandle 不可用");
+                        return Err(ProxyError::AuthError(
+                            "Google Gemini OAuth 认证不可用（无 AppHandle）".to_string(),
+                        ));
+                    }
+                }
+
                 adapter.get_auth_headers(&auth)
             } else {
                 Vec::new()
             };
 
             maybe_add_share_auth_header(&mut auth_headers, &base_url);
+            if let Some(model) = gemini_code_assist_model.as_deref() {
+                upsert_header(
+                    &mut auth_headers,
+                    http::HeaderName::from_static("user-agent"),
+                    http::HeaderValue::from_str(&gemini_cli_user_agent(model)).map_err(|e| {
+                        ProxyError::Internal(format!("Invalid Gemini CLI User-Agent: {e}"))
+                    })?,
+                );
+                upsert_header(
+                    &mut auth_headers,
+                    http::HeaderName::from_static("x-goog-api-client"),
+                    http::HeaderValue::from_static(GEMINI_CLI_API_CLIENT_HEADER),
+                );
+            }
 
             // 注入 Codex OAuth 的 ChatGPT-Account-Id header（如果有 account_id）
             if let Some(ref account_id) = codex_oauth_account_id {
@@ -1448,8 +1550,23 @@ impl RequestForwarder {
                 ordered_headers.insert(name, value);
             }
 
+            let mut outbound_body = filtered_body.clone();
+            if is_gemini_code_assist_provider(app_type, provider)
+                && outbound_body.get("project").is_none()
+            {
+                let token = gemini_oauth_access_token.as_deref().ok_or_else(|| {
+                    ProxyError::AuthError(
+                        "Google Gemini OAuth 认证失败: 未获取到 access token".to_string(),
+                    )
+                })?;
+                if let Some(project_id) = load_gemini_code_assist_project_for_forward(token).await?
+                {
+                    outbound_body["project"] = serde_json::json!(project_id);
+                }
+            }
+
             // 序列化请求体
-            let body_bytes = serde_json::to_vec(&filtered_body).map_err(|e| {
+            let body_bytes = serde_json::to_vec(&outbound_body).map_err(|e| {
                 ProxyError::Internal(format!("Failed to serialize request body: {e}"))
             })?;
 
@@ -1463,12 +1580,12 @@ impl RequestForwarder {
 
             // 输出请求信息日志
             let tag = adapter.name();
-            let request_model = filtered_body
+            let request_model = outbound_body
                 .get("model")
                 .and_then(|v| v.as_str())
                 .unwrap_or("<none>");
             log::info!("[{tag}] >>> 请求 URL: {url} (model={request_model})");
-            if let Ok(body_str) = serde_json::to_string(&filtered_body) {
+            if let Ok(body_str) = serde_json::to_string(&outbound_body) {
                 log::debug!(
                     "[{tag}] >>> 请求体内容 ({}字节): {}",
                     body_str.len(),
@@ -1571,6 +1688,15 @@ impl RequestForwarder {
                             }
                             OAuthKind::Copilot => {
                                 let state = app_handle.state::<CopilotAuthState>();
+                                state
+                                    .0
+                                    .read()
+                                    .await
+                                    .invalidate_cached_token(&account_id)
+                                    .await;
+                            }
+                            OAuthKind::Gemini => {
+                                let state = app_handle.state::<GeminiOAuthState>();
                                 state
                                     .0
                                     .read()
@@ -1846,6 +1972,194 @@ fn extract_json_error_message(body: &Value) -> Option<String> {
         .into_iter()
         .flatten()
         .find_map(|value| value.as_str().map(ToString::to_string))
+}
+
+fn is_gemini_code_assist_provider(app_type: &AppType, provider: &Provider) -> bool {
+    matches!(app_type, AppType::Gemini)
+        && (provider.is_google_gemini_oauth_provider()
+            || provider.is_google_gemini_official_with_managed_auth())
+}
+
+fn extract_forward_base_url(
+    app_type: &AppType,
+    provider: &Provider,
+    adapter: &dyn ProviderAdapter,
+) -> Result<String, ProxyError> {
+    if is_gemini_code_assist_provider(app_type, provider) {
+        return Ok(GEMINI_CODE_ASSIST_BASE_URL.to_string());
+    }
+
+    adapter.extract_base_url(provider)
+}
+
+fn build_gemini_code_assist_forward_request(
+    endpoint: &str,
+    request_body: &Value,
+) -> Result<(String, Value, String), ProxyError> {
+    let model = extract_gemini_model_from_endpoint(endpoint)
+        .or_else(|| {
+            request_body
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string)
+        })
+        .map(|model| super::gemini_url::normalize_gemini_model_id(&model).to_string())
+        .map(|model| normalize_gemini_code_assist_model(&model).to_string())
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| {
+            ProxyError::ConfigError(
+                "Google Gemini OAuth 反代缺少模型名，无法构造 Code Assist 请求".to_string(),
+            )
+        })?;
+
+    let is_stream = endpoint.contains("streamGenerateContent")
+        || endpoint.contains("alt=sse")
+        || request_body
+            .get("stream")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+    let action = if is_stream {
+        "streamGenerateContent"
+    } else {
+        "generateContent"
+    };
+    let url = if is_stream {
+        format!("{GEMINI_CODE_ASSIST_BASE_URL}/v1internal:{action}?alt=sse")
+    } else {
+        format!("{GEMINI_CODE_ASSIST_BASE_URL}/v1internal:{action}")
+    };
+
+    let mut inner_request = request_body.clone();
+    if let Some(obj) = inner_request.as_object_mut() {
+        obj.remove("model");
+        obj.remove("project");
+        obj.remove("stream");
+    }
+
+    let body = serde_json::json!({
+        "model": model,
+        "request": inner_request,
+    });
+
+    Ok((url, body, model))
+}
+
+fn normalize_gemini_code_assist_model(model: &str) -> &str {
+    match model {
+        "gemini-3-flash-preview" => "gemini-3-flash",
+        "gemini-3.1-flash-lite-preview" => "gemini-3.1-flash-lite",
+        other => other,
+    }
+}
+
+fn extract_gemini_model_from_endpoint(endpoint: &str) -> Option<String> {
+    let path = endpoint.split('?').next().unwrap_or(endpoint);
+    let marker = "/models/";
+    let start = path.find(marker)? + marker.len();
+    let model_and_action = &path[start..];
+    let model = model_and_action
+        .split(':')
+        .next()
+        .unwrap_or(model_and_action);
+    let model = model.trim_matches('/');
+    (!model.is_empty()).then(|| model.to_string())
+}
+
+fn gemini_cli_user_agent(model: &str) -> String {
+    let model = if model.trim().is_empty() {
+        "unknown"
+    } else {
+        model
+    };
+    format!(
+        "GeminiCLI/{GEMINI_CLI_VERSION}/{model} ({}; {})",
+        gemini_cli_platform(),
+        gemini_cli_arch()
+    )
+}
+
+fn gemini_cli_platform() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "win32",
+        other => other,
+    }
+}
+
+fn gemini_cli_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "x86" => "x86",
+        other => other,
+    }
+}
+
+fn upsert_header(
+    headers: &mut Vec<(http::HeaderName, http::HeaderValue)>,
+    name: http::HeaderName,
+    value: http::HeaderValue,
+) {
+    if let Some((_, existing)) = headers
+        .iter_mut()
+        .find(|(candidate, _)| candidate.as_str().eq_ignore_ascii_case(name.as_str()))
+    {
+        *existing = value;
+        return;
+    }
+    headers.push((name, value));
+}
+
+async fn load_gemini_code_assist_project_for_forward(
+    token: &str,
+) -> Result<Option<String>, ProxyError> {
+    let response = super::http_client::get()
+        .post(format!(
+            "{GEMINI_CODE_ASSIST_BASE_URL}/v1internal:loadCodeAssist"
+        ))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .header("user-agent", gemini_cli_user_agent("unknown"))
+        .header("x-goog-api-client", GEMINI_CLI_API_CLIENT_HEADER)
+        .json(&serde_json::json!({
+            "metadata": {
+                "ideType": "IDE_UNSPECIFIED",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI"
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| ProxyError::ForwardFailed(format!("loadCodeAssist 请求失败: {e}")))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| ProxyError::ForwardFailed(format!("loadCodeAssist 响应读取失败: {e}")))?;
+    if !status.is_success() {
+        return Err(ProxyError::UpstreamError {
+            status: status.as_u16(),
+            body: Some(body),
+        });
+    }
+
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| ProxyError::ForwardFailed(format!("loadCodeAssist 响应解析失败: {e}")))?;
+    Ok(value
+        .get("cloudaicompanionProject")
+        .and_then(extract_gemini_code_assist_project_id))
+}
+
+fn extract_gemini_code_assist_project_id(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(obj) => obj
+            .get("id")
+            .or_else(|| obj.get("projectId"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        _ => None,
+    }
 }
 
 fn split_endpoint_and_query(endpoint: &str) -> (&str, Option<&str>) {
@@ -2421,6 +2735,75 @@ mod tests {
             "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
         );
         assert_eq!(passthrough_query.as_deref(), Some("alt=sse"));
+    }
+
+    #[test]
+    fn build_gemini_code_assist_forward_request_wraps_native_stream() {
+        let (url, body, model) = build_gemini_code_assist_forward_request(
+            "/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse",
+            &json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{ "text": "ping" }]
+                }],
+                "stream": true
+            }),
+        )
+        .expect("build code assist request");
+
+        assert_eq!(
+            url,
+            "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+        );
+        assert_eq!(model, "gemini-3-flash");
+        assert_eq!(body["model"], "gemini-3-flash");
+        assert_eq!(body["request"]["contents"][0]["parts"][0]["text"], "ping");
+        assert!(body["request"].get("stream").is_none());
+    }
+
+    #[test]
+    fn build_gemini_code_assist_forward_request_strips_resource_model_prefix() {
+        let (_, body, model) = build_gemini_code_assist_forward_request(
+            "/v1beta/models/models/gemini-2.5-flash:generateContent",
+            &json!({ "contents": [] }),
+        )
+        .expect("build code assist request");
+
+        assert_eq!(model, "gemini-2.5-flash");
+        assert_eq!(body["model"], "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn gemini_official_forward_base_url_defaults_to_code_assist() {
+        use crate::provider::{AuthBinding, AuthBindingSource, Provider, ProviderMeta};
+
+        let provider = Provider {
+            id: "gemini-official".to_string(),
+            name: "Google Official".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("google_gemini_oauth".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                }),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let adapter = crate::proxy::providers::GeminiAdapter::new();
+
+        let base_url = extract_forward_base_url(&AppType::Gemini, &provider, &adapter)
+            .expect("gemini official should not require configured base_url");
+
+        assert_eq!(base_url, GEMINI_CODE_ASSIST_BASE_URL);
     }
 
     #[test]

@@ -45,6 +45,7 @@ interface CreateShareDialogProps {
   defaultApp?: AppId;
   ownerEmail?: string | null;
   isSubmitting: boolean;
+  submitLabel?: string;
   onSubmit: (params: CreateShareParams) => Promise<void> | void;
 }
 
@@ -64,6 +65,7 @@ export function CreateShareDialog({
   onOpenChange,
   ownerEmail,
   isSubmitting,
+  submitLabel,
   onSubmit,
 }: CreateShareDialogProps) {
   const { t } = useTranslation();
@@ -444,7 +446,7 @@ export function CreateShareDialog({
             {t("common.cancel")}
           </Button>
           <Button onClick={() => void submit()} disabled={isSubmitting}>
-            {t("share.create")}
+            {submitLabel ?? t("share.create")}
           </Button>
         </DialogFooter>
       </DialogContent>

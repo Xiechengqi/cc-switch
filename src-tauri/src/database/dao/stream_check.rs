@@ -42,9 +42,10 @@ impl Database {
     /// 获取流式检查配置
     pub fn get_stream_check_config(&self) -> Result<StreamCheckConfig, AppError> {
         match self.get_setting("stream_check_config")? {
-            Some(json) => serde_json::from_str(&json)
+            Some(json) => serde_json::from_str::<StreamCheckConfig>(&json)
+                .map(StreamCheckConfig::normalize_legacy_defaults)
                 .map_err(|e| AppError::Message(format!("解析配置失败: {e}"))),
-            None => Ok(StreamCheckConfig::default()),
+            None => Ok(StreamCheckConfig::default().normalize_legacy_defaults()),
         }
     }
 
@@ -67,7 +68,7 @@ impl Database {
 
     /// 保存流式检查配置
     pub fn save_stream_check_config(&self, config: &StreamCheckConfig) -> Result<(), AppError> {
-        let json = serde_json::to_string(config)
+        let json = serde_json::to_string(&config.clone().normalize_legacy_defaults())
             .map_err(|e| AppError::Message(format!("序列化配置失败: {e}")))?;
         self.set_setting("stream_check_config", &json)
     }

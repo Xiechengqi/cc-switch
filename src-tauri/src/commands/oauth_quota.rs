@@ -19,12 +19,8 @@ pub async fn get_cached_oauth_quota(
     gemini_state: State<'_, GeminiOAuthState>,
     copilot_state: State<'_, CopilotAuthState>,
 ) -> Result<Option<CachedOauthQuota>, String> {
-    let managers = OauthQuotaManagers::from_states(
-        &codex_state,
-        &claude_state,
-        &gemini_state,
-        &copilot_state,
-    );
+    let managers =
+        OauthQuotaManagers::from_states(&codex_state, &claude_state, &gemini_state, &copilot_state);
     let Some(resolved_account_id) =
         resolve_account_id_for_auth_provider(&auth_provider, account_id, &managers).await
     else {

@@ -408,6 +408,7 @@ impl TokenUsage {
 
     /// 从 Gemini API 非流式响应解析
     pub fn from_gemini_response(body: &Value) -> Option<Self> {
+        let body = gemini_payload(body);
         let usage = body.get("usageMetadata")?;
         // 提取实际使用的模型名称（modelVersion 字段）
         let model = body
@@ -444,6 +445,7 @@ impl TokenUsage {
         let mut model: Option<String> = None;
 
         for chunk in chunks {
+            let chunk = gemini_payload(chunk);
             if let Some(usage) = chunk.get("usageMetadata") {
                 // 输入 tokens (通常在所有 chunk 中保持不变)
                 total_input = usage
@@ -488,6 +490,10 @@ impl TokenUsage {
             None
         }
     }
+}
+
+fn gemini_payload(value: &Value) -> &Value {
+    value.get("response").unwrap_or(value)
 }
 
 #[cfg(test)]
@@ -688,6 +694,86 @@ mod tests {
         assert_eq!(usage.cache_read_tokens, 0);
         assert_eq!(usage.cache_creation_tokens, 0);
         assert_eq!(usage.model, Some("gemini-3-pro-high".to_string()));
+    }
+
+    #[test]
+    fn test_gemini_code_assist_wrapped_response_parsing() {
+        let response = json!({
+            "response": {
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{ "text": "Pong!" }]
+                    },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 1,
+                    "candidatesTokenCount": 2,
+                    "thoughtsTokenCount": 86,
+                    "totalTokenCount": 89,
+                    "cachedContentTokenCount": 3
+                },
+                "modelVersion": "gemini-2.5-flash"
+            },
+            "traceId": "trace-1"
+        });
+
+        let usage = TokenUsage::from_gemini_response(&response).unwrap();
+        assert_eq!(usage.input_tokens, 1);
+        assert_eq!(usage.output_tokens, 88);
+        assert_eq!(usage.cache_read_tokens, 3);
+        assert_eq!(usage.cache_creation_tokens, 0);
+        assert_eq!(usage.model, Some("gemini-2.5-flash".to_string()));
+    }
+
+    #[test]
+    fn test_gemini_code_assist_wrapped_stream_parsing() {
+        let events = vec![
+            json!({
+                "response": {
+                    "candidates": [{
+                        "content": {
+                            "role": "model",
+                            "parts": [{ "text": "P" }]
+                        }
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "totalTokenCount": 3
+                    },
+                    "modelVersion": "gemini-2.5-flash"
+                },
+                "traceId": "trace-1"
+            }),
+            json!({
+                "response": {
+                    "candidates": [{
+                        "content": {
+                            "role": "model",
+                            "parts": [{ "text": "ong!" }]
+                        },
+                        "finishReason": "STOP"
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "candidatesTokenCount": 2,
+                        "thoughtsTokenCount": 86,
+                        "totalTokenCount": 89,
+                        "cachedContentTokenCount": 3
+                    },
+                    "modelVersion": "gemini-2.5-flash"
+                },
+                "traceId": "trace-1"
+            }),
+        ];
+
+        let usage = TokenUsage::from_gemini_stream_chunks(&events).unwrap();
+        assert_eq!(usage.input_tokens, 1);
+        assert_eq!(usage.output_tokens, 88);
+        assert_eq!(usage.cache_read_tokens, 3);
+        assert_eq!(usage.cache_creation_tokens, 0);
+        assert_eq!(usage.model, Some("gemini-2.5-flash".to_string()));
     }
 
     #[test]

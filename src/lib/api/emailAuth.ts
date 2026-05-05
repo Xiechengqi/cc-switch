@@ -4,6 +4,7 @@ export interface EmailAuthStatus {
   authenticated: boolean;
   email?: string | null;
   expiresAt?: number | null;
+  routerDomain?: string | null;
 }
 
 export interface EmailCodeRequestResponse {
@@ -24,15 +25,36 @@ export interface EmailSessionMeResponse {
   installationOwnerEmail?: string | null;
 }
 
-async function requestCode(email: string): Promise<EmailCodeRequestResponse> {
-  return invoke("email_auth_request_code", { email });
+async function requestCode(params: {
+  routerDomain: string;
+  email: string;
+}): Promise<EmailCodeRequestResponse> {
+  return invoke("email_auth_request_code", params);
 }
 
 async function verifyCode(
+  routerDomain: string,
   email: string,
   code: string,
 ): Promise<EmailAuthStatus> {
-  return invoke("email_auth_verify_code", { email, code });
+  return invoke("email_auth_verify_code", { routerDomain, email, code });
+}
+
+async function requestOwnerChangeCode(params: {
+  routerDomain: string;
+  currentEmail: string;
+  newEmail: string;
+}): Promise<EmailCodeRequestResponse> {
+  return invoke("email_auth_request_owner_change_code", params);
+}
+
+async function changeOwnerEmail(params: {
+  routerDomain: string;
+  currentEmail: string;
+  newEmail: string;
+  code: string;
+}): Promise<EmailAuthStatus> {
+  return invoke("email_auth_change_owner_email", params);
 }
 
 async function getStatus(): Promise<EmailAuthStatus> {
@@ -50,6 +72,8 @@ async function logout(): Promise<void> {
 export const emailAuthApi = {
   requestCode,
   verifyCode,
+  requestOwnerChangeCode,
+  changeOwnerEmail,
   getStatus,
   sessionMe,
   logout,

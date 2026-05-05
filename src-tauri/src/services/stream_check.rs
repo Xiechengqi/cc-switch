@@ -20,6 +20,16 @@ use crate::proxy::providers::{
     get_adapter, AuthInfo, AuthStrategy, ClaudeAdapter, ProviderAdapter,
 };
 
+const GEMINI_CODE_ASSIST_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
+const GEMINI_CLI_VERSION: &str = "0.31.0";
+const GEMINI_CLI_API_CLIENT_HEADER: &str = "google-genai-sdk/1.41.0 gl-node/v22.19.0";
+const GEMINI_CODE_ASSIST_TEST_FALLBACK_MODELS: &[&str] = &[
+    "gemini-3-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+];
+const GEMINI_DEFAULT_TEST_MODEL: &str = "gemini-2.5-flash";
+
 /// 健康状态枚举
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -59,9 +69,25 @@ impl Default for StreamCheckConfig {
             degraded_threshold_ms: 6000,
             claude_model: "claude-haiku-4-5-20251001".to_string(),
             codex_model: "gpt-5.4@low".to_string(),
-            gemini_model: "gemini-3-flash-preview".to_string(),
+            gemini_model: GEMINI_DEFAULT_TEST_MODEL.to_string(),
             test_prompt: default_test_prompt(),
         }
+    }
+}
+
+impl StreamCheckConfig {
+    pub fn normalize_legacy_defaults(mut self) -> Self {
+        self.gemini_model = normalize_gemini_test_model(&self.gemini_model);
+        self
+    }
+}
+
+fn normalize_gemini_test_model(model: &str) -> String {
+    match model.trim() {
+        // Code Assist currently returns 404 for these on some accounts. Keep
+        // production model routing untouched; only normalize the health probe.
+        "gemini-3-flash" | "gemini-3-flash-preview" => GEMINI_DEFAULT_TEST_MODEL.to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -229,8 +255,9 @@ impl StreamCheckService {
                     .test_prompt
                     .clone()
                     .unwrap_or_else(|| global_config.test_prompt.clone()),
-            },
-            None => global_config.clone(),
+            }
+            .normalize_legacy_defaults(),
+            None => global_config.clone().normalize_legacy_defaults(),
         }
     }
 
@@ -488,9 +515,11 @@ impl StreamCheckService {
             request_builder = match auth.strategy {
                 AuthStrategy::GoogleOAuth => {
                     let token = auth.access_token.as_ref().unwrap_or(&auth.api_key);
+                    let normalized_model = normalize_gemini_model_id(model);
                     request_builder
                         .header("authorization", format!("Bearer {token}"))
-                        .header("x-goog-api-client", "GeminiCLI/1.0")
+                        .header("user-agent", Self::gemini_cli_user_agent(&normalized_model))
+                        .header("x-goog-api-client", GEMINI_CLI_API_CLIENT_HEADER)
                         .header("content-type", "application/json")
                         .header("accept", "text/event-stream")
                         .header("accept-encoding", "identity")
@@ -721,46 +750,164 @@ impl StreamCheckService {
         timeout: std::time::Duration,
         extra_headers: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<(u16, String), AppError> {
-        let base = base_url.trim_end_matches('/');
-        // Strip `models/` resource-name prefix from the model id — see
-        // `normalize_gemini_model_id` for rationale.
-        let normalized_model = normalize_gemini_model_id(model);
-        // Gemini 原生 API: /v1beta/models/{model}:streamGenerateContent?alt=sse
-        // 智能处理 /v1beta 路径：如果 base_url 不包含版本路径，则添加 /v1beta
-        // alt=sse 参数使 API 返回 SSE 格式（text/event-stream）而非 JSON 数组
-        let url = if base.contains("/v1beta") || base.contains("/v1/") {
-            format!("{base}/models/{normalized_model}:streamGenerateContent?alt=sse")
-        } else {
-            format!("{base}/v1beta/models/{normalized_model}:streamGenerateContent?alt=sse")
-        };
+        if auth.strategy == AuthStrategy::GoogleOAuth {
+            return Self::check_gemini_code_assist(client, auth, model, test_prompt, timeout).await;
+        }
 
-        // Gemini 原生请求体格式
-        let body = json!({
-            "contents": [{
-                "role": "user",
-                "parts": [{ "text": test_prompt }]
-            }]
+        let base = base_url.trim_end_matches('/');
+        let mut last_error: Option<AppError> = None;
+        for candidate in Self::gemini_native_test_models(model) {
+            let normalized_candidate = normalize_gemini_model_id(&candidate);
+            // Gemini 原生 API: /v1beta/models/{model}:streamGenerateContent?alt=sse
+            // 智能处理 /v1beta 路径：如果 base_url 不包含版本路径，则添加 /v1beta。
+            let url = if base.contains("/v1beta") || base.contains("/v1/") {
+                format!("{base}/models/{normalized_candidate}:streamGenerateContent?alt=sse")
+            } else {
+                format!("{base}/v1beta/models/{normalized_candidate}:streamGenerateContent?alt=sse")
+            };
+
+            // Gemini 原生请求体格式
+            let body = json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{ "text": test_prompt }]
+                }]
+            });
+
+            let mut request_builder = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .header("x-goog-api-key", &auth.api_key);
+
+            // 供应商自定义 headers 最后追加
+            if let Some(headers) = extra_headers {
+                for (key, value) in headers {
+                    if let Some(v) = value.as_str() {
+                        request_builder = request_builder.header(key.as_str(), v);
+                    }
+                }
+            }
+
+            let request_builder =
+                Self::maybe_add_share_api_key_header(request_builder, base_url, &auth.api_key);
+
+            let response = request_builder
+                .timeout(timeout)
+                .json(&body)
+                .send()
+                .await
+                .map_err(Self::map_request_error)?;
+
+            let status = response.status().as_u16();
+
+            if !response.status().is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+                let err = Self::http_status_error(status, error_text);
+                let should_try_next = matches!(
+                    &err,
+                    AppError::HttpStatus { status, body }
+                        if matches!(*status, 400 | 404)
+                            && Self::detect_error_category(*status, body)
+                                == Some("modelNotFound")
+                ) || matches!(&err, AppError::HttpStatus { status: 404, .. });
+                last_error = Some(err);
+                if should_try_next {
+                    continue;
+                }
+                break;
+            }
+
+            let mut stream = response.bytes_stream();
+            if let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(_) => return Ok((status, candidate)),
+                    Err(e) => return Err(AppError::Message(format!("Stream read failed: {e}"))),
+                }
+            } else {
+                last_error = Some(AppError::Message("No response data received".to_string()));
+                break;
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            AppError::Message("No Gemini Native test model available".to_string())
+        }))
+    }
+
+    async fn check_gemini_code_assist(
+        client: &Client,
+        auth: &AuthInfo,
+        model: &str,
+        test_prompt: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(u16, String), AppError> {
+        let token = auth.access_token.as_ref().unwrap_or(&auth.api_key);
+        let project_id = Self::load_gemini_code_assist_project(client, token, timeout).await?;
+        let normalized_model = normalize_gemini_model_id(model);
+        let mut body = json!({
+            "model": normalized_model,
+            "request": {
+                "contents": [{
+                    "role": "user",
+                    "parts": [{ "text": test_prompt }]
+                }],
+                "generationConfig": {
+                    "maxOutputTokens": 16
+                }
+            }
         });
 
-        let mut request_builder = client
-            .post(&url)
-            .header("x-goog-api-key", &auth.api_key)
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream");
+        if let Some(project) = project_id {
+            body["project"] = json!(project);
+        }
 
-        // 供应商自定义 headers 最后追加
-        if let Some(headers) = extra_headers {
-            for (key, value) in headers {
-                if let Some(v) = value.as_str() {
-                    request_builder = request_builder.header(key.as_str(), v);
+        let mut last_error: Option<AppError> = None;
+        for candidate in Self::gemini_code_assist_test_models(&normalized_model) {
+            body["model"] = json!(candidate);
+            match Self::send_gemini_code_assist_stream(client, token, &candidate, &body, timeout)
+                .await
+            {
+                Ok(status) => return Ok((status, candidate)),
+                Err(err) => {
+                    let should_try_next =
+                        matches!(
+                            &err,
+                            AppError::HttpStatus { status, body }
+                                if matches!(*status, 400 | 404)
+                                    && Self::detect_error_category(*status, body)
+                                        == Some("modelNotFound")
+                        ) || matches!(&err, AppError::HttpStatus { status: 404, .. });
+                    last_error = Some(err);
+                    if !should_try_next {
+                        break;
+                    }
                 }
             }
         }
 
-        let request_builder =
-            Self::maybe_add_share_api_key_header(request_builder, base_url, &auth.api_key);
+        Err(last_error.unwrap_or_else(|| {
+            AppError::Message("No Gemini Code Assist test model available".to_string())
+        }))
+    }
 
-        let response = request_builder
+    async fn send_gemini_code_assist_stream(
+        client: &Client,
+        token: &str,
+        model: &str,
+        body: &serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> Result<u16, AppError> {
+        let response = client
+            .post(format!(
+                "{GEMINI_CODE_ASSIST_BASE_URL}/v1internal:streamGenerateContent?alt=sse"
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .header("accept-encoding", "identity")
+            .header("user-agent", Self::gemini_cli_user_agent(model))
+            .header("x-goog-api-client", GEMINI_CLI_API_CLIENT_HEADER)
             .timeout(timeout)
             .json(&body)
             .send()
@@ -768,7 +915,6 @@ impl StreamCheckService {
             .map_err(Self::map_request_error)?;
 
         let status = response.status().as_u16();
-
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
             return Err(Self::http_status_error(status, error_text));
@@ -777,11 +923,110 @@ impl StreamCheckService {
         let mut stream = response.bytes_stream();
         if let Some(chunk) = stream.next().await {
             match chunk {
-                Ok(_) => Ok((status, model.to_string())),
+                Ok(_) => Ok(status),
                 Err(e) => Err(AppError::Message(format!("Stream read failed: {e}"))),
             }
         } else {
             Err(AppError::Message("No response data received".to_string()))
+        }
+    }
+
+    async fn load_gemini_code_assist_project(
+        client: &Client,
+        token: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Option<String>, AppError> {
+        let response = client
+            .post(format!(
+                "{GEMINI_CODE_ASSIST_BASE_URL}/v1internal:loadCodeAssist"
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .header("user-agent", Self::gemini_cli_user_agent("unknown"))
+            .header("x-goog-api-client", GEMINI_CLI_API_CLIENT_HEADER)
+            .timeout(timeout)
+            .json(&json!({
+                "metadata": {
+                    "ideType": "IDE_UNSPECIFIED",
+                    "platform": "PLATFORM_UNSPECIFIED",
+                    "pluginType": "GEMINI"
+                }
+            }))
+            .send()
+            .await
+            .map_err(Self::map_request_error)?;
+
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(Self::http_status_error(status, error_text));
+        }
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::Message(format!("Failed to parse loadCodeAssist: {e}")))?;
+        Ok(body
+            .get("cloudaicompanionProject")
+            .and_then(Self::extract_gemini_project_id))
+    }
+
+    fn extract_gemini_project_id(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Object(obj) => obj
+                .get("id")
+                .or_else(|| obj.get("projectId"))
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            _ => None,
+        }
+    }
+
+    fn gemini_code_assist_test_models(requested_model: &str) -> Vec<String> {
+        let mut models = Vec::with_capacity(1 + GEMINI_CODE_ASSIST_TEST_FALLBACK_MODELS.len());
+        let requested = requested_model.trim();
+        if !requested.is_empty() {
+            models.push(requested.to_string());
+        }
+        for fallback in GEMINI_CODE_ASSIST_TEST_FALLBACK_MODELS {
+            if !models.iter().any(|model| model == fallback) {
+                models.push((*fallback).to_string());
+            }
+        }
+        models
+    }
+
+    fn gemini_native_test_models(requested_model: &str) -> Vec<String> {
+        Self::gemini_code_assist_test_models(requested_model)
+    }
+
+    fn gemini_cli_user_agent(model: &str) -> String {
+        let model = if model.trim().is_empty() {
+            "unknown"
+        } else {
+            model
+        };
+        format!(
+            "GeminiCLI/{GEMINI_CLI_VERSION}/{model} ({}; {})",
+            Self::gemini_cli_platform(),
+            Self::gemini_cli_arch()
+        )
+    }
+
+    fn gemini_cli_platform() -> &'static str {
+        match std::env::consts::OS {
+            "windows" => "win32",
+            other => other,
+        }
+    }
+
+    fn gemini_cli_arch() -> &'static str {
+        match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "x86" => "x86",
+            other => other,
         }
     }
 
@@ -878,11 +1123,8 @@ impl StreamCheckService {
                 let (http_status, message, error_category) = match &e {
                     AppError::HttpStatus { status, body } => {
                         let category = Self::detect_error_category(*status, body);
-                        (
-                            Some(*status),
-                            Self::classify_http_status(*status).to_string(),
-                            category.map(|s| s.to_string()),
-                        )
+                        let message = Self::format_http_status_message(*status, body);
+                        (Some(*status), message, category.map(|s| s.to_string()))
                     }
                     _ => (None, e.to_string(), None),
                 };
@@ -921,6 +1163,10 @@ impl StreamCheckService {
             return Some("quotaExceeded");
         }
 
+        if status == 404 && lower.contains("requested entity was not found") {
+            return Some("modelNotFound");
+        }
+
         // 必须提到 "model"，避免通用 404 / 400 被误判
         if !lower.contains("model") {
             return None;
@@ -940,6 +1186,55 @@ impl StreamCheckService {
             return Some("modelNotFound");
         }
         None
+    }
+
+    fn format_http_status_message(status: u16, body: &str) -> String {
+        let label = Self::classify_http_status(status);
+        let body = Self::summarize_http_error_body(body);
+        if body.is_empty() {
+            label.to_string()
+        } else {
+            format!("{label}: {body}")
+        }
+    }
+
+    fn summarize_http_error_body(body: &str) -> String {
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+
+        if let Ok(json_body) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let candidates = [
+                json_body.pointer("/error/message"),
+                json_body.pointer("/message"),
+                json_body.pointer("/detail"),
+                json_body.pointer("/error"),
+            ];
+            if let Some(message) = candidates
+                .into_iter()
+                .flatten()
+                .find_map(|value| value.as_str())
+            {
+                return Self::truncate_error_summary(message, 180);
+            }
+
+            if let Ok(compact) = serde_json::to_string(&json_body) {
+                return Self::truncate_error_summary(&compact, 180);
+            }
+        }
+
+        Self::truncate_error_summary(trimmed, 180)
+    }
+
+    fn truncate_error_summary(text: &str, max_chars: usize) -> String {
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.chars().count() <= max_chars {
+            return normalized;
+        }
+
+        let truncated = normalized.chars().take(max_chars).collect::<String>();
+        format!("{}...", truncated.trim_end())
     }
 
     /// OpenClaw 流式检查分发器
@@ -1773,6 +2068,50 @@ mod tests {
     }
 
     #[test]
+    fn test_gemini_cli_user_agent_matches_code_assist_shape() {
+        let ua = StreamCheckService::gemini_cli_user_agent("gemini-3-flash-preview");
+        assert!(ua.starts_with("GeminiCLI/0.31.0/gemini-3-flash-preview ("));
+        assert!(ua.ends_with(')'));
+        assert_eq!(
+            GEMINI_CLI_API_CLIENT_HEADER,
+            "google-genai-sdk/1.41.0 gl-node/v22.19.0"
+        );
+    }
+
+    #[test]
+    fn test_gemini_code_assist_test_models_prefers_requested_then_fallbacks() {
+        assert_eq!(
+            StreamCheckService::gemini_code_assist_test_models("gemini-3-flash-preview"),
+            vec![
+                "gemini-3-flash-preview".to_string(),
+                "gemini-3-flash".to_string(),
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.5-flash-lite".to_string(),
+            ]
+        );
+
+        assert_eq!(
+            StreamCheckService::gemini_code_assist_test_models("gemini-3-flash"),
+            vec![
+                "gemini-3-flash".to_string(),
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.5-flash-lite".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_check_config_normalizes_legacy_gemini_default_model() {
+        let mut config = StreamCheckConfig::default();
+        config.gemini_model = "gemini-3-flash".to_string();
+
+        assert_eq!(
+            config.normalize_legacy_defaults().gemini_model,
+            "gemini-2.5-flash"
+        );
+    }
+
+    #[test]
     fn test_extract_openclaw_headers_preserves_map() {
         let p = make_provider(serde_json::json!({
             "baseUrl": "https://example.com/v1",
@@ -1917,6 +2256,13 @@ mod tests {
         assert_eq!(
             StreamCheckService::detect_error_category(404, generic_404),
             None
+        );
+
+        // Google Code Assist 的模型不存在响应不一定包含 model 字样
+        let code_assist_404 = r#"{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}"#;
+        assert_eq!(
+            StreamCheckService::detect_error_category(404, code_assist_404),
+            Some("modelNotFound")
         );
 
         // 5xx 就算 body 里有 "model does not exist" 也不分类（避免误判）
@@ -2155,6 +2501,35 @@ mod tests {
             url,
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
         );
+    }
+
+    #[test]
+    fn gemini_native_test_models_include_code_assist_fallbacks() {
+        let models = StreamCheckService::gemini_native_test_models("gemini-custom");
+
+        assert_eq!(models.first().map(String::as_str), Some("gemini-custom"));
+        assert!(models.iter().any(|model| model == "gemini-3-flash"));
+        assert!(models.iter().any(|model| model == "gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn stream_check_http_status_message_includes_error_body_summary() {
+        let result = StreamCheckService::build_stream_check_result(
+            Err(AppError::HttpStatus {
+                status: 400,
+                body: r#"{"error":{"message":"Invalid Gemini request shape from share proxy"}}"#
+                    .to_string(),
+            }),
+            123,
+            5_000,
+            "gemini-3-flash",
+        );
+
+        assert_eq!(
+            result.message,
+            "Bad request (400): Invalid Gemini request shape from share proxy"
+        );
+        assert_eq!(result.http_status, Some(400));
     }
 
     #[test]

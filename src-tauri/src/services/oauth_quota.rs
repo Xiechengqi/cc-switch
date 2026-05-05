@@ -393,7 +393,10 @@ fn provider_auth_provider(app_type: &AppType, provider: &Provider) -> Option<Str
     {
         return Some("codex_oauth".to_string());
     }
-    if matches!(app_type, AppType::Gemini) && provider_type == Some("google_gemini_oauth") {
+    if matches!(app_type, AppType::Gemini)
+        && (provider_type == Some("google_gemini_oauth")
+            || provider.is_google_gemini_official_with_managed_auth())
+    {
         return Some("google_gemini_oauth".to_string());
     }
     None

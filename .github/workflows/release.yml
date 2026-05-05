@@ -410,7 +410,7 @@ jobs:
               printf 'macOS 版本已通过 Apple 代码签名和公证，可直接安装使用。\n'
             } > "$NOTES_FILE"
           fi
-          gh release edit "$TAG" --notes-file "$NOTES_FILE" --draft=false --prerelease="$PRERELEASE"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES_FILE" --draft=false --prerelease="$PRERELEASE"
 
   rollback:
     name: Rollback on failure

@@ -211,18 +211,20 @@ jobs:
         run: |
           set -euo pipefail
           # tauri-action 上传的资产文件名以 "CC Switch" 或 "cc-switch" 开头（含空格/版本号），
-          # 这里清掉所有不以 CC-Switch- 开头的资产，避免与自定义命名共存
-          mapfile -t assets < <(gh release view "$TAG" --json assets --jq '.assets[].name' || true)
-          for a in "${assets[@]}"; do
-            case "$a" in
-              CC-Switch-*) ;;
-              latest.json) ;;
-              *)
-                echo "Deleting original-named asset: $a"
-                gh release delete-asset "$TAG" "$a" --yes || true
-                ;;
-            esac
-          done
+          # 这里清掉所有不以 CC-Switch- 开头的资产，避免与自定义命名共存。
+          # 用 while-read 而非 mapfile 以兼容 macOS 的 bash 3.2。
+          gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null \
+            | while IFS= read -r a; do
+                [ -z "$a" ] && continue
+                case "$a" in
+                  CC-Switch-*) ;;
+                  latest.json) ;;
+                  *)
+                    echo "Deleting original-named asset: $a"
+                    gh release delete-asset "$TAG" "$a" --yes || true
+                    ;;
+                esac
+              done
 
       - name: Prepare macOS Assets (unsigned)
         if: runner.os == 'macOS'

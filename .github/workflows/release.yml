@@ -170,45 +170,6 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
-      - name: Prepare Tauri signing key
-        shell: bash
-        run: |
-          if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
-            echo "❌ TAURI_SIGNING_PRIVATE_KEY Secret 为空或不存在" >&2
-            exit 1
-          fi
-          RAW="${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
-          KEY_PATH="$RUNNER_TEMP/tauri_signing.key"
-          if echo "$RAW" | head -n1 | grep -q '^untrusted comment:'; then
-            printf '%s\n' "$RAW" > "$KEY_PATH"
-          else
-            if DECODED=$(printf '%s' "$RAW" | (base64 --decode 2>/dev/null || base64 -D 2>/dev/null)) \
-               && echo "$DECODED" | head -n1 | grep -q '^untrusted comment:'; then
-              printf '%s\n' "$DECODED" > "$KEY_PATH"
-            else
-              if echo "$RAW" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
-                ONE=$(printf '%s' "$RAW" | tr -d '\r\n')
-                printf '%s\n%s\n' "untrusted comment: tauri signing key" "$ONE" > "$KEY_PATH"
-              else
-                echo "❌ TAURI_SIGNING_PRIVATE_KEY 格式无法识别" >&2
-                exit 1
-              fi
-            fi
-          fi
-          if command -v base64 >/dev/null 2>&1; then
-            KEY_B64=$(base64 < "$KEY_PATH" | tr -d '\r\n')
-          elif command -v openssl >/dev/null 2>&1; then
-            KEY_B64=$(openssl base64 -A -in "$KEY_PATH")
-          else
-            KEY_B64=$(KEY_PATH="$KEY_PATH" node -e "process.stdout.write(require('fs').readFileSync(process.env.KEY_PATH).toString('base64'))")
-          fi
-          [ -z "$KEY_B64" ] && { echo "❌ 无法生成私钥 base64 内容" >&2; exit 1; }
-          echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_B64" >> "$GITHUB_ENV"
-          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then
-            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> "$GITHUB_ENV"
-          fi
-          echo "✅ Tauri signing key prepared"
-
       - name: Import Apple signing certificate
         if: runner.os == 'macOS'
         shell: bash
@@ -244,8 +205,6 @@ jobs:
         timeout-minutes: 60
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -293,25 +252,19 @@ jobs:
           mkdir -p release-assets
           VERSION="${TAG}"
 
-          TAR_GZ=""; APP_PATH=""
+          APP_PATH=""
           for path in \
             "src-tauri/target/universal-apple-darwin/release/bundle/macos" \
             "src-tauri/target/aarch64-apple-darwin/release/bundle/macos" \
             "src-tauri/target/x86_64-apple-darwin/release/bundle/macos" \
             "src-tauri/target/release/bundle/macos"; do
             if [ -d "$path" ]; then
-              [ -z "$TAR_GZ" ]   && TAR_GZ=$(find "$path" -maxdepth 1 -name "*.tar.gz" -type f | head -1 || true)
               [ -z "$APP_PATH" ] && APP_PATH=$(find "$path" -maxdepth 1 -name "*.app" -type d | head -1 || true)
             fi
           done
-          [ -z "$TAR_GZ" ]   && { echo "❌ No macOS .tar.gz updater artifact" >&2; exit 1; }
           [ -z "$APP_PATH" ] && { echo "❌ No .app found" >&2; exit 1; }
 
           xcrun stapler staple "$APP_PATH"
-
-          NEW_TAR_GZ="CC-Switch-${VERSION}-macOS.tar.gz"
-          cp "$TAR_GZ" "release-assets/$NEW_TAR_GZ"
-          [ -f "$TAR_GZ.sig" ] && cp "$TAR_GZ.sig" "release-assets/$NEW_TAR_GZ.sig" || echo "no .sig for $TAR_GZ"
 
           NEW_ZIP="CC-Switch-${VERSION}-macOS.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "release-assets/$NEW_ZIP"
@@ -373,10 +326,6 @@ jobs:
           if ($null -ne $msi) {
             $dest = "CC-Switch-$VERSION-Windows.msi"
             Copy-Item $msi.FullName (Join-Path release-assets $dest)
-            $sigPath = "$($msi.FullName).sig"
-            if (Test-Path $sigPath) {
-              Copy-Item $sigPath (Join-Path release-assets ("$dest.sig"))
-            }
           } else {
             Write-Warning 'No Windows MSI installer found'
           }
@@ -412,7 +361,6 @@ jobs:
           if [ -n "$APPIMAGE" ]; then
             NEW_APPIMAGE="CC-Switch-${VERSION}-Linux-${ARCH}.AppImage"
             cp "$APPIMAGE" "release-assets/$NEW_APPIMAGE"
-            [ -f "$APPIMAGE.sig" ] && cp "$APPIMAGE.sig" "release-assets/$NEW_APPIMAGE.sig" || echo "no .sig for AppImage"
           fi
           DEB=$(find src-tauri/target/release/bundle -name "*.deb" | head -1 || true)
           [ -n "$DEB" ] && cp "$DEB" "release-assets/CC-Switch-${VERSION}-Linux-${ARCH}.deb" || echo "no .deb"
@@ -438,13 +386,6 @@ jobs:
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
 
-      - name: Upload .sig artifacts (for latest.json job)
-        uses: actions/upload-artifact@v7
-        with:
-          name: sigs-${{ runner.os }}-${{ matrix.arch || runner.arch }}
-          path: release-assets/*.sig
-          if-no-files-found: ignore
-
       - name: Clean up Apple signing keychain
         if: runner.os == 'macOS' && always()
         shell: bash
@@ -457,97 +398,12 @@ jobs:
           fi
 
   finalize:
-    name: Assemble latest.json & publish
+    name: Set notes & publish release
     needs: [prepare-tag, build]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - name: Download .sig artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: sigs-*
-          path: sigs
-          merge-multiple: true
-
-      - name: List downloaded sigs
-        run: ls -la sigs || true
-
-      - name: Generate latest.json from sig contents + asset URLs
-        env:
-          REPO: ${{ github.repository }}
-          TAG: ${{ needs.prepare-tag.outputs.tag }}
-        run: |
-          set -euo pipefail
-          VERSION="${TAG#v}"
-          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          base_url="https://github.com/$REPO/releases/download/$TAG"
-
-          mac_url=""; mac_sig=""
-          win_url=""; win_sig=""
-          linux_x64_url=""; linux_x64_sig=""
-          linux_arm64_url=""; linux_arm64_sig=""
-
-          shopt -s nullglob
-          for sig in sigs/*.sig; do
-            base=${sig%.sig}
-            fname=$(basename "$base")
-            url="$base_url/$fname"
-            sig_content=$(cat "$sig")
-            case "$fname" in
-              *.tar.gz)
-                mac_url="$url"; mac_sig="$sig_content";;
-              *-Linux-arm64.AppImage|*-Linux-arm64.appimage)
-                linux_arm64_url="$url"; linux_arm64_sig="$sig_content";;
-              *-Linux-x86_64.AppImage|*-Linux-x86_64.appimage)
-                linux_x64_url="$url"; linux_x64_sig="$sig_content";;
-              *.msi|*.exe)
-                win_url="$url"; win_sig="$sig_content";;
-            esac
-          done
-
-          tmp_json=$(mktemp)
-          {
-            echo '{'
-            echo "  \"version\": \"$VERSION\","
-            echo "  \"notes\": \"Release $TAG\","
-            echo "  \"pub_date\": \"$PUB_DATE\","
-            echo '  "platforms": {'
-            first=1
-            if [ -n "$mac_url" ] && [ -n "$mac_sig" ]; then
-              for key in darwin-aarch64 darwin-x86_64; do
-                [ $first -eq 0 ] && echo ','
-                echo "    \"$key\": {\"signature\": \"$mac_sig\", \"url\": \"$mac_url\"}"
-                first=0
-              done
-            fi
-            if [ -n "$win_url" ] && [ -n "$win_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"windows-x86_64\": {\"signature\": \"$win_sig\", \"url\": \"$win_url\"}"
-              first=0
-            fi
-            if [ -n "$linux_x64_url" ] && [ -n "$linux_x64_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"linux-x86_64\": {\"signature\": \"$linux_x64_sig\", \"url\": \"$linux_x64_url\"}"
-              first=0
-            fi
-            if [ -n "$linux_arm64_url" ] && [ -n "$linux_arm64_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"linux-aarch64\": {\"signature\": \"$linux_arm64_sig\", \"url\": \"$linux_arm64_url\"}"
-              first=0
-            fi
-            echo '  }'
-            echo '}'
-          } > "$tmp_json"
-          echo "Generated latest.json:"; cat "$tmp_json"
-          mv "$tmp_json" latest.json
-
-      - name: Upload latest.json to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.prepare-tag.outputs.tag }}
-        run: gh release upload "$TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
-
       - name: Set release body & promote draft → published
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -568,7 +424,6 @@ jobs:
               printf -- '- **Windows**: `CC-Switch-%s-Windows.msi`（安装版）或 `CC-Switch-%s-Windows-Portable.zip`（绿色版）\n' "$TAG" "$TAG"
               printf -- '- **Linux (x86_64)**: `CC-Switch-%s-Linux-x86_64.AppImage` / `.deb` / `.rpm`\n' "$TAG"
               printf -- '- **Linux (ARM64)**: `CC-Switch-%s-Linux-arm64.AppImage` / `.deb` / `.rpm`\n\n' "$TAG"
-              printf '> `.tar.gz` 为 Tauri updater 自动更新专用，无需手动下载。\n\n'
               printf -- '---\n'
               printf 'macOS 版本已通过 Apple 代码签名和公证，可直接安装使用。\n'
             } > "$NOTES_FILE"

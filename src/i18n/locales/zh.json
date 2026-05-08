@@ -16,6 +16,7 @@
     "settings": "设置",
     "about": "关于",
     "version": "版本",
+    "commit": "Commit",
     "loading": "加载中...",
     "notInstalled": "未安装",
     "success": "成功",

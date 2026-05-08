@@ -82,6 +82,12 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
+      - name: Capture build metadata env
+        shell: bash
+        run: |
+          echo "CC_SWITCH_BUILD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "CC_SWITCH_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Disable updater signing for dev-channel build
         shell: bash
         run: |

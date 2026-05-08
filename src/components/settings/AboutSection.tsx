@@ -94,6 +94,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const { t } = useTranslation();
   const [version, setVersion] = useState<string | null>(null);
   const [isLoadingVersion, setIsLoadingVersion] = useState(true);
+  const [buildCommit, setBuildCommit] = useState<string | null>(null);
+  const [buildTime, setBuildTime] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [toolVersions, setToolVersions] = useState<ToolVersion[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(true);
@@ -215,6 +217,19 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         if (active) {
           setIsLoadingVersion(false);
         }
+      }
+
+      try {
+        const info = await settingsApi.getBuildInfo();
+        if (!active) return;
+        if (info.commit && info.commit !== "unknown") {
+          setBuildCommit(info.commit.slice(0, 7));
+        }
+        if (info.buildTime && info.buildTime !== "unknown") {
+          setBuildTime(info.buildTime);
+        }
+      } catch (error) {
+        console.warn("[AboutSection] Failed to load build info", error);
       }
     };
 
@@ -350,6 +365,18 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                   <span className="font-medium">{`v${displayVersion}`}</span>
                 )}
               </Badge>
+              {buildCommit && (
+                <Badge
+                  variant="outline"
+                  className="gap-1.5 bg-background/80"
+                  title={buildTime ? `Built ${buildTime}` : undefined}
+                >
+                  <span className="text-muted-foreground">
+                    {t("common.commit")}
+                  </span>
+                  <span className="font-mono font-medium">{buildCommit}</span>
+                </Badge>
+              )}
               {isPortable && (
                 <Badge variant="secondary" className="gap-1.5">
                   <Info className="h-3 w-3" />

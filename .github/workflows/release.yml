@@ -29,6 +29,7 @@ jobs:
     outputs:
       tag: ${{ steps.compute.outputs.tag }}
       semver: ${{ steps.compute.outputs.semver }}
+      main_sha: ${{ steps.capture-sha.outputs.main_sha }}
     steps:
       - name: Validate & compute version
         id: compute
@@ -63,6 +64,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Capture main branch commit SHA for build metadata
+        id: capture-sha
+        shell: bash
+        run: echo "main_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Delete existing tag & release if present
         env:
@@ -188,6 +194,12 @@ jobs:
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
+
+      - name: Capture build metadata env
+        shell: bash
+        run: |
+          echo "CC_SWITCH_BUILD_SHA=${{ needs.prepare-tag.outputs.main_sha }}" >> "$GITHUB_ENV"
+          echo "CC_SWITCH_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
       - name: Build & upload via tauri-action
         id: tauri

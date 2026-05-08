@@ -18,6 +18,15 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// 构建元信息（commit SHA + 构建时间），由 build.rs 在编译期注入。
+#[tauri::command]
+pub fn get_build_info() -> serde_json::Value {
+    serde_json::json!({
+        "commit": env!("CC_SWITCH_BUILD_SHA"),
+        "buildTime": env!("CC_SWITCH_BUILD_TIME"),
+    })
+}
+
 /// 打开外部链接
 #[tauri::command]
 pub async fn open_external(app: AppHandle, url: String) -> Result<bool, String> {

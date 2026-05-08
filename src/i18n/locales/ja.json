@@ -16,6 +16,7 @@
     "settings": "設定",
     "about": "バージョン情報",
     "version": "バージョン",
+    "commit": "コミット",
     "loading": "読み込み中...",
     "notInstalled": "未インストール",
     "success": "成功",

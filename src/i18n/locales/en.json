@@ -16,6 +16,7 @@
     "settings": "Settings",
     "about": "About",
     "version": "Version",
+    "commit": "Commit",
     "loading": "Loading...",
     "notInstalled": "Not installed",
     "success": "Success",

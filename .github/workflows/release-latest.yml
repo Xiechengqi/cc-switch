@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: latest-deb-${{ github.ref }}
+  group: release-latest-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -48,13 +48,12 @@ jobs:
           key: ubuntu-22.04-amd64-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: ubuntu-22.04-amd64-pnpm-store-
 
-      - name: Cache Cargo registry and build
+      - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            src-tauri/target
           key: ubuntu-22.04-amd64-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: ubuntu-22.04-amd64-cargo-
 
@@ -126,6 +125,14 @@ jobs:
           DEB_NAME="cc-switch-linux-amd64-ubuntu22-latest.deb"
           cp "$DEB_PATH" "release-files/$DEB_NAME"
           echo "deb_name=$DEB_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload deb as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-switch-deb-amd64
+          path: release-files/*.deb
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Delete existing latest release and tag
         shell: bash
@@ -212,7 +219,7 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=latest
 
-      - name: Prepare minimal Docker build context
+      - name: Prepare Docker build context with deb
         id: docker-context
         shell: bash
         run: |
@@ -222,6 +229,16 @@ jobs:
           cp Dockerfile "$CONTEXT_DIR/Dockerfile"
           echo "path=$CONTEXT_DIR" >> "$GITHUB_OUTPUT"
 
+      - name: Download deb artifact into Docker context
+        uses: actions/download-artifact@v4
+        with:
+          name: cc-switch-deb-amd64
+          path: ${{ steps.docker-context.outputs.path }}
+
+      - name: List Docker build context
+        shell: bash
+        run: ls -la "${{ steps.docker-context.outputs.path }}"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
@@ -230,8 +247,50 @@ jobs:
           platforms: linux/amd64
           push: true
           build-args: |
-            RELEASE_REPO=${{ github.repository }}
-            RELEASE_TAG=latest
             DEB_NAME=cc-switch-linux-amd64-ubuntu22-latest.deb
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  verify-image:
+    name: Verify image binary commit SHA
+    runs-on: ubuntu-22.04
+    needs: build-and-push-image
+    permissions:
+      packages: read
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image name and expected SHA
+        id: expect
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE_NAME=$(echo "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          echo "image=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Pull image at this commit's sha tag
+        run: docker pull ${{ steps.expect.outputs.image }}:${{ steps.expect.outputs.sha }}
+
+      - name: Verify cc-switch binary embeds expected commit SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="${{ steps.expect.outputs.sha }}"
+          IMG="${{ steps.expect.outputs.image }}:${EXPECTED}"
+          # cc-switch is a Tauri GUI binary; we cannot run --version. Instead grep
+          # the literal CC_SWITCH_BUILD_SHA value baked into .rodata via env!().
+          if docker run --rm --entrypoint sh "$IMG" -c \
+               "command -v cc-switch >/dev/null && grep -aF '$EXPECTED' \"\$(command -v cc-switch)\" >/dev/null"; then
+            echo "✅ image $IMG embeds expected commit $EXPECTED"
+          else
+            echo "❌ image $IMG does NOT embed $EXPECTED" >&2
+            docker run --rm --entrypoint sh "$IMG" -c \
+              "command -v cc-switch && ls -l \"\$(command -v cc-switch)\"" || true
+            exit 1
+          fi

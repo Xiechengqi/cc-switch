@@ -567,6 +567,85 @@ pub fn run() {
                 Err(e) => log::warn!("✗ Failed to import Hermes providers: {e}"),
             }
 
+            // 1.7. 一次性清理历史 official 种子供应商（claude/codex/gemini）
+            //
+            // 旧版本启动时会调用 init_default_official_providers() 把三条
+            // claude-official / codex-official / gemini-official 写入 providers
+            // 表（category="official"）。上游已移除该调用，但已写入的记录不会
+            // 自动消失。这里通过 settings 表的 official_providers_seeded 标记
+            // 识别"曾被种过的库"，删除三条遗留记录后写新标记防止重跑。
+            let already_cleared_official = app_state
+                .db
+                .get_bool_flag("official_providers_seeded_v2_cleared")
+                .unwrap_or(false);
+            let was_seeded_official = app_state
+                .db
+                .get_bool_flag("official_providers_seeded")
+                .unwrap_or(false);
+            if was_seeded_official && !already_cleared_official {
+                for (app_type, seed_id) in [
+                    ("claude", "claude-official"),
+                    ("codex", "codex-official"),
+                    ("gemini", "gemini-official"),
+                ] {
+                    if let Err(e) = app_state.db.delete_provider(app_type, seed_id) {
+                        log::warn!("✗ Failed to delete legacy seed {seed_id}: {e}");
+                    }
+                }
+                if let Err(e) = app_state
+                    .db
+                    .set_setting("official_providers_seeded_v2_cleared", "true")
+                {
+                    log::warn!("✗ Failed to set official cleanup flag: {e}");
+                } else {
+                    log::info!("✓ Cleared legacy official seed providers (claude/codex/gemini)");
+                }
+            }
+
+            // 1.8. 一次性强制重置本地代理 / 故障转移默认值
+            //
+            // commit 867ca0aa 把 enable_local_proxy / enable_failover_toggle /
+            // proxy_config.proxy_enabled 默认值都改为 true=1。但旧 DB 中已存值
+            // 不会被 schema DEFAULT 反向覆盖；用户主动关掉过的也保持 false。
+            // 这里通过 settings 表的 proxy_defaults_v2_applied 标记保证只跑一
+            // 次：覆盖式重置三个值为 true，向用户语义即"上游升级带回了主页路
+            // 由/故障转移开关"。后续用户可在设置页再手动关闭。
+            let proxy_defaults_already_applied = app_state
+                .db
+                .get_bool_flag("proxy_defaults_v2_applied")
+                .unwrap_or(false);
+            if !proxy_defaults_already_applied {
+                let mut next = crate::settings::get_settings();
+                next.enable_local_proxy = true;
+                next.enable_failover_toggle = true;
+                if let Err(e) = crate::settings::update_settings(next) {
+                    log::warn!("✗ Failed to reset settings defaults: {e}");
+                }
+                let db_for_proxy = app_state.db.clone();
+                tauri::async_runtime::block_on(async move {
+                    match db_for_proxy.get_global_proxy_config().await {
+                        Ok(mut cfg) => {
+                            cfg.proxy_enabled = true;
+                            if let Err(e) = db_for_proxy.update_global_proxy_config(cfg).await {
+                                log::warn!("✗ Failed to reset global proxy_enabled: {e}");
+                            }
+                        }
+                        Err(e) => log::warn!("✗ Failed to read global proxy config: {e}"),
+                    }
+                });
+                if let Err(e) = app_state
+                    .db
+                    .set_setting("proxy_defaults_v2_applied", "true")
+                {
+                    log::warn!("✗ Failed to set proxy defaults flag: {e}");
+                } else {
+                    log::info!(
+                        "✓ Reset proxy/failover defaults: enable_local_proxy=true, \
+                         enable_failover_toggle=true, proxy_enabled=true"
+                    );
+                }
+            }
+
             // 2. OMO 配置导入（当数据库中无 OMO provider 时，从本地文件导入）
             {
                 let has_omo = app_state

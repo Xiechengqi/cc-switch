@@ -214,10 +214,18 @@ jobs:
           images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=latest
-            type=sha,prefix=
+            type=sha,prefix=,format=long
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=latest
+
+      - name: Show resolved image tags
+        shell: bash
+        env:
+          META_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          echo "Resolved tags:"
+          echo "$META_TAGS"
 
       - name: Prepare Docker build context with deb
         id: docker-context

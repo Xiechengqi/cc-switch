@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-05-08
+
+- **上游分支：** `main`
+- **上游 HEAD：** `10c874af`
+- **共同祖先：** `1d44b1ba`
+- **合并提交数：** 16
+- **合并提交：** `07d0bc5a`
+- **主要变更：**
+  - feat(claude-desktop): 新增 44 个 provider preset，从 Claude Code 翻译过来；通过 proxy gateway 支持第三方 provider 切换；form UI 与 Claude Code 对齐；模型映射 UX 简化；3P provider 仅在需要路由时才展示徽章；移除 proxy-stopped 状态告警；`[1M]` 后缀 model route 匹配修复；裁剪 proxy / switch 流程冗余
+  - fix(codex): 启动期 live import 重复处理 (#2590)
+  - fix(proxy): 非 Anthropic 后端复用 pooled HTTPS 连接（**未采纳**，见冲突解决）
+  - feat(deepseek): 工具调用响应携带 `reasoning_content` (#2543)
+  - chore(backend): 通过 `cargo fmt` / `cargo clippy --all-targets`
+  - docs: 新增 BytePlus、Micu API、Right Code、shengsuanyun、claudeapi 等赞助商展示，更新多个 logo / 文案
+- **冲突解决：**
+  - `.gitignore` — 保留本仓 `.github` 跟踪（CI workflow 在仓内维护，不能忽略），同时接受上游新加的 `mainWindow.js` 忽略项
+  - `src-tauri/src/database/mod.rs` — 同时保留本仓 `pub use dao::shares::ShareRecord` 与上游新增 `pub(crate) use dao::providers_seed::CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID`
+  - `src-tauri/src/proxy/forwarder.rs` —
+    - 主体：保留本仓 retry `loop {}` 结构以及 OAuth 401 单次重试、Gemini Code Assist `outbound_body["project"] = project_id` 注入。**没有**采纳上游 `e15bfbfe` 的 pooled-reqwest 路径（`should_preserve_exact_header_case` + reqwest pool dispatch），因为它要求把外层 retry loop 拆成线性代码，与本仓的 401 重试和后续单包响应处理冲突；遗留为 TODO，编译期产出两条 `should_preserve_exact_header_case` / `map_reqwest_send_error` 未使用的 dead-code warning（保留是为下次评估时直接可用）
+    - 测试模块：同时保留本仓新增的 `find_header_value` helper 与上游新增的 `test_provider_with_type` helper（两者都被各自的新测试用例使用）
+  - `src-tauri/src/tray.rs` — 保留本仓 `crate::commands::switch_provider_internal` 调用（语义上等价于上游的 `crate::services::ProviderService::switch`，前者只是后者的薄包装），后接的 `OauthQuotaState` 切换后异步刷新逻辑也一并保留
+- **附加：** 合并前先把工作区 62 个未提交文件 commit 为 `79cf62ba wip: local changes before upstream merge`（与 2026-05-02 同款流程），避免合并冲突解决期间被自动恢复
+- **验证：** `cargo check`（仅 7 条 warning，含上述 2 条 dead-code）、`pnpm tsc --noEmit` 通过
+- **注：** 推送命令 `git push origin main` 输出 `76da1f9d..07d0bc5a`
+
+---
+
 ## 2026-05-02
 
 - **上游分支：** `main`

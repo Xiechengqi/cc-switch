@@ -29,4 +29,5 @@ flatpak-repo/
 copilot-api
 .history
 CODEBUDDY.md
-# .github
+# .github 在本仓维护，不忽略
+mainWindow.js

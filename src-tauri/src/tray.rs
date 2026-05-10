@@ -429,7 +429,8 @@ fn handle_provider_click(
             .db
             .set_proxy_flags_sync(app_type_str, proxy_enabled, false)?;
 
-        // 切换供应商
+        // 切换供应商。需要本地路由的供应商也不在这里自动启动代理，
+        // 由用户在页面/设置中手动开启。
         crate::commands::switch_provider_internal(
             app_state.inner(),
             app_type.clone(),

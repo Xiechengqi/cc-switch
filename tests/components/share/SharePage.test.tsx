@@ -59,6 +59,7 @@ describe("SharePage", () => {
         subdomain: "alpha",
         tunnelUrl: "https://share-1.example.test",
         status: "active",
+        autoStart: false,
         createdAt: "2026-04-01T00:00:00.000Z",
         lastUsedAt: null,
       },
@@ -94,14 +95,17 @@ describe("SharePage", () => {
     });
     let requestBody: { routerDomain?: string; email?: string } | null = null;
     server.use(
-      http.post("http://tauri.local/email_auth_request_code", async ({ request }) => {
-        requestBody = (await request.json()) as typeof requestBody;
-        return HttpResponse.json({
-          ok: true,
-          cooldownSecs: 60,
-          maskedDestination: requestBody?.email ?? "***",
-        });
-      }),
+      http.post(
+        "http://tauri.local/email_auth_request_code",
+        async ({ request }) => {
+          requestBody = (await request.json()) as typeof requestBody;
+          return HttpResponse.json({
+            ok: true,
+            cooldownSecs: 60,
+            maskedDestination: requestBody?.email ?? "***",
+          });
+        },
+      ),
     );
 
     renderPage();
@@ -131,14 +135,17 @@ describe("SharePage", () => {
     const user = userEvent.setup();
     let requestBody: { routerDomain?: string; email?: string } | null = null;
     server.use(
-      http.post("http://tauri.local/email_auth_request_code", async ({ request }) => {
-        requestBody = (await request.json()) as typeof requestBody;
-        return HttpResponse.json({
-          ok: true,
-          cooldownSecs: 60,
-          maskedDestination: requestBody?.email ?? "***",
-        });
-      }),
+      http.post(
+        "http://tauri.local/email_auth_request_code",
+        async ({ request }) => {
+          requestBody = (await request.json()) as typeof requestBody;
+          return HttpResponse.json({
+            ok: true,
+            cooldownSecs: 60,
+            maskedDestination: requestBody?.email ?? "***",
+          });
+        },
+      ),
     );
 
     renderPage();
@@ -157,6 +164,63 @@ describe("SharePage", () => {
       }),
     );
     expect(screen.getByLabelText("Verification Code")).toBeInTheDocument();
+  });
+
+  it("automatically opens owner login when tunnel status requires owner verification", async () => {
+    server.use(
+      http.post("http://tauri.local/get_tunnel_status", () =>
+        HttpResponse.json({
+          info: null,
+          lastError: "当前设备身份已失效，请重新发送并验证邮箱验证码后重试",
+          requiresOwnerLogin: true,
+        }),
+      ),
+    );
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Share Owner Login")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Share Owner Login")).toBeInTheDocument();
+  });
+
+  it("does not loop owner login when retry after verification still fails", async () => {
+    const user = userEvent.setup();
+    let enableAttempts = 0;
+    server.use(
+      http.post("http://tauri.local/get_tunnel_status", () =>
+        HttpResponse.json({
+          info: null,
+          lastError: "当前设备身份已失效，请重新发送并验证邮箱验证码后重试",
+          requiresOwnerLogin: true,
+        }),
+      ),
+      http.post("http://tauri.local/enable_share", () => {
+        enableAttempts += 1;
+        return HttpResponse.json(
+          "当前设备身份已失效，请重新发送并验证邮箱验证码后重试",
+          { status: 400 },
+        );
+      }),
+    );
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Share Owner Login")).toBeInTheDocument(),
+    );
+    await user.click(screen.getByText("Continue"));
+    await user.click(await screen.findByText("发送验证码"));
+    await user.type(await screen.findByLabelText("Verification Code"), "123456");
+    await user.click(screen.getByText("验证并登录"));
+
+    await waitFor(() => expect(enableAttempts).toBe(1));
+    await waitFor(() =>
+      expect(screen.queryByText("Share Owner Login")).not.toBeInTheDocument(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(enableAttempts).toBe(1);
   });
 
   it("changes owner email by verifying the new owner email", async () => {
@@ -197,13 +261,15 @@ describe("SharePage", () => {
     renderPage();
 
     await screen.findByText("Alpha Share");
-    await user.click(screen.getByRole("button", { name: "Change Owner Email" }));
+    await user.click(
+      screen.getByRole("button", { name: "Change Owner Email" }),
+    );
     await waitFor(() =>
       expect(screen.getAllByText("Change Owner Email").length).toBeGreaterThan(
         1,
       ),
     );
-    expect(screen.getByText("alpha@example.com")).toBeInTheDocument();
+    expect(screen.getAllByText("alpha@example.com").length).toBeGreaterThan(0);
 
     await user.click(screen.getByText("Continue"));
     await user.type(
@@ -220,7 +286,10 @@ describe("SharePage", () => {
       newEmail: "new-owner@example.com",
     });
 
-    await user.type(await screen.findByLabelText("Verification Code"), "123456");
+    await user.type(
+      await screen.findByLabelText("Verification Code"),
+      "123456",
+    );
     await user.click(screen.getByText("Change Owner"));
 
     await waitFor(() =>

@@ -22,3 +22,4 @@ export { useCopilotAuth } from "./useCopilotAuth";
 export { useCodexOauth } from "./useCodexOauth";
 export { useClaudeOauth } from "./useClaudeOauth";
 export { useGeminiOauth } from "./useGeminiOauth";
+export { useDeepSeekAccount } from "./useDeepSeekAccount";

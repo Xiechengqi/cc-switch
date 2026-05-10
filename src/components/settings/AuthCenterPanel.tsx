@@ -7,10 +7,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ClaudeIcon, CodexIcon, GeminiIcon } from "@/components/BrandIcons";
+import {
+  ClaudeIcon,
+  CodexIcon,
+  DeepSeekIcon,
+  GeminiIcon,
+} from "@/components/BrandIcons";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
 import { ClaudeOAuthSection } from "@/components/providers/forms/ClaudeOAuthSection";
+import { DeepSeekAccountSection } from "@/components/providers/forms/DeepSeekAccountSection";
 import { GeminiOAuthSection } from "@/components/providers/forms/GeminiOAuthSection";
 import { settingsApi } from "@/lib/api";
 import { useSettingsQuery } from "@/lib/query";
@@ -230,6 +236,24 @@ export function AuthCenterPanel() {
         </div>
 
         <GeminiOAuthSection showLoggedInAccounts />
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+            <DeepSeekIcon size={20} />
+          </div>
+          <div>
+            <h4 className="font-medium">DeepSeek(Account)</h4>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.authCenter.deepseekAccountDescription", {
+                defaultValue: "管理 DeepSeek 账号",
+              })}
+            </p>
+          </div>
+        </div>
+
+        <DeepSeekAccountSection showLoggedInAccounts />
       </section>
     </div>
   );

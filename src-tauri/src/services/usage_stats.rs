@@ -97,6 +97,10 @@ pub struct RequestLogDetail {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_model: Option<String>,
+    pub request_agent: String,
+    pub requested_model: String,
+    pub actual_model: String,
+    pub actual_model_source: String,
     pub cost_multiplier: String,
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -124,8 +128,9 @@ pub struct RequestLogDetail {
 
 /// 把 24 列的查询结果映射为 `RequestLogDetail`。
 ///
-/// 调用方的 SELECT **必须**按以下顺序返回 24 列：
+/// 调用方的 SELECT **必须**按以下顺序返回 30 列：
 /// `request_id, provider_id, provider_name, app_type, model, request_model,
+///  request_agent, requested_model, actual_model, actual_model_source,
 ///  cost_multiplier, input_tokens, output_tokens, cache_read_tokens,
 ///  cache_creation_tokens, input_cost_usd, output_cost_usd, cache_read_cost_usd,
 ///  cache_creation_cost_usd, total_cost_usd, is_streaming, latency_ms,
@@ -141,28 +146,32 @@ fn row_to_request_log_detail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reques
         app_type: row.get(3)?,
         model: row.get(4)?,
         request_model: row.get(5)?,
+        request_agent: row.get(6)?,
+        requested_model: row.get(7)?,
+        actual_model: row.get(8)?,
+        actual_model_source: row.get(9)?,
         cost_multiplier: row
-            .get::<_, Option<String>>(6)?
+            .get::<_, Option<String>>(10)?
             .unwrap_or_else(|| "1".to_string()),
-        input_tokens: row.get::<_, i64>(7)? as u32,
-        output_tokens: row.get::<_, i64>(8)? as u32,
-        cache_read_tokens: row.get::<_, i64>(9)? as u32,
-        cache_creation_tokens: row.get::<_, i64>(10)? as u32,
-        input_cost_usd: row.get(11)?,
-        output_cost_usd: row.get(12)?,
-        cache_read_cost_usd: row.get(13)?,
-        cache_creation_cost_usd: row.get(14)?,
-        total_cost_usd: row.get(15)?,
-        is_streaming: row.get::<_, i64>(16)? != 0,
-        latency_ms: row.get::<_, i64>(17)? as u64,
-        first_token_ms: row.get::<_, Option<i64>>(18)?.map(|v| v as u64),
-        duration_ms: row.get::<_, Option<i64>>(19)?.map(|v| v as u64),
-        status_code: row.get::<_, i64>(20)? as u16,
-        error_message: row.get(21)?,
-        created_at: row.get(22)?,
-        share_id: row.get(23)?,
-        share_name: row.get(24)?,
-        data_source: row.get(25)?,
+        input_tokens: row.get::<_, i64>(11)? as u32,
+        output_tokens: row.get::<_, i64>(12)? as u32,
+        cache_read_tokens: row.get::<_, i64>(13)? as u32,
+        cache_creation_tokens: row.get::<_, i64>(14)? as u32,
+        input_cost_usd: row.get(15)?,
+        output_cost_usd: row.get(16)?,
+        cache_read_cost_usd: row.get(17)?,
+        cache_creation_cost_usd: row.get(18)?,
+        total_cost_usd: row.get(19)?,
+        is_streaming: row.get::<_, i64>(20)? != 0,
+        latency_ms: row.get::<_, i64>(21)? as u64,
+        first_token_ms: row.get::<_, Option<i64>>(22)?.map(|v| v as u64),
+        duration_ms: row.get::<_, Option<i64>>(23)?.map(|v| v as u64),
+        status_code: row.get::<_, i64>(24)? as u16,
+        error_message: row.get(25)?,
+        created_at: row.get(26)?,
+        share_id: row.get(27)?,
+        share_name: row.get(28)?,
+        data_source: row.get(29)?,
     })
 }
 
@@ -1099,7 +1108,8 @@ impl Database {
         let logs_pname = provider_name_coalesce("l", "p");
         let sql = format!(
             "SELECT l.request_id, l.provider_id, {logs_pname} as provider_name, l.app_type, l.model,
-                    l.request_model, l.cost_multiplier,
+                    l.request_model, l.request_agent, l.requested_model, l.actual_model, l.actual_model_source,
+                    l.cost_multiplier,
                     l.input_tokens, l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
                     l.input_cost_usd, l.output_cost_usd, l.cache_read_cost_usd, l.cache_creation_cost_usd, l.total_cost_usd,
                     l.is_streaming, l.latency_ms, l.first_token_ms, l.duration_ms,
@@ -1148,7 +1158,8 @@ impl Database {
         let detail_pname = provider_name_coalesce("l", "p");
         let detail_sql = format!(
             "SELECT l.request_id, l.provider_id, {detail_pname} as provider_name, l.app_type, l.model,
-                    l.request_model, l.cost_multiplier,
+                    l.request_model, l.request_agent, l.requested_model, l.actual_model, l.actual_model_source,
+                    l.cost_multiplier,
                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                     input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                     is_streaming, latency_ms, first_token_ms, duration_ms,
@@ -1298,6 +1309,7 @@ impl Database {
         let mut logs = {
             let mut stmt = conn.prepare(
                 "SELECT request_id, provider_id, NULL AS provider_name, app_type, model, request_model,
+                        request_agent, requested_model, actual_model, actual_model_source,
                         cost_multiplier,
                         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                         input_cost_usd, output_cost_usd, cache_read_cost_usd,

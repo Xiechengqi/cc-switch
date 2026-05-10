@@ -33,6 +33,7 @@ struct TunnelHandle {
 pub struct TunnelManager {
     config: Option<TunnelConfig>,
     tunnels: HashMap<String, TunnelHandle>,
+    last_errors: HashMap<String, String>,
     http_client: reqwest::Client,
     installation_registration_refreshed: bool,
 }
@@ -42,6 +43,7 @@ impl TunnelManager {
         Self {
             config: None,
             tunnels: HashMap::new(),
+            last_errors: HashMap::new(),
             http_client: reqwest::Client::new(),
             installation_registration_refreshed: false,
         }
@@ -60,7 +62,7 @@ impl TunnelManager {
         &mut self,
         id: &str,
         req: TunnelRequest,
-        _db: Arc<Database>,
+        db: Arc<Database>,
     ) -> Result<TunnelInfo, TunnelError> {
         if self.tunnels.contains_key(id) {
             return Err(TunnelError::AlreadyExists(id.to_string()));
@@ -137,6 +139,7 @@ impl TunnelManager {
         let reconnect_subdomain = req.subdomain.clone();
         let reconnect_type = req.tunnel_type;
         let reconnect_share_metadata = req.share_metadata.clone();
+        let reconnect_db = db.clone();
         let reconnect_healthy = healthy.clone();
         let mut shutdown_for_reconnect = shutdown_tx.subscribe();
 
@@ -149,6 +152,7 @@ impl TunnelManager {
                 reconnect_type,
                 reconnect_subdomain,
                 reconnect_share_metadata,
+                reconnect_db,
                 reconnect_healthy,
                 &mut shutdown_for_reconnect,
             )
@@ -166,6 +170,7 @@ impl TunnelManager {
                 _reconnect_task: reconnect_task,
             },
         );
+        self.last_errors.remove(id);
 
         Ok(self.tunnels[id].info.clone())
     }
@@ -179,6 +184,7 @@ impl TunnelManager {
         tunnel_type: TunnelType,
         subdomain: String,
         share_metadata: Option<config::ShareTunnelMetadata>,
+        db: Arc<Database>,
         healthy: Arc<AtomicBool>,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) {
@@ -186,6 +192,10 @@ impl TunnelManager {
             tokio::select! {
                 Some(()) = reconnect_rx.recv() => {
                     log::info!("[Tunnel] Reconnecting tunnel for {subdomain}...");
+                    let share_metadata = refresh_share_metadata_for_reconnect(
+                        share_metadata.clone(),
+                        &db,
+                    );
                     match connection::issue_lease(
                         &http_client,
                         &config,
@@ -241,6 +251,18 @@ impl TunnelManager {
         })
     }
 
+    pub fn set_last_error(&mut self, id: &str, message: impl Into<String>) {
+        self.last_errors.insert(id.to_string(), message.into());
+    }
+
+    pub fn clear_last_error(&mut self, id: &str) {
+        self.last_errors.remove(id);
+    }
+
+    pub fn get_last_error(&self, id: &str) -> Option<String> {
+        self.last_errors.get(id).cloned()
+    }
+
     pub fn list_tunnels(&self) -> Vec<(String, TunnelInfo)> {
         self.tunnels
             .iter()
@@ -257,6 +279,33 @@ impl TunnelManager {
         let ids: Vec<String> = self.tunnels.keys().cloned().collect();
         for id in ids {
             let _ = self.stop_tunnel(&id).await;
+        }
+    }
+}
+
+fn refresh_share_metadata_for_reconnect(
+    share_metadata: Option<config::ShareTunnelMetadata>,
+    db: &Arc<Database>,
+) -> Option<config::ShareTunnelMetadata> {
+    let Some(metadata) = share_metadata else {
+        return None;
+    };
+    match db.get_share_by_id(&metadata.share_id) {
+        Ok(Some(share)) => Some(sync::share_metadata_from_record(&share)),
+        Ok(None) => {
+            log::warn!(
+                "[Tunnel] Share {} not found while refreshing reconnect metadata; using cached metadata",
+                metadata.share_id
+            );
+            Some(metadata)
+        }
+        Err(err) => {
+            log::warn!(
+                "[Tunnel] Failed to refresh reconnect metadata for share {}: {}; using cached metadata",
+                metadata.share_id,
+                err
+            );
+            Some(metadata)
         }
     }
 }

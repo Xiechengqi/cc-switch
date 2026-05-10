@@ -16,6 +16,10 @@ pub struct RequestLog {
     pub app_type: String,
     pub model: String,
     pub request_model: String,
+    pub request_agent: String,
+    pub requested_model: String,
+    pub actual_model: String,
+    pub actual_model_source: String,
     pub usage: TokenUsage,
     pub cost: Option<CostBreakdown>,
     pub latency_ms: u64,
@@ -77,18 +81,23 @@ impl<'a> UsageLogger<'a> {
         conn.execute(
             "INSERT OR REPLACE INTO proxy_request_logs (
                 request_id, provider_id, app_type, model, request_model,
+                request_agent, requested_model, actual_model, actual_model_source,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
                 provider_type, is_streaming, cost_multiplier, created_at,
                 share_id, share_name
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
             rusqlite::params![
                 log.request_id,
                 log.provider_id,
                 log.app_type,
                 log.model,
                 log.request_model,
+                log.request_agent,
+                log.requested_model,
+                log.actual_model,
+                log.actual_model_source,
                 log.usage.input_tokens,
                 log.usage.output_tokens,
                 log.usage.cache_read_tokens,
@@ -134,8 +143,12 @@ impl<'a> UsageLogger<'a> {
         let log = RequestLog {
             request_id,
             provider_id,
-            app_type,
-            model,
+            app_type: app_type.clone(),
+            model: model.clone(),
+            request_agent: app_type.clone(),
+            requested_model: request_model.clone(),
+            actual_model_source: actual_model_source(&request_model, &model),
+            actual_model: model.clone(),
             request_model,
             usage: TokenUsage::default(),
             cost: None,
@@ -175,8 +188,12 @@ impl<'a> UsageLogger<'a> {
         let log = RequestLog {
             request_id,
             provider_id,
-            app_type,
-            model,
+            app_type: app_type.clone(),
+            model: model.clone(),
+            request_agent: app_type.clone(),
+            requested_model: request_model.clone(),
+            actual_model_source: actual_model_source(&request_model, &model),
+            actual_model: model.clone(),
             request_model,
             usage: TokenUsage::default(),
             cost: None,
@@ -323,8 +340,12 @@ impl<'a> UsageLogger<'a> {
         let log = RequestLog {
             request_id,
             provider_id,
-            app_type,
-            model,
+            app_type: app_type.clone(),
+            model: model.clone(),
+            request_agent: app_type.clone(),
+            requested_model: request_model.clone(),
+            actual_model_source: actual_model_source(&request_model, &model),
+            actual_model: model.clone(),
             request_model,
             usage,
             cost,
@@ -341,6 +362,14 @@ impl<'a> UsageLogger<'a> {
         };
 
         self.log_request(&log)
+    }
+}
+
+fn actual_model_source(requested_model: &str, actual_model: &str) -> String {
+    if requested_model == actual_model {
+        "official".to_string()
+    } else {
+        "provider_mapping".to_string()
     }
 }
 

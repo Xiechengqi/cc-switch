@@ -19,6 +19,11 @@ mod codex;
 pub mod codex_oauth_auth;
 pub mod copilot_auth;
 pub mod copilot_model_map;
+pub mod deepseek_account_auth;
+pub mod deepseek_claude;
+pub mod deepseek_client;
+pub mod deepseek_pow;
+pub mod deepseek_sse;
 mod gemini;
 pub mod gemini_oauth_auth;
 pub(crate) mod gemini_schema;
@@ -70,6 +75,8 @@ pub enum ProviderType {
     CodexOAuth,
     /// Claude Official (Anthropic 官方订阅 OAuth，透传不转换)
     ClaudeOAuth,
+    /// DeepSeek Account (DeepSeek Web 账号，Claude Messages API 本地适配)
+    DeepSeekAccount,
 }
 
 impl ProviderType {
@@ -84,6 +91,7 @@ impl ProviderType {
             ProviderType::GitHubCopilot => true,
             ProviderType::CodexOAuth => true,
             ProviderType::OpenRouter => false,
+            ProviderType::DeepSeekAccount => false,
             _ => false,
         }
     }
@@ -102,6 +110,7 @@ impl ProviderType {
             ProviderType::OpenRouter => "https://openrouter.ai/api",
             ProviderType::GitHubCopilot => "https://api.githubcopilot.com",
             ProviderType::CodexOAuth => "https://chatgpt.com/backend-api/codex",
+            ProviderType::DeepSeekAccount => "https://chat.deepseek.com",
         }
     }
 
@@ -130,6 +139,9 @@ impl ProviderType {
                     }
                     if meta.provider_type.as_deref() == Some("claude_oauth") {
                         return ProviderType::ClaudeOAuth;
+                    }
+                    if meta.provider_type.as_deref() == Some("deepseek_account") {
+                        return ProviderType::DeepSeekAccount;
                     }
                 }
 
@@ -211,6 +223,7 @@ impl ProviderType {
             ProviderType::GitHubCopilot => "github_copilot",
             ProviderType::CodexOAuth => "codex_oauth",
             ProviderType::ClaudeOAuth => "claude_oauth",
+            ProviderType::DeepSeekAccount => "deepseek_account",
         }
     }
 }
@@ -236,6 +249,10 @@ impl std::str::FromStr for ProviderType {
                 Ok(ProviderType::GitHubCopilot)
             }
             "codex_oauth" | "codex-oauth" | "codexoauth" => Ok(ProviderType::CodexOAuth),
+            "claude_oauth" | "claude-oauth" | "claudeoauth" => Ok(ProviderType::ClaudeOAuth),
+            "deepseek_account" | "deepseek-account" | "deepseekaccount" => {
+                Ok(ProviderType::DeepSeekAccount)
+            }
             _ => Err(format!("Invalid provider type: {s}")),
         }
     }
@@ -263,7 +280,8 @@ pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> Box<dyn Pr
         | ProviderType::OpenRouter
         | ProviderType::GitHubCopilot
         | ProviderType::CodexOAuth
-        | ProviderType::ClaudeOAuth => Box::new(ClaudeAdapter::new()),
+        | ProviderType::ClaudeOAuth
+        | ProviderType::DeepSeekAccount => Box::new(ClaudeAdapter::new()),
         ProviderType::Codex => Box::new(CodexAdapter::new()),
         ProviderType::Gemini | ProviderType::GeminiCli => Box::new(GeminiAdapter::new()),
     }

@@ -827,6 +827,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "futures",
+ "hex",
  "http",
  "http-body",
  "http-body-util",

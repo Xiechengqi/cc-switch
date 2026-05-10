@@ -145,6 +145,17 @@ pub struct TunnelInfo {
     pub healthy: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareTunnelStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info: Option<TunnelInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub requires_owner_login: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareSupport {
@@ -174,6 +185,13 @@ pub struct ShareUpstreamQuota {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ShareUpstreamModel {
+    pub slot: String,
+    pub actual_model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ShareUpstreamProvider {
     pub kind: String,
     pub app: String,
@@ -185,6 +203,8 @@ pub struct ShareUpstreamProvider {
     pub api_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<ShareUpstreamQuota>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ShareUpstreamModel>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -228,6 +248,11 @@ pub struct ShareTunnelMetadata {
     pub tokens_used: i64,
     pub requests_count: i64,
     pub share_status: String,
+    // Local-only setting. The deployed router does not include autoStart in the
+    // signed ShareDescriptor, so serializing it would make router signature
+    // verification fail after deserialization drops the unknown field.
+    #[serde(default, skip_serializing)]
+    pub auto_start: bool,
     pub created_at: String,
     pub expires_at: String,
     #[serde(default)]
@@ -249,6 +274,10 @@ pub struct ShareTunnelRequestLog {
     pub app_type: String,
     pub model: String,
     pub request_model: String,
+    pub request_agent: String,
+    pub requested_model: String,
+    pub actual_model: String,
+    pub actual_model_source: String,
     pub status_code: u16,
     pub latency_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -316,6 +345,7 @@ mod tests {
             tokens_used: 0,
             requests_count: 0,
             share_status: "active".to_string(),
+            auto_start: true,
             created_at: "2026-04-21T00:00:00Z".to_string(),
             expires_at: "2026-04-22T00:00:00Z".to_string(),
             support: ShareSupport::default(),

@@ -19,6 +19,7 @@ export interface ShareRecord {
   subdomain?: string | null;
   tunnelUrl?: string | null;
   status: string;
+  autoStart: boolean;
   createdAt: string;
   lastUsedAt?: string | null;
 }
@@ -32,6 +33,7 @@ export interface CreateShareParams {
   expiresInSecs: number;
   subdomain?: string;
   apiKey?: string;
+  autoStart: boolean;
 }
 
 export interface PublicMarket {
@@ -83,11 +85,22 @@ export interface UpdateShareExpirationParams {
   expiresAt: string;
 }
 
+export interface UpdateShareAutoStartParams {
+  shareId: string;
+  autoStart: boolean;
+}
+
 export interface TunnelInfo {
   tunnelUrl: string;
   subdomain: string;
   remotePort: number;
   healthy: boolean;
+}
+
+export interface ShareTunnelStatus {
+  info?: TunnelInfo | null;
+  lastError?: string | null;
+  requiresOwnerLogin: boolean;
 }
 
 export interface TunnelConfig {
@@ -170,6 +183,12 @@ async function updateExpiration(
   return invoke<ShareRecord>("update_share_expiration", { params });
 }
 
+async function updateAutoStart(
+  params: UpdateShareAutoStartParams,
+): Promise<ShareRecord> {
+  return invoke<ShareRecord>("update_share_auto_start", { params });
+}
+
 async function updateAcl(params: UpdateShareAclParams): Promise<ShareRecord> {
   return invoke<ShareRecord>("update_share_acl", { params });
 }
@@ -204,8 +223,8 @@ async function stopTunnel(shareId: string): Promise<void> {
   return invoke("stop_share_tunnel", { shareId });
 }
 
-async function getTunnelStatus(shareId: string): Promise<TunnelInfo | null> {
-  return invoke<TunnelInfo | null>("get_tunnel_status", { shareId });
+async function getTunnelStatus(shareId: string): Promise<ShareTunnelStatus> {
+  return invoke<ShareTunnelStatus>("get_tunnel_status", { shareId });
 }
 
 async function getConnectInfo(shareId: string): Promise<ConnectInfo> {
@@ -231,6 +250,7 @@ export const shareApi = {
   updateDescription,
   updateForSale,
   updateExpiration,
+  updateAutoStart,
   updateAcl,
   listMarkets,
   authorizeMarket,

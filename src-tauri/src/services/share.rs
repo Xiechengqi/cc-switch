@@ -94,6 +94,7 @@ impl ShareService {
             subdomain: Some(subdomain),
             tunnel_url: None,
             status: "paused".to_string(),
+            auto_start: params.auto_start,
             created_at: now.to_rfc3339(),
             last_used_at: None,
         };
@@ -378,6 +379,19 @@ impl ShareService {
         Ok(updated)
     }
 
+    pub fn update_auto_start(
+        db: &Arc<Database>,
+        share_id: &str,
+        auto_start: bool,
+    ) -> Result<ShareRecord, AppError> {
+        db.update_share_auto_start(share_id, auto_start)?;
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
     pub fn update_acl(
         db: &Arc<Database>,
         share_id: &str,
@@ -445,6 +459,7 @@ pub struct PrepareShareParams {
     pub expires_in_secs: i64,
     pub subdomain: Option<String>,
     pub api_key: Option<String>,
+    pub auto_start: bool,
 }
 
 fn normalize_share_app_type(value: &str) -> Result<String, AppError> {

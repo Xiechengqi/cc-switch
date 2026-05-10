@@ -776,6 +776,16 @@ impl RequestForwarder {
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
     ) -> Result<(ProxyResponse, Option<String>), ProxyError> {
+        if matches!(app_type, AppType::Claude) && provider.is_deepseek_account_provider() {
+            let response = super::providers::deepseek_claude::forward_deepseek_claude(
+                self.app_handle.as_ref(),
+                provider,
+                body,
+            )
+            .await?;
+            return Ok((response, Some("anthropic".to_string())));
+        }
+
         // Gemini Official/OAuth 对齐 Claude/Codex official：本地代理不要求用户配置
         // base_url，后续会直接改写到 Code Assist 内部接口。
         let mut base_url = extract_forward_base_url(app_type, provider, adapter)?;

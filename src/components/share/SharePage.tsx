@@ -1,13 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { useQueries, useQueryClient, type Query } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQueries } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
 import {
-  settingsApi,
   shareApi,
   type AppId,
   type ShareRecord,
-  type TunnelInfo,
+  type ShareTunnelStatus,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -23,6 +21,7 @@ import {
   useEnableShareMutation,
   useResetShareUsageMutation,
   useUpdateShareAclMutation,
+  useUpdateShareAutoStartMutation,
   useSharesQuery,
   useUpdateShareApiKeyMutation,
   useUpdateShareDescriptionMutation,
@@ -33,26 +32,16 @@ import {
   useUpdateShareTokenLimitMutation,
 } from "@/lib/query";
 import { shareKeys } from "@/lib/query/share";
-import { usageKeys } from "@/lib/query/usage";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   getTunnelConfigFromSettings,
   isTunnelConfigured,
 } from "@/utils/shareUtils";
-import { ShareConnectDialog } from "./ShareConnectDialog";
 import { CreateShareDialog } from "./CreateShareDialog";
-import { ShareDetailDrawer } from "./ShareDetailDrawer";
 import { ShareList } from "./ShareList";
 import { ShareOwnerChangeEmailDialog } from "./ShareOwnerChangeEmailDialog";
 import { ShareOwnerLoginDialog } from "./ShareOwnerLoginDialog";
 import { ShareRouterBar } from "./ShareRouterBar";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 interface SharePageProps {
   defaultApp?: AppId;
@@ -60,7 +49,6 @@ interface SharePageProps {
 
 export function SharePage({ defaultApp }: SharePageProps) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   const { data: shares = [], isLoading, error, refetch } = useSharesQuery();
   const { data: settings } = useSettingsQuery();
   const { data: emailAuthStatus } = useEmailAuthStatusQuery();
@@ -75,9 +63,10 @@ export function SharePage({ defaultApp }: SharePageProps) {
   );
   const [createOpen, setCreateOpen] = useState(false);
   const [ownerLoginOpen, setOwnerLoginOpen] = useState(false);
+  const [ownerLoginEmailHint, setOwnerLoginEmailHint] = useState<string | null>(
+    null,
+  );
   const [ownerChangeOpen, setOwnerChangeOpen] = useState(false);
-  const [detailShareId, setDetailShareId] = useState<string | null>(null);
-  const [connectShareId, setConnectShareId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ShareRecord | null>(null);
   const [pendingActionShareId, setPendingActionShareId] = useState<
     string | null
@@ -85,8 +74,11 @@ export function SharePage({ defaultApp }: SharePageProps) {
   const [pendingOwnerLoginShareId, setPendingOwnerLoginShareId] = useState<
     string | null
   >(null);
-  const [selectedMarketEmail, setSelectedMarketEmail] = useState("");
-  const [marketActionPending, setMarketActionPending] = useState(false);
+  const [
+    autoOwnerReverifyPromptedShareId,
+    setAutoOwnerReverifyPromptedShareId,
+  ] = useState<string | null>(null);
+  const ownerLoginRetryAttemptedRef = useRef<Set<string>>(new Set());
 
   const createMutation = useCreateShareMutation();
   const deleteMutation = useDeleteShareMutation();
@@ -97,6 +89,7 @@ export function SharePage({ defaultApp }: SharePageProps) {
   const updateDescriptionMutation = useUpdateShareDescriptionMutation();
   const updateForSaleMutation = useUpdateShareForSaleMutation();
   const updateExpirationMutation = useUpdateShareExpirationMutation();
+  const updateAutoStartMutation = useUpdateShareAutoStartMutation();
   const updateAclMutation = useUpdateShareAclMutation();
   const updateParallelLimitMutation = useUpdateShareParallelLimitMutation();
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
@@ -113,14 +106,15 @@ export function SharePage({ defaultApp }: SharePageProps) {
     queries: shares.map((share) => ({
       queryKey: shareKeys.tunnelStatus(share.id),
       queryFn: () => shareApi.getTunnelStatus(share.id),
-      enabled: share.status === "active" && Boolean(share.tunnelUrl),
-      refetchInterval: (query: Query<TunnelInfo | null, Error>) =>
-        share.status === "active" && Boolean(query.state.data) ? 8000 : false,
+      enabled: share.status === "active",
+      refetchInterval: share.status === "active" ? 8000 : false,
       refetchIntervalInBackground: true,
     })),
   });
 
-  const tunnelStatusMap = useMemo(
+  const tunnelRuntimeStatusMap = useMemo<
+    Record<string, ShareTunnelStatus | null>
+  >(
     () =>
       Object.fromEntries(
         shares.map((share, index) => [
@@ -131,27 +125,47 @@ export function SharePage({ defaultApp }: SharePageProps) {
     [shares, tunnelQueries],
   );
 
-  const detailShare =
-    shares.find((share) => share.id === detailShareId) ?? null;
-  const connectShare =
-    shares.find((share) => share.id === connectShareId) ?? null;
+  const tunnelStatusMap = useMemo(
+    () =>
+      Object.fromEntries(
+        shares.map((share) => [
+          share.id,
+          tunnelRuntimeStatusMap[share.id]?.info ?? null,
+        ]),
+      ),
+    [shares, tunnelRuntimeStatusMap],
+  );
+
+  const tunnelOwnerLoginRequiredMap = useMemo(
+    () =>
+      Object.fromEntries(
+        shares.map((share) => [
+          share.id,
+          tunnelRuntimeStatusMap[share.id]?.requiresOwnerLogin ?? false,
+        ]),
+      ),
+    [shares, tunnelRuntimeStatusMap],
+  );
+
   const primaryShare = shares[0] ?? null;
-  const selectedMarket =
-    markets.find((market) => market.email === selectedMarketEmail) ?? null;
-  const authorizedMarket = primaryShare
-    ? markets.find((market) =>
-        primaryShare.sharedWithEmails
-          .map((email) => email.toLowerCase())
-          .includes(market.email.toLowerCase()),
-      ) ?? null
-    : null;
   const canChangeOwner =
     Boolean(emailAuthStatus?.authenticated) &&
     Boolean(primaryShare?.ownerEmail) &&
     emailAuthStatus?.email === primaryShare?.ownerEmail;
   const shouldShowLoginOnly = !primaryShare && !emailAuthStatus?.authenticated;
   const openOwnerReverify = (share?: ShareRecord | null) => {
-    setPendingOwnerLoginShareId(share?.id ?? null);
+    const shareId = share?.id ?? null;
+    if (shareId) {
+      ownerLoginRetryAttemptedRef.current.delete(shareId);
+    }
+    setPendingOwnerLoginShareId(shareId);
+    setOwnerLoginEmailHint(null);
+    setOwnerLoginOpen(true);
+  };
+  const openOwnerLoginWithEmail = (email?: string | null) => {
+    const normalizedEmail = email?.trim().toLowerCase();
+    setPendingOwnerLoginShareId(null);
+    setOwnerLoginEmailHint(normalizedEmail || null);
     setOwnerLoginOpen(true);
   };
 
@@ -159,8 +173,12 @@ export function SharePage({ defaultApp }: SharePageProps) {
     const message = extractErrorMessage(error);
     return (
       message.includes("当前邮箱登录凭证已过期") ||
+      message.includes("当前设备身份已失效") ||
+      message.includes("请重新发送并验证邮箱验证码") ||
       message.includes("请重新登录") ||
-      message.includes("请先完成邮箱验证码登录")
+      message.includes("请先完成邮箱验证码登录") ||
+      message.includes("当前邮箱登录状态与 share owner 不一致") ||
+      message.includes("当前邮箱登录所属分享节点与所选分享节点不一致")
     );
   };
 
@@ -175,58 +193,24 @@ export function SharePage({ defaultApp }: SharePageProps) {
         }),
       );
     }
-    await createMutation.mutateAsync(params);
+    const created = await createMutation.mutateAsync(params);
     setCreateOpen(false);
-  };
-
-  const handleAuthorizeMarket = async () => {
-    if (!primaryShare || !selectedMarket) return;
-    setMarketActionPending(true);
-    try {
-      const updated = await shareApi.authorizeMarket(
-        primaryShare.id,
-        selectedMarket.email,
-      );
-      queryClient.setQueryData<ShareRecord[] | undefined>(
-        shareKeys.list(),
-        (current) =>
-          current?.map((share) => (share.id === updated.id ? updated : share)),
-      );
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: shareKeys.list() }),
-        queryClient.invalidateQueries({
-          queryKey: shareKeys.detail(primaryShare.id),
-        }),
-      ]);
-      toast.success(
-        t("share.market.authorizeSuccess", {
-          defaultValue: "Market authorized",
-        }),
-      );
-    } catch (error) {
-      if (isOwnerAuthExpiredError(error)) {
-        openOwnerReverify(primaryShare);
-      }
-      toast.error(
-        t("share.market.authorizeError", {
-          defaultValue: "Authorize market failed: {{error}}",
-          error: extractErrorMessage(error),
-        }),
-      );
-    } finally {
-      setMarketActionPending(false);
-    }
+    await runShareAction(created, () => enableMutation.mutateAsync(created.id));
   };
 
   const runShareAction = async (
     share: ShareRecord,
     action: () => Promise<unknown>,
+    options?: { promptOnOwnerAuthError?: boolean },
   ) => {
     setPendingActionShareId(share.id);
     try {
       await action();
     } catch (error) {
-      if (isOwnerAuthExpiredError(error)) {
+      if (
+        options?.promptOnOwnerAuthError !== false &&
+        isOwnerAuthExpiredError(error)
+      ) {
         openOwnerReverify(share);
       }
       throw error;
@@ -235,30 +219,43 @@ export function SharePage({ defaultApp }: SharePageProps) {
     }
   };
 
-  useEffect(() => {
-    if (!pendingOwnerLoginShareId || !emailAuthStatus?.authenticated) return;
+  const retryPendingShareAfterOwnerLogin = async () => {
+    if (!pendingOwnerLoginShareId) return;
     const share = shares.find((item) => item.id === pendingOwnerLoginShareId);
-    if (!share || emailAuthStatus.email !== share.ownerEmail) return;
-    setPendingOwnerLoginShareId(null);
-    if (share.status !== "active") {
-      void runShareAction(share, () => enableMutation.mutateAsync(share.id));
+    if (!share) {
+      setPendingOwnerLoginShareId(null);
+      return;
     }
-  }, [emailAuthStatus, enableMutation, pendingOwnerLoginShareId, shares]);
+    setPendingOwnerLoginShareId(null);
+    const tunnelInfo = tunnelStatusMap[share.id];
+    if (share.status === "active" && tunnelInfo?.healthy) return;
+    if (ownerLoginRetryAttemptedRef.current.has(share.id)) return;
 
-  const handleRefresh = async (share: ShareRecord) => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: shareKeys.list() }),
-      queryClient.invalidateQueries({
-        queryKey: shareKeys.tunnelStatus(share.id),
-      }),
-      queryClient.invalidateQueries({ queryKey: shareKeys.detail(share.id) }),
-      queryClient.invalidateQueries({
-        queryKey: usageKeys
-          .logs({ preset: "7d", shareId: share.id }, 0, 10)
-          .slice(0, 2),
-      }),
-    ]);
+    ownerLoginRetryAttemptedRef.current.add(share.id);
+    try {
+      await runShareAction(
+        share,
+        () => enableMutation.mutateAsync(share.id),
+        { promptOnOwnerAuthError: false },
+      );
+    } catch {
+      // The mutation already shows the detailed failure toast. Do not reopen the
+      // login dialog here, otherwise an unchanged router/device state can loop.
+    }
   };
+
+  useEffect(() => {
+    const share = primaryShare;
+    if (!share) return;
+    if (!tunnelOwnerLoginRequiredMap[share.id]) return;
+    if (autoOwnerReverifyPromptedShareId === share.id) return;
+    setAutoOwnerReverifyPromptedShareId(share.id);
+    openOwnerReverify(share);
+  }, [
+    autoOwnerReverifyPromptedShareId,
+    primaryShare,
+    tunnelOwnerLoginRequiredMap,
+  ]);
 
   if (shouldShowLoginOnly) {
     return (
@@ -279,7 +276,10 @@ export function SharePage({ defaultApp }: SharePageProps) {
               </p>
             </div>
             <div className="mt-5 flex flex-wrap gap-2">
-              <Button type="button" onClick={() => setOwnerLoginOpen(true)}>
+              <Button
+                type="button"
+                onClick={() => openOwnerLoginWithEmail(emailAuthStatus?.email)}
+              >
                 {t("share.ownerLogin.action", {
                   defaultValue: "Login Share Owner",
                 })}
@@ -292,11 +292,12 @@ export function SharePage({ defaultApp }: SharePageProps) {
           onOpenChange={setOwnerLoginOpen}
           tunnelConfig={tunnelConfig}
           tunnelConfigSaving={configureTunnelMutation.isPending}
-          currentEmail={emailAuthStatus?.email ?? null}
+          currentEmail={ownerLoginEmailHint ?? emailAuthStatus?.email ?? null}
           lockedOwnerEmail={null}
           onSaveTunnelConfig={(config) =>
             configureTunnelMutation.mutateAsync(config)
           }
+          onVerified={retryPendingShareAfterOwnerLogin}
         />
       </div>
     );
@@ -306,26 +307,17 @@ export function SharePage({ defaultApp }: SharePageProps) {
     <div className="px-6 py-4">
       <div className="mx-auto flex max-w-7xl flex-col gap-5 pb-10">
         <ShareRouterBar
-          tunnelConfig={tunnelConfig}
-          tunnelConfigSaving={configureTunnelMutation.isPending}
           proxyRunning={proxyStatus?.running ?? false}
           proxyAddress={proxyStatus?.address ?? null}
           proxyPort={proxyStatus?.port ?? null}
           hasShare={shares.length > 0}
-          ownerEmail={primaryShare?.ownerEmail ?? null}
-          ownerAuthenticated={canChangeOwner}
           onCreate={() => {
             if (!emailAuthStatus?.authenticated) {
-              setOwnerLoginOpen(true);
+              openOwnerLoginWithEmail(emailAuthStatus?.email);
               return;
             }
             setCreateOpen(true);
           }}
-          onChangeOwner={() => setOwnerChangeOpen(true)}
-          onVerifyOwner={() => openOwnerReverify(primaryShare)}
-          onSaveTunnelConfig={(config) =>
-            configureTunnelMutation.mutateAsync(config)
-          }
         />
 
         <ShareList
@@ -336,16 +328,22 @@ export function SharePage({ defaultApp }: SharePageProps) {
           isLoading={isLoading}
           error={error ? extractErrorMessage(error) : null}
           pendingAction={pendingActionShareId}
+          markets={markets}
+          marketsLoading={marketsLoading}
+          marketsError={marketsError ? extractErrorMessage(marketsError) : null}
+          ownerAuthenticated={canChangeOwner}
+          ownerLoginRequiredMap={tunnelOwnerLoginRequiredMap}
+          onRetryMarkets={() => void refetchMarkets()}
+          onChangeOwner={() => setOwnerChangeOpen(true)}
+          onVerifyOwner={() => openOwnerReverify(primaryShare)}
           onRetry={() => void refetch()}
           onCreate={() => {
             if (!emailAuthStatus?.authenticated) {
-              setOwnerLoginOpen(true);
+              openOwnerLoginWithEmail(emailAuthStatus?.email);
               return;
             }
             setCreateOpen(true);
           }}
-          onOpenDetail={(share) => setDetailShareId(share.id)}
-          onOpenConnect={(share) => setConnectShareId(share.id)}
           onDelete={(share) => setDeleteTarget(share)}
           onEnable={(share) =>
             void runShareAction(share, () =>
@@ -357,98 +355,81 @@ export function SharePage({ defaultApp }: SharePageProps) {
               disableMutation.mutateAsync(share.id),
             ).catch(() => undefined)
           }
-          onRefresh={(share) => void handleRefresh(share)}
+          onResetUsage={(share) =>
+            runShareAction(share, () =>
+              resetUsageMutation.mutateAsync(share.id),
+            )
+          }
+          onUpdateSubdomain={(share, subdomain) =>
+            runShareAction(share, () =>
+              updateSubdomainMutation.mutateAsync({
+                shareId: share.id,
+                subdomain,
+              }),
+            )
+          }
+          onUpdateApiKey={(share, apiKey) =>
+            runShareAction(share, () =>
+              updateApiKeyMutation.mutateAsync({ shareId: share.id, apiKey }),
+            )
+          }
+          onUpdateDescription={(share, description) =>
+            runShareAction(share, () =>
+              updateDescriptionMutation.mutateAsync({
+                shareId: share.id,
+                description,
+              }),
+            )
+          }
+          onUpdateForSale={(share, forSale) =>
+            runShareAction(share, () =>
+              updateForSaleMutation.mutateAsync({
+                shareId: share.id,
+                forSale,
+              }),
+            )
+          }
+          onUpdateExpiration={(share, expiresAt) =>
+            runShareAction(share, () =>
+              updateExpirationMutation.mutateAsync({
+                shareId: share.id,
+                expiresAt,
+              }),
+            )
+          }
+          onUpdateAutoStart={(share, autoStart) =>
+            runShareAction(share, () =>
+              updateAutoStartMutation.mutateAsync({
+                shareId: share.id,
+                autoStart,
+              }),
+            )
+          }
+          onUpdateAcl={(share, sharedWithEmails) =>
+            runShareAction(share, () =>
+              updateAclMutation.mutateAsync({
+                shareId: share.id,
+                sharedWithEmails,
+              }),
+            )
+          }
+          onUpdateTokenLimit={(share, tokenLimit) =>
+            runShareAction(share, () =>
+              updateTokenLimitMutation.mutateAsync({
+                shareId: share.id,
+                tokenLimit,
+              }),
+            )
+          }
+          onUpdateParallelLimit={(share, parallelLimit) =>
+            runShareAction(share, () =>
+              updateParallelLimitMutation.mutateAsync({
+                shareId: share.id,
+                parallelLimit,
+              }),
+            )
+          }
         />
-
-        {primaryShare && (
-          <div className="rounded-lg border border-border-default bg-card p-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-              <div className="min-w-0 space-y-1">
-                <div className="text-sm font-semibold">
-                  {t("share.market.title", {
-                    defaultValue: "Market",
-                  })}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {authorizedMarket
-                    ? t("share.market.authorized", {
-                        defaultValue: "Authorized: {{market}}",
-                        market: authorizedMarket.displayName,
-                      })
-                    : t("share.market.description", {
-                        defaultValue:
-                          "Choose a market to sell this share and claim earnings there.",
-                      })}
-                </div>
-              </div>
-              <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[360px] md:flex-row">
-                <Select
-                  value={selectedMarketEmail}
-                  onValueChange={setSelectedMarketEmail}
-                  disabled={marketsLoading || markets.length === 0}
-                >
-                  <SelectTrigger className="md:w-[220px]">
-                    <SelectValue
-                      placeholder={
-                        marketsLoading
-                          ? t("common.loading", { defaultValue: "Loading" })
-                          : t("share.market.select", {
-                              defaultValue: "Select market",
-                            })
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {markets.map((market) => (
-                      <SelectItem key={market.id} value={market.email}>
-                        {market.displayName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  type="button"
-                  onClick={() => void handleAuthorizeMarket()}
-                  disabled={
-                    !selectedMarket ||
-                    marketActionPending ||
-                    primaryShare.sharedWithEmails
-                      .map((email) => email.toLowerCase())
-                      .includes(selectedMarket.email.toLowerCase())
-                  }
-                >
-                  {t("share.market.authorize", {
-                    defaultValue: "Authorize",
-                  })}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={!authorizedMarket}
-                  onClick={() => {
-                    if (!authorizedMarket) return;
-                    void settingsApi.openExternal(
-                      `${authorizedMarket.publicBaseUrl.replace(/\/$/, "")}/claim`,
-                    );
-                  }}
-                >
-                  {t("share.market.claim", {
-                    defaultValue: "Claim earnings",
-                  })}
-                </Button>
-              </div>
-            </div>
-            {marketsError && (
-              <button
-                type="button"
-                className="mt-2 text-xs text-destructive underline"
-                onClick={() => void refetchMarkets()}
-              >
-                {extractErrorMessage(marketsError)}
-              </button>
-            )}
-          </div>
-        )}
       </div>
 
       <CreateShareDialog
@@ -456,7 +437,16 @@ export function SharePage({ defaultApp }: SharePageProps) {
         onOpenChange={setCreateOpen}
         defaultApp={defaultApp}
         ownerEmail={emailAuthStatus?.email ?? primaryShare?.ownerEmail ?? null}
-        isSubmitting={createMutation.isPending}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigSaving={configureTunnelMutation.isPending}
+        isSubmitting={createMutation.isPending || enableMutation.isPending}
+        onRelogin={(email) => {
+          setCreateOpen(false);
+          openOwnerLoginWithEmail(email);
+        }}
+        onSaveTunnelConfig={(config) =>
+          configureTunnelMutation.mutateAsync(config)
+        }
         onSubmit={handleCreate}
       />
 
@@ -466,12 +456,16 @@ export function SharePage({ defaultApp }: SharePageProps) {
         tunnelConfig={tunnelConfig}
         tunnelConfigSaving={configureTunnelMutation.isPending}
         currentEmail={
-          emailAuthStatus?.email ?? primaryShare?.ownerEmail ?? null
+          ownerLoginEmailHint ??
+          emailAuthStatus?.email ??
+          primaryShare?.ownerEmail ??
+          null
         }
         lockedOwnerEmail={primaryShare?.ownerEmail ?? null}
         onSaveTunnelConfig={(config) =>
           configureTunnelMutation.mutateAsync(config)
         }
+        onVerified={retryPendingShareAfterOwnerLogin}
       />
 
       <ShareOwnerChangeEmailDialog
@@ -479,96 +473,12 @@ export function SharePage({ defaultApp }: SharePageProps) {
         onOpenChange={setOwnerChangeOpen}
         tunnelConfig={tunnelConfig}
         tunnelConfigSaving={configureTunnelMutation.isPending}
-        currentEmail={primaryShare?.ownerEmail ?? emailAuthStatus?.email ?? null}
+        currentEmail={
+          primaryShare?.ownerEmail ?? emailAuthStatus?.email ?? null
+        }
         onSaveTunnelConfig={(config) =>
           configureTunnelMutation.mutateAsync(config)
         }
-      />
-
-      <ShareDetailDrawer
-        share={detailShare}
-        tunnelStatus={detailShare ? tunnelStatusMap[detailShare.id] : null}
-        tunnelConfig={tunnelConfig}
-        open={Boolean(detailShare)}
-        onOpenChange={(open) => {
-          if (!open) setDetailShareId(null);
-        }}
-        onResetUsage={(share) =>
-          void runShareAction(share, () =>
-            resetUsageMutation.mutateAsync(share.id),
-          )
-        }
-        onUpdateSubdomain={(share, subdomain) =>
-          void runShareAction(share, () =>
-            updateSubdomainMutation.mutateAsync({
-              shareId: share.id,
-              subdomain,
-            }),
-          )
-        }
-        onUpdateApiKey={(share, apiKey) =>
-          void runShareAction(share, () =>
-            updateApiKeyMutation.mutateAsync({ shareId: share.id, apiKey }),
-          )
-        }
-        onUpdateDescription={(share, description) =>
-          void runShareAction(share, () =>
-            updateDescriptionMutation.mutateAsync({
-              shareId: share.id,
-              description,
-            }),
-          )
-        }
-        onUpdateForSale={(share, forSale) =>
-          void runShareAction(share, () =>
-            updateForSaleMutation.mutateAsync({
-              shareId: share.id,
-              forSale,
-            }),
-          )
-        }
-        onUpdateExpiration={(share, expiresAt) =>
-          void runShareAction(share, () =>
-            updateExpirationMutation.mutateAsync({
-              shareId: share.id,
-              expiresAt,
-            }),
-          )
-        }
-        onUpdateAcl={(share, sharedWithEmails) =>
-          void runShareAction(share, () =>
-            updateAclMutation.mutateAsync({
-              shareId: share.id,
-              sharedWithEmails,
-            }),
-          )
-        }
-        onUpdateTokenLimit={(share, tokenLimit) =>
-          void runShareAction(share, () =>
-            updateTokenLimitMutation.mutateAsync({
-              shareId: share.id,
-              tokenLimit,
-            }),
-          )
-        }
-        onUpdateParallelLimit={(share, parallelLimit) =>
-          void runShareAction(share, () =>
-            updateParallelLimitMutation.mutateAsync({
-              shareId: share.id,
-              parallelLimit,
-            }),
-          )
-        }
-        busy={pendingActionShareId === detailShare?.id}
-      />
-
-      <ShareConnectDialog
-        share={connectShare}
-        tunnelConfig={tunnelConfig}
-        open={Boolean(connectShare)}
-        onOpenChange={(open) => {
-          if (!open) setConnectShareId(null);
-        }}
       />
 
       <ConfirmDialog
@@ -583,8 +493,6 @@ export function SharePage({ defaultApp }: SharePageProps) {
           void runShareAction(deleteTarget, async () => {
             await deleteMutation.mutateAsync(deleteTarget.id);
             setDeleteTarget(null);
-            if (detailShareId === deleteTarget.id) setDetailShareId(null);
-            if (connectShareId === deleteTarget.id) setConnectShareId(null);
           });
         }}
       />

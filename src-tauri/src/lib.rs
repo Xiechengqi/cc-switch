@@ -962,6 +962,20 @@ pub fn run() {
                 log::info!("✓ GeminiOAuthManager initialized");
             }
 
+            // 初始化 DeepSeekAccountManager (DeepSeek 账号)
+            {
+                use crate::proxy::providers::deepseek_account_auth::DeepSeekAccountManager;
+                use commands::DeepSeekAccountState;
+                use tokio::sync::RwLock;
+
+                let app_config_dir = crate::config::get_app_config_dir();
+                let deepseek_account_manager = DeepSeekAccountManager::new(app_config_dir);
+                app.manage(DeepSeekAccountState(Arc::new(RwLock::new(
+                    deepseek_account_manager,
+                ))));
+                log::info!("✓ DeepSeekAccountManager initialized");
+            }
+
             // 初始化 OAuth 订阅额度后台刷新服务
             {
                 use commands::OauthQuotaState;
@@ -1262,6 +1276,12 @@ pub fn run() {
             commands::get_cached_oauth_quota,
             commands::get_coding_plan_quota,
             commands::get_balance,
+            // DeepSeek account management
+            commands::deepseek_account_add,
+            commands::deepseek_account_list,
+            commands::deepseek_account_status,
+            commands::deepseek_account_remove,
+            commands::deepseek_account_set_default,
             // New MCP via config.json (SSOT)
             commands::get_mcp_config,
             commands::upsert_mcp_server_in_config,
@@ -1515,6 +1535,7 @@ pub fn run() {
             commands::update_share_description,
             commands::update_share_for_sale,
             commands::update_share_expiration,
+            commands::update_share_auto_start,
             commands::update_share_subdomain,
             commands::enable_share,
             commands::disable_share,

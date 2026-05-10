@@ -1,6 +1,11 @@
 import { useTranslation } from "react-i18next";
 import { FormLabel } from "@/components/ui/form";
-import { ClaudeIcon, CodexIcon, GeminiIcon } from "@/components/BrandIcons";
+import {
+  ClaudeIcon,
+  CodexIcon,
+  DeepSeekIcon,
+  GeminiIcon,
+} from "@/components/BrandIcons";
 import { Zap, Star, Layers, Settings2 } from "lucide-react";
 import type { ProviderPreset } from "@/config/claudeProviderPresets";
 import type { CodexProviderPreset } from "@/config/codexProviderPresets";
@@ -87,6 +92,8 @@ export function ProviderPresetSelector({
         return <CodexIcon size={14} />;
       case "gemini":
         return <GeminiIcon size={14} />;
+      case "deepseek":
+        return <DeepSeekIcon size={14} />;
       case "generic":
         return <Zap size={14} />;
       default:

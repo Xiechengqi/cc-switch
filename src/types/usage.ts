@@ -14,6 +14,10 @@ export interface RequestLog {
   appType: string;
   model: string;
   requestModel?: string;
+  requestAgent: string;
+  requestedModel: string;
+  actualModel: string;
+  actualModelSource: string;
   costMultiplier: string;
   inputTokens: number;
   outputTokens: number;

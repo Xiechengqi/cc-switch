@@ -109,6 +109,13 @@ impl Provider {
             == Some("google_gemini_oauth")
     }
 
+    pub fn is_deepseek_account_provider(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("deepseek_account")
+    }
+
     /// 是否为通过代理访问的托管 OAuth 官方订阅。
     pub fn is_managed_oauth_provider(&self) -> bool {
         self.is_codex_official_with_managed_auth()
@@ -121,6 +128,7 @@ impl Provider {
             || self.is_codex_oauth_provider()
             || self.is_claude_oauth_provider()
             || self.is_google_gemini_oauth_provider()
+            || self.is_deepseek_account_provider()
             || self.is_google_gemini_official_with_managed_auth()
     }
 

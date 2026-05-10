@@ -30,6 +30,7 @@ export type {
   UpdateShareApiKeyParams,
   UpdateShareExpirationParams,
   TunnelInfo,
+  ShareTunnelStatus,
   TunnelConfig,
   ConnectInfo,
 } from "./share";
@@ -48,4 +49,6 @@ export type {
   ManagedAuthAccount,
   ManagedAuthStatus,
   ManagedAuthDeviceCodeResponse,
+  DeepSeekAccount,
+  DeepSeekAccountStatus,
 } from "./auth";

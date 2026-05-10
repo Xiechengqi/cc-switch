@@ -8,8 +8,8 @@ use crate::provider::Provider;
 use crate::settings;
 use crate::tunnel::config::{
     ShareAppRuntimes, ShareRuntimeSnapshot, ShareSupport, ShareTunnelMetadata,
-    ShareTunnelRequestLog, ShareUpstreamProvider, ShareUpstreamQuota, ShareUpstreamQuotaTier,
-    TunnelConfig,
+    ShareTunnelRequestLog, ShareUpstreamModel, ShareUpstreamProvider, ShareUpstreamQuota,
+    ShareUpstreamQuotaTier, TunnelConfig,
 };
 use crate::tunnel::identity;
 use std::sync::Arc;
@@ -299,6 +299,7 @@ async fn build_upstream_provider_snapshot_for_app(
         account_email: None,
         api_url: custom_provider_api_url(&app, &provider),
         quota: None,
+        models: custom_provider_models(&app, &provider),
     })
 }
 
@@ -310,6 +311,7 @@ fn unknown_upstream_provider(app: &str) -> ShareUpstreamProvider {
         account_email: None,
         api_url: None,
         quota: None,
+        models: Vec::new(),
     }
 }
 
@@ -371,6 +373,110 @@ fn extract_codex_toml_base_url(config: &str) -> Option<&str> {
     None
 }
 
+fn custom_provider_models(app: &AppType, provider: &Provider) -> Vec<ShareUpstreamModel> {
+    match app {
+        AppType::Claude => claude_custom_models(provider),
+        AppType::Codex => codex_custom_models(provider),
+        AppType::Gemini => gemini_custom_models(provider),
+        _ => Vec::new(),
+    }
+}
+
+fn claude_custom_models(provider: &Provider) -> Vec<ShareUpstreamModel> {
+    let env = provider.settings_config.get("env");
+    [
+        ("default", "ANTHROPIC_MODEL"),
+        ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+        ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
+        ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+    ]
+    .into_iter()
+    .filter_map(|(slot, key)| {
+        env.and_then(|value| value.get(key))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|actual_model| ShareUpstreamModel {
+                slot: slot.to_string(),
+                actual_model: actual_model.to_string(),
+            })
+    })
+    .collect()
+}
+
+fn codex_custom_models(provider: &Provider) -> Vec<ShareUpstreamModel> {
+    let settings = &provider.settings_config;
+    single_model(
+        settings
+            .get("model")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                settings
+                    .pointer("/config/model")
+                    .and_then(|value| value.as_str())
+            })
+            .or_else(|| {
+                settings
+                    .get("config")
+                    .and_then(|value| value.as_str())
+                    .and_then(extract_codex_toml_model)
+            }),
+    )
+}
+
+fn gemini_custom_models(provider: &Provider) -> Vec<ShareUpstreamModel> {
+    let settings = &provider.settings_config;
+    single_model(
+        settings
+            .pointer("/env/GEMINI_MODEL")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                settings
+                    .pointer("/env/GOOGLE_GEMINI_MODEL")
+                    .and_then(|value| value.as_str())
+            })
+            .or_else(|| settings.get("model").and_then(|value| value.as_str()))
+            .or_else(|| {
+                settings
+                    .pointer("/config/model")
+                    .and_then(|value| value.as_str())
+            }),
+    )
+}
+
+fn single_model(model: Option<&str>) -> Vec<ShareUpstreamModel> {
+    model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|actual_model| {
+            vec![ShareUpstreamModel {
+                slot: "model".to_string(),
+                actual_model: actual_model.to_string(),
+            }]
+        })
+        .unwrap_or_default()
+}
+
+fn extract_codex_toml_model(config: &str) -> Option<&str> {
+    for line in config.lines() {
+        let trimmed = line.trim();
+        for marker in ["model = \"", "model = '"] {
+            let Some(rest) = trimmed.strip_prefix(marker) else {
+                continue;
+            };
+            let quote = marker.chars().last()?;
+            let Some(end) = rest.find(quote) else {
+                continue;
+            };
+            let value = rest[..end].trim();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
 async fn build_official_oauth_snapshot(
     app: &AppType,
     provider: &Provider,
@@ -423,6 +529,7 @@ async fn build_codex_oauth_snapshot(provider: &Provider) -> Option<ShareUpstream
         account_email,
         api_url: None,
         quota,
+        models: Vec::new(),
     })
 }
 
@@ -454,6 +561,7 @@ async fn build_claude_oauth_snapshot(provider: &Provider) -> Option<ShareUpstrea
         account_email,
         api_url: None,
         quota,
+        models: Vec::new(),
     })
 }
 
@@ -485,6 +593,7 @@ async fn build_gemini_oauth_snapshot(provider: &Provider) -> Option<ShareUpstrea
         account_email,
         api_url: None,
         quota,
+        models: Vec::new(),
     })
 }
 
@@ -980,6 +1089,7 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         tokens_used: share.tokens_used,
         requests_count: share.requests_count,
         share_status: share.status.clone(),
+        auto_start: share.auto_start,
         created_at: share.created_at.clone(),
         expires_at: share.expires_at.clone(),
         support: Default::default(),

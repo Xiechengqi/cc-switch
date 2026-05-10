@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
-import type { AppId, CreateShareParams } from "@/lib/api";
+import type { AppId, CreateShareParams, TunnelConfig } from "@/lib/api";
 import {
   createShareSchema,
   type CreateShareFormInput,
@@ -29,6 +29,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { SHARE_REGIONS } from "@/config/shareRegions";
 import {
   DEFAULT_PARALLEL_LIMIT,
   MIN_PARALLEL_LIMIT,
@@ -44,8 +45,12 @@ interface CreateShareDialogProps {
   onOpenChange: (open: boolean) => void;
   defaultApp?: AppId;
   ownerEmail?: string | null;
+  tunnelConfig: TunnelConfig;
+  tunnelConfigSaving: boolean;
   isSubmitting: boolean;
   submitLabel?: string;
+  onRelogin?: (email: string) => void;
+  onSaveTunnelConfig: (config: TunnelConfig) => Promise<void> | void;
   onSubmit: (params: CreateShareParams) => Promise<void> | void;
 }
 
@@ -65,13 +70,19 @@ export function CreateShareDialog({
   onOpenChange,
   defaultApp,
   ownerEmail,
+  tunnelConfig,
+  tunnelConfigSaving,
   isSubmitting,
   submitLabel,
+  onRelogin,
+  onSaveTunnelConfig,
   onSubmit,
 }: CreateShareDialogProps) {
   const { t } = useTranslation();
   const [confirmFreeOpen, setConfirmFreeOpen] = useState(false);
   const [isPermanent, setIsPermanent] = useState(false);
+  const [ownerEmailInput, setOwnerEmailInput] = useState(ownerEmail ?? "");
+  const [routerDomain, setRouterDomain] = useState(tunnelConfig.domain);
   const [lastFiniteTokenLimit, setLastFiniteTokenLimit] =
     useState(DEFAULT_TOKEN_LIMIT);
   const [lastFiniteParallelLimit, setLastFiniteParallelLimit] = useState(
@@ -83,6 +94,7 @@ export function CreateShareDialog({
     defaultValues: {
       description: "",
       forSale: "No",
+      autoStart: false,
       tokenLimit: DEFAULT_TOKEN_LIMIT,
       parallelLimit: DEFAULT_PARALLEL_LIMIT,
       expiresInSecs: 24 * 3600,
@@ -93,9 +105,12 @@ export function CreateShareDialog({
 
   useEffect(() => {
     if (!open) return;
+    setOwnerEmailInput(ownerEmail ?? "");
+    setRouterDomain(tunnelConfig.domain);
     form.reset({
       description: "",
       forSale: "No",
+      autoStart: false,
       tokenLimit: DEFAULT_TOKEN_LIMIT,
       parallelLimit: DEFAULT_PARALLEL_LIMIT,
       expiresInSecs: 24 * 3600,
@@ -105,7 +120,7 @@ export function CreateShareDialog({
     setIsPermanent(false);
     setLastFiniteTokenLimit(DEFAULT_TOKEN_LIMIT);
     setLastFiniteParallelLimit(DEFAULT_PARALLEL_LIMIT);
-  }, [form, open]);
+  }, [form, open, ownerEmail, tunnelConfig.domain]);
 
   const tokenLimit = form.watch("tokenLimit") as number;
   const parallelLimit = form.watch("parallelLimit") as number;
@@ -115,8 +130,27 @@ export function CreateShareDialog({
   const parallelLimitField = form.register("parallelLimit", {
     valueAsNumber: true,
   });
+  const normalizedOwnerEmail = ownerEmailInput.trim().toLowerCase();
+  const normalizedAuthenticatedOwnerEmail = (ownerEmail ?? "")
+    .trim()
+    .toLowerCase();
+  const ownerEmailNeedsLogin =
+    Boolean(normalizedOwnerEmail) &&
+    normalizedOwnerEmail !== normalizedAuthenticatedOwnerEmail;
+
+  const requestOwnerRelogin = () => {
+    onRelogin?.(normalizedOwnerEmail || normalizedAuthenticatedOwnerEmail);
+  };
 
   const submit = form.handleSubmit(async (values) => {
+    if (!normalizedOwnerEmail || ownerEmailNeedsLogin) {
+      requestOwnerRelogin();
+      return;
+    }
+    const nextRouterDomain = routerDomain.trim();
+    if (nextRouterDomain && nextRouterDomain !== tunnelConfig.domain) {
+      await onSaveTunnelConfig({ domain: nextRouterDomain });
+    }
     await onSubmit({
       appType: toShareAppType(defaultApp),
       description: values.description || undefined,
@@ -126,40 +160,89 @@ export function CreateShareDialog({
       expiresInSecs: values.expiresInSecs,
       apiKey: values.apiKey || undefined,
       subdomain: values.subdomain || undefined,
+      autoStart: values.autoStart,
     });
   });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl overflow-hidden p-0">
-        <DialogHeader>
+        <DialogHeader className="px-5 pb-2 pt-5">
           <DialogTitle>{t("share.create")}</DialogTitle>
-          <DialogDescription>{t("share.createDescription")}</DialogDescription>
+          <DialogDescription className="text-xs">
+            {t("share.createDescription")}
+          </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
-          <div className="space-y-2">
-            <Label htmlFor="share-owner-email">
-              {t("share.ownerEmail", { defaultValue: "Owner Email" })}
+        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="share-create-router">
+              {t("share.tunnel.region")}
             </Label>
-            <Input
-              id="share-owner-email"
-              value={ownerEmail ?? ""}
-              readOnly
-              disabled
-            />
+            <Select value={routerDomain} onValueChange={setRouterDomain}>
+              <SelectTrigger id="share-create-router">
+                <SelectValue placeholder={t("share.tunnel.selectRegion")} />
+              </SelectTrigger>
+              <SelectContent>
+                {SHARE_REGIONS.map((region) => (
+                  <SelectItem key={region.baseUrl} value={region.baseUrl}>
+                    {region.region} - {region.baseUrl}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <div className="text-xs text-muted-foreground">
-              {t("share.ownerEmailCreateHint", {
+              {t("share.createRouterHint", {
                 defaultValue:
-                  "Share 名称会自动使用当前登录邮箱，创建后当前设备不能切换到其他邮箱。",
+                  "创建前选择路由节点。创建完成后当前 share 会绑定到该节点。",
               })}
             </div>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="share-owner-email">
+              {t("share.ownerEmail", { defaultValue: "Owner Email" })}
+            </Label>
+            <div className="flex gap-2">
+              <Input
+                id="share-owner-email"
+                type="email"
+                value={ownerEmailInput}
+                onChange={(event) => setOwnerEmailInput(event.target.value)}
+                placeholder="owner@example.com"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="shrink-0"
+                onClick={requestOwnerRelogin}
+                disabled={
+                  !normalizedOwnerEmail && !normalizedAuthenticatedOwnerEmail
+                }
+              >
+                {t("share.ownerLogin.reloginAction", {
+                  defaultValue: "重新登录",
+                })}
+              </Button>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {ownerEmailNeedsLogin
+                ? t("share.ownerEmailReloginHint", {
+                    defaultValue:
+                      "该邮箱尚未验证，创建前需要先重新登录并完成验证码验证。",
+                  })
+                : t("share.ownerEmailCreateHint", {
+                    defaultValue:
+                      "Share 名称会自动使用当前登录邮箱，创建后当前设备不能切换到其他邮箱。",
+                  })}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
             <Label htmlFor="share-description">{t("share.description")}</Label>
             <Textarea
               id="share-description"
+              className="min-h-[72px]"
               maxLength={200}
               placeholder={t("share.descriptionPlaceholder")}
               {...form.register("description")}
@@ -170,60 +253,137 @@ export function CreateShareDialog({
             <FieldError error={form.formState.errors.description?.message} />
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="share-for-sale">{t("share.forSale")}</Label>
-            <Select
-              value={form.watch("forSale")}
-              onValueChange={(value) => {
-                const next = value as "Yes" | "No" | "Free";
-                if (next === "Free") {
-                  setConfirmFreeOpen(true);
-                } else {
-                  form.setValue("forSale", next, {
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="share-for-sale">{t("share.forSale")}</Label>
+              <Select
+                value={form.watch("forSale")}
+                onValueChange={(value) => {
+                  const next = value as "Yes" | "No" | "Free";
+                  if (next === "Free") {
+                    setConfirmFreeOpen(true);
+                  } else {
+                    form.setValue("forSale", next, {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    });
+                  }
+                }}
+              >
+                <SelectTrigger id="share-for-sale">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="No">
+                    {t("share.forSaleOptions.no")}
+                  </SelectItem>
+                  <SelectItem value="Yes">
+                    {t("share.forSaleOptions.yes")}
+                  </SelectItem>
+                  <SelectItem value="Free">
+                    {t("share.forSaleOptions.free")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="text-xs text-muted-foreground">
+                {t("share.forSaleHint")}
+              </div>
+              <FieldError error={form.formState.errors.forSale?.message} />
+              <ConfirmDialog
+                isOpen={confirmFreeOpen}
+                title={t("share.forSaleFreeConfirmTitle")}
+                message={t("share.forSaleFreeConfirmMessage")}
+                variant="destructive"
+                zIndex="top"
+                onConfirm={() => {
+                  form.setValue("forSale", "Free", {
                     shouldDirty: true,
                     shouldValidate: true,
                   });
-                }
-              }}
-            >
-              <SelectTrigger id="share-for-sale">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="No">
-                  {t("share.forSaleOptions.no")}
-                </SelectItem>
-                <SelectItem value="Yes">
-                  {t("share.forSaleOptions.yes")}
-                </SelectItem>
-                <SelectItem value="Free">
-                  {t("share.forSaleOptions.free")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <div className="text-xs text-muted-foreground">
-              {t("share.forSaleHint")}
+                  setConfirmFreeOpen(false);
+                }}
+                onCancel={() => setConfirmFreeOpen(false)}
+              />
             </div>
-            <FieldError error={form.formState.errors.forSale?.message} />
-            <ConfirmDialog
-              isOpen={confirmFreeOpen}
-              title={t("share.forSaleFreeConfirmTitle")}
-              message={t("share.forSaleFreeConfirmMessage")}
-              variant="destructive"
-              zIndex="top"
-              onConfirm={() => {
-                form.setValue("forSale", "Free", {
-                  shouldDirty: true,
-                  shouldValidate: true,
-                });
-                setConfirmFreeOpen(false);
-              }}
-              onCancel={() => setConfirmFreeOpen(false)}
-            />
-          </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
+            <div className="space-y-1.5">
+              <div className="flex min-h-10 items-center gap-2 rounded-md border border-border-default px-3 py-2">
+                <Checkbox
+                  id="share-auto-start"
+                  checked={form.watch("autoStart")}
+                  onCheckedChange={(checked) =>
+                    form.setValue("autoStart", checked === true, {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    })
+                  }
+                />
+                <Label
+                  htmlFor="share-auto-start"
+                  className="cursor-pointer text-sm font-normal"
+                >
+                  {t("share.autoStart")}
+                </Label>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {t("share.autoStartHint")}
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="share-expires">{t("share.expiresIn")}</Label>
+              <Input
+                id="share-expires"
+                type="number"
+                disabled={isPermanent}
+                {...form.register("expiresInSecs", { valueAsNumber: true })}
+              />
+              <div className="flex flex-wrap gap-1.5">
+                {EXPIRY_PRESETS.map((preset) => (
+                  <Button
+                    key={preset.value}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={isPermanent}
+                    onClick={() => form.setValue("expiresInSecs", preset.value)}
+                  >
+                    {t(preset.labelKey)}
+                  </Button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <Checkbox
+                  id="share-expires-permanent"
+                  checked={isPermanent}
+                  onCheckedChange={(checked) => {
+                    const next = checked === true;
+                    setIsPermanent(next);
+                    if (next) {
+                      form.setValue("expiresInSecs", permanentExpiresInSecs(), {
+                        shouldValidate: true,
+                      });
+                    } else {
+                      form.setValue("expiresInSecs", 24 * 3600, {
+                        shouldValidate: true,
+                      });
+                    }
+                  }}
+                />
+                <Label
+                  htmlFor="share-expires-permanent"
+                  className="cursor-pointer text-sm font-normal"
+                >
+                  {t("share.expiry.permanent")}
+                </Label>
+              </div>
+              <FieldError
+                error={form.formState.errors.expiresInSecs?.message}
+              />
+            </div>
+
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-3">
                 <Label htmlFor="share-token-limit">
                   {t("share.tokenLimit")}
@@ -278,6 +438,7 @@ export function CreateShareDialog({
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="h-7 px-2 text-xs"
                     disabled={unlimitedTokenLimit}
                     onClick={() => {
                       setLastFiniteTokenLimit(preset);
@@ -294,7 +455,7 @@ export function CreateShareDialog({
               <FieldError error={form.formState.errors.tokenLimit?.message} />
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-3">
                 <Label htmlFor="share-parallel-limit">
                   {t("share.parallelLimit")}
@@ -358,96 +519,42 @@ export function CreateShareDialog({
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="share-expires">{t("share.expiresIn")}</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="share-api-key">{t("share.apiKey")}</Label>
               <Input
-                id="share-expires"
-                type="number"
-                disabled={isPermanent}
-                {...form.register("expiresInSecs", { valueAsNumber: true })}
+                id="share-api-key"
+                placeholder="custom-share-key"
+                {...form.register("apiKey")}
               />
-              <div className="flex flex-wrap gap-2">
-                {EXPIRY_PRESETS.map((preset) => (
-                  <Button
-                    key={preset.value}
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={isPermanent}
-                    onClick={() => form.setValue("expiresInSecs", preset.value)}
-                  >
-                    {t(preset.labelKey)}
-                  </Button>
-                ))}
+              <div className="text-xs text-muted-foreground">
+                {t("share.apiKeyHint")}
               </div>
-              <div className="flex items-center gap-2 pt-1">
-                <Checkbox
-                  id="share-expires-permanent"
-                  checked={isPermanent}
-                  onCheckedChange={(checked) => {
-                    const next = checked === true;
-                    setIsPermanent(next);
-                    if (next) {
-                      form.setValue("expiresInSecs", permanentExpiresInSecs(), {
-                        shouldValidate: true,
-                      });
-                    } else {
-                      form.setValue("expiresInSecs", 24 * 3600, {
-                        shouldValidate: true,
-                      });
-                    }
-                  }}
-                />
-                <Label
-                  htmlFor="share-expires-permanent"
-                  className="cursor-pointer text-sm font-normal"
-                >
-                  {t("share.expiry.permanent")}
-                </Label>
-              </div>
-              <FieldError
-                error={form.formState.errors.expiresInSecs?.message}
+              <FieldError error={form.formState.errors.apiKey?.message} />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="share-subdomain">{t("share.subdomain")}</Label>
+              <Input
+                id="share-subdomain"
+                placeholder="my-share"
+                {...form.register("subdomain")}
               />
+              <div className="text-xs text-muted-foreground">
+                {t("share.subdomainHint")}
+              </div>
+              <FieldError error={form.formState.errors.subdomain?.message} />
             </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="share-api-key">{t("share.apiKey")}</Label>
-            <Input
-              id="share-api-key"
-              placeholder="custom-share-key"
-              {...form.register("apiKey")}
-            />
-            <div className="text-xs text-muted-foreground">
-              {t("share.apiKeyHint")}
-            </div>
-            <FieldError error={form.formState.errors.apiKey?.message} />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="share-subdomain">{t("share.subdomain")}</Label>
-            <Input
-              id="share-subdomain"
-              placeholder="my-share"
-              {...form.register("subdomain")}
-            />
-            <div className="text-xs text-muted-foreground">
-              {t("share.subdomainHint")}
-            </div>
-            <FieldError error={form.formState.errors.subdomain?.message} />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="share-notes">{t("share.createHelp")}</Label>
-            <Textarea id="share-notes" value={t("share.createHint")} readOnly />
           </div>
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="px-5 py-4">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t("common.cancel")}
           </Button>
-          <Button onClick={() => void submit()} disabled={isSubmitting}>
+          <Button
+            onClick={() => void submit()}
+            disabled={isSubmitting || tunnelConfigSaving}
+          >
             {submitLabel ?? t("share.create")}
           </Button>
         </DialogFooter>

@@ -25,20 +25,21 @@ pub struct ShareRecord {
     pub subdomain: Option<String>,
     pub tunnel_url: Option<String>,
     pub status: String,
+    pub auto_start: bool,
     pub created_at: String,
     pub last_used_at: Option<String>,
 }
 
 impl Database {
-    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, description, for_sale, share_token, app_type, provider_id, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, created_at, last_used_at";
+    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, description, for_sale, share_token, app_type, provider_id, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
 
     pub fn create_share(&self, share: &ShareRecord) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
             "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, description, for_sale, share_token, app_type, provider_id, api_key,
              settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at,
-             subdomain, tunnel_url, status, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+             subdomain, tunnel_url, status, auto_start, created_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 share.id,
                 share.name,
@@ -60,6 +61,7 @@ impl Database {
                 share.subdomain,
                 share.tunnel_url,
                 share.status,
+                share.auto_start,
                 share.created_at,
                 share.last_used_at,
             ],
@@ -313,6 +315,16 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_share_auto_start(&self, id: &str, auto_start: bool) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE shares SET auto_start = ?2 WHERE id = ?1",
+            params![id, auto_start],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn delete_share(&self, id: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute("DELETE FROM shares WHERE id = ?1", params![id])
@@ -358,8 +370,9 @@ impl Database {
             subdomain: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
             tunnel_url: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
             status: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
-            created_at: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
-            last_used_at: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
+            auto_start: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
+            created_at: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
+            last_used_at: row.get(21).map_err(|e| AppError::Database(e.to_string()))?,
         })
     }
 }

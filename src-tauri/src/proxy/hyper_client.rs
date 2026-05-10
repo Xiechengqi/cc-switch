@@ -10,7 +10,7 @@ use futures::stream::Stream;
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
-use std::sync::OnceLock;
+use std::{pin::Pin, sync::OnceLock};
 
 /// Our own header case map: maps lowercase header name → original wire-casing bytes.
 ///
@@ -79,13 +79,56 @@ fn global_hyper_client() -> &'static HyperClient {
 pub enum ProxyResponse {
     Hyper(hyper::Response<hyper::body::Incoming>),
     Reqwest(reqwest::Response),
+    Local {
+        status: http::StatusCode,
+        headers: http::HeaderMap,
+        body: Bytes,
+    },
+    LocalStream {
+        status: http::StatusCode,
+        headers: http::HeaderMap,
+        stream: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+    },
 }
 
 impl ProxyResponse {
+    pub fn local_json(status: http::StatusCode, body: Bytes) -> Self {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/json"),
+        );
+        Self::Local {
+            status,
+            headers,
+            body,
+        }
+    }
+
+    pub fn local_sse(
+        stream: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+    ) -> Self {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("text/event-stream"),
+        );
+        headers.insert(
+            http::header::CACHE_CONTROL,
+            http::HeaderValue::from_static("no-cache"),
+        );
+        Self::LocalStream {
+            status: http::StatusCode::OK,
+            headers,
+            stream,
+        }
+    }
+
     pub fn status(&self) -> http::StatusCode {
         match self {
             Self::Hyper(r) => r.status(),
             Self::Reqwest(r) => r.status(),
+            Self::Local { status, .. } | Self::LocalStream { status, .. } => *status,
         }
     }
 
@@ -93,6 +136,7 @@ impl ProxyResponse {
         match self {
             Self::Hyper(r) => r.headers(),
             Self::Reqwest(r) => r.headers(),
+            Self::Local { headers, .. } | Self::LocalStream { headers, .. } => headers,
         }
     }
 
@@ -122,6 +166,18 @@ impl ProxyResponse {
             Self::Reqwest(r) => r.bytes().await.map_err(|e| {
                 ProxyError::ForwardFailed(format!("Failed to read response body: {e}"))
             }),
+            Self::Local { body, .. } => Ok(body),
+            Self::LocalStream { mut stream, .. } => {
+                use futures::StreamExt;
+                let mut out = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(|e| {
+                        ProxyError::ForwardFailed(format!("Failed to read local stream: {e}"))
+                    })?;
+                    out.extend_from_slice(&chunk);
+                }
+                Ok(Bytes::from(out))
+            }
         }
     }
 
@@ -161,6 +217,8 @@ impl ProxyResponse {
                     .map(|r| r.map_err(|e| std::io::Error::other(e.to_string())));
                 Box::pin(stream)
             }
+            Self::Local { body, .. } => Box::pin(futures::stream::once(async move { Ok(body) })),
+            Self::LocalStream { stream, .. } => stream,
         }
     }
 }

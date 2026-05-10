@@ -299,27 +299,19 @@ export function RequestLogTable({
                       <TableCell className="text-center">
                         {log.providerName || t("usage.unknownProvider")}
                       </TableCell>
-                      <TableCell className="text-center font-mono text-xs max-w-[200px]">
+                      <TableCell className="text-center font-mono text-xs max-w-[220px]">
                         <div
                           className="truncate"
-                          title={
-                            log.requestModel && log.requestModel !== log.model
-                              ? `${log.requestModel} → ${log.model}`
-                              : log.model
-                          }
+                          title={`${log.requestAgent || log.appType} · ${log.requestedModel || log.requestModel || "-"} → ${log.actualModel || log.model || "-"}`}
                         >
-                          {log.requestModel &&
-                          log.requestModel !== log.model ? (
-                            <span>
-                              {log.requestModel}
-                              <span className="text-muted-foreground">
-                                {" → "}
-                                {log.model}
-                              </span>
-                            </span>
-                          ) : (
-                            log.model
-                          )}
+                          <span className="rounded bg-muted px-1 uppercase">
+                            {log.requestAgent || log.appType}
+                          </span>
+                          <span className="ml-1 text-muted-foreground">
+                            {log.requestedModel || log.requestModel || "-"}
+                            {" → "}
+                          </span>
+                          <span>{log.actualModel || log.model || "-"}</span>
                         </div>
                       </TableCell>
                       <TableCell className="text-center px-1.5">

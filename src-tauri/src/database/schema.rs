@@ -184,6 +184,10 @@ impl Database {
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_request_logs (
             request_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, app_type TEXT NOT NULL, model TEXT NOT NULL,
             request_model TEXT,
+            request_agent TEXT NOT NULL DEFAULT '',
+            requested_model TEXT NOT NULL DEFAULT '',
+            actual_model TEXT NOT NULL DEFAULT '',
+            actual_model_source TEXT NOT NULL DEFAULT '',
             input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
             input_cost_usd TEXT NOT NULL DEFAULT '0', output_cost_usd TEXT NOT NULL DEFAULT '0',
@@ -377,6 +381,7 @@ impl Database {
                 subdomain TEXT,
                 tunnel_url TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
+                auto_start BOOLEAN NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 last_used_at TEXT
             )",
@@ -497,6 +502,11 @@ impl Database {
                         log::info!("迁移数据库从 v15 到 v16（添加 Hermes Agent 支持）");
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
+                    }
+                    16 => {
+                        log::info!("迁移数据库从 v16 到 v17（Share 开机启动）");
+                        Self::migrate_v16_to_v17(conn)?;
+                        Self::set_user_version(conn, 17)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -668,6 +678,10 @@ impl Database {
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_request_logs (
             request_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, app_type TEXT NOT NULL, model TEXT NOT NULL,
             request_model TEXT,
+            request_agent TEXT NOT NULL DEFAULT '',
+            requested_model TEXT NOT NULL DEFAULT '',
+            actual_model TEXT NOT NULL DEFAULT '',
+            actual_model_source TEXT NOT NULL DEFAULT '',
             input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
             input_cost_usd TEXT NOT NULL DEFAULT '0', output_cost_usd TEXT NOT NULL DEFAULT '0',
@@ -681,6 +695,30 @@ impl Database {
 
         // 为已存在的表添加新字段
         Self::add_column_if_missing(conn, "proxy_request_logs", "provider_type", "TEXT")?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "request_agent",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "requested_model",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "actual_model",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "actual_model_source",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         Self::add_column_if_missing(
             conn,
             "proxy_request_logs",
@@ -1380,6 +1418,21 @@ impl Database {
         }
 
         log::info!("v15 -> v16 迁移完成：已添加 Hermes Agent 支持");
+        Ok(())
+    }
+
+    /// v16 -> v17 迁移：shares 增加 auto_start 字段
+    fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(
+                conn,
+                "shares",
+                "auto_start",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
+        }
+
+        log::info!("v16 -> v17 迁移完成：shares 表增加 auto_start 字段");
         Ok(())
     }
 

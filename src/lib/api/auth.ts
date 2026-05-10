@@ -6,6 +6,20 @@ export type ManagedAuthProvider =
   | "claude_oauth"
   | "google_gemini_oauth";
 
+export interface DeepSeekAccount {
+  id: string;
+  login: string;
+  authenticated_at: number;
+  is_default: boolean;
+  has_password: boolean;
+}
+
+export interface DeepSeekAccountStatus {
+  authenticated: boolean;
+  default_account_id: string | null;
+  accounts: DeepSeekAccount[];
+}
+
 export interface ManagedAuthAccount {
   id: string;
   provider: ManagedAuthProvider;
@@ -99,6 +113,36 @@ export async function authLogout(
   });
 }
 
+export async function deepseekAccountAdd(params: {
+  email?: string | null;
+  mobile?: string | null;
+  password: string;
+}): Promise<DeepSeekAccount> {
+  return invoke<DeepSeekAccount>("deepseek_account_add", {
+    email: params.email || null,
+    mobile: params.mobile || null,
+    password: params.password,
+  });
+}
+
+export async function deepseekAccountList(): Promise<DeepSeekAccount[]> {
+  return invoke<DeepSeekAccount[]>("deepseek_account_list");
+}
+
+export async function deepseekAccountStatus(): Promise<DeepSeekAccountStatus> {
+  return invoke<DeepSeekAccountStatus>("deepseek_account_status");
+}
+
+export async function deepseekAccountRemove(accountId: string): Promise<void> {
+  return invoke("deepseek_account_remove", { accountId });
+}
+
+export async function deepseekAccountSetDefault(
+  accountId: string,
+): Promise<void> {
+  return invoke("deepseek_account_set_default", { accountId });
+}
+
 export const authApi = {
   authStartLogin,
   authPollForAccount,
@@ -107,4 +151,9 @@ export const authApi = {
   authRemoveAccount,
   authSetDefaultAccount,
   authLogout,
+  deepseekAccountAdd,
+  deepseekAccountList,
+  deepseekAccountStatus,
+  deepseekAccountRemove,
+  deepseekAccountSetDefault,
 };

@@ -2,14 +2,29 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
-import { describe, it, expect, vi } from "vitest";
+import { beforeAll, describe, it, expect, vi } from "vitest";
 import { ShareCard } from "@/components/share/ShareCard";
-import type { ShareRecord } from "@/lib/api";
+import type { PublicMarket, ShareRecord } from "@/lib/api";
 import { createTestQueryClient } from "../../utils/testQueryClient";
 
 vi.mock("@/components/share/ShareRequestLogTable", () => ({
   ShareRequestLogTable: () => null,
 }));
+
+beforeAll(() => {
+  if (!HTMLElement.prototype.hasPointerCapture) {
+    HTMLElement.prototype.hasPointerCapture = () => false;
+  }
+  if (!HTMLElement.prototype.setPointerCapture) {
+    HTMLElement.prototype.setPointerCapture = () => undefined;
+  }
+  if (!HTMLElement.prototype.releasePointerCapture) {
+    HTMLElement.prototype.releasePointerCapture = () => undefined;
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => undefined;
+  }
+});
 
 const tunnelConfig = {
   domain: "127.0.0.1:8787",
@@ -34,15 +49,50 @@ const baseShare: ShareRecord = {
   subdomain: null,
   tunnelUrl: null,
   status: "active",
+  autoStart: false,
   createdAt: "2026-04-01T00:00:00.000Z",
   lastUsedAt: null,
 };
+
+const markets: PublicMarket[] = [
+  {
+    id: "market-1",
+    displayName: "Alpha Market",
+    email: "alpha@example.com",
+    subdomain: "alpha",
+    publicBaseUrl: "https://alpha.example.com",
+    status: "active",
+  },
+  {
+    id: "market-2",
+    displayName: "Beta Market",
+    email: "beta@example.com",
+    subdomain: "beta",
+    publicBaseUrl: "https://beta.example.com",
+    status: "active",
+  },
+];
 
 describe("ShareCard", () => {
   const renderShareCard = (ui: ReactNode) => {
     const client = createTestQueryClient();
     return render(createElement(QueryClientProvider, { client }, ui));
   };
+  const createHandlers = () => ({
+    onDelete: vi.fn(),
+    onEnable: vi.fn(),
+    onDisable: vi.fn(),
+    onResetUsage: vi.fn(),
+    onUpdateTokenLimit: vi.fn(),
+    onUpdateParallelLimit: vi.fn(),
+    onUpdateSubdomain: vi.fn(),
+    onUpdateApiKey: vi.fn(),
+    onUpdateDescription: vi.fn(),
+    onUpdateForSale: vi.fn(),
+    onUpdateExpiration: vi.fn(),
+    onUpdateAutoStart: vi.fn(),
+    onUpdateAcl: vi.fn(),
+  });
 
   it("shows disable for active share even when tunnel is not configured", () => {
     renderShareCard(
@@ -50,11 +100,7 @@ describe("ShareCard", () => {
         share={baseShare}
         tunnelConfig={tunnelConfig}
         tunnelConfigured={false}
-        onOpenDetail={vi.fn()}
-        onOpenConnect={vi.fn()}
-        onDelete={vi.fn()}
-        onEnable={vi.fn()}
-        onDisable={vi.fn()}
+        {...createHandlers()}
       />,
     );
 
@@ -67,11 +113,7 @@ describe("ShareCard", () => {
         share={baseShare}
         tunnelConfig={tunnelConfig}
         tunnelConfigured={true}
-        onOpenDetail={vi.fn()}
-        onOpenConnect={vi.fn()}
-        onDelete={vi.fn()}
-        onEnable={vi.fn()}
-        onDisable={vi.fn()}
+        {...createHandlers()}
       />,
     );
 
@@ -86,16 +128,46 @@ describe("ShareCard", () => {
         share={baseShare}
         tunnelConfig={tunnelConfig}
         tunnelConfigured={true}
-        onOpenDetail={vi.fn()}
-        onOpenConnect={vi.fn()}
-        onDelete={vi.fn()}
-        onEnable={vi.fn()}
+        {...createHandlers()}
         onDisable={onDisable}
       />,
     );
 
     await user.click(screen.getByRole("button", { name: "share.disable" }));
     expect(onDisable).toHaveBeenCalledWith(baseShare);
+  });
+
+  it("disables delete while share is not closed", () => {
+    renderShareCard(
+      <ShareCard
+        share={baseShare}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        {...createHandlers()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "share.delete" })).toBeDisabled();
+  });
+
+  it("allows deleting a closed share", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    const closedShare = { ...baseShare, status: "paused" };
+    renderShareCard(
+      <ShareCard
+        share={closedShare}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        {...createHandlers()}
+        onDelete={onDelete}
+      />,
+    );
+
+    const deleteButton = screen.getByRole("button", { name: "share.delete" });
+    expect(deleteButton).toBeEnabled();
+    await user.click(deleteButton);
+    expect(onDelete).toHaveBeenCalledWith(closedShare);
   });
 
   it("shows enable for paused share even if a stale tunnel url exists", () => {
@@ -108,11 +180,7 @@ describe("ShareCard", () => {
         }}
         tunnelConfig={tunnelConfig}
         tunnelConfigured={true}
-        onOpenDetail={vi.fn()}
-        onOpenConnect={vi.fn()}
-        onDelete={vi.fn()}
-        onEnable={vi.fn()}
-        onDisable={vi.fn()}
+        {...createHandlers()}
       />,
     );
 
@@ -120,5 +188,172 @@ describe("ShareCard", () => {
       screen.queryByRole("button", { name: "share.disable" }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "share.enable" })).toBeEnabled();
+  });
+
+  it("keeps editable fields read-only until edit is clicked", async () => {
+    const user = userEvent.setup();
+    renderShareCard(
+      <ShareCard
+        share={baseShare}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        {...createHandlers()}
+      />,
+    );
+
+    expect(screen.queryByDisplayValue("1000")).not.toBeInTheDocument();
+    expect(screen.getByText(/500\/1000/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/share\.settings|Settings|设置项/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("share.expiresAt")).toBeInTheDocument();
+    expect(screen.queryByText("share.editDescription")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "保存" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+
+    expect(
+      screen.getByRole("button", {
+        name: /share\.exitEdit|Exit Edit|退出编辑/,
+      }),
+    ).toBeEnabled();
+    const tokenLimitInput = screen.getByDisplayValue("1000");
+    expect(tokenLimitInput).toBeEnabled();
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+  });
+
+  it("keeps save disabled when the only difference is timestamp formatting", async () => {
+    const user = userEvent.setup();
+    renderShareCard(
+      <ShareCard
+        share={{
+          ...baseShare,
+          expiresAt: "2026-05-01T00:00:00+00:00",
+        }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        {...createHandlers()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+  });
+
+  it("enables save after a field changes and submits the dirty field", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    renderShareCard(
+      <ShareCard
+        share={{ ...baseShare, description: "old description" }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    const descriptionInput = screen.getByDisplayValue("old description");
+    await user.clear(descriptionInput);
+    await user.type(descriptionInput, "new description");
+
+    const saveButton = screen.getByRole("button", { name: "保存" });
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+
+    expect(handlers.onUpdateDescription).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "share-1" }),
+      "new description",
+    );
+  });
+
+  it("selects a market in edit mode and saves it through the share ACL", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    renderShareCard(
+      <ShareCard
+        share={{ ...baseShare, forSale: "Yes" }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        markets={markets}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    await user.click(
+      screen.getByRole("combobox", { name: /Select market|选择 Market/i }),
+    );
+    await user.click(
+      await screen.findByRole("option", { name: "Alpha Market" }),
+    );
+
+    expect(screen.getAllByText("Alpha Market").length).toBeGreaterThan(0);
+    const saveButton = screen.getByRole("button", { name: "保存" });
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+
+    expect(handlers.onUpdateAcl).toHaveBeenCalledTimes(1);
+    expect(handlers.onUpdateAcl).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "share-1" }),
+      ["alpha@example.com"],
+    );
+  });
+
+  it("selects all currently fetched markets when All is chosen", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    renderShareCard(
+      <ShareCard
+        share={{ ...baseShare, forSale: "Yes" }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        markets={markets}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    await user.click(
+      screen.getByRole("combobox", { name: /Select market|选择 Market/i }),
+    );
+    await user.click(await screen.findByRole("option", { name: "All" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(handlers.onUpdateAcl).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "share-1" }),
+      ["alpha@example.com", "beta@example.com"],
+    );
+  });
+
+  it("restores market selection to the default while preserving Share To emails", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    renderShareCard(
+      <ShareCard
+        share={{
+          ...baseShare,
+          forSale: "Yes",
+          sharedWithEmails: ["friend@example.com", "alpha@example.com"],
+        }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        markets={markets}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    await user.click(screen.getByRole("button", { name: /Restore|还原/ }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(handlers.onUpdateAcl).toHaveBeenCalledTimes(1);
+    expect(handlers.onUpdateAcl).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "share-1" }),
+      ["friend@example.com"],
+    );
   });
 });

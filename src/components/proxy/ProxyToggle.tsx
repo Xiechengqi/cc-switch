@@ -382,9 +382,14 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         isSubmitting={
           createShareMutation.isPending || stage === "creating-share"
         }
+        tunnelConfig={tunnelConfig}
+        tunnelConfigSaving={configureTunnelMutation.isPending}
         submitLabel={t("share.toggle.createAndEnable", {
           defaultValue: "创建并开启分享",
         })}
+        onSaveTunnelConfig={(config) =>
+          configureTunnelMutation.mutateAsync(config)
+        }
         onSubmit={createAndEnable}
       />
 

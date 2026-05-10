@@ -56,11 +56,7 @@ fn inject_build_metadata() {
     let build_time = std::env::var("CC_SWITCH_BUILD_TIME")
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            chrono::Utc::now()
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string()
-        });
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
 
     println!("cargo:rustc-env=CC_SWITCH_BUILD_SHA={sha}");
     println!("cargo:rustc-env=CC_SWITCH_BUILD_TIME={build_time}");

@@ -1,9 +1,4 @@
-import type {
-  ConnectInfo,
-  ShareRecord,
-  TunnelConfig,
-  TunnelInfo,
-} from "@/lib/api";
+import type { ShareRecord, TunnelConfig, TunnelInfo } from "@/lib/api";
 import type { Settings } from "@/types";
 export type ShareAction = "enable" | "disable" | "delete" | "connectInfo";
 
@@ -121,10 +116,6 @@ export function resolveShareTunnelInfo(
   };
 }
 
-export function buildShareCurlExample(connectInfo: ConnectInfo): string {
-  return `curl -H "X-API-Key: ${connectInfo.apiKey}" "${connectInfo.tunnelUrl}"`;
-}
-
 export function getShareTunnelRuntimeStatus(
   share: Pick<ShareRecord, "status" | "tunnelUrl">,
   tunnelStatus?: TunnelInfo | null,
@@ -174,7 +165,7 @@ export function getShareDisplayStatus(
   if (share.tunnelUrl) {
     return "connecting";
   }
-  return "connection_error";
+  return "connecting";
 }
 
 export const PERMANENT_EXPIRES_AT = "2099-12-31T23:59:59Z";

@@ -4,7 +4,9 @@ use crate::error::AppError;
 use crate::proxy::ProxyConfig;
 use crate::services::share::{PrepareShareParams, ShareService};
 use crate::store::AppState;
-use crate::tunnel::config::{TunnelConfig, TunnelInfo, TunnelRequest, TunnelType};
+use crate::tunnel::config::{
+    ShareTunnelStatus, TunnelConfig, TunnelInfo, TunnelRequest, TunnelType,
+};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::net::TcpStream;
@@ -21,6 +23,8 @@ pub struct CreateShareParams {
     pub expires_in_secs: i64,
     pub subdomain: Option<String>,
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub auto_start: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -91,6 +95,13 @@ pub struct UpdateShareExpirationParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateShareAutoStartParams {
+    pub share_id: String,
+    pub auto_start: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateShareAclParams {
     pub share_id: String,
     pub shared_with_emails: Vec<String>,
@@ -125,6 +136,7 @@ pub async fn create_share(
             expires_in_secs: params.expires_in_secs,
             subdomain: requested_subdomain.clone(),
             api_key: params.api_key.clone(),
+            auto_start: params.auto_start,
         })
         .map_err(|e: AppError| e.to_string())?;
 
@@ -303,6 +315,15 @@ pub fn update_share_expiration(
 }
 
 #[tauri::command]
+pub fn update_share_auto_start(
+    state: State<'_, AppState>,
+    params: UpdateShareAutoStartParams,
+) -> Result<ShareRecord, String> {
+    ShareService::update_auto_start(&state.db, &params.share_id, params.auto_start)
+        .map_err(|e: AppError| e.to_string())
+}
+
+#[tauri::command]
 pub async fn update_share_subdomain(
     state: State<'_, AppState>,
     params: UpdateShareSubdomainParams,
@@ -331,7 +352,7 @@ pub async fn update_share_subdomain(
         .map_err(|e: AppError| e.to_string())?;
 
     if updated.status == "active" {
-        return start_share_tunnel_inner(state.inner(), &params.share_id)
+        return start_share_tunnel_with_error_tracking(state.inner(), &params.share_id)
             .await
             .map(|_| updated.clone())
             .map_err(|e| e.to_string());
@@ -346,7 +367,7 @@ pub async fn enable_share(
     share_id: String,
 ) -> Result<TunnelInfo, String> {
     ShareService::resume(&state.db, &share_id).map_err(|e: AppError| e.to_string())?;
-    start_share_tunnel_inner(state.inner(), &share_id)
+    start_share_tunnel_with_error_tracking(state.inner(), &share_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -399,7 +420,7 @@ pub async fn start_share_tunnel(
     state: State<'_, AppState>,
     share_id: String,
 ) -> Result<TunnelInfo, String> {
-    start_share_tunnel_inner(state.inner(), &share_id)
+    start_share_tunnel_with_error_tracking(state.inner(), &share_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -407,8 +428,11 @@ pub async fn start_share_tunnel(
 pub async fn restore_active_share_tunnel(state: &AppState) -> Result<(), AppError> {
     for share in ShareService::list(&state.db)?
         .into_iter()
-        .filter(|share| share.status == "active")
+        .filter(|share| share.status == "active" || share.auto_start)
     {
+        if share.auto_start && share.status != "active" {
+            state.db.update_share_status(&share.id, "active")?;
+        }
         let already_running = {
             let mgr = state.tunnel_manager.read().await;
             mgr.get_info(&share.id).is_some()
@@ -421,7 +445,7 @@ pub async fn restore_active_share_tunnel(state: &AppState) -> Result<(), AppErro
             "[Share] Restoring active share tunnel for share_id={}",
             share.id
         );
-        if let Err(err) = start_share_tunnel_inner(state, &share.id).await {
+        if let Err(err) = start_share_tunnel_with_error_tracking(state, &share.id).await {
             log::warn!(
                 "[Share] Failed to restore active share tunnel for share_id={}: {}",
                 share.id,
@@ -431,6 +455,30 @@ pub async fn restore_active_share_tunnel(state: &AppState) -> Result<(), AppErro
     }
 
     Ok(())
+}
+
+async fn start_share_tunnel_with_error_tracking(
+    state: &AppState,
+    share_id: &str,
+) -> Result<TunnelInfo, AppError> {
+    match start_share_tunnel_inner(state, share_id).await {
+        Ok(info) => {
+            state
+                .tunnel_manager
+                .write()
+                .await
+                .clear_last_error(share_id);
+            Ok(info)
+        }
+        Err(err) => {
+            state
+                .tunnel_manager
+                .write()
+                .await
+                .set_last_error(share_id, err.to_string());
+            Err(err)
+        }
+    }
 }
 
 async fn start_share_tunnel_inner(
@@ -487,6 +535,16 @@ async fn start_share_tunnel_inner(
     Ok(info)
 }
 
+fn requires_owner_login_for_error(message: &str) -> bool {
+    message.contains("当前设备身份已失效")
+        || message.contains("当前邮箱验证码登录凭证已过期")
+        || message.contains("请重新发送并验证邮箱验证码")
+        || message.contains("请重新登录")
+        || message.contains("请先完成邮箱验证码登录")
+        || message.contains("当前邮箱登录状态与 share owner 不一致")
+        || message.contains("当前邮箱登录所属分享节点与所选分享节点不一致")
+}
+
 #[tauri::command]
 pub async fn stop_share_tunnel(state: State<'_, AppState>, share_id: String) -> Result<(), String> {
     let mut mgr = state.tunnel_manager.write().await;
@@ -505,9 +563,18 @@ pub async fn stop_share_tunnel(state: State<'_, AppState>, share_id: String) -> 
 pub async fn get_tunnel_status(
     state: State<'_, AppState>,
     share_id: String,
-) -> Result<Option<TunnelInfo>, String> {
+) -> Result<ShareTunnelStatus, String> {
     let mgr = state.tunnel_manager.read().await;
-    Ok(mgr.get_info(&share_id))
+    let info = mgr.get_info(&share_id);
+    let last_error = mgr.get_last_error(&share_id);
+    Ok(ShareTunnelStatus {
+        requires_owner_login: last_error
+            .as_deref()
+            .map(requires_owner_login_for_error)
+            .unwrap_or(false),
+        info,
+        last_error,
+    })
 }
 
 #[tauri::command]

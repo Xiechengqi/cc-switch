@@ -34,6 +34,7 @@ interface ShareOwnerLoginDialogProps {
   lockedOwnerEmail?: string | null;
   onOpenChange: (open: boolean) => void;
   onSaveTunnelConfig: (config: TunnelConfig) => Promise<void> | void;
+  onVerified?: () => Promise<void> | void;
 }
 
 type Step = "router" | "email" | "code";
@@ -46,6 +47,7 @@ export function ShareOwnerLoginDialog({
   lockedOwnerEmail,
   onOpenChange,
   onSaveTunnelConfig,
+  onVerified,
 }: ShareOwnerLoginDialogProps) {
   const { t } = useTranslation();
   const requestCodeMutation = useEmailAuthRequestCodeMutation();
@@ -113,6 +115,7 @@ export function ShareOwnerLoginDialog({
         code: code.trim(),
       });
       onOpenChange(false);
+      await onVerified?.();
     } catch {
       return;
     }

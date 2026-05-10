@@ -28,6 +28,7 @@ const baseShare: ShareRecord = {
   subdomain: "demo",
   tunnelUrl: "https://demo.example.com",
   status: "active",
+  autoStart: false,
   createdAt: "2026-01-01T00:00:00Z",
   lastUsedAt: null,
 };
@@ -70,10 +71,10 @@ describe("share utils", () => {
       expect(getShareDisplayStatus(baseShare, true, null)).toBe("connecting");
     });
 
-    it("shows connection_error for active shares without a tunnel url", () => {
+    it("shows connecting for active shares while tunnel url is syncing", () => {
       expect(
         getShareDisplayStatus({ ...baseShare, tunnelUrl: null }, true, null),
-      ).toBe("connection_error");
+      ).toBe("connecting");
     });
 
     it("shows business terminal statuses before tunnel configuration", () => {

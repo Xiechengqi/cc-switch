@@ -596,6 +596,31 @@ pub async fn ensure_remote_owner_binding(
     } else {
         match send_bind_owner_request(&client, config, &identity, &email, None, None).await {
             Ok(body) => body,
+            Err(err)
+                if crate::tunnel::identity::should_reset_identity_for_api_error(&err.message) =>
+            {
+                identity =
+                    crate::tunnel::identity::refresh_installation_registration(&client, config)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                let access_token = match valid_access_token(config, &mut state, &client).await {
+                    Ok(token) => token,
+                    Err(_) if remote_owner_matches(config, &email).await? => {
+                        return Ok(());
+                    }
+                    Err(err) => return Err(err),
+                };
+                send_bind_owner_request(
+                    &client,
+                    config,
+                    &identity,
+                    &email,
+                    None,
+                    Some(&access_token),
+                )
+                .await
+                .map_err(|err| humanize_remote_owner_binding_error(&err.message))?
+            }
             Err(err) if err.status == reqwest::StatusCode::UNAUTHORIZED => {
                 let access_token = match valid_access_token(config, &mut state, &client).await {
                     Ok(token) => token,

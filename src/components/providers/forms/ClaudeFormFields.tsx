@@ -36,6 +36,7 @@ import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
 import { CopilotAuthSection } from "./CopilotAuthSection";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { ClaudeOAuthSection } from "./ClaudeOAuthSection";
+import { DeepSeekAccountSection } from "./DeepSeekAccountSection";
 import {
   copilotGetModels,
   copilotGetModelsForAccount,
@@ -94,6 +95,11 @@ interface ClaudeFormFieldsProps {
   isClaudeOauthAuthenticated?: boolean;
   selectedClaudeAccountId?: string | null;
   onClaudeAccountSelect?: (accountId: string | null) => void;
+
+  // DeepSeek Account
+  isDeepSeekAccountPreset?: boolean;
+  selectedDeepSeekAccountId?: string | null;
+  onDeepSeekAccountSelect?: (accountId: string | null) => void;
 
   // Template Values
   templateValueEntries: Array<[string, TemplateValueConfig]>;
@@ -163,6 +169,9 @@ export function ClaudeFormFields({
   isClaudeOauthPreset,
   selectedClaudeAccountId,
   onClaudeAccountSelect,
+  isDeepSeekAccountPreset,
+  selectedDeepSeekAccountId,
+  onDeepSeekAccountSelect,
   codexFastMode,
   onCodexFastModeChange,
   templateValueEntries,
@@ -409,6 +418,13 @@ export function ClaudeFormFields({
         <ClaudeOAuthSection
           selectedAccountId={selectedClaudeAccountId}
           onAccountSelect={onClaudeAccountSelect}
+        />
+      )}
+
+      {isDeepSeekAccountPreset && (
+        <DeepSeekAccountSection
+          selectedAccountId={selectedDeepSeekAccountId}
+          onAccountSelect={onDeepSeekAccountSelect}
         />
       )}
 

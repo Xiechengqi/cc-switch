@@ -332,6 +332,7 @@ export const handlers = [
         tokenLimit: number;
         parallelLimit: number;
         expiresInSecs: number;
+        autoStart: boolean;
       };
     }>(request);
 
@@ -362,7 +363,8 @@ export const handlers = [
       expiresAt: new Date(now + params.expiresInSecs * 1000).toISOString(),
       subdomain: null,
       tunnelUrl: null,
-      status: "active",
+      status: "paused",
+      autoStart: params.autoStart ?? false,
       createdAt: new Date(now).toISOString(),
       lastUsedAt: null,
     };
@@ -420,6 +422,17 @@ export const handlers = [
     updateShare(params.shareId, { forSale: params.forSale });
     return success(getShare(params.shareId));
   }),
+
+  http.post(
+    `${TAURI_ENDPOINT}/update_share_auto_start`,
+    async ({ request }) => {
+      const { params } = await withJson<{
+        params: { shareId: string; autoStart: boolean };
+      }>(request);
+      updateShare(params.shareId, { autoStart: params.autoStart });
+      return success(getShare(params.shareId));
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/start_share_tunnel`, async ({ request }) => {
     const { shareId } = await withJson<{ shareId: string }>(request);
@@ -483,7 +496,11 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/get_tunnel_status`, async ({ request }) => {
     const { shareId } = await withJson<{ shareId: string }>(request);
-    return success(getTunnelStatus(shareId));
+    return success({
+      info: getTunnelStatus(shareId),
+      lastError: null,
+      requiresOwnerLogin: false,
+    });
   }),
 
   http.post(`${TAURI_ENDPOINT}/get_share_connect_info`, async ({ request }) => {

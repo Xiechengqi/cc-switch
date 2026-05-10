@@ -148,9 +148,12 @@ export function ShareRequestLogTable({
                           {formatUtcDateTime(log.createdAt * 1000)}
                         </TableCell>
                         <TableCell>
-                          <div className="font-medium">{log.model || "-"}</div>
+                          <div className="font-medium">
+                            {log.requestAgent || log.appType} ·{" "}
+                            {log.actualModel || log.model || "-"}
+                          </div>
                           <div className="text-xs text-muted-foreground">
-                            {log.providerName || log.appType}
+                            {log.requestedModel || log.requestModel || "-"}
                           </div>
                         </TableCell>
                         <TableCell>{log.inputTokens}</TableCell>

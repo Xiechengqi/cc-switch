@@ -14,8 +14,8 @@ export interface TemplateValueConfig {
  * 预设供应商的视觉主题配置
  */
 export interface PresetTheme {
-  /** 图标类型：'claude' | 'codex' | 'gemini' | 'generic' */
-  icon?: "claude" | "codex" | "gemini" | "generic";
+  /** 图标类型：'claude' | 'codex' | 'gemini' | 'deepseek' | 'generic' */
+  icon?: "claude" | "codex" | "gemini" | "deepseek" | "generic";
   /** 背景色（选中状态），支持 Tailwind 类名或 hex 颜色 */
   backgroundColor?: string;
   /** 文字色（选中状态），支持 Tailwind 类名或 hex 颜色 */
@@ -60,11 +60,13 @@ export interface ProviderPreset {
   // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
   // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
   // - "claude_oauth": Claude 官方订阅 OAuth（Anthropic 官方）
+  // - "deepseek_account": DeepSeek 账号
   providerType?:
     | "github_copilot"
     | "codex_oauth"
     | "claude_oauth"
-    | "google_gemini_oauth";
+    | "google_gemini_oauth"
+    | "deepseek_account";
 
   // 是否需要 OAuth 认证（而非 API Key）
   requiresOAuth?: boolean;
@@ -95,6 +97,56 @@ export const providerPresets: ProviderPreset[] = [
     },
     icon: "anthropic",
     iconColor: "#D4915D",
+  },
+  {
+    name: "OpenAI Official",
+    websiteUrl: "https://chatgpt.com/codex",
+    settingsConfig: {
+      env: {
+        // base_url 由代理后端强制重写为 chatgpt.com/backend-api/codex
+        // 用户无需配置
+        ANTHROPIC_BASE_URL: "https://chatgpt.com/backend-api/codex",
+        ANTHROPIC_MODEL: "gpt-5.5",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-5.4",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.5",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.5",
+      },
+    },
+    isOfficial: true,
+    category: "official",
+    apiFormat: "openai_responses",
+    providerType: "codex_oauth",
+    requiresOAuth: true,
+    theme: {
+      icon: "codex",
+      backgroundColor: "#1F2937",
+      textColor: "#FFFFFF",
+    },
+    icon: "openai",
+    iconColor: "#00A67E",
+  },
+  {
+    name: "DeepSeek Official",
+    websiteUrl: "https://chat.deepseek.com",
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: "https://chat.deepseek.com",
+        ANTHROPIC_MODEL: "deepseek-v4-flash",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-flash",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro",
+      },
+    },
+    category: "cn_official",
+    providerType: "deepseek_account",
+    requiresOAuth: true,
+    theme: {
+      icon: "deepseek",
+      backgroundColor: "#4D6BFE",
+      textColor: "#FFFFFF",
+    },
+    icon: "deepseek",
+    iconColor: "#4D6BFE",
   },
   {
     name: "Shengsuanyun",
@@ -134,7 +186,7 @@ export const providerPresets: ProviderPreset[] = [
     iconColor: "#4285F4",
   },
   {
-    name: "DeepSeek",
+    name: "DeepSeek(API Key)",
     websiteUrl: "https://platform.deepseek.com",
     settingsConfig: {
       env: {
@@ -872,27 +924,6 @@ export const providerPresets: ProviderPreset[] = [
     providerType: "github_copilot",
     requiresOAuth: true,
     icon: "github",
-    iconColor: "#000000",
-  },
-  {
-    name: "Codex",
-    websiteUrl: "https://openai.com/chatgpt/pricing",
-    settingsConfig: {
-      env: {
-        // base_url 由代理后端强制重写为 chatgpt.com/backend-api/codex
-        // 用户无需配置
-        ANTHROPIC_BASE_URL: "https://chatgpt.com/backend-api/codex",
-        ANTHROPIC_MODEL: "gpt-5.4",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-5.4-mini",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.4",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.4",
-      },
-    },
-    category: "third_party",
-    apiFormat: "openai_responses",
-    providerType: "codex_oauth",
-    requiresOAuth: true,
-    icon: "openai",
     iconColor: "#000000",
   },
   {

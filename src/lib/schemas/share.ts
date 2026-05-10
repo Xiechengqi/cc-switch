@@ -11,6 +11,7 @@ export const createShareSchema = z.object({
       "share.validation.descriptionTooLong",
     ),
   forSale: z.enum(["Yes", "No", "Free"]),
+  autoStart: z.boolean(),
   tokenLimit: z.coerce
     .number()
     .int()

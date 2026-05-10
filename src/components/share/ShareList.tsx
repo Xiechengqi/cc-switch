@@ -1,5 +1,10 @@
 import { useTranslation } from "react-i18next";
-import type { ShareRecord, TunnelConfig, TunnelInfo } from "@/lib/api";
+import type {
+  PublicMarket,
+  ShareRecord,
+  TunnelConfig,
+  TunnelInfo,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ShareCard } from "./ShareCard";
@@ -12,14 +17,53 @@ interface ShareListProps {
   isLoading: boolean;
   error: string | null;
   pendingAction?: string | null;
+  markets?: PublicMarket[];
+  marketsLoading?: boolean;
+  marketsError?: string | null;
+  ownerAuthenticated?: boolean;
+  ownerLoginRequiredMap?: Record<string, boolean>;
+  onRetryMarkets?: () => void;
+  onChangeOwner?: () => void;
+  onVerifyOwner?: () => void;
   onRetry: () => void;
   onCreate: () => void;
-  onOpenDetail: (share: ShareRecord) => void;
-  onOpenConnect: (share: ShareRecord) => void;
   onDelete: (share: ShareRecord) => void;
   onEnable: (share: ShareRecord) => void;
   onDisable: (share: ShareRecord) => void;
-  onRefresh: (share: ShareRecord) => void;
+  onResetUsage: (share: ShareRecord) => Promise<void> | void;
+  onUpdateTokenLimit: (
+    share: ShareRecord,
+    tokenLimit: number,
+  ) => Promise<void> | void;
+  onUpdateParallelLimit: (
+    share: ShareRecord,
+    parallelLimit: number,
+  ) => Promise<void> | void;
+  onUpdateSubdomain: (
+    share: ShareRecord,
+    subdomain: string,
+  ) => Promise<void> | void;
+  onUpdateApiKey: (share: ShareRecord, apiKey: string) => Promise<void> | void;
+  onUpdateDescription: (
+    share: ShareRecord,
+    description: string,
+  ) => Promise<void> | void;
+  onUpdateForSale: (
+    share: ShareRecord,
+    forSale: "Yes" | "No" | "Free",
+  ) => Promise<void> | void;
+  onUpdateExpiration: (
+    share: ShareRecord,
+    expiresAt: string,
+  ) => Promise<void> | void;
+  onUpdateAutoStart: (
+    share: ShareRecord,
+    autoStart: boolean,
+  ) => Promise<void> | void;
+  onUpdateAcl: (
+    share: ShareRecord,
+    sharedWithEmails: string[],
+  ) => Promise<void> | void;
 }
 
 export function ShareList({
@@ -30,14 +74,29 @@ export function ShareList({
   isLoading,
   error,
   pendingAction,
+  markets,
+  marketsLoading,
+  marketsError,
+  ownerAuthenticated = false,
+  ownerLoginRequiredMap = {},
+  onRetryMarkets,
+  onChangeOwner,
+  onVerifyOwner,
   onRetry,
   onCreate,
-  onOpenDetail,
-  onOpenConnect,
   onDelete,
   onEnable,
   onDisable,
-  onRefresh,
+  onResetUsage,
+  onUpdateTokenLimit,
+  onUpdateParallelLimit,
+  onUpdateSubdomain,
+  onUpdateApiKey,
+  onUpdateDescription,
+  onUpdateForSale,
+  onUpdateExpiration,
+  onUpdateAutoStart,
+  onUpdateAcl,
 }: ShareListProps) {
   const { t } = useTranslation();
 
@@ -98,12 +157,27 @@ export function ShareList({
           tunnelConfig={tunnelConfig}
           tunnelConfigured={tunnelConfigured}
           pendingAction={pendingAction}
-          onOpenDetail={onOpenDetail}
-          onOpenConnect={onOpenConnect}
+          markets={markets}
+          marketsLoading={marketsLoading}
+          marketsError={marketsError}
+          ownerAuthenticated={ownerAuthenticated}
+          ownerLoginRequired={ownerLoginRequiredMap[share.id] ?? false}
+          onRetryMarkets={onRetryMarkets}
+          onChangeOwner={onChangeOwner}
+          onVerifyOwner={onVerifyOwner}
           onDelete={onDelete}
           onEnable={onEnable}
           onDisable={onDisable}
-          onRefresh={onRefresh}
+          onResetUsage={onResetUsage}
+          onUpdateTokenLimit={onUpdateTokenLimit}
+          onUpdateParallelLimit={onUpdateParallelLimit}
+          onUpdateSubdomain={onUpdateSubdomain}
+          onUpdateApiKey={onUpdateApiKey}
+          onUpdateDescription={onUpdateDescription}
+          onUpdateForSale={onUpdateForSale}
+          onUpdateExpiration={onUpdateExpiration}
+          onUpdateAutoStart={onUpdateAutoStart}
+          onUpdateAcl={onUpdateAcl}
         />
       ))}
     </div>

@@ -93,6 +93,7 @@ import {
   useCodexOauth,
   useClaudeOauth,
   useGeminiOauth,
+  useDeepSeekAccount,
 } from "./hooks";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useSettingsQuery } from "@/lib/query";
@@ -397,6 +398,11 @@ export function ProviderForm({
     accounts: geminiOauthAccounts,
     defaultAccountId: defaultGeminiAccountId,
   } = useGeminiOauth();
+  const {
+    isAuthenticated: isDeepSeekAccountAuthenticated,
+    accounts: deepSeekAccounts,
+    defaultAccountId: defaultDeepSeekAccountId,
+  } = useDeepSeekAccount();
 
   // 选中的 GitHub 账号 ID（多账号支持）
   const [selectedGitHubAccountId, setSelectedGitHubAccountId] = useState<
@@ -418,6 +424,9 @@ export function ProviderForm({
   const [selectedGeminiAccountId, setSelectedGeminiAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "google_gemini_oauth"));
+  const [selectedDeepSeekAccountId, setSelectedDeepSeekAccountId] = useState<
+    string | null
+  >(() => resolveManagedAccountId(initialData?.meta, "deepseek_account"));
 
   const isCodexOfficialPreset = appId === "codex" && category === "official";
 
@@ -569,7 +578,27 @@ export function ProviderForm({
     currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
     currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
+    currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
     isCodexOfficialPreset;
+
+  useEffect(() => {
+    const isDeepSeekAccountPreset =
+      currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT;
+    if (!isDeepSeekAccountPreset || selectedDeepSeekAccountId) {
+      return;
+    }
+
+    const preferredAccountId =
+      defaultDeepSeekAccountId ?? deepSeekAccounts[0]?.id ?? null;
+    if (preferredAccountId) {
+      setSelectedDeepSeekAccountId(preferredAccountId);
+    }
+  }, [
+    currentProviderType,
+    deepSeekAccounts,
+    defaultDeepSeekAccountId,
+    selectedDeepSeekAccountId,
+  ]);
 
   useEffect(() => {
     if (!isGeminiOfficialPreset || selectedGeminiAccountId) {
@@ -990,6 +1019,9 @@ export function ProviderForm({
     const isGeminiOauthProvider =
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
+    const isDeepSeekAccountProvider =
+      templatePreset?.providerType === "deepseek_account" ||
+      initialData?.meta?.providerType === "deepseek_account";
     // GitHub Copilot 必须先登录才能添加
     if (isCopilotProvider && !isCopilotAuthenticated) {
       toast.error(
@@ -1052,6 +1084,24 @@ export function ProviderForm({
       );
       return;
     }
+    if (isDeepSeekAccountProvider) {
+      if (!isDeepSeekAccountAuthenticated) {
+        toast.error(
+          t("deepseekAccount.loginRequired", {
+            defaultValue: "请先添加 DeepSeek 账号",
+          }),
+        );
+        return;
+      }
+      if (!selectedDeepSeekAccountId) {
+        toast.error(
+          t("deepseekAccount.selectAccountRequired", {
+            defaultValue: "DeepSeek Account 必须绑定一个 DeepSeek 账号",
+          }),
+        );
+        return;
+      }
+    }
 
     // OMO Other Fields JSON：B 类（格式错了保存下去数据就坏了）
     if (
@@ -1088,14 +1138,23 @@ export function ProviderForm({
     // cloud_provider（如 Bedrock）通过模板变量处理认证，跳过通用校验
     if (category !== "official" && category !== "cloud_provider") {
       if (appId === "claude") {
-        if (!isCodexOauthProvider && !baseUrl.trim()) {
+        if (
+          !isCodexOauthProvider &&
+          !isDeepSeekAccountProvider &&
+          !baseUrl.trim()
+        ) {
           issues.push(
             t("providerForm.endpointRequired", {
               defaultValue: "非官方供应商请填写 API 端点",
             }),
           );
         }
-        if (!isCopilotProvider && !isCodexOauthProvider && !apiKey.trim()) {
+        if (
+          !isCopilotProvider &&
+          !isCodexOauthProvider &&
+          !isDeepSeekAccountProvider &&
+          !apiKey.trim()
+        ) {
           issues.push(
             t("providerForm.apiKeyRequired", {
               defaultValue: "非官方供应商请填写 API Key",
@@ -1160,6 +1219,9 @@ export function ProviderForm({
     const isGeminiOauthProvider =
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
+    const isDeepSeekAccountProvider =
+      templatePreset?.providerType === "deepseek_account" ||
+      initialData?.meta?.providerType === "deepseek_account";
 
     let settingsConfig: string;
 
@@ -1340,7 +1402,13 @@ export function ProviderForm({
                   authProvider: "google_gemini_oauth",
                   accountId: selectedGeminiAccountId ?? undefined,
                 }
-              : undefined,
+              : isDeepSeekAccountProvider
+                ? {
+                    source: "managed_account",
+                    authProvider: "deepseek_account",
+                    accountId: selectedDeepSeekAccountId ?? undefined,
+                  }
+                : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         isCopilotProvider && selectedGitHubAccountId
@@ -1934,6 +2002,10 @@ export function ProviderForm({
                 templatePreset?.providerType === "claude_oauth" ||
                 initialData?.meta?.providerType === "claude_oauth"
               }
+              isDeepSeekAccountPreset={
+                templatePreset?.providerType === "deepseek_account" ||
+                initialData?.meta?.providerType === "deepseek_account"
+              }
               usesOAuth={
                 templatePreset?.requiresOAuth === true ||
                 templatePreset?.providerType === "github_copilot" ||
@@ -1942,7 +2014,9 @@ export function ProviderForm({
                 templatePreset?.providerType === "codex_oauth" ||
                 initialData?.meta?.providerType === "codex_oauth" ||
                 templatePreset?.providerType === "claude_oauth" ||
-                initialData?.meta?.providerType === "claude_oauth"
+                initialData?.meta?.providerType === "claude_oauth" ||
+                templatePreset?.providerType === "deepseek_account" ||
+                initialData?.meta?.providerType === "deepseek_account"
               }
               isCopilotAuthenticated={isCopilotAuthenticated}
               selectedGitHubAccountId={selectedGitHubAccountId}
@@ -1953,6 +2027,8 @@ export function ProviderForm({
               isClaudeOauthAuthenticated={isClaudeOauthAuthenticated}
               selectedClaudeAccountId={selectedClaudeAccountId}
               onClaudeAccountSelect={setSelectedClaudeAccountId}
+              selectedDeepSeekAccountId={selectedDeepSeekAccountId}
+              onDeepSeekAccountSelect={setSelectedDeepSeekAccountId}
               codexFastMode={codexFastMode}
               onCodexFastModeChange={setCodexFastMode}
               templateValueEntries={templateValueEntries}

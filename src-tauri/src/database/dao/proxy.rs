@@ -18,7 +18,9 @@ impl Database {
         let conn = lock_conn!(self.conn);
         let mut stmt = match conn.prepare(
             "SELECT request_id, share_id, COALESCE(share_name, ''), provider_id, provider_id,
-                    app_type, model, COALESCE(request_model, model), status_code, latency_ms,
+                    app_type, model, COALESCE(request_model, model),
+                    request_agent, requested_model, actual_model, actual_model_source,
+                    status_code, latency_ms,
                     first_token_ms, input_tokens, output_tokens, cache_read_tokens,
                     cache_creation_tokens, is_streaming, session_id, created_at
              FROM proxy_request_logs
@@ -47,16 +49,20 @@ impl Database {
                     app_type: row.get(5)?,
                     model: row.get(6)?,
                     request_model: row.get(7)?,
-                    status_code: row.get::<_, i64>(8)? as u16,
-                    latency_ms: row.get::<_, i64>(9)? as u64,
-                    first_token_ms: row.get::<_, Option<i64>>(10)?.map(|v| v as u64),
-                    input_tokens: row.get::<_, i64>(11)? as u32,
-                    output_tokens: row.get::<_, i64>(12)? as u32,
-                    cache_read_tokens: row.get::<_, i64>(13)? as u32,
-                    cache_creation_tokens: row.get::<_, i64>(14)? as u32,
-                    is_streaming: row.get::<_, i64>(15)? != 0,
-                    session_id: row.get(16)?,
-                    created_at: row.get(17)?,
+                    request_agent: row.get(8)?,
+                    requested_model: row.get(9)?,
+                    actual_model: row.get(10)?,
+                    actual_model_source: row.get(11)?,
+                    status_code: row.get::<_, i64>(12)? as u16,
+                    latency_ms: row.get::<_, i64>(13)? as u64,
+                    first_token_ms: row.get::<_, Option<i64>>(14)?.map(|v| v as u64),
+                    input_tokens: row.get::<_, i64>(15)? as u32,
+                    output_tokens: row.get::<_, i64>(16)? as u32,
+                    cache_read_tokens: row.get::<_, i64>(17)? as u32,
+                    cache_creation_tokens: row.get::<_, i64>(18)? as u32,
+                    is_streaming: row.get::<_, i64>(19)? != 0,
+                    session_id: row.get(20)?,
+                    created_at: row.get(21)?,
                 })
             })
             .map_err(|e| AppError::Database(e.to_string()))?;

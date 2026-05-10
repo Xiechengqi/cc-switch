@@ -780,6 +780,14 @@ pub(crate) fn build_share_request_log(
         app_type: app_type.to_string(),
         model: model.to_string(),
         request_model: request_model.to_string(),
+        request_agent: app_type.to_string(),
+        requested_model: request_model.to_string(),
+        actual_model: model.to_string(),
+        actual_model_source: if model == request_model {
+            "official".to_string()
+        } else {
+            "provider_mapping".to_string()
+        },
         status_code,
         latency_ms,
         first_token_ms,

@@ -100,6 +100,7 @@ export function isManagedOauthProvider(
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
     (appId === "codex" && isCodexOfficialWithManagedAuth(provider)) ||
     (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider))
   );
@@ -122,6 +123,10 @@ export function canTestProvider(
   appId: AppId,
 ): boolean {
   if (provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH) {
+    return true;
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT) {
     return true;
   }
 

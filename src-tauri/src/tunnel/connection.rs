@@ -91,6 +91,11 @@ async fn issue_lease_inner(
     allow_identity_reset_retry: bool,
 ) -> Result<LeaseResponse, TunnelError> {
     let url = format!("{}/v1/tunnels/lease", config.get_server_addr());
+    if let Some(share) = share_metadata.as_ref() {
+        crate::email_auth::ensure_remote_owner_binding(config, &share.owner_email)
+            .await
+            .map_err(TunnelError::Api)?;
+    }
     let identity = identity::ensure_identity(client, config).await?;
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let nonce = uuid::Uuid::new_v4().to_string();
@@ -111,11 +116,6 @@ async fn issue_lease_inner(
         ),
         "share": share_metadata,
     });
-    if let Some(share) = share_metadata.as_ref() {
-        crate::email_auth::ensure_remote_owner_binding(config, &share.owner_email)
-            .await
-            .map_err(TunnelError::Api)?;
-    }
     let request = client
         .post(&url)
         .json(&payload)
@@ -126,10 +126,19 @@ async fn issue_lease_inner(
     let resp = send_share_router_request(request, "issue tunnel lease", &url).await?;
 
     if resp.status().is_success() {
-        return resp
+        let lease: LeaseResponse = resp
             .json()
             .await
-            .map_err(|e| TunnelError::Api(format!("parse response: {e}")));
+            .map_err(|e| TunnelError::Api(format!("parse response: {e}")))?;
+        validate_lease_response(&lease, subdomain)?;
+        log::info!(
+            "[Tunnel] lease issued subdomain={} connection_id={} ssh_username={} ssh_addr={}",
+            subdomain,
+            lease.connection_id,
+            lease.ssh_username,
+            lease.ssh_addr
+        );
+        return Ok(lease);
     }
 
     let msg = read_error_message(resp).await;
@@ -188,6 +197,9 @@ async fn claim_share_subdomain_inner(
     allow_identity_reset_retry: bool,
 ) -> Result<(), TunnelError> {
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
+    crate::email_auth::ensure_remote_owner_binding(config, &share_metadata.owner_email)
+        .await
+        .map_err(TunnelError::Api)?;
     let identity = identity::ensure_identity(client, config).await?;
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let nonce = uuid::Uuid::new_v4().to_string();
@@ -199,9 +211,6 @@ async fn claim_share_subdomain_inner(
         timestamp_ms,
         &nonce,
     )?;
-    crate::email_auth::ensure_remote_owner_binding(config, &share_metadata.owner_email)
-        .await
-        .map_err(TunnelError::Api)?;
     let resp = send_share_router_request(
         client
             .post(&url)
@@ -245,4 +254,24 @@ async fn claim_share_subdomain_inner(
     Err(TunnelError::Api(format!(
         "claim subdomain request failed: {message}"
     )))
+}
+
+fn validate_lease_response(lease: &LeaseResponse, subdomain: &str) -> Result<(), TunnelError> {
+    if lease.connection_id.trim().is_empty() {
+        return Err(TunnelError::Api(format!(
+            "share router returned invalid tunnel lease for {subdomain}: empty connection id"
+        )));
+    }
+    let username = lease.ssh_username.trim();
+    if username.is_empty() || username == "root" {
+        return Err(TunnelError::Api(format!(
+            "share router returned invalid tunnel lease for {subdomain}: unexpected SSH username `{username}`"
+        )));
+    }
+    if lease.ssh_addr.trim().is_empty() {
+        return Err(TunnelError::Api(format!(
+            "share router returned invalid tunnel lease for {subdomain}: empty SSH address"
+        )));
+    }
+    Ok(())
 }

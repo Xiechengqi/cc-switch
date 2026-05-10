@@ -4,13 +4,16 @@ use crate::app_config::AppType;
 use crate::commands::claude_oauth::ClaudeOAuthState;
 use crate::commands::codex_oauth::CodexOAuthState;
 use crate::commands::copilot::CopilotAuthState;
+use crate::commands::deepseek_account::DeepSeekAccountState;
 use crate::commands::gemini_oauth::GeminiOAuthState;
 use crate::error::AppError;
 use crate::services::stream_check::{
     HealthStatus, StreamCheckConfig, StreamCheckResult, StreamCheckService,
 };
 use crate::store::AppState;
+use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::time::Instant;
 use tauri::State;
 
 /// 流式健康检查（单个供应商）
@@ -21,6 +24,7 @@ pub async fn stream_check_provider(
     codex_oauth_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    deepseek_account_state: State<'_, DeepSeekAccountState>,
     app_type: AppType,
     provider_id: String,
 ) -> Result<StreamCheckResult, AppError> {
@@ -30,6 +34,19 @@ pub async fn stream_check_provider(
     let provider = providers
         .get(&provider_id)
         .ok_or_else(|| AppError::Message(format!("供应商 {provider_id} 不存在")))?;
+
+    if matches!(app_type, AppType::Claude) && provider.is_deepseek_account_provider() {
+        let result =
+            check_deepseek_account_provider(provider, &config, deepseek_account_state.0.clone())
+                .await;
+        let _ = state.db.save_stream_check_log(
+            &provider_id,
+            &provider.name,
+            app_type.as_str(),
+            &result,
+        );
+        return Ok(result);
+    }
 
     let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
         .await?
@@ -75,6 +92,7 @@ pub async fn stream_check_all_providers(
     codex_oauth_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    deepseek_account_state: State<'_, DeepSeekAccountState>,
     app_type: AppType,
     proxy_targets_only: bool,
 ) -> Result<Vec<(String, StreamCheckResult)>, AppError> {
@@ -102,6 +120,20 @@ pub async fn stream_check_all_providers(
             if !ids.contains(&id) {
                 continue;
             }
+        }
+
+        if matches!(app_type, AppType::Claude) && provider.is_deepseek_account_provider() {
+            let result = check_deepseek_account_provider(
+                &provider,
+                &config,
+                deepseek_account_state.0.clone(),
+            )
+            .await;
+            let _ = state
+                .db
+                .save_stream_check_log(&id, &provider.name, app_type.as_str(), &result);
+            results.push((id, result));
+            continue;
         }
 
         let auth_override = resolve_copilot_auth_override(&provider, &copilot_state)
@@ -185,6 +217,95 @@ pub fn save_stream_check_config(
     config: StreamCheckConfig,
 ) -> Result<(), AppError> {
     state.db.save_stream_check_config(&config)
+}
+
+async fn check_deepseek_account_provider(
+    provider: &crate::provider::Provider,
+    config: &StreamCheckConfig,
+    manager: std::sync::Arc<
+        tokio::sync::RwLock<crate::proxy::providers::deepseek_account_auth::DeepSeekAccountManager>,
+    >,
+) -> StreamCheckResult {
+    let start = Instant::now();
+    let model = extract_claude_env_model(provider).unwrap_or_else(|| config.claude_model.clone());
+    let body = json!({
+        "model": model,
+        "max_tokens": 64,
+        "stream": false,
+        "messages": [{
+            "role": "user",
+            "content": config.test_prompt
+        }]
+    });
+
+    let result = crate::proxy::providers::deepseek_claude::forward_deepseek_claude_with_manager(
+        manager, provider, &body,
+    )
+    .await;
+    let response_time = start.elapsed().as_millis() as u64;
+    let tested_at = chrono::Utc::now().timestamp();
+
+    match result {
+        Ok(response) => {
+            let status = response.status();
+            let bytes = response.bytes().await;
+            if status.is_success() {
+                StreamCheckResult {
+                    status: if response_time > config.degraded_threshold_ms {
+                        HealthStatus::Degraded
+                    } else {
+                        HealthStatus::Operational
+                    },
+                    success: true,
+                    message: "Check succeeded".to_string(),
+                    response_time_ms: Some(response_time),
+                    http_status: Some(status.as_u16()),
+                    model_used: model,
+                    tested_at,
+                    retry_count: 0,
+                    error_category: None,
+                }
+            } else {
+                StreamCheckResult {
+                    status: HealthStatus::Failed,
+                    success: false,
+                    message: bytes
+                        .ok()
+                        .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                        .unwrap_or_else(|| format!("HTTP {}", status.as_u16())),
+                    response_time_ms: Some(response_time),
+                    http_status: Some(status.as_u16()),
+                    model_used: model,
+                    tested_at,
+                    retry_count: 0,
+                    error_category: None,
+                }
+            }
+        }
+        Err(error) => StreamCheckResult {
+            status: HealthStatus::Failed,
+            success: false,
+            message: error.to_string(),
+            response_time_ms: Some(response_time),
+            http_status: None,
+            model_used: model,
+            tested_at,
+            retry_count: 0,
+            error_category: None,
+        },
+    }
+}
+
+fn extract_claude_env_model(provider: &crate::provider::Provider) -> Option<String> {
+    provider
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .and_then(|env| env.get("ANTHROPIC_MODEL"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
 }
 
 async fn resolve_copilot_auth_override(

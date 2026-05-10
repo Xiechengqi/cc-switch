@@ -7,6 +7,7 @@ import {
   type CreateShareParams,
   type PublicMarket,
   type ShareRecord,
+  type ShareTunnelStatus,
   type TunnelConfig,
 } from "@/lib/api";
 import type { Settings } from "@/types";
@@ -222,16 +223,65 @@ export function useResumeShareMutation() {
 }
 
 export function useEnableShareMutation() {
-  return useShareActionMutation(
-    (shareId: string) => shareApi.enable(shareId),
-    {
-      successKey: "share.toast.enableSuccess",
-      successDefault: "分享已开启",
-      errorKey: "share.toast.enableError",
-      errorDefault: "开启分享失败: {{error}}",
+  const queryClient = useQueryClient();
+  const buildMessages = useShareMutationMessages();
+
+  return useMutation({
+    mutationFn: (shareId: string) => shareApi.enable(shareId),
+    onSuccess: async (tunnelInfo, shareId) => {
+      const applyTunnelInfo = <T extends ShareRecord | null | undefined>(
+        current: T,
+      ): T => {
+        if (!current) return current;
+        return {
+          ...current,
+          status: "active",
+          tunnelUrl: tunnelInfo.tunnelUrl,
+          subdomain: tunnelInfo.subdomain || current.subdomain,
+        } as T;
+      };
+
+      queryClient.setQueryData<ShareTunnelStatus | null>(
+        shareKeys.tunnelStatus(shareId),
+        { info: tunnelInfo, lastError: null, requiresOwnerLogin: false },
+      );
+      queryClient.setQueryData<ShareRecord[] | undefined>(
+        shareKeys.list(),
+        (current) =>
+          current?.map((share) =>
+            share.id === shareId ? applyTunnelInfo(share) : share,
+          ),
+      );
+      queryClient.setQueryData<ShareRecord | null | undefined>(
+        shareKeys.detail(shareId),
+        applyTunnelInfo,
+      );
+
+      await queryClient.invalidateQueries({ queryKey: shareKeys.list() });
+      await invalidateShareDetail(queryClient, shareId);
+      toast.success(
+        buildMessages({
+          successKey: "share.toast.enableSuccess",
+          successDefault: "分享已开启",
+          errorKey: "share.toast.enableError",
+          errorDefault: "开启分享失败: {{error}}",
+        }).success,
+      );
     },
-    (shareId) => shareId,
-  );
+    onError: (error: Error) => {
+      toast.error(
+        buildMessages(
+          {
+            successKey: "",
+            successDefault: "",
+            errorKey: "share.toast.enableError",
+            errorDefault: "开启分享失败: {{error}}",
+          },
+          extractErrorMessage(error),
+        ).error,
+      );
+    },
+  });
 }
 
 export function useDisableShareMutation() {
@@ -289,9 +339,9 @@ export function useResetShareUsageMutation() {
     (shareId: string) => shareApi.resetUsage(shareId),
     {
       successKey: "share.toast.resetUsageSuccess",
-      successDefault: "用量已重置",
+      successDefault: "Token 计数已重置",
       errorKey: "share.toast.resetUsageError",
-      errorDefault: "重置用量失败: {{error}}",
+      errorDefault: "重置 Token 计数失败: {{error}}",
     },
     (shareId) => shareId,
   );
@@ -395,6 +445,20 @@ export function useUpdateShareExpirationMutation() {
       successDefault: "到期时间已更新",
       errorKey: "share.toast.updateExpirationError",
       errorDefault: "更新到期时间失败: {{error}}",
+    },
+    ({ shareId }) => shareId,
+  );
+}
+
+export function useUpdateShareAutoStartMutation() {
+  return useShareActionMutation(
+    ({ shareId, autoStart }: { shareId: string; autoStart: boolean }) =>
+      shareApi.updateAutoStart({ shareId, autoStart }),
+    {
+      successKey: "share.toast.updateAutoStartSuccess",
+      successDefault: "开机启动设置已更新",
+      errorKey: "share.toast.updateAutoStartError",
+      errorDefault: "更新开机启动设置失败: {{error}}",
     },
     ({ shareId }) => shareId,
   );

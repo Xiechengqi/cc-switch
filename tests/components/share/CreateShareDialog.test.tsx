@@ -12,6 +12,9 @@ describe("CreateShareDialog", () => {
         defaultApp="claude"
         ownerEmail="owner@example.com"
         isSubmitting={false}
+        tunnelConfig={{ domain: "jptokenswitch.cc" }}
+        tunnelConfigSaving={false}
+        onSaveTunnelConfig={vi.fn()}
         onSubmit={vi.fn()}
       />,
     );
@@ -34,6 +37,9 @@ describe("CreateShareDialog", () => {
         defaultApp="claude"
         ownerEmail="owner@example.com"
         isSubmitting={false}
+        tunnelConfig={{ domain: "jptokenswitch.cc" }}
+        tunnelConfigSaving={false}
+        onSaveTunnelConfig={vi.fn()}
         onSubmit={onSubmit}
       />,
     );
@@ -49,12 +55,96 @@ describe("CreateShareDialog", () => {
         expect.objectContaining({
           description: "Team-facing proxy",
           forSale: "No",
+          autoStart: false,
           tokenLimit: 100000,
           parallelLimit: 3,
           expiresInSecs: 86400,
         }),
       ),
     );
+  });
+
+  it("submits start on launch when checked", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+
+    render(
+      <CreateShareDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        defaultApp="claude"
+        ownerEmail="owner@example.com"
+        isSubmitting={false}
+        tunnelConfig={{ domain: "jptokenswitch.cc" }}
+        tunnelConfigSaving={false}
+        onSaveTunnelConfig={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("share.autoStart"));
+    await user.click(screen.getByRole("button", { name: "share.create" }));
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autoStart: true,
+        }),
+      ),
+    );
+  });
+
+  it("lets owner email be edited and requests relogin before submit", async () => {
+    const user = userEvent.setup();
+    const onRelogin = vi.fn();
+    const onSubmit = vi.fn();
+
+    render(
+      <CreateShareDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        defaultApp="claude"
+        ownerEmail="owner@example.com"
+        isSubmitting={false}
+        tunnelConfig={{ domain: "jptokenswitch.cc" }}
+        tunnelConfigSaving={false}
+        onSaveTunnelConfig={vi.fn()}
+        onRelogin={onRelogin}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const ownerEmailInput = screen.getByLabelText("Owner Email");
+    await user.clear(ownerEmailInput);
+    await user.type(ownerEmailInput, "new-owner@example.com");
+    await user.click(screen.getByRole("button", { name: "share.create" }));
+
+    expect(onRelogin).toHaveBeenCalledWith("new-owner@example.com");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("has a relogin button for expired owner credentials", async () => {
+    const user = userEvent.setup();
+    const onRelogin = vi.fn();
+
+    render(
+      <CreateShareDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        defaultApp="claude"
+        ownerEmail="owner@example.com"
+        isSubmitting={false}
+        tunnelConfig={{ domain: "jptokenswitch.cc" }}
+        tunnelConfigSaving={false}
+        onSaveTunnelConfig={vi.fn()}
+        onRelogin={onRelogin}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "重新登录" }));
+
+    expect(onRelogin).toHaveBeenCalledWith("owner@example.com");
   });
 
   it("locks token limit to -1 when unlimited is checked", async () => {
@@ -67,6 +157,9 @@ describe("CreateShareDialog", () => {
         defaultApp="claude"
         ownerEmail="owner@example.com"
         isSubmitting={false}
+        tunnelConfig={{ domain: "jptokenswitch.cc" }}
+        tunnelConfigSaving={false}
+        onSaveTunnelConfig={vi.fn()}
         onSubmit={vi.fn()}
       />,
     );
@@ -90,6 +183,9 @@ describe("CreateShareDialog", () => {
         defaultApp="claude"
         ownerEmail="owner@example.com"
         isSubmitting={false}
+        tunnelConfig={{ domain: "jptokenswitch.cc" }}
+        tunnelConfigSaving={false}
+        onSaveTunnelConfig={vi.fn()}
         onSubmit={vi.fn()}
       />,
     );

@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-05-11
+
+- **上游分支：** `main`
+- **上游 HEAD：** `7685ab70`
+- **共同祖先：** `10c874af`
+- **合并提交数：** 11
+- **合并提交：** `6be6251b`
+- **主要变更：**
+  - perf(proxy): 减少每请求 hot-path 工作量与数据库等待
+  - fix(proxy): 提升 Codex / Responses 请求的缓存命中率（新增 `prepare_upstream_request_body`，做私有参数过滤 + 键序 canonicalize；新增 `log_prompt_cache_trace` 用于调试 prompt cache 命中）
+  - fix(proxy): Read tool 的输入中去掉空白页 (#2472)
+  - fix(ci): 修复前端 formatting 与 Linux clippy
+  - chore(brand): 把 `ccswitch.io` 立为唯一官方网站；release notes 模板里也展示
+  - docs: 新增 RunAPI / ClaudeCN / 火山引擎（Volcengine）赞助商，对应 raster icons 资源
+  - docs: 三语 README 标题副标补充 Hermes Agent
+- **冲突解决：**
+  - `.github/workflows/release.yml` — 完全保留本仓的 tauri-action 流程，丢弃上游的 legacy `publish-release` / `assemble-latest-json` job（本仓改造期已删除 `release-ci.yml`，新流程不需要这两个 job）
+  - `src-tauri/src/proxy/forwarder.rs` —
+    - body 预处理：采纳上游 `prepare_upstream_request_body`（替代 `filter_private_params_with_whitelist`，附带 key 排序），随后仍按本仓顺序套用 `normalize_codex_oauth_responses_body` / `sign_claude_oauth_messages_body`；最后调用上游新增的 `log_prompt_cache_trace`
+    - 发送 dispatch：与 2026-05-08 同样**未采纳**上游 e15bfbfe 的 pooled-reqwest 路径（仍冲突本仓 401 retry loop），`should_preserve_exact_header_case` / `map_reqwest_send_error` 继续是 dead-code warning
+    - 测试模块：保留本仓三个 `anthropic_beta_*` 用例与上游两个新用例 `canonical_json_sorts_object_keys_for_cache_trace_hashes` / `prepare_upstream_request_body_filters_private_fields_and_canonicalizes_order`
+  - `src-tauri/src/proxy/handlers.rs` — 采纳上游 3 参数版 `SseUsageCollector::new(start_time, Some(claude_stream_usage_event_filter), |events, first_token_ms| ...)` 与 Some/None 包装，但闭包内部保留本仓 `share_id` / `share_name` / `incoming_request_id` / `schedule_sync_share_request_log` / `share_guard::record_share_request` 的完整 share 计费路径；顺手清掉外层一个被新作用域 shadow 的冗余 `let session_id`
+  - `src-tauri/src/proxy/response_processor.rs` — 把上游的 `if !logging_enabled { return None }` 改为本仓语义 `let should_log_request = logging_enabled || ctx.share_id.is_some(); if !should_log_request { return None; }`，让纯 share 路径在日志关闭时仍能采集；闭包内用 `logging_enabled` 守 `log_usage_internal` 调用，`if let Some(sid) = share_id` 块保持无条件调度 share sync；同步采纳上游的 3 参数 `SseUsageCollector::new` + Some 包装
+- **附加修复：**
+  - `handlers.rs:573` 把 `Some(session_id)` 改为 `Some(session_id.clone())`，避免 share-log 同一作用域内 move 后再用导致 E0382
+  - `handlers.rs:553` 删除 shadow 掉的旧 `let session_id = ctx.session_id.clone()`（unused 警告）
+- **验证：** `cargo check`（3 条 dead-code warning，含上述 2 条遗留 + 1 条 `streaming_first_byte_timeout` field never read，无 error）、`pnpm tsc --noEmit` 通过
+
+---
+
 ## 2026-05-08
 
 - **上游分支：** `main`

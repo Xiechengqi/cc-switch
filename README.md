@@ -2,7 +2,7 @@
 
 # CC Switch
 
-### The All-in-One Manager for Claude Code, Codex, Gemini CLI, OpenCode & OpenClaw
+### The All-in-One Manager for Claude Code, Codex, Gemini CLI, OpenCode, OpenClaw & Hermes Agent
 
 [![Version](https://img.shields.io/github/v/release/farion1231/cc-switch?color=blue&label=version)](https://github.com/farion1231/cc-switch/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/cc-switch/releases)
@@ -10,6 +10,8 @@
 [![Downloads](https://img.shields.io/github/downloads/farion1231/cc-switch/total)](https://github.com/farion1231/cc-switch/releases/latest)
 
 <a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fcc-switch | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+
+### 🌐 The Only Official Website: **[ccswitch.io](https://ccswitch.io)**
 
 English | [中文](README_ZH.md) | [日本語](README_JA.md) | [Changelog](CHANGELOG.md)
 
@@ -133,6 +135,16 @@ Register now via <a href="https://pateway.ai/?ch=etzpm8&aff=WB6M6F67#/">this lin
 <td width="180"><a href="https://ddshub.short.gy/ccswitch"><img src="assets/partners/logos/dds.png" alt="DDS" width="150"></a></td>
 <td>Thanks to DDS for sponsoring this project! DDS Hub is a reliable and high-performance Claude API proxy service. We provides cost-effective domestic Claude direct acceleration services for both individual and enterprise users. We offer stable and low-latency Claude Max number pools, with full support for Claude Haiku, Opus, Sonnet and other flagship models. Invoices are available for recharges of 1000 RMB or more. Enterprise customers can also enjoy customized grouping and dedicated technical support services.
 Exclusive benefit for CC Switch users: Register via <a href="https://ddshub.short.gy/ccswitch">the link </a>below and enjoy an extra 10% credit on your first recharge (please contact the group admin to claim after recharging)!</td>
+</tr>
+
+<tr>
+<td width="180"><a href="https://claudecn.top"><img src="assets/partners/logos/claudecn.jpg" alt="ClaudeCN" width="150"></a></td>
+<td>Thanks to ClaudeCN for sponsoring this project! ClaudeCN is an enterprise-grade AI gateway platform operated by a registered company. It delivers high-availability commercial API access to popular models including Claude, GPT, and DeepSeek, and is built around formal enterprise procurement workflows — corporate bank transfers, signed contracts, and full compliance. Register via <a href="https://claudecn.top">this link</a>!</td>
+</tr>
+
+<tr>
+<td width="180"><a href="https://runapi.co"><img src="assets/partners/logos/runapi.jpg" alt="RunAPI" width="150"></a></td>
+<td>Thanks to RunAPI for sponsoring this project! RunAPI is a high-performance and reliable AI model API gateway — one API key gives you access to 150+ mainstream models including OpenAI, Claude, Gemini, DeepSeek, and Grok, with prices as low as 10% of the official rate and excellent stability. It works seamlessly with Claude Code, OpenClaw, and other tools. Exclusive benefit for CC Switch users: register and contact customer support to claim a free ¥14 credit. Register via <a href="https://runapi.co">this link</a>!</td>
 </tr>
 
 </table>

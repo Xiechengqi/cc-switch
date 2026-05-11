@@ -10,7 +10,8 @@
 use super::{
     error_mapper::{get_error_message, map_proxy_error_to_status},
     handler_config::{
-        CLAUDE_PARSER_CONFIG, CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
+        claude_stream_usage_event_filter, CLAUDE_PARSER_CONFIG, CODEX_PARSER_CONFIG,
+        GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
     },
     handler_context::RequestContext,
     providers::{
@@ -22,7 +23,7 @@ use super::{
     response_processor::{
         create_logged_passthrough_stream, process_response, read_decoded_body,
         strip_entity_headers_for_rebuilt_body, strip_hop_by_hop_response_headers,
-        SseUsageCollector,
+        usage_logging_enabled, SseUsageCollector,
     },
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
@@ -370,8 +371,8 @@ async fn handle_claude_transform(
             Box::new(Box::pin(create_anthropic_sse_stream(stream)))
         };
 
-        // 创建使用量收集器
-        let usage_collector = {
+        // 创建使用量收集器；关闭 usage logging 时不要再解析转换后的 SSE。
+        let usage_collector = if usage_logging_enabled(state) {
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
             let provider_name = ctx.provider.name.clone();
@@ -383,75 +384,84 @@ async fn handle_claude_transform(
             let session_id = ctx.session_id.clone();
             let incoming_request_id = ctx.incoming_request_id.clone();
 
-            SseUsageCollector::new(start_time, move |events, first_token_ms| {
-                let latency_ms = start_time.elapsed().as_millis() as u64;
-                let (usage, total_tokens) =
-                    if let Some(u) = TokenUsage::from_claude_stream_events(&events) {
-                        let total = i64::from(u.input_tokens)
-                            + i64::from(u.output_tokens)
-                            + i64::from(u.cache_read_tokens)
-                            + i64::from(u.cache_creation_tokens);
-                        (u, total)
-                    } else {
-                        log::debug!("[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录");
-                        (TokenUsage::default(), 0)
-                    };
+            Some(SseUsageCollector::new(
+                start_time,
+                Some(claude_stream_usage_event_filter),
+                move |events, first_token_ms| {
+                    let latency_ms = start_time.elapsed().as_millis() as u64;
+                    let (usage, total_tokens) =
+                        if let Some(u) = TokenUsage::from_claude_stream_events(&events) {
+                            let total = i64::from(u.input_tokens)
+                                + i64::from(u.output_tokens)
+                                + i64::from(u.cache_read_tokens)
+                                + i64::from(u.cache_creation_tokens);
+                            (u, total)
+                        } else {
+                            log::debug!(
+                                "[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录"
+                            );
+                            (TokenUsage::default(), 0)
+                        };
 
-                let state = state.clone();
-                let provider_id = provider_id.clone();
-                let provider_name = provider_name.clone();
-                let model = model.clone();
-                let share_id = share_id.clone();
-                let share_name = share_name.clone();
-                let session_id = session_id.clone();
-                let incoming_request_id = incoming_request_id.clone();
+                    let state = state.clone();
+                    let provider_id = provider_id.clone();
+                    let provider_name = provider_name.clone();
+                    let model = model.clone();
+                    let share_id = share_id.clone();
+                    let share_name = share_name.clone();
+                    let session_id = session_id.clone();
+                    let incoming_request_id = incoming_request_id.clone();
 
-                tokio::spawn(async move {
-                    log_usage(
-                        &state,
-                        incoming_request_id.clone(),
-                        &provider_id,
-                        "claude",
-                        &model,
-                        &model,
-                        usage.clone(),
-                        latency_ms,
-                        first_token_ms,
-                        true,
-                        status_code,
-                    )
-                    .await;
+                    tokio::spawn(async move {
+                        log_usage(
+                            &state,
+                            incoming_request_id.clone(),
+                            &provider_id,
+                            "claude",
+                            &model,
+                            &model,
+                            usage.clone(),
+                            latency_ms,
+                            first_token_ms,
+                            true,
+                            status_code,
+                            Some(session_id.clone()),
+                        )
+                        .await;
 
-                    if let Some(sid) = share_id {
-                        let request_id = incoming_request_id
-                            .clone()
-                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                        crate::tunnel::sync::schedule_sync_share_request_log(
-                            super::response_processor::build_share_request_log(
-                                &request_id,
+                        if let Some(sid) = share_id {
+                            let request_id = incoming_request_id
+                                .clone()
+                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                            crate::tunnel::sync::schedule_sync_share_request_log(
+                                super::response_processor::build_share_request_log(
+                                    &request_id,
+                                    &sid,
+                                    share_name.as_deref().unwrap_or(""),
+                                    &provider_id,
+                                    &provider_name,
+                                    "claude",
+                                    &model,
+                                    &model,
+                                    status_code,
+                                    latency_ms,
+                                    first_token_ms,
+                                    &usage,
+                                    true,
+                                    Some(session_id),
+                                ),
+                            );
+                            crate::proxy::share_guard::record_share_request(
+                                &state.db,
                                 &sid,
-                                share_name.as_deref().unwrap_or(""),
-                                &provider_id,
-                                &provider_name,
-                                "claude",
-                                &model,
-                                &model,
-                                status_code,
-                                latency_ms,
-                                first_token_ms,
-                                &usage,
-                                true,
-                                Some(session_id),
-                            ),
-                        );
-                        crate::proxy::share_guard::record_share_request(
-                            &state.db,
-                            &sid,
-                            total_tokens,
-                        );
-                    }
-                });
-            })
+                                total_tokens,
+                            );
+                        }
+                    });
+                },
+            ))
+        } else {
+            None
         };
 
         // 获取流式超时配置
@@ -460,7 +470,7 @@ async fn handle_claude_transform(
         let logged_stream = create_logged_passthrough_stream(
             sse_stream,
             "Claude/OpenRouter",
-            Some(usage_collector),
+            usage_collector,
             timeout_config,
         );
 
@@ -540,12 +550,12 @@ async fn handle_claude_transform(
         let share_id = ctx.share_id.clone();
         let share_name = ctx.share_name.clone();
         let provider_name = ctx.provider.name.clone();
-        let session_id = ctx.session_id.clone();
         let incoming_request_id = ctx.incoming_request_id.clone();
         tokio::spawn({
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
             let model = model.to_string();
+            let session_id = ctx.session_id.clone();
             async move {
                 log_usage(
                     &state,
@@ -559,6 +569,7 @@ async fn handle_claude_transform(
                     None,
                     false,
                     status.as_u16(),
+                    Some(session_id.clone()),
                 )
                 .await;
 
@@ -998,8 +1009,13 @@ async fn log_usage(
     first_token_ms: Option<u64>,
     is_streaming: bool,
     status_code: u16,
+    session_id: Option<String>,
 ) {
     use super::usage::logger::UsageLogger;
+
+    if !usage_logging_enabled(state) {
+        return;
+    }
 
     let logger = UsageLogger::new(&state.db);
 
@@ -1025,7 +1041,7 @@ async fn log_usage(
         latency_ms,
         first_token_ms,
         status_code,
-        None,
+        session_id,
         None, // provider_type
         is_streaming,
         None, // share_id — recorded separately via record_share_request

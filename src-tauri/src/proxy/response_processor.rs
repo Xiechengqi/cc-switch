@@ -3,7 +3,7 @@
 //! 统一处理流式和非流式 API 响应
 
 use super::{
-    handler_config::UsageParserConfig,
+    handler_config::{StreamUsageEventFilter, UsageParserConfig},
     handler_context::{RequestContext, StreamingTimeoutConfig},
     hyper_client::ProxyResponse,
     server::ProxyState,
@@ -237,7 +237,7 @@ pub async fn handle_streaming(
     // 创建字节流
     let stream = response.bytes_stream();
 
-    // 创建使用量收集器
+    // 创建使用量收集器；关闭 usage logging 时不要在流式热路径上解析每个 SSE event。
     let usage_collector = create_usage_collector(ctx, state, status.as_u16(), parser_config);
 
     // 获取流式超时配置
@@ -245,7 +245,7 @@ pub async fn handle_streaming(
 
     // 创建带日志和超时的透传流
     let logged_stream =
-        create_logged_passthrough_stream(stream, ctx.tag, Some(usage_collector), timeout_config);
+        create_logged_passthrough_stream(stream, ctx.tag, usage_collector, timeout_config);
 
     let body = axum::body::Body::from_stream(logged_stream);
     match builder.body(body) {
@@ -281,63 +281,67 @@ pub async fn handle_non_streaming(
         String::from_utf8_lossy(&body_bytes)
     );
 
-    // 解析并记录使用量
-    if let Ok(json_value) = serde_json::from_slice::<Value>(&body_bytes) {
-        // 解析使用量
-        if let Some(usage) = (parser_config.response_parser)(&json_value) {
-            // 优先使用 usage 中解析出的模型名称，其次使用响应中的 model 字段，最后回退到请求模型
-            let model = if let Some(ref m) = usage.model {
-                m.clone()
-            } else if let Some(m) = json_value.get("model").and_then(|m| m.as_str()) {
-                m.to_string()
-            } else {
-                ctx.request_model.clone()
-            };
+    // 解析并记录使用量。关闭 usage logging 时直接跳过，避免非流式响应整包 JSON parse。
+    if usage_logging_enabled(state) {
+        if let Ok(json_value) = serde_json::from_slice::<Value>(&body_bytes) {
+            // 解析使用量
+            if let Some(usage) = (parser_config.response_parser)(&json_value) {
+                // 优先使用 usage 中解析出的模型名称，其次使用响应中的 model 字段，最后回退到请求模型
+                let model = if let Some(ref m) = usage.model {
+                    m.clone()
+                } else if let Some(m) = json_value.get("model").and_then(|m| m.as_str()) {
+                    m.to_string()
+                } else {
+                    ctx.request_model.clone()
+                };
 
-            spawn_log_usage(
-                state,
-                ctx,
-                usage,
-                &model,
-                &ctx.request_model,
-                status.as_u16(),
-                false,
-            );
+                spawn_log_usage(
+                    state,
+                    ctx,
+                    usage,
+                    &model,
+                    &ctx.request_model,
+                    status.as_u16(),
+                    false,
+                );
+            } else {
+                let model = json_value
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or(&ctx.request_model)
+                    .to_string();
+                spawn_log_usage(
+                    state,
+                    ctx,
+                    TokenUsage::default(),
+                    &model,
+                    &ctx.request_model,
+                    status.as_u16(),
+                    false,
+                );
+                log::debug!(
+                    "[{}] 未能解析 usage 信息，跳过记录",
+                    parser_config.app_type_str
+                );
+            }
         } else {
-            let model = json_value
-                .get("model")
-                .and_then(|m| m.as_str())
-                .unwrap_or(&ctx.request_model)
-                .to_string();
+            log::debug!(
+                "[{}] <<< 响应 (非 JSON): {} bytes",
+                ctx.tag,
+                body_bytes.len()
+            );
             spawn_log_usage(
                 state,
                 ctx,
                 TokenUsage::default(),
-                &model,
+                &ctx.request_model,
                 &ctx.request_model,
                 status.as_u16(),
                 false,
             );
-            log::debug!(
-                "[{}] 未能解析 usage 信息，跳过记录",
-                parser_config.app_type_str
-            );
         }
     } else {
-        log::debug!(
-            "[{}] <<< 响应 (非 JSON): {} bytes",
-            ctx.tag,
-            body_bytes.len()
-        );
-        spawn_log_usage(
-            state,
-            ctx,
-            TokenUsage::default(),
-            &ctx.request_model,
-            &ctx.request_model,
-            status.as_u16(),
-            false,
-        );
+        log::debug!("[{}] usage logging 已关闭，跳过非流式 usage 解析", ctx.tag);
     }
 
     // 构建响应
@@ -386,13 +390,15 @@ struct SseUsageCollectorInner {
     first_event_time: Mutex<Option<std::time::Instant>>,
     start_time: std::time::Instant,
     on_complete: UsageCallbackWithTiming,
+    should_collect: Option<StreamUsageEventFilter>,
     finished: AtomicBool,
 }
 
 impl SseUsageCollector {
-    /// 创建新的使用量收集器
+    /// 创建使用量收集器；`should_collect` 用来在 hot path 跳过与 usage 无关的事件。
     pub fn new(
         start_time: std::time::Instant,
+        should_collect: Option<StreamUsageEventFilter>,
         callback: impl Fn(Vec<Value>, Option<u64>) + Send + Sync + 'static,
     ) -> Self {
         let on_complete: UsageCallbackWithTiming = Arc::new(callback);
@@ -402,9 +408,17 @@ impl SseUsageCollector {
                 first_event_time: Mutex::new(None),
                 start_time,
                 on_complete,
+                should_collect,
                 finished: AtomicBool::new(false),
             }),
         }
+    }
+
+    pub fn should_collect(&self, data: &str) -> bool {
+        self.inner
+            .should_collect
+            .map(|filter| filter(data))
+            .unwrap_or(true)
     }
 
     /// 推送 SSE 事件
@@ -450,13 +464,17 @@ fn create_usage_collector(
     state: &ProxyState,
     status_code: u16,
     parser_config: &UsageParserConfig,
-) -> SseUsageCollector {
+) -> Option<SseUsageCollector> {
     let logging_enabled = state
         .config
         .try_read()
         .map(|c| c.enable_logging)
         .unwrap_or(true);
     let should_log_request = logging_enabled || ctx.share_id.is_some();
+    if !should_log_request {
+        return None;
+    }
+
     let state = state.clone();
     let provider_id = ctx.provider.id.clone();
     let provider_name = ctx.provider.name.clone();
@@ -471,135 +489,147 @@ fn create_usage_collector(
     let share_name = ctx.share_name.clone();
     let incoming_request_id = ctx.incoming_request_id.clone();
 
-    SseUsageCollector::new(start_time, move |events, first_token_ms| {
-        if let Some(usage) = stream_parser(&events) {
-            let model = model_extractor(&events, &request_model);
-            let latency_ms = start_time.elapsed().as_millis() as u64;
+    Some(SseUsageCollector::new(
+        start_time,
+        parser_config.stream_event_filter,
+        move |events, first_token_ms| {
+            if let Some(usage) = stream_parser(&events) {
+                let model = model_extractor(&events, &request_model);
+                let latency_ms = start_time.elapsed().as_millis() as u64;
 
-            let state = state.clone();
-            let provider_id = provider_id.clone();
-            let session_id = session_id.clone();
-            let request_model = request_model.clone();
-            let share_id = share_id.clone();
-            let share_name = share_name.clone();
-            let incoming_request_id = incoming_request_id.clone();
-            let total_tokens = i64::from(usage.input_tokens)
-                + i64::from(usage.output_tokens)
-                + i64::from(usage.cache_read_tokens)
-                + i64::from(usage.cache_creation_tokens);
-            let request_id = incoming_request_id
-                .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let usage_for_log = usage.clone();
-            let usage_for_sync = usage.clone();
-            let session_id_for_log = session_id.clone();
-            let session_id_for_sync = session_id.clone();
-            let share_name_for_log = share_name.clone();
-            let share_name_for_sync = share_name.clone();
-            let provider_name_for_sync = provider_name.clone();
+                let state = state.clone();
+                let provider_id = provider_id.clone();
+                let session_id = session_id.clone();
+                let request_model = request_model.clone();
+                let share_id = share_id.clone();
+                let share_name = share_name.clone();
+                let incoming_request_id = incoming_request_id.clone();
+                let total_tokens = i64::from(usage.input_tokens)
+                    + i64::from(usage.output_tokens)
+                    + i64::from(usage.cache_read_tokens)
+                    + i64::from(usage.cache_creation_tokens);
+                let request_id = incoming_request_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let usage_for_log = usage.clone();
+                let usage_for_sync = usage.clone();
+                let session_id_for_log = session_id.clone();
+                let session_id_for_sync = session_id.clone();
+                let share_name_for_log = share_name.clone();
+                let share_name_for_sync = share_name.clone();
+                let provider_name_for_sync = provider_name.clone();
 
-            tokio::spawn(async move {
-                if should_log_request {
-                    log_usage_internal(
-                        &state,
-                        &request_id,
-                        &provider_id,
-                        app_type_str,
-                        &model,
-                        &request_model,
-                        usage_for_log,
-                        latency_ms,
-                        first_token_ms,
-                        true, // is_streaming
-                        status_code,
-                        Some(session_id_for_log),
-                        share_id.clone(),
-                        share_name_for_log,
-                    )
-                    .await;
-                }
-                if let Some(sid) = share_id {
-                    crate::tunnel::sync::schedule_sync_share_request_log(build_share_request_log(
-                        &request_id,
-                        &sid,
-                        share_name_for_sync.as_deref().unwrap_or(""),
-                        &provider_id,
-                        &provider_name_for_sync,
-                        app_type_str,
-                        &model,
-                        &request_model,
-                        status_code,
-                        latency_ms,
-                        first_token_ms,
-                        &usage_for_sync,
-                        true,
-                        Some(session_id_for_sync),
-                    ));
-                    crate::proxy::share_guard::record_share_request(&state.db, &sid, total_tokens);
-                }
-            });
-        } else {
-            let model = model_extractor(&events, &request_model);
-            let latency_ms = start_time.elapsed().as_millis() as u64;
-            let state = state.clone();
-            let provider_id = provider_id.clone();
-            let session_id = session_id.clone();
-            let request_model = request_model.clone();
-            let share_id = share_id.clone();
-            let share_name = share_name.clone();
-            let incoming_request_id = incoming_request_id.clone();
-            let request_id = incoming_request_id
-                .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let session_id_for_log = session_id.clone();
-            let session_id_for_sync = session_id.clone();
-            let share_name_for_log = share_name.clone();
-            let share_name_for_sync = share_name.clone();
-            let provider_name_for_sync = provider_name.clone();
+                tokio::spawn(async move {
+                    if logging_enabled {
+                        log_usage_internal(
+                            &state,
+                            &request_id,
+                            &provider_id,
+                            app_type_str,
+                            &model,
+                            &request_model,
+                            usage_for_log,
+                            latency_ms,
+                            first_token_ms,
+                            true, // is_streaming
+                            status_code,
+                            Some(session_id_for_log),
+                            share_id.clone(),
+                            share_name_for_log,
+                        )
+                        .await;
+                    }
+                    if let Some(sid) = share_id {
+                        crate::tunnel::sync::schedule_sync_share_request_log(
+                            build_share_request_log(
+                                &request_id,
+                                &sid,
+                                share_name_for_sync.as_deref().unwrap_or(""),
+                                &provider_id,
+                                &provider_name_for_sync,
+                                app_type_str,
+                                &model,
+                                &request_model,
+                                status_code,
+                                latency_ms,
+                                first_token_ms,
+                                &usage_for_sync,
+                                true,
+                                Some(session_id_for_sync),
+                            ),
+                        );
+                        crate::proxy::share_guard::record_share_request(
+                            &state.db,
+                            &sid,
+                            total_tokens,
+                        );
+                    }
+                });
+            } else {
+                let model = model_extractor(&events, &request_model);
+                let latency_ms = start_time.elapsed().as_millis() as u64;
+                let state = state.clone();
+                let provider_id = provider_id.clone();
+                let session_id = session_id.clone();
+                let request_model = request_model.clone();
+                let share_id = share_id.clone();
+                let share_name = share_name.clone();
+                let incoming_request_id = incoming_request_id.clone();
+                let request_id = incoming_request_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let session_id_for_log = session_id.clone();
+                let session_id_for_sync = session_id.clone();
+                let share_name_for_log = share_name.clone();
+                let share_name_for_sync = share_name.clone();
+                let provider_name_for_sync = provider_name.clone();
 
-            tokio::spawn(async move {
-                if should_log_request {
-                    log_usage_internal(
-                        &state,
-                        &request_id,
-                        &provider_id,
-                        app_type_str,
-                        &model,
-                        &request_model,
-                        TokenUsage::default(),
-                        latency_ms,
-                        first_token_ms,
-                        true, // is_streaming
-                        status_code,
-                        Some(session_id_for_log),
-                        share_id.clone(),
-                        share_name_for_log,
-                    )
-                    .await;
-                }
-                if let Some(sid) = share_id {
-                    crate::tunnel::sync::schedule_sync_share_request_log(build_share_request_log(
-                        &request_id,
-                        &sid,
-                        share_name_for_sync.as_deref().unwrap_or(""),
-                        &provider_id,
-                        &provider_name_for_sync,
-                        app_type_str,
-                        &model,
-                        &request_model,
-                        status_code,
-                        latency_ms,
-                        first_token_ms,
-                        &TokenUsage::default(),
-                        true,
-                        Some(session_id_for_sync),
-                    ));
-                    crate::proxy::share_guard::record_share_request(&state.db, &sid, 0);
-                }
-            });
-            log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
-        }
-    })
+                tokio::spawn(async move {
+                    if logging_enabled {
+                        log_usage_internal(
+                            &state,
+                            &request_id,
+                            &provider_id,
+                            app_type_str,
+                            &model,
+                            &request_model,
+                            TokenUsage::default(),
+                            latency_ms,
+                            first_token_ms,
+                            true, // is_streaming
+                            status_code,
+                            Some(session_id_for_log),
+                            share_id.clone(),
+                            share_name_for_log,
+                        )
+                        .await;
+                    }
+                    if let Some(sid) = share_id {
+                        crate::tunnel::sync::schedule_sync_share_request_log(
+                            build_share_request_log(
+                                &request_id,
+                                &sid,
+                                share_name_for_sync.as_deref().unwrap_or(""),
+                                &provider_id,
+                                &provider_name_for_sync,
+                                app_type_str,
+                                &model,
+                                &request_model,
+                                status_code,
+                                latency_ms,
+                                first_token_ms,
+                                &TokenUsage::default(),
+                                true,
+                                Some(session_id_for_sync),
+                            ),
+                        );
+                        crate::proxy::share_guard::record_share_request(&state.db, &sid, 0);
+                    }
+                });
+                log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
+            }
+        },
+    ))
 }
 
 /// 异步记录使用量
@@ -686,6 +716,14 @@ fn spawn_log_usage(
             crate::proxy::share_guard::record_share_request(&state.db, &sid, total_tokens);
         }
     });
+}
+
+pub(crate) fn usage_logging_enabled(state: &ProxyState) -> bool {
+    state
+        .config
+        .try_read()
+        .map(|config| config.enable_logging)
+        .unwrap_or(true)
 }
 
 /// 内部使用量记录函数
@@ -812,6 +850,8 @@ pub fn create_logged_passthrough_stream(
         let mut buffer = String::new();
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut collector = usage_collector;
+        let inspect_sse_events =
+            collector.is_some() || log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
 
         // 超时配置
@@ -862,25 +902,36 @@ pub fn create_logged_passthrough_stream(
                         );
                     }
                     is_first_chunk = false;
-                    crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
+                    if inspect_sse_events {
+                        crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
-                    // 尝试解析并记录完整的 SSE 事件
-                    while let Some(event_text) = take_sse_block(&mut buffer) {
-                        if !event_text.trim().is_empty() {
-                            // 提取 data 部分并尝试解析为 JSON
-                            for line in event_text.lines() {
-                                if let Some(data) = strip_sse_field(line, "data") {
-                                    if data.trim() != "[DONE]" {
-                                        if let Ok(json_value) = serde_json::from_str::<Value>(data) {
-                                            if let Some(c) = &collector {
-                                                c.push(json_value.clone()).await;
+                        // 尝试解析并记录完整的 SSE 事件
+                        while let Some(event_text) = take_sse_block(&mut buffer) {
+                            if !event_text.trim().is_empty() {
+                                // 提取 data 部分；只有 usage collector 存在时才解析 JSON。
+                                for line in event_text.lines() {
+                                    if let Some(data) = strip_sse_field(line, "data") {
+                                        if data.trim() != "[DONE]" {
+                                            let collected = match &collector {
+                                                Some(c) if c.should_collect(data) => {
+                                                    match serde_json::from_str::<Value>(data) {
+                                                        Ok(json_value) => {
+                                                            c.push(json_value).await;
+                                                            true
+                                                        }
+                                                        Err(_) => false,
+                                                    }
+                                                }
+                                                _ => false,
+                                            };
+                                            if collected {
+                                                log::debug!("[{tag}] <<< SSE 事件: {data}");
+                                            } else {
+                                                log::debug!("[{tag}] <<< SSE 数据: {data}");
                                             }
-                                            log::debug!("[{tag}] <<< SSE 事件: {data}");
                                         } else {
-                                            log::debug!("[{tag}] <<< SSE 数据: {data}");
+                                            log::debug!("[{tag}] <<< SSE: [DONE]");
                                         }
-                                    } else {
-                                        log::debug!("[{tag}] <<< SSE: [DONE]");
                                     }
                                 }
                             }

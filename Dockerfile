@@ -17,7 +17,7 @@ COPY ${DEB_NAME} /tmp/${DEB_NAME}
 
 RUN set -eux; \
     apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl "/tmp/${DEB_NAME}"; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl sqlite3 "/tmp/${DEB_NAME}"; \
     curl -SsL https://github.com/YUxiangLuo/miao/releases/download/v0.18.4/miao-rust-linux-amd64 -o /usr/local/bin/miao; \
     chmod +x /usr/local/bin/miao; \
     rm -f "/tmp/${DEB_NAME}"; \

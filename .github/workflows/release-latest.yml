@@ -199,6 +199,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Compute image name
         id: image
         shell: bash
@@ -211,7 +217,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ steps.image.outputs.name }}
+          images: |
+            ${{ steps.image.outputs.name }}
+            docker.io/xiechengqi/cc-switch
           tags: |
             type=raw,value=latest
             type=sha,prefix=,format=long

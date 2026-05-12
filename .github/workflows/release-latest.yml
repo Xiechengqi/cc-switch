@@ -219,7 +219,7 @@ jobs:
         with:
           images: |
             ${{ steps.image.outputs.name }}
-            docker.io/xiechengqi/cc-switch
+            docker.io/tokenswitch/cc-switch
           tags: |
             type=raw,value=latest
             type=sha,prefix=,format=long

@@ -45,6 +45,8 @@ describe("SharePage", () => {
         name: "Alpha Share",
         ownerEmail: "alpha@example.com",
         sharedWithEmails: [],
+        marketAccessMode: "selected",
+        forSaleOfficialPricePercentByApp: {},
         forSale: "No",
         shareToken: "token-1",
         appType: "proxy",
@@ -212,7 +214,10 @@ describe("SharePage", () => {
     );
     await user.click(screen.getByText("Continue"));
     await user.click(await screen.findByText("发送验证码"));
-    await user.type(await screen.findByLabelText("Verification Code"), "123456");
+    await user.type(
+      await screen.findByLabelText("Verification Code"),
+      "123456",
+    );
     await user.click(screen.getByText("验证并登录"));
 
     await waitFor(() => expect(enableAttempts).toBe(1));

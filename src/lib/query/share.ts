@@ -436,6 +436,25 @@ export function useUpdateShareForSaleMutation() {
   );
 }
 
+export function useUpdateShareForSaleOfficialPricePercentMutation() {
+  return useShareActionMutation(
+    ({
+      shareId,
+      pricing,
+    }: {
+      shareId: string;
+      pricing: Record<string, number>;
+    }) => shareApi.updateForSaleOfficialPricePercent({ shareId, pricing }),
+    {
+      successKey: "share.toast.updateForSalePricingSuccess",
+      successDefault: "模型定价已更新",
+      errorKey: "share.toast.updateForSalePricingError",
+      errorDefault: "更新模型定价失败: {{error}}",
+    },
+    ({ shareId }) => shareId,
+  );
+}
+
 export function useUpdateShareExpirationMutation() {
   return useShareActionMutation(
     ({ shareId, expiresAt }: { shareId: string; expiresAt: string }) =>
@@ -469,10 +488,12 @@ export function useUpdateShareAclMutation() {
     ({
       shareId,
       sharedWithEmails,
+      marketAccessMode,
     }: {
       shareId: string;
       sharedWithEmails: string[];
-    }) => shareApi.updateAcl({ shareId, sharedWithEmails }),
+      marketAccessMode: "selected" | "all";
+    }) => shareApi.updateAcl({ shareId, sharedWithEmails, marketAccessMode }),
     {
       successKey: "share.toast.updateAclSuccess",
       successDefault: "分享名单已更新",

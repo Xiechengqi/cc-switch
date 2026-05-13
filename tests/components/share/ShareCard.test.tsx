@@ -35,6 +35,8 @@ const baseShare: ShareRecord = {
   name: "Demo Share",
   ownerEmail: "owner@example.com",
   sharedWithEmails: [],
+  marketAccessMode: "selected",
+  forSaleOfficialPricePercentByApp: {},
   forSale: "No",
   shareToken: "token",
   appType: "proxy",
@@ -89,6 +91,7 @@ describe("ShareCard", () => {
     onUpdateApiKey: vi.fn(),
     onUpdateDescription: vi.fn(),
     onUpdateForSale: vi.fn(),
+    onUpdateShareSalePricing: vi.fn(),
     onUpdateExpiration: vi.fn(),
     onUpdateAutoStart: vi.fn(),
     onUpdateAcl: vi.fn(),
@@ -300,10 +303,11 @@ describe("ShareCard", () => {
     expect(handlers.onUpdateAcl).toHaveBeenCalledWith(
       expect.objectContaining({ id: "share-1" }),
       ["alpha@example.com"],
+      "selected",
     );
   });
 
-  it("selects all currently fetched markets when All is chosen", async () => {
+  it("selects dynamic all-markets access when All is chosen", async () => {
     const user = userEvent.setup();
     const handlers = createHandlers();
     renderShareCard(
@@ -325,8 +329,72 @@ describe("ShareCard", () => {
 
     expect(handlers.onUpdateAcl).toHaveBeenCalledWith(
       expect.objectContaining({ id: "share-1" }),
-      ["alpha@example.com", "beta@example.com"],
+      [],
+      "all",
     );
+  });
+
+  it("allows dynamic all-markets access before any market is fetched", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    renderShareCard(
+      <ShareCard
+        share={{ ...baseShare, forSale: "Yes" }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        markets={[]}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    await user.click(
+      screen.getByRole("combobox", { name: /Select market|选择 Market/i }),
+    );
+    await user.click(await screen.findByRole("option", { name: "All" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(handlers.onUpdateAcl).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "share-1" }),
+      [],
+      "all",
+    );
+  });
+
+  it("saves global model pricing on the share instead of the provider", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    const providerUpdate = vi.fn();
+    renderShareCard(
+      <ShareCard
+        share={{ ...baseShare, forSale: "Yes" }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        providerSalePricing={[
+          {
+            app: "claude",
+            label: "Claude",
+            providerName: "Claude Provider",
+            percent: 20,
+            onUpdate: providerUpdate,
+          },
+        ]}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    await user.click(screen.getByRole("checkbox", { name: "全局" }));
+    const input = screen.getAllByRole("spinbutton")[0];
+    await user.clear(input);
+    await user.type(input, "15");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(handlers.onUpdateShareSalePricing).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "share-1" }),
+      { claude: 15 },
+    );
+    expect(providerUpdate).not.toHaveBeenCalled();
   });
 
   it("restores market selection to the default while preserving Share To emails", async () => {
@@ -354,6 +422,7 @@ describe("ShareCard", () => {
     expect(handlers.onUpdateAcl).toHaveBeenCalledWith(
       expect.objectContaining({ id: "share-1" }),
       ["friend@example.com"],
+      "selected",
     );
   });
 });

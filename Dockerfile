@@ -17,12 +17,18 @@ COPY ${DEB_NAME} /tmp/${DEB_NAME}
 
 RUN set -eux; \
     apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl sqlite3 "/tmp/${DEB_NAME}"; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        curl \
+        fontconfig \
+        fonts-noto-color-emoji \
+        sqlite3 \
+        "/tmp/${DEB_NAME}"; \
+    fc-cache -fv; \
     curl -SsL https://github.com/YUxiangLuo/miao/releases/download/v0.18.4/miao-rust-linux-amd64 -o /usr/local/bin/miao; \
     chmod +x /usr/local/bin/miao; \
     rm -f "/tmp/${DEB_NAME}"; \
     rm -rf /var/lib/apt/lists/*; \
-    mkdir -p /root/.config/ivnc && \
+    mkdir -p /root/.config/ivnc /root/.cc-switch/miao/sing-box && \
     sqlite3 /root/.config/ivnc/apps.db "\
 CREATE TABLE IF NOT EXISTS apps (\
     id TEXT PRIMARY KEY,\
@@ -48,7 +54,7 @@ INSERT OR IGNORE INTO apps \
     (id, name, app_type, url, mode, autostart, show_nav, exec_command, env_vars, created_at, remote_debugging_port, proxy_server, launch_command, launch_env_vars, launch_cwd, launch_wait_url, launch_wait_timeout_secs) \
 VALUES \
     ('preset-cc-switch', 'cc-switch', 'desktop', NULL, NULL, 1, 0, 'cc-switch', '', '2026-04-23T00:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, NULL),\
-    ('preset-miao', 'Miao', 'webapp', 'http://localhost:6161', 'webview', 1, 0, '', '', '2026-05-12T00:00:00Z', NULL, NULL, 'miao', '', NULL, NULL, NULL);\
+    ('preset-miao', 'Miao', 'webapp', 'http://localhost:6161', 'native', 1, 0, '', '', '2026-05-12T00:00:00Z', NULL, NULL, 'mkdir -p /root/.cc-switch/miao/sing-box && rm -rf /tmp/miao-sing-box && ln -s /root/.cc-switch/miao/sing-box /tmp/miao-sing-box && exec miao', '', '/root/.cc-switch/miao', NULL, NULL);\
 "
 
 VOLUME ["/root/.cc-switch"]

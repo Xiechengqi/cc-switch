@@ -2,6 +2,7 @@ use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,6 +11,8 @@ pub struct ShareRecord {
     pub name: String,
     pub owner_email: String,
     pub shared_with_emails: Vec<String>,
+    pub market_access_mode: String,
+    pub for_sale_official_price_percent_by_app: HashMap<String, u16>,
     pub description: Option<String>,
     pub for_sale: String,
     pub share_token: String,
@@ -31,20 +34,23 @@ pub struct ShareRecord {
 }
 
 impl Database {
-    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, description, for_sale, share_token, app_type, provider_id, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
+    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, share_token, app_type, provider_id, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
 
     pub fn create_share(&self, share: &ShareRecord) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
-            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, description, for_sale, share_token, app_type, provider_id, api_key,
+            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, share_token, app_type, provider_id, api_key,
              settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at,
              subdomain, tunnel_url, status, auto_start, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 share.id,
                 share.name,
                 share.owner_email,
                 serde_json::to_string(&share.shared_with_emails)
+                    .map_err(|e| AppError::Database(e.to_string()))?,
+                share.market_access_mode,
+                serde_json::to_string(&share.for_sale_official_price_percent_by_app)
                     .map_err(|e| AppError::Database(e.to_string()))?,
                 share.description,
                 share.for_sale,
@@ -263,17 +269,19 @@ impl Database {
         id: &str,
         owner_email: &str,
         shared_with_emails: &[String],
+        market_access_mode: &str,
     ) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         let shared_with_emails_json = serde_json::to_string(shared_with_emails)
             .map_err(|e| AppError::Database(e.to_string()))?;
         conn.execute(
             "UPDATE shares
-             SET name = ?2,
-                 owner_email = ?2,
-                 shared_with_emails_json = ?3
-             WHERE id = ?1",
-            params![id, owner_email, shared_with_emails_json],
+                 SET name = ?2,
+                     owner_email = ?2,
+                     shared_with_emails_json = ?3,
+                     market_access_mode = ?4
+                 WHERE id = ?1",
+            params![id, owner_email, shared_with_emails_json, market_access_mode],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -300,6 +308,22 @@ impl Database {
         conn.execute(
             "UPDATE shares SET for_sale = ?2 WHERE id = ?1",
             params![id, for_sale],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn update_share_for_sale_official_price_percent_by_app(
+        &self,
+        id: &str,
+        pricing: &HashMap<String, u16>,
+    ) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        let pricing_json =
+            serde_json::to_string(pricing).map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE shares SET for_sale_official_price_percent_json = ?2 WHERE id = ?1",
+            params![id, pricing_json],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -355,24 +379,30 @@ impl Database {
                     .map_err(|e| AppError::Database(e.to_string()))?,
             )
             .map_err(|e| AppError::Database(e.to_string()))?,
-            description: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
-            for_sale: row.get(5).map_err(|e| AppError::Database(e.to_string()))?,
-            share_token: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
-            app_type: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
-            provider_id: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
-            api_key: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
-            settings_config: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
-            token_limit: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
-            parallel_limit: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
-            tokens_used: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
-            requests_count: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
-            expires_at: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
-            subdomain: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
-            tunnel_url: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
-            status: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
-            auto_start: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
-            created_at: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
-            last_used_at: row.get(21).map_err(|e| AppError::Database(e.to_string()))?,
+            market_access_mode: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
+            for_sale_official_price_percent_by_app: serde_json::from_str::<HashMap<String, u16>>(
+                &row.get::<_, String>(5)
+                    .map_err(|e| AppError::Database(e.to_string()))?,
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?,
+            description: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
+            for_sale: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
+            share_token: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
+            app_type: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
+            provider_id: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
+            api_key: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
+            settings_config: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
+            token_limit: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
+            parallel_limit: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
+            tokens_used: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
+            requests_count: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
+            expires_at: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
+            subdomain: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
+            tunnel_url: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
+            status: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
+            auto_start: row.get(21).map_err(|e| AppError::Database(e.to_string()))?,
+            created_at: row.get(22).map_err(|e| AppError::Database(e.to_string()))?,
+            last_used_at: row.get(23).map_err(|e| AppError::Database(e.to_string()))?,
         })
     }
 }

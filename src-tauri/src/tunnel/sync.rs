@@ -233,7 +233,7 @@ pub(crate) async fn build_share_runtime_snapshot(
     db: &Database,
 ) -> ShareRuntimeSnapshot {
     let support = query_share_support(db).await;
-    let app_runtimes = build_all_upstream_provider_snapshots(db, &support).await;
+    let app_runtimes = build_all_upstream_provider_snapshots(db, &support, share).await;
     ShareRuntimeSnapshot {
         share_id: share.id.clone(),
         queried_at: chrono::Utc::now().timestamp(),
@@ -245,11 +245,35 @@ pub(crate) async fn build_share_runtime_snapshot(
 async fn build_all_upstream_provider_snapshots(
     db: &Database,
     support: &ShareSupport,
+    share: &ShareRecord,
 ) -> ShareAppRuntimes {
-    ShareAppRuntimes {
+    let mut runtimes = ShareAppRuntimes {
         claude: build_upstream_provider_snapshot_for_app(db, support.claude, AppType::Claude).await,
         codex: build_upstream_provider_snapshot_for_app(db, support.codex, AppType::Codex).await,
         gemini: build_upstream_provider_snapshot_for_app(db, support.gemini, AppType::Gemini).await,
+    };
+    apply_share_for_sale_pricing_override(share, &mut runtimes);
+    runtimes
+}
+
+fn apply_share_for_sale_pricing_override(share: &ShareRecord, runtimes: &mut ShareAppRuntimes) {
+    if share.for_sale != "Yes" {
+        return;
+    }
+    if let Some(percent) = share.for_sale_official_price_percent_by_app.get("claude") {
+        if let Some(runtime) = runtimes.claude.as_mut() {
+            runtime.for_sale_official_price_percent = Some(*percent);
+        }
+    }
+    if let Some(percent) = share.for_sale_official_price_percent_by_app.get("codex") {
+        if let Some(runtime) = runtimes.codex.as_mut() {
+            runtime.for_sale_official_price_percent = Some(*percent);
+        }
+    }
+    if let Some(percent) = share.for_sale_official_price_percent_by_app.get("gemini") {
+        if let Some(runtime) = runtimes.gemini.as_mut() {
+            runtime.for_sale_official_price_percent = Some(*percent);
+        }
     }
 }
 
@@ -296,6 +320,7 @@ async fn build_upstream_provider_snapshot_for_app(
         kind: "custom_provider".to_string(),
         app: app.as_str().to_string(),
         provider_name: Some(provider.name.clone()),
+        for_sale_official_price_percent: provider_sale_percent(&provider),
         account_email: None,
         api_url: custom_provider_api_url(&app, &provider),
         quota: None,
@@ -308,11 +333,19 @@ fn unknown_upstream_provider(app: &str) -> ShareUpstreamProvider {
         kind: "unknown".to_string(),
         app: app.to_string(),
         provider_name: None,
+        for_sale_official_price_percent: None,
         account_email: None,
         api_url: None,
         quota: None,
         models: Vec::new(),
     }
+}
+
+fn provider_sale_percent(provider: &Provider) -> Option<u16> {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.for_sale_official_price_percent)
 }
 
 fn custom_provider_api_url(app: &AppType, provider: &Provider) -> Option<String> {
@@ -526,6 +559,7 @@ async fn build_codex_oauth_snapshot(provider: &Provider) -> Option<ShareUpstream
         kind: "official_oauth".to_string(),
         app: "codex".to_string(),
         provider_name: Some(provider.name.clone()),
+        for_sale_official_price_percent: provider_sale_percent(provider),
         account_email,
         api_url: None,
         quota,
@@ -558,6 +592,7 @@ async fn build_claude_oauth_snapshot(provider: &Provider) -> Option<ShareUpstrea
         kind: "official_oauth".to_string(),
         app: "claude".to_string(),
         provider_name: Some(provider.name.clone()),
+        for_sale_official_price_percent: provider_sale_percent(provider),
         account_email,
         api_url: None,
         quota,
@@ -590,6 +625,7 @@ async fn build_gemini_oauth_snapshot(provider: &Provider) -> Option<ShareUpstrea
         kind: "official_oauth".to_string(),
         app: "gemini".to_string(),
         provider_name: Some(provider.name.clone()),
+        for_sale_official_price_percent: provider_sale_percent(provider),
         account_email,
         api_url: None,
         quota,
@@ -1078,6 +1114,10 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         share_name: share.name.clone(),
         owner_email: share.owner_email.clone(),
         shared_with_emails: share.shared_with_emails.clone(),
+        market_access_mode: share.market_access_mode.clone(),
+        for_sale_official_price_percent_by_app: share
+            .for_sale_official_price_percent_by_app
+            .clone(),
         description: share.description.clone(),
         for_sale: share.for_sale.clone(),
         subdomain: share.subdomain.clone().unwrap_or_default(),

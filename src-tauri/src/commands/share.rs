@@ -8,6 +8,7 @@ use crate::tunnel::config::{
     ShareTunnelStatus, TunnelConfig, TunnelInfo, TunnelRequest, TunnelType,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tauri::State;
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
@@ -88,6 +89,13 @@ pub struct UpdateShareForSaleParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateShareForSaleOfficialPricePercentParams {
+    pub share_id: String,
+    pub pricing: HashMap<String, u16>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateShareExpirationParams {
     pub share_id: String,
     pub expires_at: String,
@@ -105,6 +113,12 @@ pub struct UpdateShareAutoStartParams {
 pub struct UpdateShareAclParams {
     pub share_id: String,
     pub shared_with_emails: Vec<String>,
+    #[serde(default = "default_market_access_mode")]
+    pub market_access_mode: String,
+}
+
+fn default_market_access_mode() -> String {
+    "selected".to_string()
 }
 
 #[derive(Serialize)]
@@ -200,8 +214,14 @@ pub fn authorize_share_market(
     }
     let mut emails = share.shared_with_emails;
     emails.push(market_email);
-    ShareService::update_acl(&state.db, &share_id, &owner_email, emails)
-        .map_err(|e: AppError| e.to_string())
+    ShareService::update_acl(
+        &state.db,
+        &share_id,
+        &owner_email,
+        emails,
+        &share.market_access_mode,
+    )
+    .map_err(|e: AppError| e.to_string())
 }
 
 #[tauri::command]
@@ -221,6 +241,7 @@ pub fn update_share_acl(
         &params.share_id,
         &owner_email,
         params.shared_with_emails,
+        &params.market_access_mode,
     )
     .map_err(|e: AppError| e.to_string())
 }
@@ -303,6 +324,19 @@ pub fn update_share_for_sale(
 ) -> Result<ShareRecord, String> {
     ShareService::update_for_sale(&state.db, &params.share_id, &params.for_sale)
         .map_err(|e: AppError| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_share_for_sale_official_price_percent(
+    state: State<'_, AppState>,
+    params: UpdateShareForSaleOfficialPricePercentParams,
+) -> Result<ShareRecord, String> {
+    ShareService::update_for_sale_official_price_percent_by_app(
+        &state.db,
+        &params.share_id,
+        params.pricing,
+    )
+    .map_err(|e: AppError| e.to_string())
 }
 
 #[tauri::command]

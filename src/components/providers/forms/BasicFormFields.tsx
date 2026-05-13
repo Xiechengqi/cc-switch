@@ -27,6 +27,8 @@ interface BasicFormFieldsProps {
   form: UseFormReturn<ProviderFormData>;
   /** Slot to render content between icon and name fields */
   beforeNameSlot?: ReactNode;
+  /** Slot to render beside website URL */
+  websiteSideSlot?: ReactNode;
   isNameReadOnly?: boolean;
   isWebsiteUrlReadOnly?: boolean;
 }
@@ -34,6 +36,7 @@ interface BasicFormFieldsProps {
 export function BasicFormFields({
   form,
   beforeNameSlot,
+  websiteSideSlot,
   isNameReadOnly = false,
   isWebsiteUrlReadOnly = false,
 }: BasicFormFieldsProps) {
@@ -176,36 +179,43 @@ export function BasicFormFields({
         />
       </div>
 
-      <FormField
-        control={form.control}
-        name="websiteUrl"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>{t("provider.websiteUrl")}</FormLabel>
-            <FormControl>
-              <Input
-                {...field}
-                placeholder={t("providerForm.websiteUrlPlaceholder")}
-                readOnly={isWebsiteUrlReadOnly}
-                className={
-                  isWebsiteUrlReadOnly
-                    ? "cursor-not-allowed bg-muted/50 text-muted-foreground"
-                    : undefined
-                }
-              />
-            </FormControl>
-            {isWebsiteUrlReadOnly && (
-              <p className="text-xs text-muted-foreground">
-                {t("provider.managedOauthWebsiteLockedHint", {
-                  defaultValue:
-                    "OAuth account provider website links are managed by the preset and cannot be edited.",
-                })}
-              </p>
-            )}
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+      <div
+        className={
+          websiteSideSlot ? "grid grid-cols-1 md:grid-cols-2 gap-4" : undefined
+        }
+      >
+        <FormField
+          control={form.control}
+          name="websiteUrl"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t("provider.websiteUrl")}</FormLabel>
+              <FormControl>
+                <Input
+                  {...field}
+                  placeholder={t("providerForm.websiteUrlPlaceholder")}
+                  readOnly={isWebsiteUrlReadOnly}
+                  className={
+                    isWebsiteUrlReadOnly
+                      ? "cursor-not-allowed bg-muted/50 text-muted-foreground"
+                      : undefined
+                  }
+                />
+              </FormControl>
+              {isWebsiteUrlReadOnly && (
+                <p className="text-xs text-muted-foreground">
+                  {t("provider.managedOauthWebsiteLockedHint", {
+                    defaultValue:
+                      "OAuth account provider website links are managed by the preset and cannot be edited.",
+                  })}
+                </p>
+              )}
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        {websiteSideSlot}
+      </div>
     </>
   );
 }

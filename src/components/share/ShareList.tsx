@@ -7,7 +7,7 @@ import type {
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { ShareCard } from "./ShareCard";
+import { ShareCard, type ShareProviderSalePricing } from "./ShareCard";
 
 interface ShareListProps {
   shares: ShareRecord[];
@@ -18,6 +18,7 @@ interface ShareListProps {
   error: string | null;
   pendingAction?: string | null;
   markets?: PublicMarket[];
+  providerSalePricing?: ShareProviderSalePricing[];
   marketsLoading?: boolean;
   marketsError?: string | null;
   ownerAuthenticated?: boolean;
@@ -52,6 +53,10 @@ interface ShareListProps {
     share: ShareRecord,
     forSale: "Yes" | "No" | "Free",
   ) => Promise<void> | void;
+  onUpdateShareSalePricing: (
+    share: ShareRecord,
+    pricing: Record<string, number>,
+  ) => Promise<void> | void;
   onUpdateExpiration: (
     share: ShareRecord,
     expiresAt: string,
@@ -63,6 +68,7 @@ interface ShareListProps {
   onUpdateAcl: (
     share: ShareRecord,
     sharedWithEmails: string[],
+    marketAccessMode: "selected" | "all",
   ) => Promise<void> | void;
 }
 
@@ -75,6 +81,7 @@ export function ShareList({
   error,
   pendingAction,
   markets,
+  providerSalePricing,
   marketsLoading,
   marketsError,
   ownerAuthenticated = false,
@@ -94,6 +101,7 @@ export function ShareList({
   onUpdateApiKey,
   onUpdateDescription,
   onUpdateForSale,
+  onUpdateShareSalePricing,
   onUpdateExpiration,
   onUpdateAutoStart,
   onUpdateAcl,
@@ -158,6 +166,7 @@ export function ShareList({
           tunnelConfigured={tunnelConfigured}
           pendingAction={pendingAction}
           markets={markets}
+          providerSalePricing={providerSalePricing}
           marketsLoading={marketsLoading}
           marketsError={marketsError}
           ownerAuthenticated={ownerAuthenticated}
@@ -175,6 +184,7 @@ export function ShareList({
           onUpdateApiKey={onUpdateApiKey}
           onUpdateDescription={onUpdateDescription}
           onUpdateForSale={onUpdateForSale}
+          onUpdateShareSalePricing={onUpdateShareSalePricing}
           onUpdateExpiration={onUpdateExpiration}
           onUpdateAutoStart={onUpdateAutoStart}
           onUpdateAcl={onUpdateAcl}

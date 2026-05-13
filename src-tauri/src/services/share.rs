@@ -1,5 +1,6 @@
 use crate::database::{Database, ShareRecord};
 use crate::error::AppError;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct ShareService;
@@ -79,6 +80,8 @@ impl ShareService {
             name: owner_email.clone(),
             owner_email,
             shared_with_emails: Vec::new(),
+            market_access_mode: "selected".to_string(),
+            for_sale_official_price_percent_by_app: HashMap::new(),
             description,
             for_sale,
             share_token,
@@ -349,6 +352,20 @@ impl ShareService {
         Ok(updated)
     }
 
+    pub fn update_for_sale_official_price_percent_by_app(
+        db: &Arc<Database>,
+        share_id: &str,
+        pricing: HashMap<String, u16>,
+    ) -> Result<ShareRecord, AppError> {
+        let pricing = normalize_for_sale_official_price_percent_by_app(pricing)?;
+        db.update_share_for_sale_official_price_percent_by_app(share_id, &pricing)?;
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
     pub fn update_expires_at(
         db: &Arc<Database>,
         share_id: &str,
@@ -397,10 +414,17 @@ impl ShareService {
         share_id: &str,
         owner_email: &str,
         shared_with_emails: Vec<String>,
+        market_access_mode: &str,
     ) -> Result<ShareRecord, AppError> {
         let owner_email = normalize_email(owner_email)?;
         let shared_with_emails = normalize_email_list(shared_with_emails, &owner_email)?;
-        db.update_share_acl(share_id, &owner_email, &shared_with_emails)?;
+        let market_access_mode = normalize_market_access_mode(market_access_mode)?;
+        db.update_share_acl(
+            share_id,
+            &owner_email,
+            &shared_with_emails,
+            &market_access_mode,
+        )?;
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
@@ -556,6 +580,37 @@ fn normalize_for_sale(value: &str) -> Result<String, AppError> {
             "For Sale 只能是 Yes、No 或 Free".to_string(),
         )),
     }
+}
+
+fn normalize_market_access_mode(value: &str) -> Result<String, AppError> {
+    match value.trim() {
+        "selected" => Ok("selected".to_string()),
+        "all" => Ok("all".to_string()),
+        _ => Err(AppError::Message(
+            "Market 访问模式只能是 selected 或 all".to_string(),
+        )),
+    }
+}
+
+fn normalize_for_sale_official_price_percent_by_app(
+    pricing: HashMap<String, u16>,
+) -> Result<HashMap<String, u16>, AppError> {
+    let mut normalized = HashMap::new();
+    for (app, percent) in pricing {
+        let app = app.trim().to_ascii_lowercase();
+        if !matches!(app.as_str(), "claude" | "codex" | "gemini") {
+            return Err(AppError::Message(
+                "模型定价只支持 claude、codex 或 gemini".to_string(),
+            ));
+        }
+        if !(1..=100).contains(&percent) {
+            return Err(AppError::Message(
+                "模型定价百分比只能是 1-100 的整数".to_string(),
+            ));
+        }
+        normalized.insert(app, percent);
+    }
+    Ok(normalized)
 }
 
 fn normalize_email(value: &str) -> Result<String, AppError> {

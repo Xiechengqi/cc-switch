@@ -53,8 +53,18 @@ pub fn update_provider(
     #[allow(non_snake_case)] originalId: Option<String>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    ProviderService::update(state.inner(), app_type, originalId.as_deref(), provider)
-        .map_err(|e| e.to_string())
+    let updated = ProviderService::update(
+        state.inner(),
+        app_type.clone(),
+        originalId.as_deref(),
+        provider,
+    )
+    .map_err(|e| e.to_string())?;
+    crate::tunnel::sync::schedule_share_runtime_refresh_after_provider_switch(
+        state.db.clone(),
+        app_type,
+    );
+    Ok(updated)
 }
 
 #[tauri::command]

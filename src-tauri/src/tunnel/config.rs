@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 const KNOWN_PUBLIC_SHARE_ROUTER_DOMAINS: &[&str] = &["jptokenswitch.cc", "sgptokenswitch.cc"];
 
@@ -198,6 +199,8 @@ pub struct ShareUpstreamProvider {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_sale_official_price_percent: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
@@ -235,6 +238,10 @@ pub struct ShareTunnelMetadata {
     pub owner_email: String,
     #[serde(default)]
     pub shared_with_emails: Vec<String>,
+    #[serde(default = "default_market_access_mode")]
+    pub market_access_mode: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub for_sale_official_price_percent_by_app: HashMap<String, u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub for_sale: String,
@@ -261,6 +268,10 @@ pub struct ShareTunnelMetadata {
     pub upstream_provider: Option<ShareUpstreamProvider>,
     #[serde(default)]
     pub app_runtimes: ShareAppRuntimes,
+}
+
+fn default_market_access_mode() -> String {
+    "selected".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -334,6 +345,8 @@ mod tests {
             share_name: "Test".to_string(),
             owner_email: "owner@example.com".to_string(),
             shared_with_emails: vec!["friend@example.com".to_string()],
+            market_access_mode: "selected".to_string(),
+            for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),
             subdomain: "demo".to_string(),
@@ -361,6 +374,7 @@ mod tests {
                 "shareName": "Test",
                 "ownerEmail": "owner@example.com",
                 "sharedWithEmails": ["friend@example.com"],
+                "marketAccessMode": "selected",
                 "forSale": "No",
                 "subdomain": "demo",
                 "shareToken": "token",

@@ -19,6 +19,7 @@ import {
   useShareMarketsQuery,
   useDisableShareMutation,
   useEnableShareMutation,
+  useProvidersQuery,
   useResetShareUsageMutation,
   useUpdateShareAclMutation,
   useUpdateShareAutoStartMutation,
@@ -27,9 +28,11 @@ import {
   useUpdateShareDescriptionMutation,
   useUpdateShareExpirationMutation,
   useUpdateShareForSaleMutation,
+  useUpdateShareForSaleOfficialPricePercentMutation,
   useUpdateShareParallelLimitMutation,
   useUpdateShareSubdomainMutation,
   useUpdateShareTokenLimitMutation,
+  useUpdateProviderMutation,
 } from "@/lib/query";
 import { shareKeys } from "@/lib/query/share";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -42,6 +45,13 @@ import { ShareList } from "./ShareList";
 import { ShareOwnerChangeEmailDialog } from "./ShareOwnerChangeEmailDialog";
 import { ShareOwnerLoginDialog } from "./ShareOwnerLoginDialog";
 import { ShareRouterBar } from "./ShareRouterBar";
+import type { Provider } from "@/types";
+
+const SHARE_PROVIDER_APPS = [
+  { app: "claude", label: "Claude" },
+  { app: "codex", label: "Codex" },
+  { app: "gemini", label: "Gemini" },
+] as const;
 
 interface SharePageProps {
   defaultApp?: AppId;
@@ -53,6 +63,9 @@ export function SharePage({ defaultApp }: SharePageProps) {
   const { data: settings } = useSettingsQuery();
   const { data: emailAuthStatus } = useEmailAuthStatusQuery();
   const { data: proxyStatus } = useProxyStatus();
+  const claudeProvidersQuery = useProvidersQuery("claude");
+  const codexProvidersQuery = useProvidersQuery("codex");
+  const geminiProvidersQuery = useProvidersQuery("gemini");
   const tunnelConfigured = useMemo(
     () => isTunnelConfigured(settings),
     [settings],
@@ -88,12 +101,17 @@ export function SharePage({ defaultApp }: SharePageProps) {
   const updateApiKeyMutation = useUpdateShareApiKeyMutation();
   const updateDescriptionMutation = useUpdateShareDescriptionMutation();
   const updateForSaleMutation = useUpdateShareForSaleMutation();
+  const updateSharePricingMutation =
+    useUpdateShareForSaleOfficialPricePercentMutation();
   const updateExpirationMutation = useUpdateShareExpirationMutation();
   const updateAutoStartMutation = useUpdateShareAutoStartMutation();
   const updateAclMutation = useUpdateShareAclMutation();
   const updateParallelLimitMutation = useUpdateShareParallelLimitMutation();
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
   const updateTokenLimitMutation = useUpdateShareTokenLimitMutation();
+  const updateClaudeProviderMutation = useUpdateProviderMutation("claude");
+  const updateCodexProviderMutation = useUpdateProviderMutation("codex");
+  const updateGeminiProviderMutation = useUpdateProviderMutation("gemini");
   const configureTunnelMutation = useConfigureTunnelMutation();
   const {
     data: markets = [],
@@ -101,6 +119,60 @@ export function SharePage({ defaultApp }: SharePageProps) {
     error: marketsError,
     refetch: refetchMarkets,
   } = useShareMarketsQuery(Boolean(tunnelConfig.domain));
+  const providerQueries = useMemo(
+    () => ({
+      claude: claudeProvidersQuery.data,
+      codex: codexProvidersQuery.data,
+      gemini: geminiProvidersQuery.data,
+    }),
+    [
+      claudeProvidersQuery.data,
+      codexProvidersQuery.data,
+      geminiProvidersQuery.data,
+    ],
+  );
+  const providerMutations = useMemo(
+    () => ({
+      claude: updateClaudeProviderMutation,
+      codex: updateCodexProviderMutation,
+      gemini: updateGeminiProviderMutation,
+    }),
+    [
+      updateClaudeProviderMutation,
+      updateCodexProviderMutation,
+      updateGeminiProviderMutation,
+    ],
+  );
+  const providerSalePricing = useMemo(
+    () =>
+      SHARE_PROVIDER_APPS.map(({ app, label }) => {
+        const data = providerQueries[app];
+        const provider: Provider | undefined =
+          data?.providers?.[data.currentProviderId];
+        return {
+          app,
+          label,
+          providerName: provider?.name,
+          percent: provider?.meta?.forSaleOfficialPricePercent,
+          disabled: !provider,
+          onUpdate: async (percent?: number) => {
+            if (!provider) return;
+            const nextProvider: Provider = {
+              ...provider,
+              meta: {
+                ...(provider.meta ?? {}),
+                forSaleOfficialPricePercent: percent,
+              },
+            };
+            await providerMutations[app].mutateAsync({
+              provider: nextProvider,
+              originalId: provider.id,
+            });
+          },
+        };
+      }),
+    [providerMutations, providerQueries],
+  );
 
   const tunnelQueries = useQueries({
     queries: shares.map((share) => ({
@@ -233,11 +305,9 @@ export function SharePage({ defaultApp }: SharePageProps) {
 
     ownerLoginRetryAttemptedRef.current.add(share.id);
     try {
-      await runShareAction(
-        share,
-        () => enableMutation.mutateAsync(share.id),
-        { promptOnOwnerAuthError: false },
-      );
+      await runShareAction(share, () => enableMutation.mutateAsync(share.id), {
+        promptOnOwnerAuthError: false,
+      });
     } catch {
       // The mutation already shows the detailed failure toast. Do not reopen the
       // login dialog here, otherwise an unchanged router/device state can loop.
@@ -329,6 +399,7 @@ export function SharePage({ defaultApp }: SharePageProps) {
           error={error ? extractErrorMessage(error) : null}
           pendingAction={pendingActionShareId}
           markets={markets}
+          providerSalePricing={providerSalePricing}
           marketsLoading={marketsLoading}
           marketsError={marketsError ? extractErrorMessage(marketsError) : null}
           ownerAuthenticated={canChangeOwner}
@@ -389,6 +460,14 @@ export function SharePage({ defaultApp }: SharePageProps) {
               }),
             )
           }
+          onUpdateShareSalePricing={(share, pricing) =>
+            runShareAction(share, () =>
+              updateSharePricingMutation.mutateAsync({
+                shareId: share.id,
+                pricing,
+              }),
+            )
+          }
           onUpdateExpiration={(share, expiresAt) =>
             runShareAction(share, () =>
               updateExpirationMutation.mutateAsync({
@@ -405,11 +484,12 @@ export function SharePage({ defaultApp }: SharePageProps) {
               }),
             )
           }
-          onUpdateAcl={(share, sharedWithEmails) =>
+          onUpdateAcl={(share, sharedWithEmails, marketAccessMode) =>
             runShareAction(share, () =>
               updateAclMutation.mutateAsync({
                 shareId: share.id,
                 sharedWithEmails,
+                marketAccessMode,
               }),
             )
           }

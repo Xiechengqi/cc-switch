@@ -59,6 +59,15 @@ import {
   UNLIMITED_TOKEN_LIMIT,
 } from "@/utils/shareUtils";
 
+export interface ShareProviderSalePricing {
+  app: "claude" | "codex" | "gemini";
+  label: string;
+  providerName?: string;
+  percent?: number;
+  disabled?: boolean;
+  onUpdate: (percent?: number) => Promise<void> | void;
+}
+
 interface ShareCardProps {
   share: ShareRecord;
   tunnelStatus?: TunnelInfo | null;
@@ -66,6 +75,7 @@ interface ShareCardProps {
   tunnelConfigured: boolean;
   pendingAction?: string | null;
   markets?: PublicMarket[];
+  providerSalePricing?: ShareProviderSalePricing[];
   marketsLoading?: boolean;
   marketsError?: string | null;
   ownerAuthenticated?: boolean;
@@ -98,6 +108,10 @@ interface ShareCardProps {
     share: ShareRecord,
     forSale: "Yes" | "No" | "Free",
   ) => Promise<void> | void;
+  onUpdateShareSalePricing: (
+    share: ShareRecord,
+    pricing: Record<string, number>,
+  ) => Promise<void> | void;
   onUpdateExpiration: (
     share: ShareRecord,
     expiresAt: string,
@@ -109,10 +123,12 @@ interface ShareCardProps {
   onUpdateAcl: (
     share: ShareRecord,
     sharedWithEmails: string[],
+    marketAccessMode: "selected" | "all",
   ) => Promise<void> | void;
 }
 
 const EMPTY_MARKETS: PublicMarket[] = [];
+const EMPTY_PROVIDER_SALE_PRICING: ShareProviderSalePricing[] = [];
 
 export function ShareCard({
   share,
@@ -121,6 +137,7 @@ export function ShareCard({
   tunnelConfigured,
   pendingAction,
   markets = EMPTY_MARKETS,
+  providerSalePricing = EMPTY_PROVIDER_SALE_PRICING,
   marketsLoading = false,
   marketsError = null,
   ownerAuthenticated = false,
@@ -138,6 +155,7 @@ export function ShareCard({
   onUpdateApiKey,
   onUpdateDescription,
   onUpdateForSale,
+  onUpdateShareSalePricing,
   onUpdateExpiration,
   onUpdateAutoStart,
   onUpdateAcl,
@@ -162,8 +180,15 @@ export function ShareCard({
   const [selectedMarketEmails, setSelectedMarketEmails] = useState<string[]>(
     [],
   );
+  const [marketAccessModeInput, setMarketAccessModeInput] = useState<
+    "selected" | "all"
+  >("selected");
   const [marketSelectKey, setMarketSelectKey] = useState(0);
   const [forSaleInput, setForSaleInput] = useState<"Yes" | "No" | "Free">("No");
+  const [salePricingInputs, setSalePricingInputs] = useState<
+    Record<string, string>
+  >({});
+  const [salePricingUseGlobal, setSalePricingUseGlobal] = useState(false);
   const [autoStartInput, setAutoStartInput] = useState(false);
   const [expiryDateInput, setExpiryDateInput] = useState("");
   const [expiryHourInput, setExpiryHourInput] = useState("");
@@ -212,6 +237,11 @@ export function ShareCard({
     tunnelStatus,
   );
   const isFree = share.forSale === "Free";
+  const currentMarketAccessMode = share.marketAccessMode ?? "selected";
+  const currentShareSalePricing = share.forSaleOfficialPricePercentByApp ?? {};
+  const currentShareSalePricingHasValues = providerSalePricing.some(
+    (item) => currentShareSalePricing[item.app] != null,
+  );
   const canDelete = share.status === "paused";
   const apiKeyDisplay =
     revealKey || isFree ? share.shareToken : maskSensitive(share.shareToken);
@@ -241,7 +271,16 @@ export function ShareCard({
     setDescriptionInput(share.description ?? "");
     setShareToInput(currentNonMarketEmails.join(", "));
     setSelectedMarketEmails(currentMarketEmails);
+    setMarketAccessModeInput(currentMarketAccessMode);
     setForSaleInput(share.forSale);
+    setSalePricingUseGlobal(currentShareSalePricingHasValues);
+    setSalePricingInputs(
+      salePricingInputValues(
+        providerSalePricing,
+        currentShareSalePricingHasValues,
+        currentShareSalePricing,
+      ),
+    );
     setAutoStartInput(share.autoStart);
     const permanent = isPermanentExpiry(share.expiresAt);
     setExpiryPermanent(permanent);
@@ -260,13 +299,14 @@ export function ShareCard({
       setExpiryHourInput("");
       setExpiryMinuteInput("");
     }
-  }, [share]);
+  }, [share, providerSalePricing, currentShareSalePricingHasValues]);
 
   useEffect(() => {
     if (editing) return;
     setShareToInput(currentNonMarketEmails.join(", "));
     setSelectedMarketEmails(currentMarketEmails);
-  }, [editing, share.sharedWithEmails, markets]);
+    setMarketAccessModeInput(currentMarketAccessMode);
+  }, [editing, share.sharedWithEmails, markets, currentMarketAccessMode]);
 
   const parsedTokenLimit = Number.parseInt(tokenLimitInput, 10);
   const tokenLimitDirty =
@@ -308,20 +348,47 @@ export function ShareCard({
     JSON.stringify(normalizedShareTo) !==
     JSON.stringify(currentNonMarketEmails);
   const normalizedSelectedMarketEmails = uniqueSorted(
-    selectedMarketEmails.filter((email) => marketEmailSet.has(email)),
+    marketAccessModeInput === "all"
+      ? []
+      : selectedMarketEmails.filter((email) => marketEmailSet.has(email)),
   );
   const marketDirty =
-    JSON.stringify(normalizedSelectedMarketEmails) !==
-    JSON.stringify(currentMarketEmails);
+    marketAccessModeInput !== currentMarketAccessMode ||
+    (marketAccessModeInput === "selected" &&
+      JSON.stringify(normalizedSelectedMarketEmails) !==
+        JSON.stringify(currentMarketEmails));
   const nextAclEmails = uniqueSorted([
     ...normalizedShareTo,
-    ...normalizedSelectedMarketEmails,
+    ...(marketAccessModeInput === "all" ? [] : normalizedSelectedMarketEmails),
   ]);
   const aclDirty = shareToDirty || marketDirty;
   const shareToInvalid = normalizedShareTo.some(
     (email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
   );
   const forSaleDirty = forSaleInput !== share.forSale;
+  const salePricingCurrentValues = salePricingInputValues(
+    providerSalePricing,
+    salePricingUseGlobal,
+    currentShareSalePricing,
+  );
+  const providerSalePricingDirtyItems = providerSalePricing.filter((item) => {
+    const current = item.percent == null ? "" : String(item.percent);
+    return (salePricingInputs[item.app] ?? "") !== current;
+  });
+  const salePricingDirty =
+    salePricingUseGlobal !== currentShareSalePricingHasValues ||
+    providerSalePricing.some(
+      (item) =>
+        (salePricingInputs[item.app] ?? "") !==
+        (salePricingCurrentValues[item.app] ?? ""),
+    );
+  const salePricingInvalid = providerSalePricing.some((item) => {
+    const value = (salePricingInputs[item.app] ?? "").trim();
+    if (value === "") return false;
+    if (!/^\d+$/.test(value)) return true;
+    const parsed = Number.parseInt(value, 10);
+    return parsed < 1 || parsed > 100;
+  });
   const autoStartDirty = autoStartInput !== share.autoStart;
   const parsedExpiryHour = Number.parseInt(expiryHourInput, 10);
   const parsedExpiryMinute = Number.parseInt(expiryMinuteInput, 10);
@@ -368,6 +435,7 @@ export function ShareCard({
   const hasChanges =
     aclDirty ||
     forSaleDirty ||
+    salePricingDirty ||
     autoStartDirty ||
     descriptionDirty ||
     expiryDirty ||
@@ -377,6 +445,7 @@ export function ShareCard({
     parallelLimitDirty;
   const hasInvalidChanges =
     (aclDirty && shareToInvalid) ||
+    salePricingInvalid ||
     (descriptionDirty && descriptionInvalid) ||
     (expiryDirty && expiryInvalid) ||
     (apiKeyDirty && apiKeyInvalid) ||
@@ -393,8 +462,27 @@ export function ShareCard({
     if (!editing || !hasChanges || hasInvalidChanges || isBusy) return;
     setSaving(true);
     try {
-      if (aclDirty) await onUpdateAcl(share, nextAclEmails);
+      if (aclDirty)
+        await onUpdateAcl(share, nextAclEmails, marketAccessModeInput);
       if (forSaleDirty) await onUpdateForSale(share, forSaleInput);
+      if (salePricingDirty) {
+        if (salePricingUseGlobal) {
+          await onUpdateShareSalePricing(
+            share,
+            parseSalePricingInputs(salePricingInputs),
+          );
+        } else {
+          if (currentShareSalePricingHasValues) {
+            await onUpdateShareSalePricing(share, {});
+          }
+          for (const item of providerSalePricingDirtyItems) {
+            const raw = (salePricingInputs[item.app] ?? "").trim();
+            await item.onUpdate(
+              raw === "" ? undefined : Number.parseInt(raw, 10),
+            );
+          }
+        }
+      }
       if (autoStartDirty) await onUpdateAutoStart(share, autoStartInput);
       if (descriptionDirty)
         await onUpdateDescription(share, normalizedDescription);
@@ -697,6 +785,7 @@ export function ShareCard({
               />
               <MarketSummary
                 markets={markets}
+                marketAccessMode={currentMarketAccessMode}
                 selectedMarketEmails={normalizedSelectedMarketEmails}
               />
               <SummaryLine
@@ -811,6 +900,84 @@ export function ShareCard({
                 </Select>
               </EditableField>
 
+              {providerSalePricing.length > 0 ? (
+                <EditableField
+                  label={t("share.modelPricingPercentTitle", {
+                    defaultValue:
+                      "模型定价（官方价的百分比，默认留空使用 market 定价）",
+                  })}
+                  invalid={salePricingInvalid}
+                >
+                  <div className="mb-3 flex items-center gap-2">
+                    <Checkbox
+                      id={`share-sale-pricing-global-${share.id}`}
+                      checked={salePricingUseGlobal}
+                      disabled={isBusy}
+                      onCheckedChange={(checked) => {
+                        const next = checked === true;
+                        setSalePricingUseGlobal(next);
+                        setSalePricingInputs(
+                          salePricingInputValues(
+                            providerSalePricing,
+                            next,
+                            currentShareSalePricing,
+                          ),
+                        );
+                      }}
+                    />
+                    <Label
+                      htmlFor={`share-sale-pricing-global-${share.id}`}
+                      className="cursor-pointer text-sm font-normal"
+                    >
+                      {t("share.modelPricingGlobal", {
+                        defaultValue: "全局",
+                      })}
+                    </Label>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    {providerSalePricing.map((item) => (
+                      <div key={item.app} className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">
+                          {item.label}
+                        </Label>
+                        <Input
+                          type="number"
+                          min="1"
+                          max="100"
+                          step="1"
+                          inputMode="numeric"
+                          value={salePricingInputs[item.app] ?? ""}
+                          disabled={
+                            isBusy || (!salePricingUseGlobal && item.disabled)
+                          }
+                          onChange={(event) =>
+                            setSalePricingInputs((current) => ({
+                              ...current,
+                              [item.app]: event.target.value,
+                            }))
+                          }
+                          placeholder={
+                            item.providerName
+                              ? t("share.forSaleOfficialPricePercentEmpty", {
+                                  defaultValue: "未设置",
+                                })
+                              : t(
+                                  "share.forSaleOfficialPricePercentNoProvider",
+                                  {
+                                    defaultValue: "无当前节点",
+                                  },
+                                )
+                          }
+                        />
+                        <div className="truncate text-xs text-muted-foreground">
+                          {item.providerName ?? "-"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </EditableField>
+              ) : null}
+
               <EditableField
                 label={t("share.market.title", { defaultValue: "Market" })}
                 hint={
@@ -830,26 +997,19 @@ export function ShareCard({
                       key={marketSelectKey}
                       onValueChange={(value) => {
                         if (value === "__all__") {
-                          setSelectedMarketEmails(
-                            uniqueSorted(
-                              markets.map((market) =>
-                                market.email.toLowerCase(),
-                              ),
-                            ),
-                          );
+                          setMarketAccessModeInput("all");
+                          setSelectedMarketEmails([]);
                           setMarketSelectKey((current) => current + 1);
                           return;
                         }
+                        setMarketAccessModeInput("selected");
                         setSelectedMarketEmails((current) =>
                           uniqueSorted([...current, value.toLowerCase()]),
                         );
                         setMarketSelectKey((current) => current + 1);
                       }}
                       disabled={
-                        isBusy ||
-                        forSaleInput !== "Yes" ||
-                        marketsLoading ||
-                        markets.length === 0
+                        isBusy || forSaleInput !== "Yes" || marketsLoading
                       }
                     >
                       <SelectTrigger
@@ -883,14 +1043,22 @@ export function ShareCard({
                     <Button
                       type="button"
                       variant="outline"
-                      disabled={isBusy || selectedMarketEmails.length === 0}
-                      onClick={() => setSelectedMarketEmails([])}
+                      disabled={
+                        isBusy ||
+                        (marketAccessModeInput === "selected" &&
+                          selectedMarketEmails.length === 0)
+                      }
+                      onClick={() => {
+                        setMarketAccessModeInput("selected");
+                        setSelectedMarketEmails([]);
+                      }}
                     >
                       {t("share.market.restore", { defaultValue: "还原" })}
                     </Button>
                   </div>
                   <MarketTags
                     markets={markets}
+                    marketAccessMode={marketAccessModeInput}
                     selectedMarketEmails={normalizedSelectedMarketEmails}
                     removable
                     disabled={isBusy}
@@ -900,7 +1068,8 @@ export function ShareCard({
                       )
                     }
                   />
-                  {normalizedSelectedMarketEmails.length === 0 ? (
+                  {marketAccessModeInput !== "all" &&
+                  normalizedSelectedMarketEmails.length === 0 ? (
                     <div className="text-sm text-muted-foreground">
                       {t("share.market.default", {
                         defaultValue: "默认，不授权 Market",
@@ -1116,11 +1285,35 @@ function uniqueSorted(values: string[]) {
   ).sort();
 }
 
+function salePricingInputValues(
+  providerSalePricing: ShareProviderSalePricing[],
+  useGlobal: boolean,
+  globalPricing: Record<string, number>,
+) {
+  return Object.fromEntries(
+    providerSalePricing.map((item) => {
+      const percent = useGlobal ? globalPricing[item.app] : item.percent;
+      return [item.app, percent == null ? "" : String(percent)];
+    }),
+  );
+}
+
+function parseSalePricingInputs(inputs: Record<string, string>) {
+  return Object.fromEntries(
+    Object.entries(inputs)
+      .map(([app, value]) => [app, value.trim()] as const)
+      .filter(([, value]) => value !== "")
+      .map(([app, value]) => [app, Number.parseInt(value, 10)]),
+  );
+}
+
 function MarketSummary({
   markets,
+  marketAccessMode,
   selectedMarketEmails,
 }: {
   markets: PublicMarket[];
+  marketAccessMode: "selected" | "all";
   selectedMarketEmails: string[];
 }) {
   const { t } = useTranslation();
@@ -1131,7 +1324,9 @@ function MarketSummary({
         {t("share.market.title", { defaultValue: "Market" })}
       </div>
       <div className="mt-2">
-        {selectedMarketEmails.length ? (
+        {marketAccessMode === "all" ? (
+          <MarketAllNotice />
+        ) : selectedMarketEmails.length ? (
           <MarketTags
             markets={markets}
             selectedMarketEmails={selectedMarketEmails}
@@ -1150,12 +1345,14 @@ function MarketSummary({
 
 function MarketTags({
   markets,
+  marketAccessMode = "selected",
   selectedMarketEmails,
   removable = false,
   disabled = false,
   onRemove,
 }: {
   markets: PublicMarket[];
+  marketAccessMode?: "selected" | "all";
   selectedMarketEmails: string[];
   removable?: boolean;
   disabled?: boolean;
@@ -1164,6 +1361,10 @@ function MarketTags({
   const marketByEmail = new Map(
     markets.map((market) => [market.email.toLowerCase(), market]),
   );
+
+  if (marketAccessMode === "all") {
+    return <MarketAllNotice />;
+  }
 
   if (selectedMarketEmails.length === 0) return null;
 
@@ -1193,6 +1394,17 @@ function MarketTags({
             ) : null}
           </Badge>
         );
+      })}
+    </div>
+  );
+}
+
+function MarketAllNotice() {
+  const { t } = useTranslation();
+  return (
+    <div className="text-sm text-muted-foreground">
+      {t("share.market.allSelected", {
+        defaultValue: "已选中所有 Market",
       })}
     </div>
   );

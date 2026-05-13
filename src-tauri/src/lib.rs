@@ -1552,6 +1552,7 @@ pub fn run() {
             commands::update_share_api_key,
             commands::update_share_description,
             commands::update_share_for_sale,
+            commands::update_share_for_sale_official_price_percent,
             commands::update_share_expiration,
             commands::update_share_auto_start,
             commands::update_share_subdomain,

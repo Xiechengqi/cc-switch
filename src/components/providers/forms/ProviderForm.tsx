@@ -97,7 +97,7 @@ import {
   useDeepSeekAccount,
 } from "./hooks";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { useSettingsQuery } from "@/lib/query";
+import { useSettingsQuery, useSharesQuery } from "@/lib/query";
 import {
   CLAUDE_DEFAULT_CONFIG,
   CODEX_DEFAULT_CONFIG,
@@ -122,6 +122,10 @@ type PresetEntry = {
     | OpenClawProviderPreset
     | HermesProviderPreset;
 };
+
+function matchesPricingApp(appId: AppId) {
+  return appId === "claude" || appId === "codex" || appId === "gemini";
+}
 
 export interface ProviderFormProps {
   appId: AppId;
@@ -173,6 +177,7 @@ function ProviderFormFull({
   const isEditMode = Boolean(initialData);
   const queryClient = useQueryClient();
   const { data: settingsData } = useSettingsQuery();
+  const { data: sharesForProviderPricing = [] } = useSharesQuery();
   const showCommonConfigNotice =
     settingsData != null && settingsData.commonConfigConfirmed !== true;
 
@@ -224,15 +229,22 @@ function ProviderFormFull({
     enabled: boolean;
     costMultiplier?: string;
     pricingModelSource: PricingModelSourceOption;
+    forSaleOfficialPricePercent?: number;
   }>(() => ({
     enabled:
       initialData?.meta?.costMultiplier !== undefined ||
       initialData?.meta?.pricingModelSource !== undefined,
     costMultiplier: initialData?.meta?.costMultiplier,
+    forSaleOfficialPricePercent: initialData?.meta?.forSaleOfficialPricePercent,
     pricingModelSource: normalizePricingSource(
       initialData?.meta?.pricingModelSource,
     ),
   }));
+  const showProviderForSalePricing =
+    matchesPricingApp(appId) &&
+    sharesForProviderPricing.some(
+      (share) => share.appType === appId && share.forSale === "Yes",
+    );
 
   const { category } = useProviderCategory({
     appId,
@@ -261,6 +273,8 @@ function ProviderFormFull({
         initialData?.meta?.costMultiplier !== undefined ||
         initialData?.meta?.pricingModelSource !== undefined,
       costMultiplier: initialData?.meta?.costMultiplier,
+      forSaleOfficialPricePercent:
+        initialData?.meta?.forSaleOfficialPricePercent,
       pricingModelSource: normalizePricingSource(
         initialData?.meta?.pricingModelSource,
       ),
@@ -1373,6 +1387,13 @@ function ProviderFormFull({
 
     const baseMeta: ProviderMeta | undefined =
       payload.meta ?? (initialData?.meta ? { ...initialData.meta } : undefined);
+    const forSaleOfficialPricePercent =
+      pricingConfig.forSaleOfficialPricePercent;
+    const validForSaleOfficialPricePercent =
+      Number.isInteger(forSaleOfficialPricePercent) &&
+      forSaleOfficialPricePercent !== undefined &&
+      forSaleOfficialPricePercent >= 1 &&
+      forSaleOfficialPricePercent <= 100;
 
     // 确定 providerType（新建时从预设获取，编辑时从现有数据获取）
     const providerType =
@@ -1437,6 +1458,9 @@ function ProviderFormFull({
         pricingConfig.enabled && pricingConfig.pricingModelSource !== "inherit"
           ? pricingConfig.pricingModelSource
           : undefined,
+      forSaleOfficialPricePercent: validForSaleOfficialPricePercent
+        ? forSaleOfficialPricePercent
+        : undefined,
       apiFormat:
         appId === "claude" && category !== "official"
           ? localApiFormat
@@ -1983,6 +2007,46 @@ function ProviderFormFull({
                             })}
                       </p>
                     )}
+                </div>
+              ) : undefined
+            }
+            websiteSideSlot={
+              showProviderForSalePricing ? (
+                <div className="space-y-2">
+                  <Label htmlFor="for-sale-official-price-percent">
+                    {t("providerAdvanced.forSaleOfficialPricePercent", {
+                      defaultValue: "模型定价（官方价的百分比）",
+                    })}
+                  </Label>
+                  <Input
+                    id="for-sale-official-price-percent"
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="1"
+                    inputMode="numeric"
+                    value={pricingConfig.forSaleOfficialPricePercent ?? ""}
+                    onChange={(event) => {
+                      const raw = event.target.value;
+                      setPricingConfig((current) => ({
+                        ...current,
+                        forSaleOfficialPricePercent:
+                          raw === "" ? undefined : Number.parseInt(raw, 10),
+                      }));
+                    }}
+                    placeholder={t(
+                      "providerAdvanced.forSaleOfficialPricePercentPlaceholder",
+                      {
+                        defaultValue: "默认留空则使用 Market 定价",
+                      },
+                    )}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("providerAdvanced.forSaleOfficialPricePercentHint", {
+                      defaultValue:
+                        "只允许 1-100 的整数。Share 页全局模型定价非空时优先。",
+                    })}
+                  </p>
                 </div>
               ) : undefined
             }

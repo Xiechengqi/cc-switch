@@ -4,6 +4,8 @@ export interface ShareRecord {
   name: string;
   ownerEmail: string;
   sharedWithEmails: string[];
+  marketAccessMode: "selected" | "all";
+  forSaleOfficialPricePercentByApp: Record<string, number>;
   description?: string | null;
   forSale: "Yes" | "No" | "Free";
   shareToken: string;
@@ -48,6 +50,7 @@ export interface PublicMarket {
 export interface UpdateShareAclParams {
   shareId: string;
   sharedWithEmails: string[];
+  marketAccessMode: "selected" | "all";
 }
 
 export interface UpdateShareTokenLimitParams {
@@ -78,6 +81,11 @@ export interface UpdateShareDescriptionParams {
 export interface UpdateShareForSaleParams {
   shareId: string;
   forSale: "Yes" | "No" | "Free";
+}
+
+export interface UpdateShareForSaleOfficialPricePercentParams {
+  shareId: string;
+  pricing: Record<string, number>;
 }
 
 export interface UpdateShareExpirationParams {
@@ -177,6 +185,14 @@ async function updateForSale(
   return invoke<ShareRecord>("update_share_for_sale", { params });
 }
 
+async function updateForSaleOfficialPricePercent(
+  params: UpdateShareForSaleOfficialPricePercentParams,
+): Promise<ShareRecord> {
+  return invoke<ShareRecord>("update_share_for_sale_official_price_percent", {
+    params,
+  });
+}
+
 async function updateExpiration(
   params: UpdateShareExpirationParams,
 ): Promise<ShareRecord> {
@@ -249,6 +265,7 @@ export const shareApi = {
   updateApiKey,
   updateDescription,
   updateForSale,
+  updateForSaleOfficialPricePercent,
   updateExpiration,
   updateAutoStart,
   updateAcl,

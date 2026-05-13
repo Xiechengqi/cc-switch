@@ -389,19 +389,18 @@ async fn handle_claude_transform(
                 Some(claude_stream_usage_event_filter),
                 move |events, first_token_ms| {
                     let latency_ms = start_time.elapsed().as_millis() as u64;
-                    let (usage, total_tokens) =
-                        if let Some(u) = TokenUsage::from_claude_stream_events(&events) {
-                            let total = i64::from(u.input_tokens)
-                                + i64::from(u.output_tokens)
-                                + i64::from(u.cache_read_tokens)
-                                + i64::from(u.cache_creation_tokens);
-                            (u, total)
-                        } else {
-                            log::debug!(
-                                "[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录"
-                            );
-                            (TokenUsage::default(), 0)
-                        };
+                    let (usage, total_tokens) = if let Some(u) =
+                        TokenUsage::from_claude_stream_events(&events)
+                    {
+                        let total = i64::from(u.input_tokens)
+                            + i64::from(u.output_tokens)
+                            + i64::from(u.cache_read_tokens)
+                            + i64::from(u.cache_creation_tokens);
+                        (u, total)
+                    } else {
+                        log::debug!("[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录");
+                        (TokenUsage::default(), 0)
+                    };
 
                     let state = state.clone();
                     let provider_id = provider_id.clone();

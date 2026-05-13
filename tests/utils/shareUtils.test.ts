@@ -14,6 +14,8 @@ const baseShare: ShareRecord = {
   name: "Demo",
   ownerEmail: "owner@example.com",
   sharedWithEmails: [],
+  marketAccessMode: "selected",
+  forSaleOfficialPricePercentByApp: {},
   forSale: "No",
   shareToken: "token",
   appType: "proxy",

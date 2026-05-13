@@ -367,7 +367,10 @@ impl Database {
                 name TEXT NOT NULL,
                 owner_email TEXT NOT NULL DEFAULT '',
                 shared_with_emails_json TEXT NOT NULL DEFAULT '[]',
+                market_access_mode TEXT NOT NULL DEFAULT 'selected',
+                for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
                 description TEXT,
+                for_sale TEXT NOT NULL DEFAULT 'No',
                 share_token TEXT NOT NULL UNIQUE,
                 app_type TEXT NOT NULL,
                 provider_id TEXT,
@@ -507,6 +510,16 @@ impl Database {
                         log::info!("迁移数据库从 v16 到 v17（Share 开机启动）");
                         Self::migrate_v16_to_v17(conn)?;
                         Self::set_user_version(conn, 17)?;
+                    }
+                    17 => {
+                        log::info!("迁移数据库从 v17 到 v18（Share Market 访问模式）");
+                        Self::migrate_v17_to_v18(conn)?;
+                        Self::set_user_version(conn, 18)?;
+                    }
+                    18 => {
+                        log::info!("迁移数据库从 v18 到 v19（Share 全局 ForSale 定价）");
+                        Self::migrate_v18_to_v19(conn)?;
+                        Self::set_user_version(conn, 19)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1293,6 +1306,8 @@ impl Database {
                 name TEXT NOT NULL,
                 owner_email TEXT NOT NULL DEFAULT '',
                 shared_with_emails_json TEXT NOT NULL DEFAULT '[]',
+                market_access_mode TEXT NOT NULL DEFAULT 'selected',
+                for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
                 share_token TEXT NOT NULL UNIQUE,
@@ -1433,6 +1448,36 @@ impl Database {
         }
 
         log::info!("v16 -> v17 迁移完成：shares 表增加 auto_start 字段");
+        Ok(())
+    }
+
+    /// v17 -> v18 迁移：shares 增加 market_access_mode 字段
+    fn migrate_v17_to_v18(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(
+                conn,
+                "shares",
+                "market_access_mode",
+                "TEXT NOT NULL DEFAULT 'selected'",
+            )?;
+        }
+
+        log::info!("v17 -> v18 迁移完成：shares 表增加 market_access_mode 字段");
+        Ok(())
+    }
+
+    /// v18 -> v19 迁移：shares 增加全局 ForSale 官方价百分比配置
+    fn migrate_v18_to_v19(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(
+                conn,
+                "shares",
+                "for_sale_official_price_percent_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )?;
+        }
+
+        log::info!("v18 -> v19 迁移完成：shares 表增加全局 ForSale 定价字段");
         Ok(())
     }
 

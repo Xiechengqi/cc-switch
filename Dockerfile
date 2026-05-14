@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=ghcr.io/xiechengqi/ivnc:latest
+ARG BASE_IMAGE=xiechengqi/ivnc:latest
 FROM ${BASE_IMAGE}
 
 # Build arg names the deb file expected to be present in the build context.

@@ -24,6 +24,7 @@ const SHARE_ROUTER_REQUEST_TIMEOUT_SECS: u64 = 20;
 enum ShareSyncOp {
     Upsert(Box<ShareTunnelMetadata>),
     Delete { share_id: String },
+    DeleteAll,
 }
 
 #[derive(Default)]
@@ -814,6 +815,29 @@ pub fn schedule_delete_share(share_id: String) {
     });
 }
 
+pub fn reconcile_share_router_state(db: Arc<Database>) {
+    tauri::async_runtime::spawn(async move {
+        let op = match db.list_shares() {
+            Ok(mut shares) => {
+                shares.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                match shares.into_iter().next() {
+                    Some(share) => {
+                        ShareSyncOp::Upsert(Box::new(share_metadata_from_record(&share)))
+                    }
+                    None => ShareSyncOp::DeleteAll,
+                }
+            }
+            Err(err) => {
+                log::warn!("[TunnelSync] share router reconcile skipped: {err}");
+                return;
+            }
+        };
+        if let Err(err) = enqueue_op(op).await {
+            log::warn!("[TunnelSync] enqueue share router reconcile failed: {err}");
+        }
+    });
+}
+
 pub fn schedule_sync_share_request_log(log: ShareTunnelRequestLog) {
     tauri::async_runtime::spawn(async move {
         if let Err(err) = enqueue_request_log(log).await {
@@ -939,6 +963,7 @@ async fn enqueue_op(op: ShareSyncOp) -> Result<(), String> {
     let key = match &op {
         ShareSyncOp::Upsert(share) => share.share_id.clone(),
         ShareSyncOp::Delete { share_id } => share_id.clone(),
+        ShareSyncOp::DeleteAll => "__delete_all__".to_string(),
     };
     guard.pending.insert(key, op);
     if !guard.flush_scheduled {
@@ -986,7 +1011,10 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
             guard.flush_scheduled = false;
             return Ok(());
         }
-        let ops = guard.pending.drain().map(|(_, op)| op).collect::<Vec<_>>();
+        let mut ops = guard.pending.drain().map(|(_, op)| op).collect::<Vec<_>>();
+        if ops.iter().any(|op| matches!(op, ShareSyncOp::Upsert(_))) {
+            ops.retain(|op| !matches!(op, ShareSyncOp::DeleteAll));
+        }
         let request_logs = guard
             .pending_request_logs
             .drain()
@@ -999,13 +1027,13 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
     if !ops.is_empty() {
         if let Some(owner_email) = ops.iter().find_map(|op| match op {
             ShareSyncOp::Upsert(share) => Some(share.owner_email.clone()),
-            ShareSyncOp::Delete { .. } => None,
+            ShareSyncOp::Delete { .. } | ShareSyncOp::DeleteAll => None,
         }) {
             crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
+        } else if ops.iter().any(|op| matches!(op, ShareSyncOp::Upsert(_))) {
+            return Err("请先完成邮箱验证码登录".to_string());
         } else if let Some(owner_email) = crate::email_auth::current_email()? {
             crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
-        } else {
-            return Err("请先完成邮箱验证码登录".to_string());
         }
         let identity = identity::ensure_identity(&client, &config)
             .await
@@ -1020,6 +1048,9 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
                 ShareSyncOp::Delete { share_id } => serde_json::json!({
                     "kind": "delete",
                     "shareId": share_id,
+                }),
+                ShareSyncOp::DeleteAll => serde_json::json!({
+                    "kind": "delete_all",
                 }),
             })
             .collect::<Vec<_>>();
@@ -1051,6 +1082,7 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
                     let key = match &op {
                         ShareSyncOp::Upsert(share) => share.share_id.clone(),
                         ShareSyncOp::Delete { share_id } => share_id.clone(),
+                        ShareSyncOp::DeleteAll => "__delete_all__".to_string(),
                     };
                     guard.pending.insert(key, op);
                 }

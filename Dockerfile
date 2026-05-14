@@ -9,7 +9,7 @@ FROM ${BASE_IMAGE}
 #   docker build -f Dockerfile -t ghcr.io/xiechengqi/cc-switch:latest .
 # Runtime:
 #   docker run -d \
-#     -v ~/.cc-switch:/root/.cc-switch \
+#     -v ~/.config/ivnc:/root/.config/ivnc \
 #     ghcr.io/xiechengqi/cc-switch:latest
 ARG DEB_NAME=cc-switch-linux-amd64-ubuntu22-latest.deb
 
@@ -24,37 +24,30 @@ RUN set -eux; \
         sqlite3 \
         "/tmp/${DEB_NAME}"; \
     fc-cache -fv; \
-    curl -SsL https://github.com/YUxiangLuo/miao/releases/download/v0.18.4/miao-rust-linux-amd64 -o /usr/local/bin/miao; \
-    chmod +x /usr/local/bin/miao; \
     rm -f "/tmp/${DEB_NAME}"; \
     rm -rf /var/lib/apt/lists/*; \
-    mkdir -p /root/.config/ivnc /root/.cc-switch/miao/sing-box && \
+    mkdir -p /root/.config/ivnc/cc-switch; \
+    rm -rf /root/.cc-switch; \
+    ln -s /root/.config/ivnc/cc-switch /root/.cc-switch; \
     sqlite3 /root/.config/ivnc/apps.db "\
 CREATE TABLE IF NOT EXISTS apps (\
     id TEXT PRIMARY KEY,\
     name TEXT NOT NULL UNIQUE,\
     url TEXT,\
-    mode TEXT,\
-    dark_mode INTEGER DEFAULT 0,\
     autostart INTEGER DEFAULT 0,\
-    show_nav INTEGER DEFAULT 0,\
     created_at TEXT NOT NULL,\
-    app_type TEXT DEFAULT 'webapp',\
+    app_type TEXT DEFAULT 'background',\
     exec_command TEXT,\
     env_vars TEXT,\
-    remote_debugging_port INTEGER,\
-    proxy_server TEXT,\
     launch_command TEXT,\
     launch_env_vars TEXT,\
     launch_cwd TEXT,\
-    launch_wait_url TEXT,\
     launch_wait_timeout_secs INTEGER\
 );\
 INSERT OR IGNORE INTO apps \
-    (id, name, app_type, url, mode, autostart, show_nav, exec_command, env_vars, created_at, remote_debugging_port, proxy_server, launch_command, launch_env_vars, launch_cwd, launch_wait_url, launch_wait_timeout_secs) \
+    (id, name, app_type, url, autostart, exec_command, env_vars, created_at, launch_command, launch_env_vars, launch_cwd, launch_wait_timeout_secs) \
 VALUES \
-    ('preset-cc-switch', 'cc-switch', 'desktop', NULL, NULL, 1, 0, 'cc-switch', '', '2026-04-23T00:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, NULL),\
-    ('preset-miao', 'Miao', 'webapp', 'http://localhost:6161', 'native', 1, 0, '', '', '2026-05-12T00:00:00Z', NULL, NULL, 'mkdir -p /root/.cc-switch/miao/sing-box && rm -rf /tmp/miao-sing-box && ln -s /root/.cc-switch/miao/sing-box /tmp/miao-sing-box && exec miao', '', '/root/.cc-switch/miao', NULL, NULL);\
+    ('preset-cc-switch', 'cc-switch', 'desktop', NULL, 1, 'mkdir -p /root/.config/ivnc/cc-switch && exec cc-switch', '', '2026-04-23T00:00:00Z', NULL, NULL, NULL, NULL);\
 "
 
-VOLUME ["/root/.cc-switch"]
+VOLUME ["/root/.config/ivnc"]

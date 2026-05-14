@@ -203,11 +203,12 @@ async fn claim_share_subdomain_inner(
     let identity = identity::ensure_identity(client, config).await?;
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let nonce = uuid::Uuid::new_v4().to_string();
+    let claim = share_metadata.claim_payload();
     let signature = identity::sign_action_payload(
         &identity,
         &identity.installation_id,
         "share_claim_subdomain",
-        share_metadata,
+        &claim,
         timestamp_ms,
         &nonce,
     )?;
@@ -219,6 +220,7 @@ async fn claim_share_subdomain_inner(
                 "timestampMs": timestamp_ms,
                 "nonce": nonce,
                 "signature": signature,
+                "claim": claim,
                 "share": share_metadata,
             }))
             .timeout(std::time::Duration::from_secs(

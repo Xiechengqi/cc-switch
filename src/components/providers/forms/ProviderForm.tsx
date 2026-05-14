@@ -242,9 +242,7 @@ function ProviderFormFull({
   }));
   const showProviderForSalePricing =
     matchesPricingApp(appId) &&
-    sharesForProviderPricing.some(
-      (share) => share.appType === appId && share.forSale === "Yes",
-    );
+    sharesForProviderPricing.some((share) => share.forSale === "Yes");
 
   const { category } = useProviderCategory({
     appId,

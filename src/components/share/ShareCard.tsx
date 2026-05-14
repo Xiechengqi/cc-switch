@@ -251,6 +251,7 @@ export function ShareCard({
   }, [share.id]);
 
   useEffect(() => {
+    if (editing) return;
     setTokenLimitInput(String(share.tokenLimit));
     setTokenLimitUnlimited(isUnlimitedTokenLimit(share.tokenLimit));
     setLastFiniteTokenLimit(
@@ -299,7 +300,7 @@ export function ShareCard({
       setExpiryHourInput("");
       setExpiryMinuteInput("");
     }
-  }, [share, providerSalePricing, currentShareSalePricingHasValues]);
+  }, [editing, share, providerSalePricing, currentShareSalePricingHasValues]);
 
   useEffect(() => {
     if (editing) return;

@@ -270,6 +270,25 @@ pub struct ShareTunnelMetadata {
     pub app_runtimes: ShareAppRuntimes,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareClaimPayload {
+    pub share_id: String,
+    pub subdomain: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_email: Option<String>,
+}
+
+impl ShareTunnelMetadata {
+    pub fn claim_payload(&self) -> ShareClaimPayload {
+        ShareClaimPayload {
+            share_id: self.share_id.clone(),
+            subdomain: self.subdomain.clone(),
+            owner_email: Some(self.owner_email.clone()),
+        }
+    }
+}
+
 fn default_market_access_mode() -> String {
     "selected".to_string()
 }
@@ -392,6 +411,47 @@ mod tests {
                     "gemini": false
                 },
                 "appRuntimes": {}
+            })
+        );
+    }
+
+    #[test]
+    fn share_claim_payload_uses_stable_minimal_fields() {
+        let mut pricing = HashMap::new();
+        pricing.insert("codex".to_string(), 5);
+        let metadata = ShareTunnelMetadata {
+            share_id: "share-1".to_string(),
+            share_name: "Test".to_string(),
+            owner_email: "owner@example.com".to_string(),
+            shared_with_emails: vec!["friend@example.com".to_string()],
+            market_access_mode: "all".to_string(),
+            for_sale_official_price_percent_by_app: pricing,
+            description: Some("not signed by claim".to_string()),
+            for_sale: "Yes".to_string(),
+            subdomain: "demo".to_string(),
+            share_token: "token".to_string(),
+            app_type: "codex".to_string(),
+            provider_id: Some("provider-1".to_string()),
+            token_limit: -1,
+            parallel_limit: -1,
+            tokens_used: 10,
+            requests_count: 2,
+            share_status: "active".to_string(),
+            auto_start: true,
+            created_at: "2026-04-21T00:00:00Z".to_string(),
+            expires_at: "2026-04-22T00:00:00Z".to_string(),
+            support: ShareSupport::default(),
+            upstream_provider: None,
+            app_runtimes: ShareAppRuntimes::default(),
+        };
+
+        let value = serde_json::to_value(metadata.claim_payload()).expect("serialize claim");
+        assert_eq!(
+            value,
+            json!({
+                "shareId": "share-1",
+                "subdomain": "demo",
+                "ownerEmail": "owner@example.com"
             })
         );
     }

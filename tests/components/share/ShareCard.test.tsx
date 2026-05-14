@@ -397,6 +397,50 @@ describe("ShareCard", () => {
     expect(providerUpdate).not.toHaveBeenCalled();
   });
 
+  it("keeps global model pricing edits during background rerenders", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    const providerSalePricing = [
+      {
+        app: "claude" as const,
+        label: "Claude",
+        providerName: "Claude Provider",
+        percent: 20,
+        onUpdate: vi.fn(),
+      },
+    ];
+    const { rerender } = renderShareCard(
+      <ShareCard
+        share={{ ...baseShare, forSale: "Yes" }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        providerSalePricing={providerSalePricing}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    await user.click(screen.getByRole("checkbox", { name: "全局" }));
+    const input = screen.getAllByRole("spinbutton")[0];
+    await user.clear(input);
+    await user.type(input, "15");
+
+    rerender(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ShareCard
+          share={{ ...baseShare, forSale: "Yes", requestsCount: 4 }}
+          tunnelConfig={tunnelConfig}
+          tunnelConfigured={true}
+          providerSalePricing={[...providerSalePricing]}
+          {...handlers}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("checkbox", { name: "全局" })).toBeChecked();
+    expect(screen.getAllByRole("spinbutton")[0]).toHaveValue(15);
+  });
+
   it("restores market selection to the default while preserving Share To emails", async () => {
     const user = userEvent.setup();
     const handlers = createHandlers();

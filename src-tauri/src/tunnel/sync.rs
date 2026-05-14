@@ -108,6 +108,33 @@ fn build_signed_request_payload<T: serde::Serialize>(
     }))
 }
 
+fn build_signed_claim_request_payload<T: serde::Serialize, U: serde::Serialize>(
+    identity: &identity::TunnelIdentity,
+    claim: &T,
+    share: &U,
+) -> Result<serde_json::Value, String> {
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let signature = identity::sign_action_payload(
+        identity,
+        &identity.installation_id,
+        "share_claim_subdomain",
+        claim,
+        timestamp_ms,
+        &nonce,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "installationId": &identity.installation_id,
+        "timestampMs": timestamp_ms,
+        "nonce": nonce,
+        "signature": signature,
+        "claim": claim,
+        "share": share,
+    }))
+}
+
 pub fn schedule_sync_share(share: ShareRecord, _db: &Arc<Database>) {
     tauri::async_runtime::spawn(async move {
         let metadata = share_metadata_from_record(&share);
@@ -705,8 +732,8 @@ async fn claim_share_subdomain_inner(
         .await
         .map_err(|e| e.to_string())?;
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
-    let request_payload =
-        build_signed_request_payload(&identity, "share_claim_subdomain", "share", &metadata)?;
+    let claim = metadata.claim_payload();
+    let request_payload = build_signed_claim_request_payload(&identity, &claim, &metadata)?;
     let resp = send_share_router_request(
         client.post(&url).json(&request_payload),
         "claim subdomain",

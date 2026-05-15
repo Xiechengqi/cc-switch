@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-05-16
+
+- **上游分支：** `main`
+- **上游 HEAD：** `0d095555`
+- **共同祖先：** `7685ab70`
+- **合并提交数：** 35
+- **合并提交：** `60d0149d`
+- **主要变更：**
+  - feat(claude-desktop): Claude Desktop 切换全面重做——Claude Code 导入流改造、role-based model mapping（sonnet/opus/haiku 角色锁定，1M flag 用 `supports1m` 字段而非 `[1M]` 后缀）、修复模型输入框失焦、恢复共享入口、加 Copilot/Codex OAuth 供应商支持（含 OAuth proxy 回归测试）
+  - feat(codex-oauth): 按需从 ChatGPT 后端拉模型列表（新 `get_codex_oauth_models` 命令）
+  - feat(proxy): 转发客户端实际 HTTP method（不再硬编码 POST，5d3d9067）；P0–P3 路由/生命周期一揽子修复（206125b4）、`max_retries` 接入 `AppProxyConfig`、`get_auth_headers` 改返回 `Result` 避免 panic（c9a6afc0）、failover 决策精修（cb4ecd39）、takeover 检测收紧 + 关闭时 fallback restore（c3d810a2）、从 URI path 正确提取 Gemini 模型（9a8f5202）、Anthropic tool_choice 映射到 OpenAI Chat 嵌套形式（84aa87c3）、IPv6 listen 地址校验放行（3c359725）、`auth_header_value` 跨 provider adapter 复用（039784af）、`handle_rectifier_retry_failure` helper 抽出（85131d37）、client-request 计数器移出 per-attempt loop（f2ae9823）、Claude Code 菜单暴露真实第三方模型名（f93b935d）、reuse pooled HTTPS for non-Anthropic（仍**未采纳**，见冲突解决）
+  - fix(usage): 缓存成本语义修正 + 定价告警风暴静默（aa5e58d0）、pricing routing / SSE 生命周期 / 校验加固（402570ce）、按 model 精准回填零成本（新 `backfill_missing_usage_costs_for_model`）
+  - feat(usage): filter-driven Hero + cache-normalized totals（`isUnpricedUsage`、`getFreshInputTokens`、`isNonNegativeDecimalString` 等导出）
+  - fix(providers): 第三方 Claude 供应商禁用 model test（543e057e）
+  - feat(ui): App switcher 区分 Claude Code 与 Claude Desktop；`ed41a7a7`、`968c75bd`；空 toolbar capsule 隐藏；Monitor badge 图标对齐居中
+  - chore(presets/partners): OpenClaudeCode → MicuAPI 域名；CrazyRouter API endpoint 切到 cn 子域；移除 DDSHub 集成；BytePlus / Volcengine README 互链
+- **冲突解决：**
+  - `src-tauri/src/database/mod.rs` — 同时保留本仓 `ShareRecord` re-export 与上游新增 `validate_cost_multiplier` / `validate_pricing_source` / `PRICING_SOURCE_REQUEST` / `PRICING_SOURCE_RESPONSE`
+  - `src-tauri/src/lib.rs` — invoke_handler 同时注册本仓 `get_claude_oauth_quota` / `get_cached_oauth_quota` 与上游 `get_codex_oauth_models`
+  - `src-tauri/src/proxy/forwarder.rs` —
+    - 保留本仓 `gemini_code_assist_model` 分支与 OAuth 401 retry `loop`；上游 e15bfbfe 的 pooled-reqwest + auth 提出 loop 重构第三次**未采纳**（解开 retry loop 会冲突我们的 401 重试），`should_preserve_exact_header_case` / `map_reqwest_send_error` 继续是 dead-code warning（也保留 `streaming_first_byte_timeout` 字段未读的 warning）
+    - 序列化/日志/发送 dispatch 仍走本仓 `outbound_body`（Gemini Code Assist `project_id` 注入路径）
+    - 采纳上游 c9a6afc0：`adapter.get_auth_headers(&auth)` 改回 `Result`，调用处补 `?`
+  - `src-tauri/src/proxy/handler_context.rs` — 完整采纳上游 9a8f5202：`extract_gemini_model_from_endpoint` → `extract_gemini_model_from_path`，返回 `Option<String>`，更鲁棒；上游 8 个新测试用例完全覆盖原本仓 3 个旧用例
+  - `src-tauri/src/proxy/response_processor.rs` — 采纳上游 206125b4 把 `connection_guard` 透传给 `handle_streaming`，但 SSE 判定保留本仓 `should_handle_as_streaming_response`（包含 SSE content-type **或** `ctx.request_is_streaming`），上游退回单纯 `is_sse_response` 不采用
+  - `src-tauri/src/services/usage_stats.rs` — 采纳上游 `backfill_missing_usage_costs_for_model` + `only_model_id: Option<&str>` 参数 + `BASE_SQL` 常量化；SELECT 列保留本仓 `request_agent / requested_model / actual_model / actual_model_source / share_id / share_name`（`row_to_request_log_detail` 依赖这些索引）
+  - `src/components/providers/ProviderCard.tsx` — 保留本仓 `canTestProvider(provider, appId)` 调用，把上游 543e057e 的"第三方 Claude 禁用 test"新增到 helper 内部（`src/utils/providerMetaUtils.ts`）而非内联，并清理冲突解决时引入但未引用的 `isCodexOauth` / `isClaudeThirdParty` locals
+  - `src/components/providers/forms/ProviderForm.tsx` — 同时保留本仓 `hasManagedAuthBinding` import 与上游新增 `isNonNegativeDecimalString` import
+  - `src/components/usage/RequestLogTable.tsx` — 套用上游 `logs.map((log) => { const unpriced = isUnpricedUsage(log); return ... })` 外壳（带 cache-normalized 输入 + 未定价提示），但内层模型 cell 仍是本仓 `requestAgent` 标签 + `requestedModel → actualModel` 三段式 display（share-aware）
+- **验证：** `cargo check`（4 条 warning，含 3 条遗留 + 1 条 `_method` unused，无 error）、`pnpm tsc --noEmit` 通过
+
+---
+
 ## 2026-05-11
 
 - **上游分支：** `main`

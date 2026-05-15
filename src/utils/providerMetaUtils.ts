@@ -145,6 +145,13 @@ export function canTestProvider(
     return false;
   }
 
+  // Third-party Claude providers go through proxy gateway; the test endpoint
+  // does not exercise that path, so testing is disabled (matches upstream
+  // commit 543e057e).
+  if (appId === "claude" && provider.category === "third_party") {
+    return false;
+  }
+
   if (
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH

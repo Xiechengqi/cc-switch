@@ -1292,6 +1292,7 @@ pub fn run() {
             commands::get_codex_oauth_quota,
             commands::get_claude_oauth_quota,
             commands::get_cached_oauth_quota,
+            commands::get_codex_oauth_models,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // DeepSeek account management
@@ -1423,6 +1424,7 @@ pub fn run() {
             commands::set_auto_failover_enabled,
             // Usage statistics
             commands::get_usage_summary,
+            commands::get_usage_summary_by_app,
             commands::get_usage_trends,
             commands::get_provider_stats,
             commands::get_model_stats,

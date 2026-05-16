@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-05-20
+
+- **上游分支：** `main`
+- **上游 HEAD：** `6172bfd5`
+- **共同祖先：** `0d095555`
+- **合并提交数：** 20
+- **合并提交：** `11d969b2`
+- **新增 upstream tag：** `v3.15.0`
+- **主要变更：**
+  - chore(release): 上游 bump `tauri.conf.json` 到 3.15.0；新增 `docs/release-notes/v3.15.0-{en,ja,zh}.md`（含 imposter site warning 措辞）
+  - feat(failover): P1–P3 reliability gaps 修复（b642ef06）—— 新增 `prepare_success_response_for_failover` + `prime_streaming_response`，对应 `ProxyResponse::buffered/streamed` 构造器
+  - feat(providers): Claude Code / Codex 路由支持徽章（940161fb）
+  - feat(presets): 新增 PatewayAI / ClaudeAPI / ClaudeCN / RunAPI / RelaxyCode / 火山 Agentplan / BytePlus 等合作商 preset；DouBaoSeed endpoint 更新；20 个 Claude Desktop preset 从 proxy mode 切到 direct mode；preset 渲染顺序按数组顺序、合作商优先
+  - chore(i18n): `modelMappingOffHint` 改为 action-oriented 文案
+- **冲突解决：**
+  - `src-tauri/src/proxy/hyper_client.rs` — 上游把 `Local/LocalStream` 重命名为 `Buffered/Streamed`，并新增带 status/headers 入参的 `buffered/streamed` 构造器。因 `src-tauri/src/proxy/providers/deepseek_claude.rs` 等本仓代码仍在用 `local_json/local_sse + Local/LocalStream`，保留旧命名；同时**并行新增** `buffered/streamed` 构造器（内部仍走 `Local/LocalStream` 变体），让上游新引入的 `prepare_success_response_for_failover` / `prime_streaming_response` 可编译。两套 API 互不冲突。
+  - `src-tauri/src/proxy/forwarder.rs` —
+    - 上游 dispatch 重构第 4 次**未采纳**（pooled-reqwest + auth 提出 retry loop 与本仓 401 重试不兼容），`should_preserve_exact_header_case` / `map_reqwest_send_error` 继续是 dead-code warning
+    - 上游 `if status.is_success() { prepare_success_response_for_failover(...) } else { ... }` 包裹层也**未采纳**——保留本仓 retry-loop 平铺路径；`prepare_success_response_for_failover` 方法仍在文件里保留（被上游测试用例引用），供日后做 failover 重构时直接接入
+- **附加 dead-code warning：**
+  - `prepare_success_response_for_failover` / `prime_streaming_response` / `ProxyResponse::buffered` / `ProxyResponse::streamed` 4 个未被生产代码引用，仅测试用，加上之前遗留的 `should_preserve_exact_header_case` / `map_reqwest_send_error` / `streaming_first_byte_timeout` 字段 / `_method`，共 7 条 warning
+- **验证：** `cargo check`（7 warning，无 error）、`pnpm tsc --noEmit` 通过
+
+---
+
 ## 2026-05-16
 
 - **上游分支：** `main`

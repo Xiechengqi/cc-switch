@@ -6,7 +6,7 @@
 
 use super::ProxyError;
 use bytes::Bytes;
-use futures::stream::Stream;
+use futures::{stream::Stream, StreamExt};
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
@@ -121,6 +121,32 @@ impl ProxyResponse {
             status: http::StatusCode::OK,
             headers,
             stream,
+        }
+    }
+
+    /// Construct a buffered response with explicit status/headers. Used by the
+    /// failover replay path (upstream b642ef06) to materialize an already-read
+    /// response body back into a `ProxyResponse`.
+    pub fn buffered(status: http::StatusCode, headers: http::HeaderMap, body: Bytes) -> Self {
+        Self::Local {
+            status,
+            headers,
+            body,
+        }
+    }
+
+    /// Construct a streaming response with explicit status/headers. Used by the
+    /// streaming first-byte priming path so that a peeked chunk can be replayed
+    /// at the head of the original stream.
+    pub fn streamed(
+        status: http::StatusCode,
+        headers: http::HeaderMap,
+        stream: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
+    ) -> Self {
+        Self::LocalStream {
+            status,
+            headers,
+            stream: Box::pin(stream),
         }
     }
 

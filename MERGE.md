@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-05-21
+
+- **上游分支：** `main`
+- **上游 HEAD：** `4f0f103a`
+- **共同祖先：** `6172bfd5`
+- **合并提交数：** 2
+- **合并提交：** `4571f671`
+- **主要变更：**
+  - feat(presets): Claude Desktop 官方 preset（`c460a404`）
+  - docs: 新增 Claude Desktop 用户手册（三语 `docs/user-manual/{en,ja,zh}/2-providers/2.6-claude-desktop.md` + 多张配套截图）
+- **冲突解决：** 无（全部 Git 自动合并）
+- **验证：** `cargo check`（沿用 7 条遗留 warning，无 error）、`pnpm tsc --noEmit` 通过
+
+---
+
 ## 2026-05-20
 
 - **上游分支：** `main`

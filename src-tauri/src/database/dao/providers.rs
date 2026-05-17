@@ -16,6 +16,75 @@ type OmoProviderRow = (
     String,
 );
 
+fn is_core_catalog_provider_allowed(app_type: &str, provider: &Provider) -> bool {
+    if provider.category.as_deref() == Some("custom") {
+        return true;
+    }
+
+    let provider_type = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.provider_type.as_deref());
+
+    match app_type {
+        "claude" => match provider.name.as_str() {
+            "Claude Official" => {
+                provider.category.as_deref() == Some("official")
+                    && provider_type.is_none_or(|value| value == "claude_oauth")
+            }
+            "OpenAI Official" => {
+                provider.category.as_deref() == Some("official")
+                    && provider_type.is_none_or(|value| value == "codex_oauth")
+            }
+            "DeepSeek Official" => {
+                provider.category.as_deref() == Some("cn_official")
+                    && provider_type.is_none_or(|value| value == "deepseek_account")
+            }
+            "GitHub Copilot" => {
+                provider.category.as_deref() == Some("third_party")
+                    && provider_type.is_none_or(|value| value == "github_copilot")
+            }
+            _ => false,
+        },
+        "codex" => {
+            provider.name == "OpenAI Official" && provider.category.as_deref() == Some("official")
+        }
+        "gemini" => {
+            provider.name == "Google Official"
+                && provider.category.as_deref() == Some("official")
+                && provider_type.is_none_or(|value| value == "google_gemini_oauth")
+        }
+        _ => true,
+    }
+}
+
+fn is_core_catalog_fallback(app_type: &str, provider: &Provider) -> bool {
+    match app_type {
+        "claude" => {
+            provider.name == "Claude Official"
+                && provider.category.as_deref() == Some("official")
+                && provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.provider_type.as_deref())
+                    .is_none_or(|value| value == "claude_oauth")
+        }
+        "codex" => {
+            provider.name == "OpenAI Official" && provider.category.as_deref() == Some("official")
+        }
+        "gemini" => {
+            provider.name == "Google Official"
+                && provider.category.as_deref() == Some("official")
+                && provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.provider_type.as_deref())
+                    .is_none_or(|value| value == "google_gemini_oauth")
+        }
+        _ => false,
+    }
+}
+
 impl Database {
     pub fn get_all_providers(
         &self,
@@ -285,6 +354,122 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    pub fn prune_legacy_provider_catalog(&self) -> Result<usize, AppError> {
+        if self
+            .get_bool_flag("provider_catalog_core_v1_pruned")
+            .unwrap_or(false)
+        {
+            return Ok(0);
+        }
+
+        let mut deleted_total = 0_usize;
+
+        for app_type in ["claude", "codex", "gemini"] {
+            let providers = self.get_all_providers(app_type)?;
+            if providers.is_empty() {
+                continue;
+            }
+
+            let fallback_id = providers
+                .values()
+                .find(|provider| is_core_catalog_fallback(app_type, provider))
+                .map(|provider| provider.id.clone());
+
+            let ids_to_delete: Vec<String> = providers
+                .values()
+                .filter(|provider| !is_core_catalog_provider_allowed(app_type, provider))
+                .map(|provider| provider.id.clone())
+                .collect();
+
+            if ids_to_delete.is_empty() {
+                continue;
+            }
+
+            let fallback_before_delete = fallback_id
+                .as_ref()
+                .filter(|id| !ids_to_delete.iter().any(|deleted| deleted == *id))
+                .cloned();
+
+            let app_type_enum = app_type.parse::<crate::app_config::AppType>()?;
+            let current_before_delete = self.get_current_provider(app_type)?;
+            let settings_current_before_delete =
+                crate::settings::get_current_provider(&app_type_enum);
+            let should_reset_db_current = current_before_delete
+                .as_deref()
+                .is_some_and(|id| ids_to_delete.iter().any(|deleted| deleted == id));
+            let should_reset_settings_current = settings_current_before_delete
+                .as_deref()
+                .is_some_and(|id| ids_to_delete.iter().any(|deleted| deleted == id));
+
+            {
+                let mut conn = lock_conn!(self.conn);
+                let tx = conn
+                    .transaction()
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+
+                for deleted_id in &ids_to_delete {
+                    if let Some(fallback_id) = fallback_before_delete.as_deref() {
+                        tx.execute(
+                            "UPDATE shares SET provider_id = ?1 WHERE app_type = ?2 AND provider_id = ?3",
+                            params![fallback_id, app_type, deleted_id],
+                        )
+                        .map_err(|e| AppError::Database(e.to_string()))?;
+                    } else {
+                        tx.execute(
+                            "UPDATE shares SET provider_id = NULL WHERE app_type = ?1 AND provider_id = ?2",
+                            params![app_type, deleted_id],
+                        )
+                        .map_err(|e| AppError::Database(e.to_string()))?;
+                    }
+
+                    tx.execute(
+                        "DELETE FROM provider_endpoints WHERE provider_id = ?1 AND app_type = ?2",
+                        params![deleted_id, app_type],
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                    tx.execute(
+                        "DELETE FROM provider_health WHERE provider_id = ?1 AND app_type = ?2",
+                        params![deleted_id, app_type],
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                    tx.execute(
+                        "DELETE FROM providers WHERE id = ?1 AND app_type = ?2",
+                        params![deleted_id, app_type],
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                    deleted_total += 1;
+                }
+
+                if should_reset_db_current {
+                    tx.execute(
+                        "UPDATE providers SET is_current = 0 WHERE app_type = ?1",
+                        params![app_type],
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                    if let Some(fallback_id) = fallback_before_delete.as_deref() {
+                        tx.execute(
+                            "UPDATE providers SET is_current = 1 WHERE id = ?1 AND app_type = ?2",
+                            params![fallback_id, app_type],
+                        )
+                        .map_err(|e| AppError::Database(e.to_string()))?;
+                    }
+                }
+
+                tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+            }
+
+            if should_reset_settings_current {
+                crate::settings::set_current_provider(
+                    &app_type_enum,
+                    fallback_before_delete.as_deref(),
+                )?;
+            }
+        }
+
+        self.set_setting("provider_catalog_core_v1_pruned", "true")?;
+        Ok(deleted_total)
     }
 
     pub fn set_current_provider(&self, app_type: &str, id: &str) -> Result<(), AppError> {
@@ -706,6 +891,129 @@ impl Database {
         self.save_provider(app_type_str, &provider)?;
 
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod provider_catalog_prune_tests {
+    use crate::database::dao::shares::ShareRecord;
+    use crate::database::Database;
+    use crate::provider::{Provider, ProviderMeta};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn provider(
+        id: &str,
+        name: &str,
+        category: Option<&str>,
+        provider_type: Option<&str>,
+    ) -> Provider {
+        let mut provider = Provider::with_id(
+            id.to_string(),
+            name.to_string(),
+            json!({ "env": {} }),
+            Some(String::new()),
+        );
+        provider.category = category.map(str::to_string);
+        provider.meta = Some(ProviderMeta {
+            provider_type: provider_type.map(str::to_string),
+            ..Default::default()
+        });
+        provider
+    }
+
+    fn share(provider_id: &str) -> ShareRecord {
+        ShareRecord {
+            id: "share-1".to_string(),
+            name: "share".to_string(),
+            owner_email: String::new(),
+            shared_with_emails: Vec::new(),
+            market_access_mode: "selected".to_string(),
+            for_sale_official_price_percent_by_app: HashMap::new(),
+            description: None,
+            for_sale: "No".to_string(),
+            share_token: "token".to_string(),
+            app_type: "claude".to_string(),
+            provider_id: Some(provider_id.to_string()),
+            api_key: "key".to_string(),
+            settings_config: None,
+            token_limit: -1,
+            parallel_limit: 3,
+            tokens_used: 0,
+            requests_count: 0,
+            expires_at: "2099-01-01T00:00:00Z".to_string(),
+            subdomain: None,
+            tunnel_url: None,
+            status: "active".to_string(),
+            auto_start: false,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            last_used_at: None,
+        }
+    }
+
+    #[test]
+    fn prune_keeps_core_whitelist_and_custom_then_repoints_current_and_share() {
+        let db = Database::memory().expect("memory db");
+        db.save_provider(
+            "claude",
+            &provider(
+                "claude-official-new",
+                "Claude Official",
+                Some("official"),
+                Some("claude_oauth"),
+            ),
+        )
+        .expect("save fallback");
+        db.save_provider(
+            "claude",
+            &provider(
+                "github-copilot",
+                "GitHub Copilot",
+                Some("third_party"),
+                Some("github_copilot"),
+            ),
+        )
+        .expect("save copilot");
+        db.save_provider(
+            "claude",
+            &provider("custom-provider", "Custom", Some("custom"), None),
+        )
+        .expect("save custom");
+        db.save_provider(
+            "claude",
+            &provider("old-aggregator", "Old Aggregator", Some("aggregator"), None),
+        )
+        .expect("save old");
+        db.create_share(&share("old-aggregator"))
+            .expect("create share");
+        db.set_current_provider("claude", "old-aggregator")
+            .expect("set current");
+
+        let deleted = db
+            .prune_legacy_provider_catalog()
+            .expect("catalog prune succeeds");
+
+        assert_eq!(deleted, 1);
+        assert!(db
+            .get_provider_by_id("old-aggregator", "claude")
+            .expect("query old")
+            .is_none());
+        assert!(db
+            .get_provider_by_id("custom-provider", "claude")
+            .expect("query custom")
+            .is_some());
+        assert_eq!(
+            db.get_current_provider("claude").expect("current"),
+            Some("claude-official-new".to_string())
+        );
+        assert_eq!(
+            db.get_share_by_id("share-1")
+                .expect("share query")
+                .expect("share exists")
+                .provider_id
+                .as_deref(),
+            Some("claude-official-new")
+        );
     }
 }
 

@@ -22,6 +22,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 /// 主页面显示的应用配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,16 +36,16 @@ pub struct VisibleApps {
         rename = "claude-desktop",
         alias = "claudeDesktop",
         alias = "claude_desktop",
-        default = "default_true"
+        default = "default_false"
     )]
     pub claude_desktop: bool,
     #[serde(default = "default_true")]
     pub codex: bool,
     #[serde(default = "default_true")]
     pub gemini: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub opencode: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub openclaw: bool,
     #[serde(default)]
     pub hermes: bool,
@@ -51,12 +55,12 @@ impl Default for VisibleApps {
     fn default() -> Self {
         Self {
             claude: true,
-            claude_desktop: true,
+            claude_desktop: false,
             codex: true,
             gemini: true,
-            opencode: true,
-            openclaw: true,
-            hermes: false, // 默认不显示，需用户手动启用
+            opencode: false,
+            openclaw: false,
+            hermes: false,
         }
     }
 }
@@ -819,7 +823,7 @@ mod tests {
     use crate::app_config::AppType;
 
     #[test]
-    fn visible_apps_old_settings_default_claude_desktop_visible() {
+    fn visible_apps_old_settings_default_to_core_apps_only() {
         let visible: VisibleApps = serde_json::from_value(serde_json::json!({
             "claude": true,
             "codex": true,
@@ -830,7 +834,7 @@ mod tests {
         }))
         .expect("visible apps");
 
-        assert!(visible.is_visible(&AppType::ClaudeDesktop));
+        assert!(!visible.is_visible(&AppType::ClaudeDesktop));
     }
 
     #[test]

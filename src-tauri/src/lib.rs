@@ -616,6 +616,17 @@ pub fn run() {
                 }
             }
 
+            // 1.7b. 一次性清理旧版供应商目录，只保留核心 app 的白名单供应商
+            // 和显式自定义配置。历史使用过但已经从 UI 移除的第三方/聚合预设不再
+            // 继续出现在主列表中。
+            match app_state.db.prune_legacy_provider_catalog() {
+                Ok(count) if count > 0 => {
+                    log::info!("✓ Pruned {count} legacy provider(s) from core provider catalog");
+                }
+                Ok(_) => log::debug!("○ Core provider catalog already clean"),
+                Err(e) => log::warn!("✗ Failed to prune legacy provider catalog: {e}"),
+            }
+
             // 1.8. 一次性强制重置本地代理 / 故障转移默认值
             //
             // commit 867ca0aa 把 enable_local_proxy / enable_failover_toggle /

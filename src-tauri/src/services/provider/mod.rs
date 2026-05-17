@@ -1453,8 +1453,8 @@ impl ProviderService {
         if should_hot_switch && !_provider.can_switch_during_proxy_takeover() {
             return Err(AppError::localized(
                 "switch.official_blocked_by_proxy",
-                "代理接管模式下不能切换到官方供应商，使用代理访问官方 API 可能导致账号被封禁。请先关闭代理接管，或选择第三方供应商。",
-                "Cannot switch to official provider while proxy takeover is active. Using proxy with official APIs may cause account bans.",
+                "当前本地路由模式不允许这样切换。请先关闭该应用的本地路由，或切换到兼容当前模式的供应商。",
+                "The current local routing mode does not allow this switch. Turn off local routing for this app first, or switch to a provider that supports the current mode.",
             ));
         }
 

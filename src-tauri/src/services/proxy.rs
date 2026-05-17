@@ -1620,7 +1620,7 @@ impl ProxyService {
         // Defense-in-depth: proxy takeover only supports third-party and managed OAuth providers.
         if !provider.can_switch_during_proxy_takeover() {
             return Err(
-                "代理接管模式下不能切换到官方供应商 (Cannot switch to official provider during proxy takeover)"
+                "当前本地路由模式不允许这样切换 (The current local routing mode does not allow this switch)"
                     .to_string(),
             );
         }

@@ -18,15 +18,7 @@ interface AppSwitcherProps {
   compact?: boolean;
 }
 
-const ALL_APPS: AppId[] = [
-  "claude",
-  "claude-desktop",
-  "codex",
-  "gemini",
-  "opencode",
-  "openclaw",
-  "hermes",
-];
+const ALL_APPS: AppId[] = ["claude", "codex", "gemini"];
 const STORAGE_KEY = "cc-switch-last-app";
 
 export function AppSwitcher({
@@ -60,7 +52,7 @@ export function AppSwitcher({
     hermes: "Hermes",
   };
 
-  // Filter apps based on visibility settings (default all visible)
+  // Filter apps based on visibility settings.
   const appsToShow = ALL_APPS.filter((app) => {
     if (!visibleApps) return true;
     return visibleApps[app];

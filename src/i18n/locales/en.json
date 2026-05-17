@@ -180,12 +180,9 @@
     }
   },
   "claudeCode": {
-    "needsRouting": "Needs Routing",
-    "noRoutingSupport": "No Routing Support"
+    "needsRouting": "Needs Routing"
   },
-  "codex": {
-    "noRoutingSupport": "No Routing Support"
-  },
+  "codex": {},
   "claudeDesktop": {
     "officialNotice": "Claude Desktop official providers use the built-in 1P sign-in. No API key or endpoint URL is required.",
     "mode": "Model handling",
@@ -265,8 +262,8 @@
     "openclawNoModels": "No models configured",
     "backfillWarning": "Switched successfully, but failed to save changes back to the previous provider",
     "windowControlFailed": "Window control failed: {{error}}",
-    "officialBlockedByProxy": "Cannot switch to official provider while local routing is active. Using routing with official APIs may cause account bans.",
-    "proxyOfficialWarning": "Current provider {{name}} is official. Consider switching to a third-party provider before using local routing."
+    "officialBlockedByProxy": "The current local routing mode does not allow this switch. Turn off local routing for this app first, or switch to a provider that supports the current mode.",
+    "proxyOfficialWarning": "The current provider {{name}} may not fit continued use with local routing. Switch to a provider that matches the current mode before enabling local routing."
   },
   "confirm": {
     "deleteProvider": "Delete Provider",

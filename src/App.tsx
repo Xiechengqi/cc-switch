@@ -124,15 +124,7 @@ const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 
 const STORAGE_KEY = "cc-switch-last-app";
-const VALID_APPS: AppId[] = [
-  "claude",
-  "claude-desktop",
-  "codex",
-  "gemini",
-  "opencode",
-  "openclaw",
-  "hermes",
-];
+const VALID_APPS: AppId[] = ["claude", "codex", "gemini"];
 
 const getInitialApp = (): AppId => {
   const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
@@ -218,22 +210,18 @@ function App() {
   const contentTopOffset = dragBarHeight + HEADER_HEIGHT;
   const visibleApps: VisibleApps = settingsData?.visibleApps ?? {
     claude: true,
-    "claude-desktop": true,
+    "claude-desktop": false,
     codex: true,
     gemini: true,
-    opencode: true,
-    openclaw: true,
-    hermes: true,
+    opencode: false,
+    openclaw: false,
+    hermes: false,
   };
 
   const getFirstVisibleApp = (): AppId => {
     if (visibleApps.claude) return "claude";
-    if (visibleApps["claude-desktop"]) return "claude-desktop";
     if (visibleApps.codex) return "codex";
     if (visibleApps.gemini) return "gemini";
-    if (visibleApps.opencode) return "opencode";
-    if (visibleApps.openclaw) return "openclaw";
-    if (visibleApps.hermes) return "hermes";
     return "claude"; // fallback
   };
 
@@ -474,7 +462,7 @@ function App() {
         toast.warning(
           t("notifications.proxyOfficialWarning", {
             name: providerName,
-            defaultValue: `当前供应商 ${providerName} 是官方供应商，建议切换到第三方供应商后再使用代理接管`,
+            defaultValue: `当前供应商 ${providerName} 可能不适合继续使用本地路由。建议先切换到兼容当前模式的供应商，再启用本地路由。`,
           }),
           { duration: 8000 },
         );

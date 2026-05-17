@@ -208,7 +208,7 @@ export function useProviderActions(
         toast.error(
           t("notifications.officialBlockedByProxy", {
             defaultValue:
-              "代理接管模式下不能切换到官方供应商，使用代理访问官方 API 可能导致账号被封禁",
+              "当前本地路由模式不允许这样切换。请先关闭该应用的本地路由，或切换到兼容当前模式的供应商。",
           }),
           { duration: 6000 },
         );

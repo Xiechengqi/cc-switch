@@ -180,12 +180,9 @@
     }
   },
   "claudeCode": {
-    "needsRouting": "ルーティングが必要",
-    "noRoutingSupport": "ルーティング非対応"
+    "needsRouting": "ルーティングが必要"
   },
-  "codex": {
-    "noRoutingSupport": "ルーティング非対応"
-  },
+  "codex": {},
   "claudeDesktop": {
     "officialNotice": "Claude Desktop の公式プロバイダーは内蔵の 1P サインインを使用します。API キーやエンドポイントの設定は不要です。",
     "mode": "モデル処理方式",
@@ -265,8 +262,8 @@
     "openclawNoModels": "モデルが設定されていません",
     "backfillWarning": "切り替え成功しましたが、前のプロバイダーへの設定保存に失敗しました",
     "windowControlFailed": "ウィンドウ操作に失敗しました: {{error}}",
-    "officialBlockedByProxy": "ローカルルーティングモード中は公式プロバイダーに切り替えできません。ルーティング経由で公式 API にアクセスするとアカウントが停止される可能性があります。",
-    "proxyOfficialWarning": "現在のプロバイダー {{name}} は公式です。ローカルルーティングを使用する前にサードパーティプロバイダーに切り替えてください。"
+    "officialBlockedByProxy": "現在のローカルルーティングモードではこの切り替えはできません。先にこのアプリのローカルルーティングを無効にするか、現在のモードに適合するプロバイダーへ切り替えてください。",
+    "proxyOfficialWarning": "現在のプロバイダー {{name}} は、このままローカルルーティングを使い続ける構成に適さない可能性があります。ローカルルーティングを有効にする前に、現在のモードに適合するプロバイダーへ切り替えてください。"
   },
   "confirm": {
     "deleteProvider": "プロバイダーを削除",

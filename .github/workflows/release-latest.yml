@@ -243,6 +243,7 @@ jobs:
           CONTEXT_DIR="$RUNNER_TEMP/docker-context"
           mkdir -p "$CONTEXT_DIR"
           cp Dockerfile "$CONTEXT_DIR/Dockerfile"
+          cp docker-entrypoint.cc-switch.sh "$CONTEXT_DIR/docker-entrypoint.cc-switch.sh"
           echo "path=$CONTEXT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Download deb artifact into Docker context

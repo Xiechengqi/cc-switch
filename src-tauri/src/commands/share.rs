@@ -408,19 +408,15 @@ pub async fn enable_share(
 
 #[tauri::command]
 pub async fn disable_share(state: State<'_, AppState>, share_id: String) -> Result<(), String> {
-    {
-        let mut mgr = state.tunnel_manager.write().await;
-        if mgr.get_info(&share_id).is_some() {
-            mgr.stop_tunnel(&share_id)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
     state
         .db
         .clear_share_tunnel(&share_id)
         .map_err(|e: AppError| e.to_string())?;
     ShareService::pause(&state.db, &share_id).map_err(|e: AppError| e.to_string())?;
+    state
+        .db
+        .update_share_auto_start(&share_id, false)
+        .map_err(|e: AppError| e.to_string())?;
 
     if let Ok(Some(share)) = state.db.get_share_by_id(&share_id) {
         let metadata = crate::tunnel::sync::share_metadata_from_record(&share);
@@ -430,6 +426,21 @@ pub async fn disable_share(state: State<'_, AppState>, share_id: String) -> Resu
                 share_id,
                 err
             );
+        }
+    }
+
+    {
+        let mut mgr = state.tunnel_manager.write().await;
+        if mgr.get_info(&share_id).is_some() {
+            match timeout(Duration::from_secs(5), mgr.stop_tunnel(&share_id)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    log::warn!("[Share] stop tunnel after disable failed for {share_id}: {err}");
+                }
+                Err(_) => {
+                    log::warn!("[Share] stop tunnel after disable timed out for {share_id}");
+                }
+            }
         }
     }
 

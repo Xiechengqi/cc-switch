@@ -297,14 +297,16 @@ export function useDisableShareMutation() {
         (current) =>
           current?.map((share) =>
             share.id === shareId
-              ? { ...share, status: "paused", tunnelUrl: null }
+              ? { ...share, status: "paused", tunnelUrl: null, autoStart: false }
               : share,
           ),
       );
       queryClient.setQueryData<ShareRecord | null | undefined>(
         shareKeys.detail(shareId),
         (current) =>
-          current ? { ...current, status: "paused", tunnelUrl: null } : current,
+          current
+            ? { ...current, status: "paused", tunnelUrl: null, autoStart: false }
+            : current,
       );
 
       await queryClient.invalidateQueries({ queryKey: shareKeys.list() });

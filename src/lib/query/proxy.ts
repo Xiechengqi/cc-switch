@@ -95,7 +95,23 @@ export function useSetProxyTakeoverForApp() {
   return useMutation({
     mutationFn: ({ appType, enabled }: { appType: string; enabled: boolean }) =>
       proxyApi.setProxyTakeoverForApp(appType, enabled),
-    onSuccess: () => {
+    onMutate: async ({ appType, enabled }) => {
+      await queryClient.cancelQueries({ queryKey: ["proxyTakeoverStatus"] });
+      const previous = queryClient.getQueryData<Record<string, boolean>>([
+        "proxyTakeoverStatus",
+      ]);
+      queryClient.setQueryData<Record<string, boolean> | undefined>(
+        ["proxyTakeoverStatus"],
+        (current) => (current ? { ...current, [appType]: enabled } : current),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["proxyTakeoverStatus"], context.previous);
+      }
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] });
       queryClient.invalidateQueries({ queryKey: ["liveTakeoverActive"] });
     },

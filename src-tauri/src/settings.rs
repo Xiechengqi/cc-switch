@@ -353,7 +353,7 @@ impl Default for AppSettings {
             first_run_notice_confirmed: None,
             common_config_confirmed: None,
             oauth_quota_refresh_interval_minutes: default_oauth_quota_refresh_interval_minutes(),
-            language: None,
+            language: Some("zh".to_string()),
             visible_apps: None,
             claude_config_dir: None,
             codex_config_dir: None,

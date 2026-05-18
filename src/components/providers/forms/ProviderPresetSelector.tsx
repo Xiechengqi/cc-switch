@@ -92,22 +92,28 @@ export function ProviderPresetSelector({
 
   const renderPresetIcon = (preset: AnyPreset) => {
     const iconType = preset.theme?.icon;
-    if (!iconType) return null;
-
-    switch (iconType) {
-      case "claude":
-        return <ClaudeIcon size={14} />;
-      case "codex":
-        return <CodexIcon size={14} />;
-      case "gemini":
-        return <GeminiIcon size={14} />;
-      case "deepseek":
-        return <DeepSeekIcon size={14} />;
-      case "generic":
-        return <Zap size={14} />;
-      default:
-        return null;
+    if (iconType) {
+      switch (iconType) {
+        case "claude":
+          return <ClaudeIcon size={14} />;
+        case "codex":
+          return <CodexIcon size={14} />;
+        case "gemini":
+          return <GeminiIcon size={14} />;
+        case "deepseek":
+          return <DeepSeekIcon size={14} />;
+        case "generic":
+          return <Zap size={14} />;
+        default:
+          return null;
+      }
     }
+
+    if ("icon" in preset && preset.icon) {
+      return <ProviderIcon icon={preset.icon} name={preset.name} size={14} />;
+    }
+
+    return null;
   };
 
   const getPresetButtonClass = (isSelected: boolean, preset: AnyPreset) => {

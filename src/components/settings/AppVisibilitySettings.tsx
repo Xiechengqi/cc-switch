@@ -17,8 +17,16 @@ const APP_CONFIG: Array<{
   nameKey: string;
 }> = [
   { id: "claude", icon: "claude", nameKey: "apps.claudeCode" },
+  {
+    id: "claude-desktop",
+    icon: "claude",
+    nameKey: "apps.claudeDesktop",
+  },
   { id: "codex", icon: "openai", nameKey: "apps.codex" },
   { id: "gemini", icon: "gemini", nameKey: "apps.gemini" },
+  { id: "opencode", icon: "opencode", nameKey: "apps.opencode" },
+  { id: "openclaw", icon: "openclaw", nameKey: "apps.openclaw" },
+  { id: "hermes", icon: "hermes", nameKey: "apps.hermes" },
 ];
 
 export function AppVisibilitySettings({

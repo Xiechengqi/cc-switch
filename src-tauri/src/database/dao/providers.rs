@@ -472,6 +472,52 @@ impl Database {
         Ok(deleted_total)
     }
 
+    pub fn ensure_codex_openai_official_default_model(&self) -> Result<usize, AppError> {
+        if self
+            .get_bool_flag("codex_openai_official_default_model_v1")
+            .unwrap_or(false)
+        {
+            return Ok(0);
+        }
+
+        let mut updated = 0_usize;
+        let providers = self.get_all_providers("codex")?;
+        for mut provider in providers.into_values() {
+            if provider.name != "OpenAI Official"
+                || provider.category.as_deref() != Some("official")
+                || provider.settings_config.get("auth").is_none()
+            {
+                continue;
+            }
+
+            let Some(config_obj) = provider.settings_config.as_object_mut() else {
+                continue;
+            };
+            let current_config = config_obj
+                .get("config")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+
+            let is_old_default = current_config.is_empty()
+                || current_config == r#"model = "gpt-4.4""#
+                || current_config == r#"model = "gpt-5.4""#;
+            if !is_old_default {
+                continue;
+            }
+
+            config_obj.insert(
+                "config".to_string(),
+                serde_json::Value::String(r#"model = "gpt-5.5""#.to_string()),
+            );
+            self.save_provider("codex", &provider)?;
+            updated += 1;
+        }
+
+        self.set_setting("codex_openai_official_default_model_v1", "true")?;
+        Ok(updated)
+    }
+
     pub fn set_current_provider(&self, app_type: &str, id: &str) -> Result<(), AppError> {
         let mut conn = lock_conn!(self.conn);
         let tx = conn

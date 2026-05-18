@@ -69,7 +69,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     isOfficial: true,
     category: "official",
     auth: {},
-    config: ``,
+    config: `model = "gpt-5.5"`,
     theme: {
       icon: "codex",
       backgroundColor: "#1F2937", // gray-800

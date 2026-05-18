@@ -25,29 +25,13 @@ RUN set -eux; \
         "/tmp/${DEB_NAME}"; \
     fc-cache -fv; \
     rm -f "/tmp/${DEB_NAME}"; \
-    rm -rf /var/lib/apt/lists/*; \
-    mkdir -p /root/.config/ivnc/cc-switch; \
-    rm -rf /root/.cc-switch; \
-    ln -s /root/.config/ivnc/cc-switch /root/.cc-switch; \
-    sqlite3 /root/.config/ivnc/apps.db "\
-CREATE TABLE IF NOT EXISTS apps (\
-    id TEXT PRIMARY KEY,\
-    name TEXT NOT NULL UNIQUE,\
-    url TEXT,\
-    autostart INTEGER DEFAULT 0,\
-    created_at TEXT NOT NULL,\
-    app_type TEXT DEFAULT 'background',\
-    exec_command TEXT,\
-    env_vars TEXT,\
-    launch_command TEXT,\
-    launch_env_vars TEXT,\
-    launch_cwd TEXT,\
-    launch_wait_timeout_secs INTEGER\
-);\
-INSERT OR IGNORE INTO apps \
-    (id, name, app_type, url, autostart, exec_command, env_vars, created_at, launch_command, launch_env_vars, launch_cwd, launch_wait_timeout_secs) \
-VALUES \
-    ('preset-cc-switch', 'cc-switch', 'desktop', NULL, 1, 'mkdir -p /root/.config/ivnc/cc-switch && exec cc-switch', '', '2026-04-23T00:00:00Z', NULL, NULL, NULL, NULL);\
-"
+    rm -rf /var/lib/apt/lists/*
+
+COPY docker-entrypoint.cc-switch.sh /usr/local/bin/docker-entrypoint.cc-switch.sh
+
+RUN chmod +x /usr/local/bin/docker-entrypoint.cc-switch.sh
 
 VOLUME ["/root/.config/ivnc"]
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.cc-switch.sh", "--config", "/etc/ivnc.toml", "--"]
+CMD ["sleep", "infinity"]

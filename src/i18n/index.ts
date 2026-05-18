@@ -21,24 +21,6 @@ const getInitialLanguage = (): Language => {
     }
   }
 
-  const navigatorLang =
-    typeof navigator !== "undefined"
-      ? (navigator.language?.toLowerCase() ??
-        navigator.languages?.[0]?.toLowerCase())
-      : undefined;
-
-  if (navigatorLang?.startsWith("zh")) {
-    return "zh";
-  }
-
-  if (navigatorLang?.startsWith("ja")) {
-    return "ja";
-  }
-
-  if (navigatorLang?.startsWith("en")) {
-    return "en";
-  }
-
   return DEFAULT_LANGUAGE;
 };
 
@@ -56,7 +38,7 @@ const resources = {
 
 i18n.use(initReactI18next).init({
   resources,
-  lng: getInitialLanguage(), // 根据本地存储或系统语言选择默认语言
+  lng: getInitialLanguage(),
   fallbackLng: "en", // 如果缺少中文翻译则退回英文
 
   interpolation: {

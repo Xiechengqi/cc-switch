@@ -626,6 +626,13 @@ pub fn run() {
                 Ok(_) => log::debug!("○ Core provider catalog already clean"),
                 Err(e) => log::warn!("✗ Failed to prune legacy provider catalog: {e}"),
             }
+            match app_state.db.ensure_codex_openai_official_default_model() {
+                Ok(count) if count > 0 => {
+                    log::info!("✓ Updated {count} Codex OpenAI Official provider(s) to gpt-5.5");
+                }
+                Ok(_) => log::debug!("○ Codex OpenAI Official default model already current"),
+                Err(e) => log::warn!("✗ Failed to update Codex OpenAI Official model: {e}"),
+            }
 
             // 1.8. 一次性强制重置本地代理 / 故障转移默认值
             //

@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-05-27
+
+- **上游分支：** `main`
+- **上游 HEAD：** `76b4c8b5`
+- **共同祖先：** `4f0f103a`
+- **合并提交数：** 11
+- **合并提交：** `a07c90fa`
+- **主要变更：**
+  - feat(presets): 新增 Xiaomi MiMo Token Plan presets（#2803）
+  - chore(presets): 移除 LionCC sponsor 与 presets
+  - fix(skills): skills.sh 搜索结果安装正确 skill（#2784）；skill sync copy fallback（#2791）
+  - fix(usage): price input step 减到 0.0001 支持 sub-cent 精度（#2793）
+  - fix(terminal): Ghostty 打开干净窗口而不是 clone 已有 tab（#2801）
+  - fix(gemini-native): 修复 functionResponse.name 解析；synthesized tool call IDs 的 thought_signature 回放（#2814）
+  - fix(session): session log 模式下子 Agent token 统计遗漏（#2821）
+  - fix(codex): codex-mise detection 修复（#2822）
+  - fix(react): useEffect race condition + 类型断言 bug（#2827）
+  - docs: 更新 v3.15.0 用户手册
+- **冲突解决：**
+  - `src/config/{claude,codex,gemini}ProviderPresets.ts` — 三处冲突均为"上游在公共 preset 之间插入新 preset、本仓在对应空隙无新增"形态，统一采纳上游。唯一非空 HEAD-only 差异是 `claudeProviderPresets.ts` 中 deepseek 的 `iconColor: "#4D6BFE"`（本仓） vs `"#1E88E5"`（上游），属纯外观差异，采纳上游以保持与上游 sponsor 资源一致
+- **验证：** `cargo check`（沿用 7 条遗留 warning，无 error）、`pnpm tsc --noEmit` 通过
+
+---
+
 ## 2026-05-21
 
 - **上游分支：** `main`

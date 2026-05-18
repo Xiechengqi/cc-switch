@@ -171,6 +171,7 @@ impl TunnelManager {
             },
         );
         self.last_errors.remove(id);
+        crate::tunnel::sync::schedule_pull_pending_share_edits(db.clone());
 
         Ok(self.tunnels[id].info.clone())
     }
@@ -210,6 +211,9 @@ impl TunnelManager {
                             match t.reconnect(&lease).await {
                                 Ok(()) => {
                                     healthy.store(true, Ordering::Relaxed);
+                                    crate::tunnel::sync::schedule_pull_pending_share_edits(
+                                        db.clone(),
+                                    );
                                     log::info!("[Tunnel] Reconnected successfully for {subdomain}");
                                 }
                                 Err(e) => {

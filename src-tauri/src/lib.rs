@@ -1105,6 +1105,8 @@ pub fn run() {
                     log::warn!("恢复 active share tunnel 失败: {e}");
                 }
                 crate::tunnel::sync::reconcile_share_router_state(state.db.clone());
+                crate::tunnel::sync::schedule_pull_pending_share_edits(state.db.clone());
+                crate::tunnel::sync::spawn_share_edit_event_listener(state.db.clone());
 
                 let app_handle_for_share_restore = app_handle.clone();
                 tauri::async_runtime::spawn(async move {

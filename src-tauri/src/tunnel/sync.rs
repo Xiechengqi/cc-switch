@@ -12,6 +12,7 @@ use crate::tunnel::config::{
     ShareUpstreamQuotaTier, TunnelConfig,
 };
 use crate::tunnel::identity;
+use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -19,6 +20,54 @@ use tokio::time::sleep;
 const BATCH_DELAY_MS: u64 = 1500;
 const SHARE_ROUTER_CONNECT_TIMEOUT_SECS: u64 = 10;
 const SHARE_ROUTER_REQUEST_TIMEOUT_SECS: u64 = 20;
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareSettingsPatch {
+    #[serde(default)]
+    pub description: Option<Option<String>>,
+    #[serde(default)]
+    pub for_sale: Option<String>,
+    #[serde(default)]
+    pub market_access_mode: Option<String>,
+    #[serde(default)]
+    pub shared_with_emails: Option<Vec<String>>,
+    #[serde(default)]
+    pub for_sale_official_price_percent_by_app: Option<HashMap<String, u16>>,
+    #[serde(default)]
+    pub token_limit: Option<i64>,
+    #[serde(default)]
+    pub parallel_limit: Option<i64>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub auto_start: Option<bool>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareEditView {
+    id: String,
+    share_id: String,
+    revision: i64,
+    patch: ShareSettingsPatch,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingShareEditsResponse {
+    edits: Vec<ShareEditView>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareEditAckPayload<'a> {
+    edit_id: &'a str,
+    revision: i64,
+    status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_message: Option<&'a str>,
+}
 
 #[derive(Clone)]
 enum ShareSyncOp {
@@ -143,6 +192,232 @@ pub fn schedule_sync_share(share: ShareRecord, _db: &Arc<Database>) {
             log::debug!("[TunnelSync] enqueue upsert failed: {err}");
         }
     });
+}
+
+pub fn schedule_pull_pending_share_edits(db: Arc<Database>) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = pull_and_apply_pending_share_edits(&db).await {
+            log::debug!("[TunnelSync] pending share edit pull skipped/failed: {err}");
+        }
+    });
+}
+
+pub fn spawn_share_edit_event_listener(db: Arc<Database>) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = share_edit_event_loop(db).await {
+            log::warn!("[TunnelSync] share edit event listener stopped: {err}");
+        }
+    });
+}
+
+pub async fn pull_and_apply_pending_share_edits(db: &Arc<Database>) -> Result<(), String> {
+    let shares = db.list_shares().map_err(|e| e.to_string())?;
+    if shares.is_empty() {
+        return Ok(());
+    }
+    let share_ids = shares
+        .iter()
+        .map(|share| share.id.clone())
+        .collect::<Vec<_>>();
+    let owner_email = shares
+        .iter()
+        .find_map(|share| {
+            (!share.owner_email.trim().is_empty()).then_some(share.owner_email.clone())
+        })
+        .ok_or_else(|| "请先完成邮箱验证码登录".to_string())?;
+    let config = load_config();
+    let client = share_router_client()?;
+    crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
+    let identity = identity::ensure_identity(&client, &config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let request_payload =
+        build_signed_request_payload(&identity, "share_pending_edits", "shareIds", &share_ids)?;
+    let url = format!("{}/v1/shares/pending-edits", config.get_server_addr());
+    let resp = send_share_router_request(
+        client.post(&url).json(&request_payload),
+        "pull pending share edits",
+        &url,
+    )
+    .await?;
+    if !resp.status().is_success() {
+        return Err(read_error_message(resp).await);
+    }
+    let response = resp
+        .json::<PendingShareEditsResponse>()
+        .await
+        .map_err(|e| format!("decode pending share edits failed: {e}"))?;
+    for edit in response.edits {
+        let result = apply_share_settings_patch(db, &edit.share_id, edit.patch.clone())
+            .map(|_| "applied".to_string())
+            .map_err(|err| err.to_string());
+        if result.as_deref() == Ok("applied") {
+            if let Some(share) = db
+                .get_share_by_id(&edit.share_id)
+                .map_err(|e| e.to_string())?
+            {
+                schedule_sync_share(share, db);
+            }
+        }
+        let (status, error_message) = match result {
+            Ok(status) => (status, None),
+            Err(err) => ("rejected".to_string(), Some(err)),
+        };
+        ack_share_edit(
+            &client,
+            &config,
+            &identity,
+            &edit,
+            &status,
+            error_message.as_deref(),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn apply_share_settings_patch(
+    db: &Arc<Database>,
+    share_id: &str,
+    patch: ShareSettingsPatch,
+) -> Result<(), crate::error::AppError> {
+    if let Some(description) = patch.description {
+        crate::services::share::ShareService::update_description(db, share_id, description)?;
+    }
+    if let Some(for_sale) = patch.for_sale {
+        crate::services::share::ShareService::update_for_sale(db, share_id, &for_sale)?;
+    }
+    if patch.shared_with_emails.is_some() || patch.market_access_mode.is_some() {
+        let share = db.get_share_by_id(share_id)?.ok_or_else(|| {
+            crate::error::AppError::Message(format!("Share not found: {share_id}"))
+        })?;
+        crate::services::share::ShareService::update_acl(
+            db,
+            share_id,
+            &share.owner_email,
+            patch.shared_with_emails.unwrap_or(share.shared_with_emails),
+            patch
+                .market_access_mode
+                .as_deref()
+                .unwrap_or(&share.market_access_mode),
+        )?;
+    }
+    if let Some(pricing) = patch.for_sale_official_price_percent_by_app {
+        crate::services::share::ShareService::update_for_sale_official_price_percent_by_app(
+            db, share_id, pricing,
+        )?;
+    }
+    if let Some(token_limit) = patch.token_limit {
+        crate::services::share::ShareService::update_token_limit(db, share_id, token_limit)?;
+    }
+    if let Some(parallel_limit) = patch.parallel_limit {
+        crate::services::share::ShareService::update_parallel_limit(db, share_id, parallel_limit)?;
+    }
+    if let Some(expires_at) = patch.expires_at {
+        crate::services::share::ShareService::update_expires_at(db, share_id, &expires_at)?;
+    }
+    if let Some(auto_start) = patch.auto_start {
+        crate::services::share::ShareService::update_auto_start(db, share_id, auto_start)?;
+    }
+    Ok(())
+}
+
+async fn ack_share_edit(
+    client: &reqwest::Client,
+    config: &TunnelConfig,
+    identity: &identity::TunnelIdentity,
+    edit: &ShareEditView,
+    status: &str,
+    error_message: Option<&str>,
+) -> Result<(), String> {
+    let ack = ShareEditAckPayload {
+        edit_id: &edit.id,
+        revision: edit.revision,
+        status,
+        error_message,
+    };
+    let payload = build_signed_request_payload(identity, "share_edit_ack", "ack", &ack)?;
+    let url = format!("{}/v1/shares/edit-ack", config.get_server_addr());
+    let resp =
+        send_share_router_request(client.post(&url).json(&payload), "ack share edit", &url).await?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(read_error_message(resp).await)
+    }
+}
+
+async fn share_edit_event_loop(db: Arc<Database>) -> Result<(), String> {
+    loop {
+        let config = load_config();
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(SHARE_ROUTER_CONNECT_TIMEOUT_SECS))
+            .build()
+            .map_err(|e| format!("create share edit event HTTP client failed: {e}"))?;
+        let shares = db.list_shares().map_err(|e| e.to_string())?;
+        if shares.is_empty() {
+            sleep(Duration::from_secs(30)).await;
+            continue;
+        }
+        let owner_email = shares.iter().find_map(|share| {
+            (!share.owner_email.trim().is_empty()).then_some(share.owner_email.clone())
+        });
+        if let Some(owner_email) = owner_email {
+            crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
+        }
+        let identity = identity::ensure_identity(&client, &config)
+            .await
+            .map_err(|e| e.to_string())?;
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let event_payload = serde_json::json!({ "installationId": &identity.installation_id });
+        let signature = identity::sign_action_payload(
+            &identity,
+            &identity.installation_id,
+            "share_edit_events",
+            &event_payload,
+            timestamp_ms,
+            &nonce,
+        )
+        .map_err(|e| e.to_string())?;
+        let url = format!(
+            "{}/v1/shares/edit-events?installationId={}&timestampMs={}&nonce={}&signature={}",
+            config.get_server_addr(),
+            urlencoding::encode(&identity.installation_id),
+            timestamp_ms,
+            urlencoding::encode(&nonce),
+            urlencoding::encode(&signature),
+        );
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let mut stream = resp.bytes_stream();
+                let mut buffer = String::new();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(|e| e.to_string())?;
+                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    while let Some(index) = buffer.find('\n') {
+                        let line = buffer[..index].trim().to_string();
+                        buffer = buffer[index + 1..].to_string();
+                        if line.starts_with("event: share_edit_available")
+                            || line.starts_with("event: resync")
+                        {
+                            if let Err(err) = pull_and_apply_pending_share_edits(&db).await {
+                                log::warn!("[TunnelSync] share edit event pull failed: {err}");
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(resp) => {
+                let message = read_error_message(resp).await;
+                log::warn!("[TunnelSync] share edit event stream rejected: {message}");
+            }
+            Err(err) => {
+                log::debug!("[TunnelSync] share edit event stream failed: {err}");
+            }
+        }
+        sleep(Duration::from_secs(10)).await;
+    }
 }
 
 pub async fn sync_share_metadata_now(share: ShareTunnelMetadata) -> Result<(), String> {

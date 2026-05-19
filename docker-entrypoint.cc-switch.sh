@@ -48,7 +48,7 @@ for i in 1 2 3; do
     location="$(curl -SsL --max-time 5 3.0.3.0 2>/dev/null | grep 'location' || true)"
     if [[ -n "$location" ]]; then
         echo "[cc-switch] network location check $i: $location" >&2
-        if [[ "$location" != *"中国"* ]]; then
+        if [[ "$location" == *"台湾"* || "$location" != *"中国"* ]]; then
             can_start=1
             break
         fi
@@ -58,7 +58,7 @@ for i in 1 2 3; do
 done
 
 if [[ "$can_start" -ne 1 ]]; then
-    echo "[cc-switch] not starting: all 3 location checks were empty or still matched 中国" >&2
+    echo "[cc-switch] not starting: all 3 location checks were empty or still matched 中国 without 台湾" >&2
     exit 1
 fi
 

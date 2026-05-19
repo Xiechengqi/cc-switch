@@ -920,7 +920,7 @@ impl RequestForwarder {
     async fn forward(
         &self,
         app_type: &AppType,
-        method: &http::Method,
+        _method: &http::Method,
         provider: &Provider,
         endpoint: &str,
         body: &Value,
@@ -1805,15 +1805,11 @@ impl RequestForwarder {
                 for (key, value) in &ordered_headers {
                     request = request.header(key, value);
                 }
-                let reqwest_resp = request.body(body_bytes).send().await.map_err(|e| {
-                    if e.is_timeout() {
-                        ProxyError::Timeout(format!("请求超时: {e}"))
-                    } else if e.is_connect() {
-                        ProxyError::ForwardFailed(format!("连接失败: {e}"))
-                    } else {
-                        ProxyError::ForwardFailed(e.to_string())
-                    }
-                })?;
+                let reqwest_resp = request
+                    .body(body_bytes)
+                    .send()
+                    .await
+                    .map_err(map_reqwest_send_error)?;
                 ProxyResponse::Reqwest(reqwest_resp)
             } else {
                 // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
@@ -1899,6 +1895,10 @@ impl RequestForwarder {
                 body: body_text,
             });
         };
+
+        let response = self
+            .prepare_success_response_for_failover(response, request_is_streaming)
+            .await?;
 
         Ok((response, resolved_claude_api_format))
     }
@@ -2719,6 +2719,7 @@ fn build_codex_oauth_session_headers(
     headers
 }
 
+#[cfg(test)]
 fn should_preserve_exact_header_case(
     adapter_name: &str,
     provider: &Provider,

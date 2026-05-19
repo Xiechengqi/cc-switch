@@ -6,7 +6,7 @@
 
 use super::ProxyError;
 use bytes::Bytes;
-use futures::{stream::Stream, StreamExt};
+use futures::stream::Stream;
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};

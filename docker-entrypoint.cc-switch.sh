@@ -34,6 +34,39 @@ fi
 command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required to seed iVNC apps"
 mkdir -p "$ivnc_config_dir" || fail "failed to create iVNC config dir: $ivnc_config_dir"
 
+cat > /usr/local/bin/cc-switch-gated-start <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p /root/.cc-switch
+
+echo "[cc-switch] waiting 5 seconds before network location check" >&2
+sleep 5
+
+can_start=0
+for i in 1 2 3; do
+    location="$(curl -SsL --max-time 5 3.0.3.0 2>/dev/null | grep 'location' || true)"
+    if [[ -n "$location" ]]; then
+        echo "[cc-switch] network location check $i: $location" >&2
+        if [[ "$location" != *"中国"* ]]; then
+            can_start=1
+            break
+        fi
+    else
+        echo "[cc-switch] network location check $i: empty result" >&2
+    fi
+done
+
+if [[ "$can_start" -ne 1 ]]; then
+    echo "[cc-switch] not starting: all 3 location checks were empty or still matched 中国" >&2
+    exit 1
+fi
+
+echo "[cc-switch] network location check passed; starting cc-switch" >&2
+exec cc-switch
+SH
+chmod +x /usr/local/bin/cc-switch-gated-start
+
 sqlite3 "$apps_db" <<'SQL'
 CREATE TABLE IF NOT EXISTS apps (
     id TEXT PRIMARY KEY,
@@ -74,7 +107,12 @@ sqlite3 "$apps_db" <<'SQL'
 INSERT OR IGNORE INTO apps
     (id, name, app_type, url, autostart, exec_command, env_vars, created_at, launch_command, launch_env_vars, launch_cwd, launch_wait_timeout_secs)
 VALUES
-    ('preset-cc-switch', 'cc-switch', 'desktop', NULL, 1, 'mkdir -p /root/.cc-switch && exec cc-switch', '', '2026-04-23T00:00:00Z', NULL, NULL, NULL, NULL);
+    ('preset-cc-switch', 'cc-switch', 'desktop', NULL, 1, '/usr/local/bin/cc-switch-gated-start', '', '2026-04-23T00:00:00Z', NULL, NULL, NULL, NULL);
+UPDATE apps
+SET app_type = 'desktop',
+    autostart = 1,
+    exec_command = '/usr/local/bin/cc-switch-gated-start'
+WHERE id = 'preset-cc-switch' OR name = 'cc-switch';
 SQL
 
 log "ensured cc-switch app preset and data dir under $ivnc_config_dir"

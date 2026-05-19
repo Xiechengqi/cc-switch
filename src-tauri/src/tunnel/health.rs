@@ -2,7 +2,7 @@ use super::config::TunnelConfig;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 /// HTTP health checker for an active tunnel.
 ///
@@ -16,6 +16,7 @@ pub struct HealthChecker {
     consecutive_failures: AtomicU32,
     max_retries: u32,
     healthy: Arc<AtomicBool>,
+    reconnect_pending: Arc<AtomicBool>,
 }
 
 impl HealthChecker {
@@ -24,6 +25,7 @@ impl HealthChecker {
         subdomain: String,
         http_client: reqwest::Client,
         healthy: Arc<AtomicBool>,
+        reconnect_pending: Arc<AtomicBool>,
     ) -> Self {
         Self {
             config,
@@ -32,6 +34,7 @@ impl HealthChecker {
             consecutive_failures: AtomicU32::new(0),
             max_retries: 3,
             healthy,
+            reconnect_pending,
         }
     }
 
@@ -39,7 +42,7 @@ impl HealthChecker {
     pub async fn run(
         &self,
         mut shutdown_rx: broadcast::Receiver<()>,
-        reconnect_tx: tokio::sync::mpsc::Sender<()>,
+        reconnect_tx: mpsc::Sender<()>,
     ) {
         let mut interval = tokio::time::interval(Duration::from_secs(3));
 
@@ -61,15 +64,7 @@ impl HealthChecker {
                             self.healthy.store(false, Ordering::Relaxed);
 
                             if reconnect_now || failures >= self.max_retries {
-                                log::warn!(
-                                    "[Tunnel] {} requesting reconnect",
-                                    if reconnect_now {
-                                        "Health check hit a terminal tunnel error,"
-                                    } else {
-                                        "Max health check retries exceeded,"
-                                    }
-                                );
-                                let _ = reconnect_tx.send(()).await;
+                                self.request_reconnect(&reconnect_tx, reconnect_now);
                                 self.consecutive_failures.store(0, Ordering::Relaxed);
                             }
                         }
@@ -78,6 +73,47 @@ impl HealthChecker {
                 _ = shutdown_rx.recv() => {
                     break;
                 }
+            }
+        }
+    }
+
+    fn request_reconnect(&self, reconnect_tx: &mpsc::Sender<()>, reconnect_now: bool) {
+        let reason = if reconnect_now {
+            "Health check hit a terminal tunnel error,"
+        } else {
+            "Max health check retries exceeded,"
+        };
+        if self
+            .reconnect_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            log::debug!(
+                "[Tunnel] {} reconnect already pending for {}, skipping duplicate request",
+                reason,
+                self.subdomain
+            );
+            return;
+        }
+
+        match reconnect_tx.try_send(()) {
+            Ok(()) => {
+                log::warn!("[Tunnel] {} requesting reconnect", reason);
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                log::debug!(
+                    "[Tunnel] {} reconnect queue already full for {}, keeping pending flag",
+                    reason,
+                    self.subdomain
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.reconnect_pending.store(false, Ordering::Release);
+                log::debug!(
+                    "[Tunnel] {} reconnect queue is closed for {}",
+                    reason,
+                    self.subdomain
+                );
             }
         }
     }

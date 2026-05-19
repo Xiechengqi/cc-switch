@@ -113,6 +113,7 @@ impl TunnelManager {
         };
 
         let healthy = Arc::new(AtomicBool::new(true));
+        let reconnect_pending = Arc::new(AtomicBool::new(false));
         let tunnel = Arc::new(RwLock::new(ssh_tunnel));
 
         // 3. Start health check (HTTP only)
@@ -123,6 +124,7 @@ impl TunnelManager {
                 req.subdomain.clone(),
                 self.http_client.clone(),
                 healthy.clone(),
+                reconnect_pending.clone(),
             );
             let shutdown_rx = shutdown_tx.subscribe();
             tokio::spawn(async move {
@@ -141,6 +143,7 @@ impl TunnelManager {
         let reconnect_share_metadata = req.share_metadata.clone();
         let reconnect_db = db.clone();
         let reconnect_healthy = healthy.clone();
+        let reconnect_pending_flag = reconnect_pending.clone();
         let mut shutdown_for_reconnect = shutdown_tx.subscribe();
 
         let reconnect_task = tokio::spawn(async move {
@@ -154,6 +157,7 @@ impl TunnelManager {
                 reconnect_share_metadata,
                 reconnect_db,
                 reconnect_healthy,
+                reconnect_pending_flag,
                 &mut shutdown_for_reconnect,
             )
             .await;
@@ -187,11 +191,13 @@ impl TunnelManager {
         share_metadata: Option<config::ShareTunnelMetadata>,
         db: Arc<Database>,
         healthy: Arc<AtomicBool>,
+        reconnect_pending: Arc<AtomicBool>,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) {
         loop {
             tokio::select! {
                 Some(()) = reconnect_rx.recv() => {
+                    healthy.store(false, Ordering::Relaxed);
                     log::info!("[Tunnel] Reconnecting tunnel for {subdomain}...");
                     let share_metadata = refresh_share_metadata_for_reconnect(
                         share_metadata.clone(),
@@ -225,6 +231,16 @@ impl TunnelManager {
                             log::error!("[Tunnel] Reconnect API failed: {e}");
                         }
                     }
+                    let mut drained = 0usize;
+                    while reconnect_rx.try_recv().is_ok() {
+                        drained += 1;
+                    }
+                    if drained > 0 {
+                        log::debug!(
+                            "[Tunnel] Dropped {drained} duplicate reconnect request(s) for {subdomain}"
+                        );
+                    }
+                    reconnect_pending.store(false, Ordering::Release);
                 }
                 _ = shutdown_rx.recv() => break,
                 else => break,

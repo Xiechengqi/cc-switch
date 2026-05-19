@@ -364,7 +364,6 @@ describe("ShareCard", () => {
   it("saves global model pricing on the share instead of the provider", async () => {
     const user = userEvent.setup();
     const handlers = createHandlers();
-    const providerUpdate = vi.fn();
     renderShareCard(
       <ShareCard
         share={{ ...baseShare, forSale: "Yes" }}
@@ -376,7 +375,6 @@ describe("ShareCard", () => {
             label: "Claude",
             providerName: "Claude Provider",
             percent: 20,
-            onUpdate: providerUpdate,
           },
         ]}
         {...handlers}
@@ -384,7 +382,6 @@ describe("ShareCard", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "share.edit" }));
-    await user.click(screen.getByRole("checkbox", { name: "全局" }));
     const input = screen.getAllByRole("spinbutton")[0];
     await user.clear(input);
     await user.type(input, "15");
@@ -394,7 +391,6 @@ describe("ShareCard", () => {
       expect.objectContaining({ id: "share-1" }),
       { claude: 15 },
     );
-    expect(providerUpdate).not.toHaveBeenCalled();
   });
 
   it("keeps global model pricing edits during background rerenders", async () => {
@@ -406,7 +402,6 @@ describe("ShareCard", () => {
         label: "Claude",
         providerName: "Claude Provider",
         percent: 20,
-        onUpdate: vi.fn(),
       },
     ];
     const { rerender } = renderShareCard(
@@ -420,7 +415,6 @@ describe("ShareCard", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "share.edit" }));
-    await user.click(screen.getByRole("checkbox", { name: "全局" }));
     const input = screen.getAllByRole("spinbutton")[0];
     await user.clear(input);
     await user.type(input, "15");
@@ -437,7 +431,6 @@ describe("ShareCard", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByRole("checkbox", { name: "全局" })).toBeChecked();
     expect(screen.getAllByRole("spinbutton")[0]).toHaveValue(15);
   });
 

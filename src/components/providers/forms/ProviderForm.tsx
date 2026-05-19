@@ -2049,7 +2049,7 @@ function ProviderFormFull({
                   <p className="text-xs text-muted-foreground">
                     {t("providerAdvanced.forSaleOfficialPricePercentHint", {
                       defaultValue:
-                        "只允许 1-100 的整数。Share 页全局模型定价非空时优先。",
+                        "只允许 1-100 的整数。非空时优先于 Share 页模型定价。",
                     })}
                   </p>
                 </div>

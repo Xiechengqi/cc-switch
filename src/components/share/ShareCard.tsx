@@ -64,8 +64,6 @@ export interface ShareProviderSalePricing {
   label: string;
   providerName?: string;
   percent?: number;
-  disabled?: boolean;
-  onUpdate: (percent?: number) => Promise<void> | void;
 }
 
 interface ShareCardProps {
@@ -188,7 +186,6 @@ export function ShareCard({
   const [salePricingInputs, setSalePricingInputs] = useState<
     Record<string, string>
   >({});
-  const [salePricingUseGlobal, setSalePricingUseGlobal] = useState(false);
   const [autoStartInput, setAutoStartInput] = useState(false);
   const [expiryDateInput, setExpiryDateInput] = useState("");
   const [expiryHourInput, setExpiryHourInput] = useState("");
@@ -239,9 +236,6 @@ export function ShareCard({
   const isFree = share.forSale === "Free";
   const currentMarketAccessMode = share.marketAccessMode ?? "selected";
   const currentShareSalePricing = share.forSaleOfficialPricePercentByApp ?? {};
-  const currentShareSalePricingHasValues = providerSalePricing.some(
-    (item) => currentShareSalePricing[item.app] != null,
-  );
   const canDelete = share.status === "paused";
   const apiKeyDisplay =
     revealKey || isFree ? share.shareToken : maskSensitive(share.shareToken);
@@ -274,13 +268,8 @@ export function ShareCard({
     setSelectedMarketEmails(currentMarketEmails);
     setMarketAccessModeInput(currentMarketAccessMode);
     setForSaleInput(share.forSale);
-    setSalePricingUseGlobal(currentShareSalePricingHasValues);
     setSalePricingInputs(
-      salePricingInputValues(
-        providerSalePricing,
-        currentShareSalePricingHasValues,
-        currentShareSalePricing,
-      ),
+      salePricingInputValues(providerSalePricing, currentShareSalePricing),
     );
     setAutoStartInput(share.autoStart);
     const permanent = isPermanentExpiry(share.expiresAt);
@@ -300,7 +289,7 @@ export function ShareCard({
       setExpiryHourInput("");
       setExpiryMinuteInput("");
     }
-  }, [editing, share, providerSalePricing, currentShareSalePricingHasValues]);
+  }, [editing, share, providerSalePricing]);
 
   useEffect(() => {
     if (editing) return;
@@ -369,20 +358,13 @@ export function ShareCard({
   const forSaleDirty = forSaleInput !== share.forSale;
   const salePricingCurrentValues = salePricingInputValues(
     providerSalePricing,
-    salePricingUseGlobal,
     currentShareSalePricing,
   );
-  const providerSalePricingDirtyItems = providerSalePricing.filter((item) => {
-    const current = item.percent == null ? "" : String(item.percent);
-    return (salePricingInputs[item.app] ?? "") !== current;
-  });
-  const salePricingDirty =
-    salePricingUseGlobal !== currentShareSalePricingHasValues ||
-    providerSalePricing.some(
-      (item) =>
-        (salePricingInputs[item.app] ?? "") !==
-        (salePricingCurrentValues[item.app] ?? ""),
-    );
+  const salePricingDirty = providerSalePricing.some(
+    (item) =>
+      (salePricingInputs[item.app] ?? "") !==
+      (salePricingCurrentValues[item.app] ?? ""),
+  );
   const salePricingInvalid = providerSalePricing.some((item) => {
     const value = (salePricingInputs[item.app] ?? "").trim();
     if (value === "") return false;
@@ -467,22 +449,10 @@ export function ShareCard({
         await onUpdateAcl(share, nextAclEmails, marketAccessModeInput);
       if (forSaleDirty) await onUpdateForSale(share, forSaleInput);
       if (salePricingDirty) {
-        if (salePricingUseGlobal) {
-          await onUpdateShareSalePricing(
-            share,
-            parseSalePricingInputs(salePricingInputs),
-          );
-        } else {
-          if (currentShareSalePricingHasValues) {
-            await onUpdateShareSalePricing(share, {});
-          }
-          for (const item of providerSalePricingDirtyItems) {
-            const raw = (salePricingInputs[item.app] ?? "").trim();
-            await item.onUpdate(
-              raw === "" ? undefined : Number.parseInt(raw, 10),
-            );
-          }
-        }
+        await onUpdateShareSalePricing(
+          share,
+          parseSalePricingInputs(salePricingInputs),
+        );
       }
       if (autoStartDirty) await onUpdateAutoStart(share, autoStartInput);
       if (descriptionDirty)
@@ -905,36 +875,10 @@ export function ShareCard({
                 <EditableField
                   label={t("share.modelPricingPercentTitle", {
                     defaultValue:
-                      "模型定价（官方价的百分比，默认留空使用 market 定价）",
+                      "模型定价（Share 默认；供应商非空时优先）",
                   })}
                   invalid={salePricingInvalid}
                 >
-                  <div className="mb-3 flex items-center gap-2">
-                    <Checkbox
-                      id={`share-sale-pricing-global-${share.id}`}
-                      checked={salePricingUseGlobal}
-                      disabled={isBusy}
-                      onCheckedChange={(checked) => {
-                        const next = checked === true;
-                        setSalePricingUseGlobal(next);
-                        setSalePricingInputs(
-                          salePricingInputValues(
-                            providerSalePricing,
-                            next,
-                            currentShareSalePricing,
-                          ),
-                        );
-                      }}
-                    />
-                    <Label
-                      htmlFor={`share-sale-pricing-global-${share.id}`}
-                      className="cursor-pointer text-sm font-normal"
-                    >
-                      {t("share.modelPricingGlobal", {
-                        defaultValue: "全局",
-                      })}
-                    </Label>
-                  </div>
                   <div className="grid gap-3 md:grid-cols-3">
                     {providerSalePricing.map((item) => (
                       <div key={item.app} className="space-y-1">
@@ -948,9 +892,7 @@ export function ShareCard({
                           step="1"
                           inputMode="numeric"
                           value={salePricingInputs[item.app] ?? ""}
-                          disabled={
-                            isBusy || (!salePricingUseGlobal && item.disabled)
-                          }
+                          disabled={isBusy}
                           onChange={(event) =>
                             setSalePricingInputs((current) => ({
                               ...current,
@@ -971,7 +913,14 @@ export function ShareCard({
                           }
                         />
                         <div className="truncate text-xs text-muted-foreground">
-                          {item.providerName ?? "-"}
+                          {item.percent == null
+                            ? (item.providerName ?? "-")
+                            : t("share.providerPricingOverrideHint", {
+                                defaultValue:
+                                  "{{provider}} provider override: {{percent}}%",
+                                provider: item.providerName ?? item.label,
+                                percent: item.percent,
+                              })}
                         </div>
                       </div>
                     ))}
@@ -1288,12 +1237,11 @@ function uniqueSorted(values: string[]) {
 
 function salePricingInputValues(
   providerSalePricing: ShareProviderSalePricing[],
-  useGlobal: boolean,
-  globalPricing: Record<string, number>,
+  sharePricing: Record<string, number>,
 ) {
   return Object.fromEntries(
     providerSalePricing.map((item) => {
-      const percent = useGlobal ? globalPricing[item.app] : item.percent;
+      const percent = sharePricing[item.app];
       return [item.app, percent == null ? "" : String(percent)];
     }),
   );

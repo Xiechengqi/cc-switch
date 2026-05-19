@@ -32,7 +32,6 @@ import {
   useUpdateShareParallelLimitMutation,
   useUpdateShareSubdomainMutation,
   useUpdateShareTokenLimitMutation,
-  useUpdateProviderMutation,
 } from "@/lib/query";
 import { shareKeys } from "@/lib/query/share";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -109,9 +108,6 @@ export function SharePage({ defaultApp }: SharePageProps) {
   const updateParallelLimitMutation = useUpdateShareParallelLimitMutation();
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
   const updateTokenLimitMutation = useUpdateShareTokenLimitMutation();
-  const updateClaudeProviderMutation = useUpdateProviderMutation("claude");
-  const updateCodexProviderMutation = useUpdateProviderMutation("codex");
-  const updateGeminiProviderMutation = useUpdateProviderMutation("gemini");
   const configureTunnelMutation = useConfigureTunnelMutation();
   const {
     data: markets = [],
@@ -131,18 +127,6 @@ export function SharePage({ defaultApp }: SharePageProps) {
       geminiProvidersQuery.data,
     ],
   );
-  const providerMutations = useMemo(
-    () => ({
-      claude: updateClaudeProviderMutation,
-      codex: updateCodexProviderMutation,
-      gemini: updateGeminiProviderMutation,
-    }),
-    [
-      updateClaudeProviderMutation,
-      updateCodexProviderMutation,
-      updateGeminiProviderMutation,
-    ],
-  );
   const providerSalePricing = useMemo(
     () =>
       SHARE_PROVIDER_APPS.map(({ app, label }) => {
@@ -154,24 +138,9 @@ export function SharePage({ defaultApp }: SharePageProps) {
           label,
           providerName: provider?.name,
           percent: provider?.meta?.forSaleOfficialPricePercent,
-          disabled: !provider,
-          onUpdate: async (percent?: number) => {
-            if (!provider) return;
-            const nextProvider: Provider = {
-              ...provider,
-              meta: {
-                ...(provider.meta ?? {}),
-                forSaleOfficialPricePercent: percent,
-              },
-            };
-            await providerMutations[app].mutateAsync({
-              provider: nextProvider,
-              originalId: provider.id,
-            });
-          },
         };
       }),
-    [providerMutations, providerQueries],
+    [providerQueries],
   );
 
   const tunnelQueries = useQueries({

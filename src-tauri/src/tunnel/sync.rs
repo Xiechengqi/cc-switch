@@ -565,17 +565,23 @@ fn apply_share_for_sale_pricing_override(share: &ShareRecord, runtimes: &mut Sha
     }
     if let Some(percent) = share.for_sale_official_price_percent_by_app.get("claude") {
         if let Some(runtime) = runtimes.claude.as_mut() {
-            runtime.for_sale_official_price_percent = Some(*percent);
+            if runtime.for_sale_official_price_percent.is_none() {
+                runtime.for_sale_official_price_percent = Some(*percent);
+            }
         }
     }
     if let Some(percent) = share.for_sale_official_price_percent_by_app.get("codex") {
         if let Some(runtime) = runtimes.codex.as_mut() {
-            runtime.for_sale_official_price_percent = Some(*percent);
+            if runtime.for_sale_official_price_percent.is_none() {
+                runtime.for_sale_official_price_percent = Some(*percent);
+            }
         }
     }
     if let Some(percent) = share.for_sale_official_price_percent_by_app.get("gemini") {
         if let Some(runtime) = runtimes.gemini.as_mut() {
-            runtime.for_sale_official_price_percent = Some(*percent);
+            if runtime.for_sale_official_price_percent.is_none() {
+                runtime.for_sale_official_price_percent = Some(*percent);
+            }
         }
     }
 }

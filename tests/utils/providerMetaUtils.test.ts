@@ -5,7 +5,6 @@ import {
   getProviderQuotaSource,
   hasManagedAuthBinding,
   isManagedOauthProvider,
-  isOfficialBlockedByProxyTakeover,
   isCodexOfficialWithManagedAuth,
   isGoogleGeminiOfficialWithManagedAuth,
   mergeProviderMeta,
@@ -286,47 +285,6 @@ describe("isManagedOauthProvider", () => {
     };
 
     expect(isManagedOauthProvider(provider, "gemini")).toBe(true);
-  });
-});
-
-describe("isOfficialBlockedByProxyTakeover", () => {
-  it("blocks plain official providers during proxy takeover", () => {
-    const provider: Pick<Provider, "category" | "meta"> = {
-      category: "official",
-      meta: undefined,
-    };
-
-    expect(isOfficialBlockedByProxyTakeover(provider, "claude", true)).toBe(
-      true,
-    );
-  });
-
-  it("does not block managed official oauth providers during proxy takeover", () => {
-    const provider: Pick<Provider, "category" | "meta"> = {
-      category: "official",
-      meta: { providerType: "claude_oauth" },
-    };
-
-    expect(isOfficialBlockedByProxyTakeover(provider, "claude", true)).toBe(
-      false,
-    );
-  });
-
-  it("does not block managed Google official providers during proxy takeover", () => {
-    const provider: Pick<Provider, "category" | "meta"> = {
-      category: "official",
-      meta: {
-        authBinding: {
-          source: "managed_account",
-          authProvider: "google_gemini_oauth",
-          accountId: "gemini-acct-1",
-        },
-      },
-    };
-
-    expect(isOfficialBlockedByProxyTakeover(provider, "gemini", true)).toBe(
-      false,
-    );
   });
 });
 

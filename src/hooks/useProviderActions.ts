@@ -18,7 +18,6 @@ import {
   useSwitchProviderMutation,
 } from "@/lib/query";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import { isOfficialBlockedByProxyTakeover } from "@/utils/providerMetaUtils";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import {
   extractCodexWireApi,
@@ -215,22 +214,6 @@ export function useProviderActions(
               "此供应商{{reason}}，需要代理服务才能正常使用，请先启动代理",
           }),
         );
-      }
-
-      // Block only direct official providers when proxy takeover is active.
-      // Managed OAuth providers (Copilot / Codex OAuth / Claude OAuth) are
-      // proxy-backed entries and must remain switchable.
-      if (
-        isOfficialBlockedByProxyTakeover(provider, activeApp, !!isProxyTakeover)
-      ) {
-        toast.error(
-          t("notifications.officialBlockedByProxy", {
-            defaultValue:
-              "当前本地路由模式不允许这样切换。请先关闭该应用的本地路由，或切换到兼容当前模式的供应商。",
-          }),
-          { duration: 6000 },
-        );
-        return;
       }
 
       try {

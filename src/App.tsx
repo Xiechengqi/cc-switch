@@ -475,39 +475,6 @@ function App() {
     };
   }, [queryClient, t]);
 
-  // Listen for proxy-official-warning: warn when takeover is enabled with an official provider
-  useEffect(() => {
-    let unsubscribe: (() => void) | undefined;
-    let active = true;
-
-    const setup = async () => {
-      const off = await listen("proxy-official-warning", (event) => {
-        const { providerName } = event.payload as {
-          appType: string;
-          providerName: string;
-        };
-        toast.warning(
-          t("notifications.proxyOfficialWarning", {
-            name: providerName,
-            defaultValue: `当前供应商 ${providerName} 可能不适合继续使用本地路由。建议先切换到兼容当前模式的供应商，再启用本地路由。`,
-          }),
-          { duration: 8000 },
-        );
-      });
-      if (!active) {
-        off();
-        return;
-      }
-      unsubscribe = off;
-    };
-
-    void setup();
-    return () => {
-      active = false;
-      unsubscribe?.();
-    };
-  }, [t]);
-
   useEffect(() => {
     let active = true;
     let unlistenResize: (() => void) | undefined;

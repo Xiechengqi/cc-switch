@@ -31,7 +31,6 @@ import {
   canTestProvider,
   getProviderQuotaSource,
   isManagedOauthProvider,
-  isOfficialBlockedByProxyTakeover,
 } from "@/utils/providerMetaUtils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
@@ -262,11 +261,6 @@ export function ProviderCard({
   const usageEnabled = provider.meta?.usage_script?.enabled ?? false;
   const isOfficial = isOfficialProvider(provider, appId);
   const isManagedOauth = isManagedOauthProvider(provider, appId);
-  const isOfficialBlockedByProxy = isOfficialBlockedByProxyTakeover(
-    provider,
-    appId,
-    isProxyTakeover,
-  );
   // Hermes v12+ overlay entries live under the `providers:` dict and are
   // read-only here — writes have to go through Hermes Web UI.
   const isHermesReadOnly =
@@ -445,22 +439,6 @@ export function ProviderCard({
                 </span>
               )}
 
-              {appId === "claude" && provider.category === "official" && (
-                <span className="inline-flex items-center rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 dark:bg-slate-700/60 dark:text-slate-200">
-                  {t("claudeCode.noRoutingSupport", {
-                    defaultValue: "不支持路由",
-                  })}
-                </span>
-              )}
-
-              {appId === "codex" && provider.category === "official" && (
-                <span className="inline-flex items-center rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 dark:bg-slate-700/60 dark:text-slate-200">
-                  {t("codex.noRoutingSupport", {
-                    defaultValue: "不支持路由",
-                  })}
-                </span>
-              )}
-
               {isProxyRunning && isInFailoverQueue && health && (
                 <ProviderHealthBadge
                   consecutiveFailures={health.consecutive_failures}
@@ -610,7 +588,6 @@ export function ProviderCard({
               isInConfig={isInConfig}
               isTesting={isTesting}
               isProxyTakeover={isProxyTakeover}
-              isOfficialBlockedByProxy={isOfficialBlockedByProxy}
               isReadOnly={isHermesReadOnly}
               isOmo={isAnyOmo}
               onSwitch={() => onSwitch(provider)}

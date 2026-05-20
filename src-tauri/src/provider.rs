@@ -157,12 +157,12 @@ impl Provider {
 
     /// 代理接管模式下是否应阻止切换到该供应商。
     pub fn is_blocked_by_proxy_takeover(&self) -> bool {
-        !self.can_switch_during_proxy_takeover()
+        false
     }
 
     /// 代理接管模式下是否允许切换到该供应商。
     pub fn can_switch_during_proxy_takeover(&self) -> bool {
-        self.category.as_deref() != Some("official") || self.is_managed_oauth_provider()
+        true
     }
 
     pub fn supports_stream_check(&self, app_type: &AppType) -> bool {
@@ -1035,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_official_provider_is_blocked_during_proxy_takeover() {
+    fn direct_official_provider_is_allowed_during_proxy_takeover() {
         let provider = Provider {
             id: "official".to_string(),
             name: "Official".to_string(),
@@ -1052,8 +1052,8 @@ mod tests {
         };
 
         assert!(!provider.is_managed_oauth_provider());
-        assert!(!provider.can_switch_during_proxy_takeover());
-        assert!(provider.is_blocked_by_proxy_takeover());
+        assert!(provider.can_switch_during_proxy_takeover());
+        assert!(!provider.is_blocked_by_proxy_takeover());
     }
 
     #[test]

@@ -106,18 +106,6 @@ export function isManagedOauthProvider(
   );
 }
 
-export function isOfficialBlockedByProxyTakeover(
-  provider: Pick<Provider, "category" | "meta">,
-  appId: AppId,
-  isProxyTakeover: boolean,
-): boolean {
-  return (
-    isProxyTakeover &&
-    provider.category === "official" &&
-    !isManagedOauthProvider(provider, appId)
-  );
-}
-
 export function canTestProvider(
   provider: Pick<Provider, "category" | "meta">,
   appId: AppId,

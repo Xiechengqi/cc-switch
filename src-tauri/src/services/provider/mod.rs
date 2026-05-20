@@ -1449,15 +1449,6 @@ impl ProviderService {
         // Hot-switch only when BOTH: this app is taken over AND proxy server is actually running
         let should_hot_switch = (is_app_taken_over || live_taken_over) && is_proxy_running;
 
-        // Proxy takeover only supports third-party providers and managed OAuth official providers.
-        if should_hot_switch && !_provider.can_switch_during_proxy_takeover() {
-            return Err(AppError::localized(
-                "switch.official_blocked_by_proxy",
-                "当前本地路由模式不允许这样切换。请先关闭该应用的本地路由，或切换到兼容当前模式的供应商。",
-                "The current local routing mode does not allow this switch. Turn off local routing for this app first, or switch to a provider that supports the current mode.",
-            ));
-        }
-
         if should_hot_switch {
             // Proxy takeover mode: hot-switch only, don't write Live config
             log::info!(

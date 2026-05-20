@@ -15,7 +15,6 @@ use crate::services::provider::{
 use serde_json::{json, Map, Value};
 use std::str::FromStr;
 use std::sync::Arc;
-use tauri::Emitter;
 use tokio::sync::RwLock;
 
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
@@ -533,25 +532,6 @@ impl ProxyService {
 
             // 7) 兼容旧逻辑：写入 any-of 标志（失败不影响功能）
             let _ = self.db.set_live_takeover_active(true).await;
-
-            // 8) Warn if the current provider is official (risk of account ban via proxy)
-            if let Ok(Some(current_id)) =
-                crate::settings::get_effective_current_provider(&self.db, &app)
-            {
-                if let Ok(Some(provider)) = self.db.get_provider_by_id(&current_id, app_type_str) {
-                    if !provider.can_switch_during_proxy_takeover() {
-                        if let Some(handle) = self.app_handle.read().await.as_ref() {
-                            let _ = handle.emit(
-                                "proxy-official-warning",
-                                serde_json::json!({
-                                    "appType": app_type_str,
-                                    "providerName": provider.name,
-                                }),
-                            );
-                        }
-                    }
-                }
-            }
 
             return Ok(());
         }
@@ -1711,14 +1691,6 @@ impl ProxyService {
             .get_provider_by_id(provider_id, app_type)
             .map_err(|e| format!("读取供应商失败: {e}"))?
             .ok_or_else(|| format!("供应商不存在: {provider_id}"))?;
-
-        // Defense-in-depth: proxy takeover only supports third-party and managed OAuth providers.
-        if !provider.can_switch_during_proxy_takeover() {
-            return Err(
-                "当前本地路由模式不允许这样切换 (The current local routing mode does not allow this switch)"
-                    .to_string(),
-            );
-        }
 
         let logical_target_changed =
             crate::settings::get_effective_current_provider(&self.db, &app_type_enum)

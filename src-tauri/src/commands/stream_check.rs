@@ -491,7 +491,9 @@ async fn resolve_codex_oauth_auth_override(
 fn uses_codex_oauth_auth(app_type: &AppType, provider: &crate::provider::Provider) -> bool {
     match app_type {
         AppType::Codex => provider.is_codex_official_with_managed_auth(),
-        AppType::Claude => provider.is_codex_oauth_provider(),
+        AppType::Claude => {
+            provider.is_codex_oauth_provider() || provider.is_codex_official_with_managed_auth()
+        }
         _ => false,
     }
 }
@@ -500,6 +502,9 @@ fn resolve_codex_oauth_base_url_override(
     app_type: &AppType,
     provider: &crate::provider::Provider,
 ) -> Option<String> {
+    if matches!(app_type, AppType::Claude) && provider.is_codex_official_with_managed_auth() {
+        return Some("https://chatgpt.com/backend-api/codex".to_string());
+    }
     provider
         .stream_check_base_url_override(app_type)
         .map(str::to_string)
@@ -618,6 +623,15 @@ async fn resolve_claude_api_format_override(
 ) -> Result<Option<String>, AppError> {
     if *app_type != AppType::Claude {
         return Ok(None);
+    }
+
+    let is_codex_oauth = auth_override
+        .map(|auth| auth.strategy == crate::proxy::providers::AuthStrategy::CodexOAuth)
+        .unwrap_or(false);
+    if is_codex_oauth
+        && (provider.is_codex_oauth_provider() || provider.is_codex_official_with_managed_auth())
+    {
+        return Ok(Some("openai_responses".to_string()));
     }
 
     let is_copilot = auth_override
@@ -796,6 +810,10 @@ mod tests {
             resolve_codex_oauth_base_url_override(&AppType::Codex, &provider).as_deref(),
             Some("https://chatgpt.com/backend-api/codex")
         );
+        assert_eq!(
+            resolve_codex_oauth_base_url_override(&AppType::Claude, &provider).as_deref(),
+            Some("https://chatgpt.com/backend-api/codex")
+        );
     }
 
     #[test]
@@ -824,5 +842,33 @@ mod tests {
         };
 
         assert!(uses_codex_oauth_auth(&AppType::Claude, &provider));
+    }
+
+    #[test]
+    fn claude_openai_official_provider_uses_codex_oauth_auth_override() {
+        let provider = Provider {
+            id: "p7".to_string(),
+            name: "OpenAI Official".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("codex_oauth".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                }),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert!(uses_codex_oauth_auth(&AppType::Claude, &provider));
+        assert!(provider.supports_stream_check(&AppType::Claude));
     }
 }

@@ -167,7 +167,9 @@ impl Provider {
 
     pub fn supports_stream_check(&self, app_type: &AppType) -> bool {
         match app_type {
-            AppType::Claude => self.is_claude_oauth_provider(),
+            AppType::Claude => {
+                self.is_claude_oauth_provider() || self.is_codex_official_with_managed_auth()
+            }
             AppType::Codex => self.is_codex_official_with_managed_auth(),
             AppType::Gemini => {
                 self.is_google_gemini_oauth_provider()

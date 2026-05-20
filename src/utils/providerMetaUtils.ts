@@ -118,7 +118,7 @@ export function canTestProvider(
     return true;
   }
 
-  if (appId === "codex" && isCodexOfficialWithManagedAuth(provider)) {
+  if ((appId === "codex" || appId === "claude") && isCodexOfficialWithManagedAuth(provider)) {
     return true;
   }
 

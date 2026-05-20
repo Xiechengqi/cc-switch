@@ -14,7 +14,7 @@ use crate::store::AppState;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::Instant;
-use tauri::State;
+use tauri::{Manager, State};
 
 /// 流式健康检查（单个供应商）
 #[tauri::command]
@@ -80,6 +80,69 @@ pub async fn stream_check_provider(
         state
             .db
             .save_stream_check_log(&provider_id, &provider.name, app_type.as_str(), &result);
+
+    Ok(result)
+}
+
+/// Run the same provider stream check used by the UI "Test model" button from
+/// internal HTTP surfaces such as the share-router model health probe.
+pub(crate) async fn run_stream_check_for_provider(
+    db: &crate::database::Database,
+    app_handle: Option<&tauri::AppHandle>,
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+) -> Result<StreamCheckResult, AppError> {
+    let config = db.get_stream_check_config()?;
+
+    let Some(app_handle) = app_handle else {
+        return StreamCheckService::check_with_retry(app_type, provider, &config, None, None, None)
+            .await;
+    };
+
+    let copilot_state = app_handle.state::<CopilotAuthState>();
+    let codex_oauth_state = app_handle.state::<CodexOAuthState>();
+    let claude_oauth_state = app_handle.state::<ClaudeOAuthState>();
+    let gemini_oauth_state = app_handle.state::<GeminiOAuthState>();
+    let deepseek_account_state = app_handle.state::<DeepSeekAccountState>();
+
+    if matches!(app_type, AppType::Claude) && provider.is_deepseek_account_provider() {
+        return Ok(check_deepseek_account_provider(
+            provider,
+            &config,
+            deepseek_account_state.0.clone(),
+        )
+        .await);
+    }
+
+    let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
+        .await?
+        .or(resolve_codex_oauth_auth_override(app_type, provider, &codex_oauth_state).await?)
+        .or(resolve_claude_oauth_auth_override(provider, &claude_oauth_state).await?)
+        .or(resolve_gemini_oauth_auth_override(app_type, provider, &gemini_oauth_state).await?);
+    let base_url_override = resolve_codex_oauth_base_url_override(app_type, provider)
+        .or(resolve_copilot_base_url_override(provider, &copilot_state).await?)
+        .or(resolve_claude_oauth_base_url_override(provider))
+        .or(resolve_gemini_oauth_base_url_override(app_type, provider));
+    let claude_api_format_override = resolve_claude_api_format_override(
+        app_type,
+        provider,
+        &config,
+        &copilot_state,
+        auth_override.as_ref(),
+    )
+    .await?;
+
+    let result = StreamCheckService::check_with_retry(
+        app_type,
+        provider,
+        &config,
+        auth_override,
+        base_url_override,
+        claude_api_format_override,
+    )
+    .await?;
+
+    let _ = db.save_stream_check_log(&provider.id, &provider.name, app_type.as_str(), &result);
 
     Ok(result)
 }

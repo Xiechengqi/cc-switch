@@ -293,6 +293,10 @@ impl ProxyServer {
                 "/_share-router/share-runtime",
                 get(handlers::share_router_runtime),
             )
+            .route(
+                "/_share-router/model-health",
+                post(handlers::share_router_model_health),
+            )
             .route("/status", get(handlers::get_status))
             // Claude API (支持带前缀和不带前缀两种格式)
             .route("/v1/messages", post(handlers::handle_messages))

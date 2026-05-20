@@ -38,7 +38,9 @@ use crate::database::PRICING_SOURCE_REQUEST;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
 use http_body_util::BodyExt;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::str::FromStr;
 
 const SHARE_ROUTER_REQUEST_LOGS_LIMIT: usize = 10;
 
@@ -83,6 +85,142 @@ pub async fn share_router_health_probe(headers: axum::http::HeaderMap) -> impl I
             "timestamp": chrono::Utc::now().to_rfc3339(),
         })),
     )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareRouterModelHealthRequest {
+    pub app_type: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareRouterModelHealthResponse {
+    pub ok: bool,
+    pub success: bool,
+    pub status: String,
+    pub message: String,
+    pub status_code: Option<u16>,
+    pub model_used: String,
+    pub response_time_ms: Option<u64>,
+    pub tested_at: i64,
+    pub retry_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<String>,
+    pub provider_id: String,
+    pub provider_name: String,
+}
+
+/// Internal model health endpoint used by cc-switch-router.
+///
+/// This intentionally triggers the same StreamCheckService path as the UI
+/// "Test model" action, so provider-specific protocol conversion and managed
+/// auth headers stay inside cc-switch rather than being guessed by router.
+pub async fn share_router_model_health(
+    State(state): State<ProxyState>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<ShareRouterModelHealthRequest>,
+) -> impl IntoResponse {
+    if !has_share_router_probe_header(&headers)
+        && !headers
+            .get("X-Share-Router-Health-Check")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
+    }
+
+    let app_type = match AppType::from_str(input.app_type.trim()) {
+        Ok(app_type @ (AppType::Claude | AppType::Codex | AppType::Gemini)) => app_type,
+        Ok(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("unsupported appType for share model health: {}", other.as_str())
+                })),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid appType" })),
+            )
+                .into_response();
+        }
+    };
+
+    let provider = match state
+        .provider_router
+        .select_providers(app_type.as_str())
+        .await
+    {
+        Ok(mut providers) => providers.drain(..).next(),
+        Err(err) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    let Some(provider) = provider else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "no provider selected" })),
+        )
+            .into_response();
+    };
+
+    match crate::commands::run_stream_check_for_provider(
+        state.db.as_ref(),
+        state.app_handle.as_ref(),
+        &app_type,
+        &provider,
+    )
+    .await
+    {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(json!(ShareRouterModelHealthResponse {
+                ok: true,
+                success: result.success,
+                status: serde_json::to_value(&result.status)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_string))
+                    .unwrap_or_else(|| format!("{:?}", result.status).to_ascii_lowercase()),
+                message: result.message,
+                status_code: result.http_status,
+                model_used: result.model_used,
+                response_time_ms: result.response_time_ms,
+                tested_at: result.tested_at,
+                retry_count: result.retry_count,
+                error_category: result.error_category,
+                provider_id: provider.id,
+                provider_name: provider.name,
+            })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::OK,
+            Json(json!(ShareRouterModelHealthResponse {
+                ok: true,
+                success: false,
+                status: "failed".to_string(),
+                message: err.to_string(),
+                status_code: None,
+                model_used: String::new(),
+                response_time_ms: None,
+                tested_at: chrono::Utc::now().timestamp(),
+                retry_count: 0,
+                error_category: None,
+                provider_id: provider.id,
+                provider_name: provider.name,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 /// Internal request-log endpoint used by cc-switch-router for share log recovery.

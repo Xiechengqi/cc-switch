@@ -169,7 +169,7 @@ async fn register_installation_with_public_key(
     let payload = RegisterInstallationRequest {
         public_key: public_key_base64,
         platform: std::env::consts::OS,
-        app_version: env!("CARGO_PKG_VERSION"),
+        app_version: crate::build_info::display_version(),
         instance_nonce: uuid::Uuid::new_v4().to_string(),
     };
 

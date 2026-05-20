@@ -9,8 +9,8 @@ use std::panic;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-/// 应用版本号（从 Cargo.toml 读取）
-const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Runtime build identifier shown to users and router.
+const APP_VERSION: &str = crate::build_info::DISPLAY_VERSION;
 
 static APP_CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 

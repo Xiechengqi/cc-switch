@@ -57,11 +57,54 @@ fn inject_build_metadata() {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    let release_version = std::env::var("CC_SWITCH_RELEASE_VERSION")
+        .ok()
+        .map(|s| s.trim().trim_start_matches('v').to_string())
+        .filter(|s| !s.is_empty());
+    let channel = std::env::var("CC_SWITCH_BUILD_CHANNEL")
+        .ok()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| matches!(s.as_str(), "release" | "commit" | "dev"))
+        .or_else(|| release_version.as_ref().map(|_| "release".to_string()))
+        .unwrap_or_else(|| {
+            if sha == "unknown" {
+                "dev".to_string()
+            } else {
+                "commit".to_string()
+            }
+        });
+    let short_sha: String = sha.chars().take(7).collect();
+    let display_version = std::env::var("CC_SWITCH_DISPLAY_VERSION")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| match (channel.as_str(), release_version.as_deref()) {
+            ("release", Some(version)) => format!("release {version}"),
+            ("release", None) => {
+                if short_sha.is_empty() || short_sha == "unknown" {
+                    "release unknown".to_string()
+                } else {
+                    format!("release {short_sha}")
+                }
+            }
+            ("commit", _) => format!("commit {short_sha}"),
+            _ if short_sha.is_empty() || short_sha == "unknown" => "dev unknown".to_string(),
+            _ => format!("dev {short_sha}"),
+        });
 
     println!("cargo:rustc-env=CC_SWITCH_BUILD_SHA={sha}");
     println!("cargo:rustc-env=CC_SWITCH_BUILD_TIME={build_time}");
+    println!("cargo:rustc-env=CC_SWITCH_BUILD_CHANNEL={channel}");
+    println!("cargo:rustc-env=CC_SWITCH_DISPLAY_VERSION={display_version}");
+    println!(
+        "cargo:rustc-env=CC_SWITCH_RELEASE_VERSION={}",
+        release_version.as_deref().unwrap_or("")
+    );
     println!("cargo:rerun-if-env-changed=CC_SWITCH_BUILD_SHA");
     println!("cargo:rerun-if-env-changed=CC_SWITCH_BUILD_TIME");
+    println!("cargo:rerun-if-env-changed=CC_SWITCH_BUILD_CHANNEL");
+    println!("cargo:rerun-if-env-changed=CC_SWITCH_DISPLAY_VERSION");
+    println!("cargo:rerun-if-env-changed=CC_SWITCH_RELEASE_VERSION");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     // Re-run when git HEAD or refs change so dev rebuilds pick up new commits.
     println!("cargo:rerun-if-changed=../.git/HEAD");

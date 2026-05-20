@@ -22,7 +22,6 @@ import {
 } from "@/components/ui/select";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { getVersion } from "@tauri-apps/api/app";
 import { settingsApi } from "@/lib/api";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { relaunchApp } from "@/lib/updater";
@@ -95,6 +94,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   // ... (use hooks as before) ...
   const { t } = useTranslation();
   const [version, setVersion] = useState<string | null>(null);
+  const [releaseVersion, setReleaseVersion] = useState<string | null>(null);
   const [isLoadingVersion, setIsLoadingVersion] = useState(true);
   const [buildCommit, setBuildCommit] = useState<string | null>(null);
   const [buildTime, setBuildTime] = useState<string | null>(null);
@@ -202,13 +202,20 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     let active = true;
     const load = async () => {
       try {
-        const [appVersion] = await Promise.all([
-          getVersion(),
+        const [info] = await Promise.all([
+          settingsApi.getBuildInfo(),
           ...(isWindows() ? [] : [loadAllToolVersions()]),
         ]);
 
         if (active) {
-          setVersion(appVersion);
+          setVersion(info.displayVersion || null);
+          setReleaseVersion(info.releaseVersion || null);
+          if (info.commit && info.commit !== "unknown") {
+            setBuildCommit(info.commit.slice(0, 7));
+          }
+          if (info.buildTime && info.buildTime !== "unknown") {
+            setBuildTime(info.buildTime);
+          }
         }
       } catch (error) {
         console.error("[AboutSection] Failed to load info", error);
@@ -219,19 +226,6 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         if (active) {
           setIsLoadingVersion(false);
         }
-      }
-
-      try {
-        const info = await settingsApi.getBuildInfo();
-        if (!active) return;
-        if (info.commit && info.commit !== "unknown") {
-          setBuildCommit(info.commit.slice(0, 7));
-        }
-        if (info.buildTime && info.buildTime !== "unknown") {
-          setBuildTime(info.buildTime);
-        }
-      } catch (error) {
-        console.warn("[AboutSection] Failed to load build info", error);
       }
     };
 
@@ -249,14 +243,15 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const handleOpenReleaseNotes = useCallback(async () => {
     try {
-      const targetVersion = updateInfo?.availableVersion ?? version ?? "";
-      const displayVersion = targetVersion.startsWith("v")
-        ? targetVersion
-        : targetVersion
-          ? `v${targetVersion}`
+      const releaseTag = releaseVersion
+        ? `v${releaseVersion}`
+        : updateInfo?.availableVersion
+          ? updateInfo.availableVersion.startsWith("v")
+            ? updateInfo.availableVersion
+            : `v${updateInfo.availableVersion}`
           : "";
 
-      if (!displayVersion) {
+      if (!releaseTag) {
         await settingsApi.openExternal(
           "https://github.com/farion1231/cc-switch/releases",
         );
@@ -264,13 +259,13 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       }
 
       await settingsApi.openExternal(
-        `https://github.com/farion1231/cc-switch/releases/tag/${displayVersion}`,
+        `https://github.com/farion1231/cc-switch/releases/tag/${releaseTag}`,
       );
     } catch (error) {
       console.error("[AboutSection] Failed to open release notes", error);
       toast.error(t("settings.openReleaseNotesFailed"));
     }
-  }, [t, updateInfo?.availableVersion, version]);
+  }, [t, updateInfo?.availableVersion, releaseVersion]);
 
   const handleCheckUpdate = useCallback(async () => {
     if (hasUpdate && updateHandle) {
@@ -364,7 +359,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                 {isLoadingVersion ? (
                   <Loader2 className="h-3 w-3 animate-spin" />
                 ) : (
-                  <span className="font-medium">{`v${displayVersion}`}</span>
+                  <span className="font-medium">{displayVersion}</span>
                 )}
               </Badge>
               {buildCommit && (

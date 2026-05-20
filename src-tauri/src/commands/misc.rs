@@ -22,8 +22,12 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[tauri::command]
 pub fn get_build_info() -> serde_json::Value {
     serde_json::json!({
-        "commit": env!("CC_SWITCH_BUILD_SHA"),
-        "buildTime": env!("CC_SWITCH_BUILD_TIME"),
+        "commit": crate::build_info::BUILD_SHA,
+        "buildTime": crate::build_info::BUILD_TIME,
+        "channel": crate::build_info::BUILD_CHANNEL,
+        "displayVersion": crate::build_info::DISPLAY_VERSION,
+        "packageVersion": crate::build_info::PACKAGE_VERSION,
+        "releaseVersion": crate::build_info::RELEASE_VERSION,
     })
 }
 

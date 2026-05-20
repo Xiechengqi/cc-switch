@@ -35,7 +35,14 @@ export const settingsApi = {
     await invoke("check_for_updates");
   },
 
-  async getBuildInfo(): Promise<{ commit: string; buildTime: string }> {
+  async getBuildInfo(): Promise<{
+    commit: string;
+    buildTime: string;
+    channel: string;
+    displayVersion: string;
+    packageVersion: string;
+    releaseVersion: string;
+  }> {
     return await invoke("get_build_info");
   },
 

@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-05-20
+
+- **上游分支：** `main`
+- **上游 HEAD：** `00b6cc68`
+- **共同祖先：** `76b4c8b5`
+- **合并提交数：** 6
+- **主要变更：**
+  - feat(codex): 新增 Codex providers 的 Chat Completions 路由（responses → chat 转换、wire_api 推断、UI 路由徽章）
+  - feat(codex): Codex Chat reasoning 转换改进，处理 inline thinking 块
+  - fix(proxy): managed-account Claude takeover 仅注入 `ANTHROPIC_API_KEY`，加入 `PROXY_MANAGED` 占位拦截
+  - feat(provider): 新增 `is_github_copilot` / `uses_managed_account_auth` / `provider_type` / `claude_base_url_contains` 助手
+  - docs: 推荐官方 Homebrew cask 安装；providerConfigUtils 格式化
+- **冲突解决：**
+  - `src-tauri/src/provider.rs`：保留本仓全部 helpers（is_codex_official_with_managed_auth、is_managed_oauth_provider、supports_stream_check 等），追加上游新增的 `is_github_copilot` / `uses_managed_account_auth` / `provider_type` / `claude_base_url_contains`
+  - `src-tauri/src/proxy/forwarder.rs`：保留本仓 OAuth 401 重试 `loop {}` 与 `outbound_body` 日志路径；采纳上游 `codex_responses_to_chat` / `rewrite_codex_responses_endpoint_to_chat` / `codex_chat_base_is_full_endpoint`、`reject_proxy_placeholder_for_managed_account_upstream` + `is_managed_account_upstream_url` + `headers_contain_proxy_placeholder` 全套；`should_preserve_exact_header_case` 继续保持 `#[cfg(test)]`，未引入上游的池化 reqwest 路径；request-body 日志改为 `if log::log_enabled!(Debug)` 包裹
+  - `src-tauri/src/services/proxy.rs`：测试块采纳上游（新增 `apply_codex_proxy_toml_config_forces_local_responses_wire_api`、原 `update_toml_base_url_creates_proxy_model_provider_without_model_provider` 重命名为 `update_toml_base_url_falls_back_to_top_level_base_url`）
+  - `src-tauri/src/proxy/handlers.rs`：为上游新增的两处 codex chat→responses 转换路径 `log_usage(...)` 调用补充 `incoming_request_id = None` 形参（与本仓 12 参签名对齐）
+  - `src/types.ts`：保留 `forSaleOfficialPricePercent`，注释采用上游"API 格式（Claude / Codex 供应商使用）"
+  - `src/components/providers/ProviderCard.tsx`：保留本仓 `canTestProvider`/`getProviderQuotaSource`/`isManagedOauthProvider`/`isOfficialBlockedByProxyTakeover` 导入；合并上游 `extractCodexWireApi`/`isCodexChatWireApi` 导入和 `codexNeedsRouting` useMemo + 三处徽章（needsRouting/noRoutingSupport）；剔除 TS6133 未使用的 `isCodexOauth` / `isClaudeThirdParty` 局部变量
+  - `src/components/providers/forms/ProviderForm.tsx`：保留本仓 `hasManagedAuthBinding` 导入、`matchesPricingApp` 助手；并存上游 `extractCodexWireApi`/`setCodexWireApi` 导入与 `codexApiFormatFromWireApi` 助手
+  - `src/i18n/locales/{en,zh,ja}.json`：去除本仓占位 `"codex": {}`，并入上游 `codex.needsRouting` / `codex.noRoutingSupport` 与 `claudeCode.noRoutingSupport`
+- **验证：** `cargo check` 通过；`tsc --noEmit` 通过
+
+---
+
 ## 2026-05-27
 
 - **上游分支：** `main`

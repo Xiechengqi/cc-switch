@@ -20,6 +20,10 @@ import {
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { isOfficialBlockedByProxyTakeover } from "@/utils/providerMetaUtils";
 import { openclawKeys } from "@/hooks/useOpenClaw";
+import {
+  extractCodexWireApi,
+  isCodexChatWireApi,
+} from "@/utils/providerConfigUtils";
 
 /**
  * Hook for managing provider actions (add, update, delete, switch)
@@ -150,6 +154,16 @@ export function useProviderActions(
       const isCopilotProvider =
         activeApp === "claude" &&
         provider.meta?.providerType === "github_copilot";
+      const isCodexChatFormat =
+        activeApp === "codex" &&
+        (provider.meta?.apiFormat === "openai_chat" ||
+          (typeof (provider.settingsConfig as Record<string, any>)?.config ===
+            "string" &&
+            isCodexChatWireApi(
+              extractCodexWireApi(
+                (provider.settingsConfig as Record<string, any>).config,
+              ),
+            )));
 
       // Determine why this provider requires the proxy
       let proxyRequiredReason: string | null = null;
@@ -171,6 +185,10 @@ export function useProviderActions(
         ) {
           proxyRequiredReason = t("notifications.proxyReasonOpenAIResponses", {
             defaultValue: "使用 OpenAI Responses 接口格式",
+          });
+        } else if (isCodexChatFormat) {
+          proxyRequiredReason = t("notifications.proxyReasonOpenAIChat", {
+            defaultValue: "使用 OpenAI Chat 接口格式",
           });
         } else if (
           activeApp === "claude-desktop" &&

@@ -39,6 +39,8 @@ const GEMINI_CODE_ASSIST_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
 const GEMINI_CLI_VERSION: &str = "0.31.0";
 const GEMINI_CLI_API_CLIENT_HEADER: &str = "google-genai-sdk/1.41.0 gl-node/v22.19.0";
 
+const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+
 pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
@@ -1124,20 +1126,23 @@ impl RequestForwarder {
             Some(api_format) => super::providers::claude_api_format_needs_transform(api_format),
             None => adapter.needs_transform(provider),
         };
-        let (effective_endpoint, passthrough_query) =
-            if needs_transform && adapter.name() == "Claude" {
-                let api_format = resolved_claude_api_format
-                    .as_deref()
-                    .unwrap_or_else(|| super::providers::get_claude_api_format(provider));
-                rewrite_claude_transform_endpoint(endpoint, api_format, is_copilot, &mapped_body)
-            } else {
-                (
-                    endpoint.to_string(),
-                    split_endpoint_and_query(endpoint)
-                        .1
-                        .map(ToString::to_string),
-                )
-            };
+        let codex_responses_to_chat = matches!(app_type, AppType::Codex)
+            && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
+        let (effective_endpoint, passthrough_query) = if codex_responses_to_chat {
+            rewrite_codex_responses_endpoint_to_chat(endpoint)
+        } else if needs_transform && adapter.name() == "Claude" {
+            let api_format = resolved_claude_api_format
+                .as_deref()
+                .unwrap_or_else(|| super::providers::get_claude_api_format(provider));
+            rewrite_claude_transform_endpoint(endpoint, api_format, is_copilot, &mapped_body)
+        } else {
+            (
+                endpoint.to_string(),
+                split_endpoint_and_query(endpoint)
+                    .1
+                    .map(ToString::to_string),
+            )
+        };
         let is_claude_oauth_provider = adapter.name() == "Claude"
             && provider
                 .meta
@@ -1145,13 +1150,19 @@ impl RequestForwarder {
                 .and_then(|m| m.provider_type.as_deref())
                 == Some("claude_oauth");
 
+        let codex_chat_base_is_full_endpoint = codex_responses_to_chat
+            && base_url
+                .trim_end_matches('/')
+                .to_ascii_lowercase()
+                .ends_with("/chat/completions");
+
         let mut url = if matches!(resolved_claude_api_format.as_deref(), Some("gemini_native")) {
             super::gemini_url::resolve_gemini_native_url(
                 &base_url,
                 &effective_endpoint,
                 is_full_url,
             )
-        } else if is_full_url {
+        } else if is_full_url || codex_chat_base_is_full_endpoint {
             append_query_to_full_url(&base_url, passthrough_query.as_deref())
         } else {
             adapter.build_url(&base_url, &effective_endpoint)
@@ -1161,7 +1172,9 @@ impl RequestForwarder {
         }
 
         // 转换请求体（如果需要）
-        let request_body = if needs_transform {
+        let request_body = if codex_responses_to_chat {
+            super::providers::transform_codex_chat::responses_to_chat_completions(mapped_body)?
+        } else if needs_transform {
             if adapter.name() == "Claude" {
                 let api_format = resolved_claude_api_format
                     .as_deref()
@@ -1200,7 +1213,8 @@ impl RequestForwarder {
         );
         let request_is_streaming =
             is_streaming_request(&effective_endpoint, &filtered_body, headers);
-        let force_identity_encoding = needs_transform || request_is_streaming;
+        let force_identity_encoding =
+            needs_transform || codex_responses_to_chat || request_is_streaming;
 
         let gemini_code_assist_model = if is_gemini_code_assist_provider(app_type, provider) {
             let (code_assist_url, code_assist_body, model) =
@@ -1759,6 +1773,8 @@ impl RequestForwarder {
                 );
             }
 
+            reject_proxy_placeholder_for_managed_account_upstream(&url, &ordered_headers)?;
+
             // 输出请求信息日志
             let tag = adapter.name();
             let request_model = outbound_body
@@ -1766,12 +1782,14 @@ impl RequestForwarder {
                 .and_then(|v| v.as_str())
                 .unwrap_or("<none>");
             log::info!("[{tag}] >>> 请求 URL: {url} (model={request_model})");
-            if let Ok(body_str) = serde_json::to_string(&outbound_body) {
-                log::debug!(
-                    "[{tag}] >>> 请求体内容 ({}字节): {}",
-                    body_str.len(),
-                    body_str
-                );
+            if log::log_enabled!(log::Level::Debug) {
+                if let Ok(body_str) = serde_json::to_string(&outbound_body) {
+                    log::debug!(
+                        "[{tag}] >>> 请求体内容 ({}字节): {}",
+                        body_str.len(),
+                        body_str
+                    );
+                }
             }
 
             // 确定超时
@@ -2446,6 +2464,18 @@ fn is_claude_messages_path(path: &str) -> bool {
     matches!(path, "/v1/messages" | "/claude/v1/messages")
 }
 
+fn rewrite_codex_responses_endpoint_to_chat(endpoint: &str) -> (String, Option<String>) {
+    let (_path, query) = split_endpoint_and_query(endpoint);
+    let passthrough_query = query.map(ToString::to_string);
+    let target_path = "/chat/completions";
+    let rewritten = match passthrough_query.as_deref() {
+        Some(query) if !query.is_empty() => format!("{target_path}?{query}"),
+        _ => target_path.to_string(),
+    };
+
+    (rewritten, passthrough_query)
+}
+
 fn rewrite_claude_transform_endpoint(
     endpoint: &str,
     api_format: &str,
@@ -2717,6 +2747,43 @@ fn build_codex_oauth_session_headers(
     }
 
     headers
+}
+
+fn reject_proxy_placeholder_for_managed_account_upstream(
+    url: &str,
+    headers: &http::HeaderMap,
+) -> Result<(), ProxyError> {
+    if !is_managed_account_upstream_url(url) || !headers_contain_proxy_placeholder(headers) {
+        return Ok(());
+    }
+
+    Err(ProxyError::AuthError(
+        "Managed account proxy auth was not resolved; PROXY_MANAGED must not be sent upstream"
+            .to_string(),
+    ))
+}
+
+fn is_managed_account_upstream_url(url: &str) -> bool {
+    let Ok(uri) = url.parse::<http::Uri>() else {
+        return false;
+    };
+
+    let Some(host) = uri.host().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+
+    host == "githubcopilot.com"
+        || host.ends_with(".githubcopilot.com")
+        || (host == "chatgpt.com" && uri.path().starts_with("/backend-api/codex"))
+}
+
+fn headers_contain_proxy_placeholder(headers: &http::HeaderMap) -> bool {
+    headers.values().any(|value| {
+        value
+            .to_str()
+            .map(|value| value.contains(PROXY_AUTH_PLACEHOLDER))
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(test)]
@@ -3210,6 +3277,61 @@ mod tests {
     }
 
     #[test]
+    fn managed_account_upstream_rejects_proxy_managed_placeholder_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer PROXY_MANAGED"),
+        );
+
+        let err = reject_proxy_placeholder_for_managed_account_upstream(
+            "https://api.githubcopilot.com/chat/completions",
+            &headers,
+        )
+        .expect_err("placeholder should be rejected before upstream");
+
+        assert!(matches!(
+            err,
+            ProxyError::AuthError(message) if message.contains("PROXY_MANAGED")
+        ));
+    }
+
+    #[test]
+    fn codex_oauth_upstream_rejects_proxy_managed_placeholder_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer PROXY_MANAGED"),
+        );
+
+        let err = reject_proxy_placeholder_for_managed_account_upstream(
+            "https://chatgpt.com/backend-api/codex/responses",
+            &headers,
+        )
+        .expect_err("placeholder should be rejected before upstream");
+
+        assert!(matches!(
+            err,
+            ProxyError::AuthError(message) if message.contains("PROXY_MANAGED")
+        ));
+    }
+
+    #[test]
+    fn non_managed_upstream_allows_proxy_managed_placeholder_guard() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer PROXY_MANAGED"),
+        );
+
+        reject_proxy_placeholder_for_managed_account_upstream(
+            "https://api.example.com/v1/messages",
+            &headers,
+        )
+        .expect("guard is scoped to managed-account upstreams");
+    }
+
+    #[test]
     fn exact_header_case_preserved_for_native_claude_only() {
         let provider = test_provider_with_type(None);
 
@@ -3276,6 +3398,24 @@ mod tests {
 
         assert_eq!(endpoint, "/v1/responses?x-id=1");
         assert_eq!(passthrough_query.as_deref(), Some("x-id=1"));
+    }
+
+    #[test]
+    fn rewrite_codex_responses_endpoint_to_chat_preserves_query() {
+        let (endpoint, passthrough_query) =
+            rewrite_codex_responses_endpoint_to_chat("/v1/responses?foo=bar");
+
+        assert_eq!(endpoint, "/chat/completions?foo=bar");
+        assert_eq!(passthrough_query.as_deref(), Some("foo=bar"));
+    }
+
+    #[test]
+    fn rewrite_codex_responses_compact_endpoint_to_chat_preserves_query() {
+        let (endpoint, passthrough_query) =
+            rewrite_codex_responses_endpoint_to_chat("/v1/responses/compact?foo=bar");
+
+        assert_eq!(endpoint, "/chat/completions?foo=bar");
+        assert_eq!(passthrough_query.as_deref(), Some("foo=bar"));
     }
 
     #[test]

@@ -221,6 +221,39 @@ pub struct ShareAppRuntimes {
     pub gemini: Option<ShareUpstreamProvider>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareModelHealthSummary {
+    #[serde(default)]
+    pub claude: Vec<ShareModelHealthResult>,
+    #[serde(default)]
+    pub codex: Vec<ShareModelHealthResult>,
+    #[serde(default)]
+    pub gemini: Vec<ShareModelHealthResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareModelHealthResult {
+    pub app_type: String,
+    pub requested_model: String,
+    pub actual_model: String,
+    pub status: String,
+    #[serde(default)]
+    pub recent_results: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+    pub latency_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    pub checked_at: i64,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareRuntimeSnapshot {
@@ -228,6 +261,8 @@ pub struct ShareRuntimeSnapshot {
     pub queried_at: i64,
     pub support: ShareSupport,
     pub app_runtimes: ShareAppRuntimes,
+    #[serde(default)]
+    pub model_health: ShareModelHealthSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

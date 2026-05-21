@@ -4,6 +4,7 @@ pub mod error;
 mod forward;
 mod health;
 pub(crate) mod identity;
+pub(crate) mod model_health;
 mod ssh;
 pub mod sync;
 

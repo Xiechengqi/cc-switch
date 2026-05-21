@@ -537,11 +537,13 @@ pub(crate) async fn build_share_runtime_snapshot(
 ) -> ShareRuntimeSnapshot {
     let support = query_share_support(db).await;
     let app_runtimes = build_all_upstream_provider_snapshots(db, &support, share).await;
+    let model_health = crate::tunnel::model_health::current_share_model_health_summary().await;
     ShareRuntimeSnapshot {
         share_id: share.id.clone(),
         queried_at: chrono::Utc::now().timestamp(),
         support,
         app_runtimes,
+        model_health,
     }
 }
 

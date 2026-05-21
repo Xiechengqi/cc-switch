@@ -337,7 +337,7 @@ describe("canTestProvider", () => {
     expect(canTestProvider(provider, "gemini")).toBe(false);
   });
 
-  it("rejects Copilot and Codex OAuth provider types", () => {
+  it("allows Copilot and Codex OAuth provider types", () => {
     expect(
       canTestProvider(
         {
@@ -346,7 +346,7 @@ describe("canTestProvider", () => {
         },
         "claude",
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       canTestProvider(
         {
@@ -355,7 +355,16 @@ describe("canTestProvider", () => {
         },
         "claude",
       ),
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("allows third-party Claude providers", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "third_party",
+      meta: { apiFormat: "openai_chat" },
+    };
+
+    expect(canTestProvider(provider, "claude")).toBe(true);
   });
 
   it("allows normal non-official providers", () => {

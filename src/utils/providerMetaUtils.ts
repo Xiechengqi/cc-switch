@@ -118,7 +118,17 @@ export function canTestProvider(
     return true;
   }
 
-  if ((appId === "codex" || appId === "claude") && isCodexOfficialWithManagedAuth(provider)) {
+  if (
+    provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
+    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH
+  ) {
+    return true;
+  }
+
+  if (
+    (appId === "codex" || appId === "claude") &&
+    isCodexOfficialWithManagedAuth(provider)
+  ) {
     return true;
   }
 
@@ -130,20 +140,6 @@ export function canTestProvider(
   }
 
   if (provider.category === "official") {
-    return false;
-  }
-
-  // Third-party Claude providers go through proxy gateway; the test endpoint
-  // does not exercise that path, so testing is disabled (matches upstream
-  // commit 543e057e).
-  if (appId === "claude" && provider.category === "third_party") {
-    return false;
-  }
-
-  if (
-    provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
-    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH
-  ) {
     return false;
   }
 

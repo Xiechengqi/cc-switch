@@ -879,18 +879,17 @@ export function ClaudeDesktopProviderForm({
                       </SelectItem>
                       <SelectItem value="openai_chat">
                         {t("providerForm.apiFormatOpenAIChat", {
-                          defaultValue: "OpenAI Chat Completions (需开启路由)",
+                          defaultValue: "OpenAI Chat Completions",
                         })}
                       </SelectItem>
                       <SelectItem value="openai_responses">
                         {t("providerForm.apiFormatOpenAIResponses", {
-                          defaultValue: "OpenAI Responses API (需开启路由)",
+                          defaultValue: "OpenAI Responses API",
                         })}
                       </SelectItem>
                       <SelectItem value="gemini_native">
                         {t("providerForm.apiFormatGeminiNative", {
-                          defaultValue:
-                            "Gemini Native generateContent (需开启路由)",
+                          defaultValue: "Gemini Native generateContent",
                         })}
                       </SelectItem>
                     </SelectContent>

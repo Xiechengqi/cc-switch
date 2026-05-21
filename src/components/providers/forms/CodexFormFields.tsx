@@ -205,7 +205,7 @@ export function CodexFormFields({
               </SelectItem>
               <SelectItem value="openai_chat">
                 {t("providerForm.codexApiFormatOpenAIChat", {
-                  defaultValue: "OpenAI Chat Completions (需开启路由)",
+                  defaultValue: "OpenAI Chat Completions",
                 })}
               </SelectItem>
             </SelectContent>

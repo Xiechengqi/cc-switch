@@ -194,7 +194,7 @@ describe("useProviderActions", () => {
     expect(settingsApiApplyMock).not.toHaveBeenCalled();
   });
 
-  it("warns but still switches providers that require proxy when proxy is not running", async () => {
+  it("switches OpenAI-format Claude providers without route-required warning", async () => {
     switchProviderMutateAsync.mockResolvedValueOnce(undefined);
     const { wrapper } = createWrapper();
     const provider = createProvider({
@@ -212,11 +212,11 @@ describe("useProviderActions", () => {
       await result.current.switchProvider(provider);
     });
 
-    expect(toastWarningMock).toHaveBeenCalledTimes(1);
+    expect(toastWarningMock).not.toHaveBeenCalled();
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
   });
 
-  it("warns but still switches Codex full URL providers when proxy is not running", async () => {
+  it("switches Codex full URL providers without route-required warning", async () => {
     switchProviderMutateAsync.mockResolvedValueOnce(undefined);
     const { wrapper } = createWrapper();
     const provider = createProvider({
@@ -234,7 +234,7 @@ describe("useProviderActions", () => {
       await result.current.switchProvider(provider);
     });
 
-    expect(toastWarningMock).toHaveBeenCalledTimes(1);
+    expect(toastWarningMock).not.toHaveBeenCalled();
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
   });
 

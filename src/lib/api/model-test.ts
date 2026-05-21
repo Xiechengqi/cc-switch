@@ -26,6 +26,10 @@ export interface StreamCheckResult {
   retryCount: number;
   /** 细粒度错误分类，如 "modelNotFound" */
   errorCategory?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 // ===== 流式健康检查 API =====

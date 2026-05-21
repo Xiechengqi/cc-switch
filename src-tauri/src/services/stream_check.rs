@@ -19,6 +19,7 @@ use crate::proxy::providers::transform_responses::anthropic_to_responses;
 use crate::proxy::providers::{
     get_adapter, AuthInfo, AuthStrategy, ClaudeAdapter, ProviderAdapter,
 };
+use crate::proxy::usage::parser::TokenUsage;
 
 const GEMINI_CODE_ASSIST_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
 const GEMINI_CLI_VERSION: &str = "0.31.0";
@@ -106,10 +107,35 @@ pub struct StreamCheckResult {
     /// 细粒度错误分类（如 "modelNotFound"），前端据此渲染专门的文案
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_category: Option<String>,
+    #[serde(default)]
+    pub input_tokens: u32,
+    #[serde(default)]
+    pub output_tokens: u32,
+    #[serde(default)]
+    pub cache_read_tokens: u32,
+    #[serde(default)]
+    pub cache_creation_tokens: u32,
 }
 
 /// 流式健康检查服务
 pub struct StreamCheckService;
+
+#[derive(Debug, Clone)]
+struct StreamCheckProbeResult {
+    status_code: u16,
+    model: String,
+    usage: Option<TokenUsage>,
+}
+
+impl StreamCheckProbeResult {
+    fn without_usage(status_code: u16, model: String) -> Self {
+        Self {
+            status_code,
+            model,
+            usage: None,
+        }
+    }
+}
 
 impl StreamCheckService {
     fn maybe_add_share_api_key_header(
@@ -216,6 +242,10 @@ impl StreamCheckService {
             tested_at: chrono::Utc::now().timestamp(),
             retry_count: effective_config.max_retries,
             error_category: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         }))
     }
 
@@ -283,6 +313,10 @@ impl StreamCheckService {
                 tested_at: chrono::Utc::now().timestamp(),
                 retry_count: 0,
                 error_category: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             });
         }
 
@@ -321,20 +355,19 @@ impl StreamCheckService {
         let test_prompt = &config.test_prompt;
 
         let result = match app_type {
-            AppType::Claude | AppType::ClaudeDesktop => {
-                Self::check_claude_stream(
-                    &client,
-                    &base_url,
-                    &auth,
-                    &model_to_test,
-                    test_prompt,
-                    request_timeout,
-                    provider,
-                    claude_api_format_override.as_deref(),
-                    None,
-                )
-                .await
-            }
+            AppType::Claude | AppType::ClaudeDesktop => Self::check_claude_stream(
+                &client,
+                &base_url,
+                &auth,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+                provider,
+                claude_api_format_override.as_deref(),
+                None,
+            )
+            .await
+            .map(|(status, model)| StreamCheckProbeResult::without_usage(status, model)),
             AppType::Codex => {
                 let codex_oauth_account_id = if auth.strategy == AuthStrategy::CodexOAuth {
                     auth.managed_account_id.clone().or_else(|| {
@@ -358,18 +391,17 @@ impl StreamCheckService {
                 )
                 .await
             }
-            AppType::Gemini => {
-                Self::check_gemini_stream(
-                    &client,
-                    &base_url,
-                    &auth,
-                    &model_to_test,
-                    test_prompt,
-                    request_timeout,
-                    None,
-                )
-                .await
-            }
+            AppType::Gemini => Self::check_gemini_stream(
+                &client,
+                &base_url,
+                &auth,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+                None,
+            )
+            .await
+            .map(|(status, model)| StreamCheckProbeResult::without_usage(status, model)),
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
                 // Already handled via early dispatch above
                 unreachable!("OpenCode/OpenClaw/Hermes 已通过 check_once_without_adapter 处理")
@@ -653,7 +685,7 @@ impl StreamCheckService {
         timeout: std::time::Duration,
         provider: &Provider,
         codex_oauth_account_id: Option<&str>,
-    ) -> Result<(u16, String), AppError> {
+    ) -> Result<StreamCheckProbeResult, AppError> {
         let is_full_url = provider
             .meta
             .as_ref()
@@ -730,19 +762,61 @@ impl StreamCheckService {
             }
 
             let mut stream = response.bytes_stream();
-            if let Some(chunk) = stream.next().await {
-                match chunk {
-                    Ok(_) => return Ok((status, actual_model)),
-                    Err(e) => return Err(AppError::Message(format!("Stream read failed: {e}"))),
-                }
+            let mut chunks = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk =
+                    chunk.map_err(|e| AppError::Message(format!("Stream read failed: {e}")))?;
+                chunks.extend_from_slice(&chunk);
             }
 
-            return Err(AppError::Message("No response data received".to_string()));
+            if chunks.is_empty() {
+                return Err(AppError::Message("No response data received".to_string()));
+            }
+
+            let usage = std::str::from_utf8(&chunks)
+                .ok()
+                .and_then(Self::parse_sse_json_events)
+                .and_then(|events| TokenUsage::from_codex_stream_events_auto(&events));
+
+            return Ok(StreamCheckProbeResult {
+                status_code: status,
+                model: actual_model,
+                usage,
+            });
         }
 
         Err(AppError::Message(
             "No valid Codex responses endpoint found".to_string(),
         ))
+    }
+
+    fn parse_sse_json_events(text: &str) -> Option<Vec<serde_json::Value>> {
+        let mut events = Vec::new();
+        for block in text.split("\n\n") {
+            let mut data_lines = Vec::new();
+            for line in block.lines() {
+                let line = line.trim_end_matches('\r');
+                if let Some(data) = line.strip_prefix("data:") {
+                    let data = data.trim();
+                    if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+                    data_lines.push(data);
+                }
+            }
+            if data_lines.is_empty() {
+                continue;
+            }
+            let data = data_lines.join("\n");
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) {
+                events.push(value);
+            }
+        }
+        if events.is_empty() {
+            None
+        } else {
+            Some(events)
+        }
     }
 
     /// Gemini 流式检查
@@ -1059,36 +1133,33 @@ impl StreamCheckService {
         let test_prompt = &config.test_prompt;
 
         let result = match app_type {
-            AppType::OpenClaw => {
-                Self::check_additive_app_stream(
-                    &client,
-                    provider,
-                    &model_to_test,
-                    test_prompt,
-                    request_timeout,
-                )
-                .await
-            }
-            AppType::OpenCode => {
-                Self::check_opencode_stream(
-                    &client,
-                    provider,
-                    &model_to_test,
-                    test_prompt,
-                    request_timeout,
-                )
-                .await
-            }
-            AppType::Hermes => {
-                Self::check_hermes_stream(
-                    &client,
-                    provider,
-                    &model_to_test,
-                    test_prompt,
-                    request_timeout,
-                )
-                .await
-            }
+            AppType::OpenClaw => Self::check_additive_app_stream(
+                &client,
+                provider,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+            )
+            .await
+            .map(|(status, model)| StreamCheckProbeResult::without_usage(status, model)),
+            AppType::OpenCode => Self::check_opencode_stream(
+                &client,
+                provider,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+            )
+            .await
+            .map(|(status, model)| StreamCheckProbeResult::without_usage(status, model)),
+            AppType::Hermes => Self::check_hermes_stream(
+                &client,
+                provider,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+            )
+            .await
+            .map(|(status, model)| StreamCheckProbeResult::without_usage(status, model)),
             _ => unreachable!("check_once_without_adapter 只处理 OpenCode/OpenClaw/Hermes"),
         };
 
@@ -1108,24 +1179,31 @@ impl StreamCheckService {
     /// `model_tested` 是本次探测使用的模型名，用于在失败场景下仍能把模型信息透传给前端，
     /// 方便针对"模型不存在 / 已下架"这类错误渲染专门的提示。
     fn build_stream_check_result(
-        result: Result<(u16, String), AppError>,
+        result: Result<StreamCheckProbeResult, AppError>,
         response_time: u64,
         degraded_threshold_ms: u64,
         model_tested: &str,
     ) -> StreamCheckResult {
         let tested_at = chrono::Utc::now().timestamp();
         match result {
-            Ok((status_code, model)) => StreamCheckResult {
-                status: Self::determine_status(response_time, degraded_threshold_ms),
-                success: true,
-                message: "Check succeeded".to_string(),
-                response_time_ms: Some(response_time),
-                http_status: Some(status_code),
-                model_used: model,
-                tested_at,
-                retry_count: 0,
-                error_category: None,
-            },
+            Ok(probe) => {
+                let usage = probe.usage.unwrap_or_default();
+                StreamCheckResult {
+                    status: Self::determine_status(response_time, degraded_threshold_ms),
+                    success: true,
+                    message: "Check succeeded".to_string(),
+                    response_time_ms: Some(response_time),
+                    http_status: Some(probe.status_code),
+                    model_used: usage.model.clone().unwrap_or(probe.model),
+                    tested_at,
+                    retry_count: 0,
+                    error_category: None,
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_read_tokens: usage.cache_read_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens,
+                }
+            }
             Err(e) => {
                 let (http_status, message, error_category) = match &e {
                     AppError::HttpStatus { status, body } => {
@@ -1145,6 +1223,10 @@ impl StreamCheckService {
                     tested_at,
                     retry_count: 0,
                     error_category,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
                 }
             }
         }
@@ -2539,6 +2621,24 @@ mod tests {
             "Bad request (400): Invalid Gemini request shape from share proxy"
         );
         assert_eq!(result.http_status, Some(400));
+    }
+
+    #[test]
+    fn codex_stream_check_parses_responses_usage() {
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":4}}}}\n\n"
+        );
+
+        let events = StreamCheckService::parse_sse_json_events(sse).unwrap();
+        let usage = TokenUsage::from_codex_stream_events_auto(&events).unwrap();
+
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.cache_read_tokens, 4);
+        assert_eq!(usage.model.as_deref(), Some("gpt-5.5"));
     }
 
     #[test]

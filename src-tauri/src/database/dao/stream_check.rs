@@ -18,8 +18,9 @@ impl Database {
         conn.execute(
             "INSERT INTO stream_check_logs 
              (provider_id, provider_name, app_type, status, success, message, 
-              response_time_ms, http_status, model_used, retry_count, tested_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+              response_time_ms, http_status, model_used, retry_count, tested_at,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             rusqlite::params![
                 provider_id,
                 provider_name,
@@ -32,6 +33,10 @@ impl Database {
                 result.model_used,
                 result.retry_count as i64,
                 result.tested_at,
+                result.input_tokens as i64,
+                result.output_tokens as i64,
+                result.cache_read_tokens as i64,
+                result.cache_creation_tokens as i64,
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;

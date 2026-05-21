@@ -241,7 +241,11 @@ impl Database {
             id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id TEXT NOT NULL, provider_name TEXT NOT NULL,
             app_type TEXT NOT NULL, status TEXT NOT NULL, success INTEGER NOT NULL, message TEXT NOT NULL,
             response_time_ms INTEGER, http_status INTEGER, model_used TEXT,
-            retry_count INTEGER DEFAULT 0, tested_at INTEGER NOT NULL
+            retry_count INTEGER DEFAULT 0, tested_at INTEGER NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
         conn.execute(
@@ -520,6 +524,11 @@ impl Database {
                         log::info!("迁移数据库从 v18 到 v19（Share 全局 ForSale 定价）");
                         Self::migrate_v18_to_v19(conn)?;
                         Self::set_user_version(conn, 19)?;
+                    }
+                    19 => {
+                        log::info!("迁移数据库从 v19 到 v20（模型测试日志 Token 使用量）");
+                        Self::migrate_v19_to_v20(conn)?;
+                        Self::set_user_version(conn, 20)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1478,6 +1487,38 @@ impl Database {
         }
 
         log::info!("v18 -> v19 迁移完成：shares 表增加全局 ForSale 定价字段");
+        Ok(())
+    }
+
+    fn migrate_v19_to_v20(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "stream_check_logs")? {
+            Self::add_column_if_missing(
+                conn,
+                "stream_check_logs",
+                "input_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "stream_check_logs",
+                "output_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "stream_check_logs",
+                "cache_read_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "stream_check_logs",
+                "cache_creation_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+
+        log::info!("v19 -> v20 迁移完成：stream_check_logs 增加 Token 使用量字段");
         Ok(())
     }
 

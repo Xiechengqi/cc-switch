@@ -254,6 +254,10 @@ pub async fn stream_check_all_providers(
                 tested_at: chrono::Utc::now().timestamp(),
                 retry_count: 0,
                 error_category: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             }
         });
 
@@ -327,6 +331,10 @@ async fn check_deepseek_account_provider(
                     tested_at,
                     retry_count: 0,
                     error_category: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
                 }
             } else {
                 StreamCheckResult {
@@ -342,6 +350,10 @@ async fn check_deepseek_account_provider(
                     tested_at,
                     retry_count: 0,
                     error_category: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
                 }
             }
         }
@@ -355,6 +367,10 @@ async fn check_deepseek_account_provider(
             tested_at,
             retry_count: 0,
             error_category: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         },
     }
 }

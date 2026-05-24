@@ -19,7 +19,9 @@ use tokio::task::JoinHandle;
 use super::copilot_auth::GitHubAccount;
 
 const KIRO_PORTAL_URL: &str = "https://app.kiro.dev";
-const CALLBACK_PORT: u16 = 54547;
+const CALLBACK_PORTS: &[u16] = &[
+    3128, 4649, 6588, 8008, 9091, 49153, 50153, 51153, 52153, 53153,
+];
 const CALLBACK_PATH: &str = "/oauth/callback";
 const CALLBACK_TIMEOUT_SECS: u64 = 300;
 const TOKEN_REFRESH_BUFFER_MS: i64 = 60_000;
@@ -242,6 +244,7 @@ impl CachedAccessToken {
 #[derive(Debug, Clone)]
 struct PendingOAuthFlow {
     code_verifier: String,
+    redirect_uri: String,
     expires_at_ms: i64,
 }
 
@@ -346,12 +349,12 @@ impl KiroOAuthManager {
     }
 
     pub async fn start_browser_flow(&self) -> Result<KiroOAuthStartResponse, KiroOAuthError> {
-        use tokio::net::TcpListener;
-
         let code_verifier = Self::generate_code_verifier();
         let code_challenge = Self::generate_code_challenge(&code_verifier);
         let state = Self::generate_state();
-        let redirect_uri = format!("http://127.0.0.1:{CALLBACK_PORT}");
+
+        let (listener, callback_port) = Self::bind_callback_listener().await?;
+        let redirect_uri = format!("http://127.0.0.1:{callback_port}");
         let auth_url = format!(
             "{KIRO_PORTAL_URL}/signin?state={}&code_challenge={}&code_challenge_method=S256&redirect_uri={}&redirect_from=KiroIDE",
             urlencoding::encode(&state),
@@ -368,11 +371,6 @@ impl KiroOAuthManager {
         }
         self.flow_results.write().await.clear();
 
-        let addr = format!("127.0.0.1:{CALLBACK_PORT}");
-        let listener = TcpListener::bind(&addr).await.map_err(|e| {
-            KiroOAuthError::CallbackServerError(format!("无法绑定回调端口 {CALLBACK_PORT}: {e}"))
-        })?;
-
         let expires_at_ms =
             chrono::Utc::now().timestamp_millis() + (CALLBACK_TIMEOUT_SECS as i64) * 1000;
         {
@@ -383,6 +381,7 @@ impl KiroOAuthManager {
                 state.clone(),
                 PendingOAuthFlow {
                     code_verifier,
+                    redirect_uri,
                     expires_at_ms,
                 },
             );
@@ -408,8 +407,25 @@ impl KiroOAuthManager {
         Ok(KiroOAuthStartResponse {
             auth_url,
             state,
-            callback_port: CALLBACK_PORT,
+            callback_port,
         })
+    }
+
+    async fn bind_callback_listener() -> Result<(tokio::net::TcpListener, u16), KiroOAuthError> {
+        let mut errors = Vec::new();
+        for port in CALLBACK_PORTS {
+            let addr = format!("127.0.0.1:{port}");
+            match tokio::net::TcpListener::bind(&addr).await {
+                Ok(listener) => return Ok((listener, *port)),
+                Err(err) => errors.push(format!("{port}: {err}")),
+            }
+        }
+
+        Err(KiroOAuthError::CallbackServerError(format!(
+            "无法绑定 Kiro OAuth 回调端口，已尝试 {:?}: {}",
+            CALLBACK_PORTS,
+            errors.join("; ")
+        )))
     }
 
     pub async fn poll_callback_result(
@@ -459,10 +475,11 @@ impl KiroOAuthManager {
             .ok_or_else(|| KiroOAuthError::TokenFetchFailed("OAuth 流程已过期".to_string()))?;
 
         let redirect_uri = if result.login_option.is_empty() {
-            format!("http://127.0.0.1:{CALLBACK_PORT}{}", result.path)
+            format!("{}{}", flow.redirect_uri, result.path)
         } else {
             format!(
-                "http://127.0.0.1:{CALLBACK_PORT}{}?login_option={}",
+                "{}{}?login_option={}",
+                flow.redirect_uri,
                 result.path,
                 urlencoding::encode(&result.login_option)
             )

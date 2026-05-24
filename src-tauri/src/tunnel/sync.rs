@@ -835,6 +835,9 @@ async fn build_official_oauth_snapshot(
         AppType::Claude if provider.is_claude_oauth_provider() => {
             build_claude_oauth_snapshot(provider).await
         }
+        AppType::Claude if provider.is_github_copilot() => {
+            build_github_copilot_snapshot(provider).await
+        }
         AppType::Gemini
             if provider.is_google_gemini_oauth_provider()
                 || provider.is_google_gemini_official_with_managed_auth() =>
@@ -896,6 +899,39 @@ async fn build_claude_oauth_snapshot(provider: &Provider) -> Option<ShareUpstrea
         .and_then(|id| account_login(&accounts, id));
     let quota = match account_id.as_deref() {
         Some(id) => cached_upstream_quota("claude_oauth", id).await,
+        None => None,
+    };
+
+    Some(ShareUpstreamProvider {
+        kind: "official_oauth".to_string(),
+        app: "claude".to_string(),
+        provider_name: Some(provider.name.clone()),
+        for_sale_official_price_percent: provider_sale_percent(provider),
+        account_email,
+        api_url: None,
+        quota,
+        models: Vec::new(),
+    })
+}
+
+async fn build_github_copilot_snapshot(provider: &Provider) -> Option<ShareUpstreamProvider> {
+    use crate::proxy::providers::copilot_auth::CopilotAuthManager;
+
+    let manager = CopilotAuthManager::new(crate::config::get_app_config_dir());
+    let bound_account_id = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("github_copilot"));
+    let account_id = match bound_account_id {
+        Some(id) if !id.trim().is_empty() => Some(id),
+        _ => manager.default_account_id().await,
+    };
+    let accounts = manager.list_accounts().await;
+    let account_email = account_id
+        .as_deref()
+        .and_then(|id| account_login(&accounts, id));
+    let quota = match account_id.as_deref() {
+        Some(id) => cached_upstream_quota("github_copilot", id).await,
         None => None,
     };
 
@@ -978,6 +1014,7 @@ fn subscription_quota_to_upstream(
     };
     ShareUpstreamQuota {
         status: status.to_string(),
+        plan: quota.credential_message,
         queried_at: quota.queried_at,
         tiers: quota
             .tiers
@@ -995,6 +1032,7 @@ fn quota_tier_label(name: &str) -> String {
     match name {
         "five_hour" => "5h".to_string(),
         "seven_day" => "1w".to_string(),
+        "premium" => "premium".to_string(),
         other => other.replace('_', " "),
     }
 }
@@ -1540,5 +1578,34 @@ mod tests {
             custom_provider_api_url(&AppType::Codex, &provider).as_deref(),
             Some("https://codex-api.example/v1")
         );
+    }
+
+    #[test]
+    fn subscription_quota_to_upstream_preserves_plan_and_premium_tier() {
+        let quota = crate::services::subscription::SubscriptionQuota {
+            tool: "github_copilot".to_string(),
+            credential_status: crate::services::subscription::CredentialStatus::Valid,
+            credential_message: Some("individual".to_string()),
+            success: true,
+            tiers: vec![crate::services::subscription::QuotaTier {
+                name: "premium".to_string(),
+                utilization: 12.0,
+                resets_at: Some("2026-05-31T00:00:00Z".to_string()),
+                used: None,
+                limit: None,
+                unit: None,
+            }],
+            extra_usage: None,
+            error: None,
+            queried_at: Some(1_774_000_000),
+            failure: None,
+        };
+
+        let upstream = subscription_quota_to_upstream(quota);
+
+        assert_eq!(upstream.status, "ok");
+        assert_eq!(upstream.plan.as_deref(), Some("individual"));
+        assert_eq!(upstream.tiers[0].label, "premium");
+        assert_eq!(upstream.tiers[0].utilization, 12.0);
     }
 }

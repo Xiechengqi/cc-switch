@@ -4,7 +4,8 @@ export type ManagedAuthProvider =
   | "github_copilot"
   | "codex_oauth"
   | "claude_oauth"
-  | "google_gemini_oauth";
+  | "google_gemini_oauth"
+  | "kiro_oauth";
 
 export interface DeepSeekAccount {
   id: string;

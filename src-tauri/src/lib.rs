@@ -995,6 +995,18 @@ pub fn run() {
                 log::info!("✓ GeminiOAuthManager initialized");
             }
 
+            // 初始化 KiroOAuthManager (Kiro OAuth)
+            {
+                use crate::proxy::providers::kiro_oauth_auth::KiroOAuthManager;
+                use commands::KiroOAuthState;
+                use tokio::sync::RwLock;
+
+                let app_config_dir = crate::config::get_app_config_dir();
+                let kiro_oauth_manager = KiroOAuthManager::new(app_config_dir);
+                app.manage(KiroOAuthState(Arc::new(RwLock::new(kiro_oauth_manager))));
+                log::info!("✓ KiroOAuthManager initialized");
+            }
+
             // 初始化 DeepSeekAccountManager (DeepSeek 账号)
             {
                 use crate::proxy::providers::deepseek_account_auth::DeepSeekAccountManager;
@@ -1024,11 +1036,13 @@ pub fn run() {
                 let claude_state = app.state::<commands::ClaudeOAuthState>();
                 let gemini_state = app.state::<commands::GeminiOAuthState>();
                 let copilot_state = app.state::<commands::CopilotAuthState>();
+                let kiro_state = app.state::<commands::KiroOAuthState>();
                 let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
                     &codex_state,
                     &claude_state,
                     &gemini_state,
                     &copilot_state,
+                    &kiro_state,
                 );
                 crate::services::oauth_quota::spawn_oauth_quota_refresher(
                     app.handle().clone(),

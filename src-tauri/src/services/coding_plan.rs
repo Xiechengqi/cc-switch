@@ -147,6 +147,9 @@ async fn query_kimi(api_key: &str) -> SubscriptionQuota {
                     name: "five_hour".to_string(),
                     utilization,
                     resets_at,
+                    used: None,
+                    limit: None,
+                    unit: None,
                 });
             }
         }
@@ -168,6 +171,9 @@ async fn query_kimi(api_key: &str) -> SubscriptionQuota {
             name: "weekly_limit".to_string(),
             utilization,
             resets_at,
+            used: None,
+            limit: None,
+            unit: None,
         });
     }
 
@@ -235,6 +241,9 @@ fn parse_zhipu_token_tiers(data: &serde_json::Value) -> Vec<QuotaTier> {
                 name: name.to_string(),
                 utilization: percentage,
                 resets_at,
+                used: None,
+                limit: None,
+                unit: None,
             })
         })
         .collect()
@@ -404,6 +413,9 @@ async fn query_minimax(api_key: &str, is_cn: bool) -> SubscriptionQuota {
                     name: "five_hour".to_string(),
                     utilization: ((interval_total - interval_remaining) / interval_total) * 100.0,
                     resets_at: end_time.and_then(millis_to_iso8601),
+                    used: None,
+                    limit: None,
+                    unit: None,
                 });
             }
 
@@ -423,6 +435,9 @@ async fn query_minimax(api_key: &str, is_cn: bool) -> SubscriptionQuota {
                     name: "weekly_limit".to_string(),
                     utilization: ((weekly_total - weekly_remaining) / weekly_total) * 100.0,
                     resets_at: weekly_end.and_then(millis_to_iso8601),
+                    used: None,
+                    limit: None,
+                    unit: None,
                 });
             }
         }

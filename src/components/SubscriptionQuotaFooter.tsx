@@ -37,6 +37,8 @@ export const TIER_I18N_KEYS: Record<string, string> = {
   weekly_limit: "subscription.sevenDay",
   // GitHub Copilot
   premium: "subscription.copilotPremium",
+  // Kiro OAuth
+  kiro_agentic_requests: "subscription.kiroAgenticRequests",
 };
 
 /** 根据使用百分比返回颜色 class */
@@ -78,7 +80,7 @@ const HIDDEN_INLINE_TIERS = new Set(["seven_day_sonnet", "seven_day_omelette"]);
 const SUPPRESSED_TIERS = new Set(["seven_day_omelette"]);
 
 /** 格式化相对时间（与 UsageFooter 一致） */
-function formatRelativeTime(
+export function formatRelativeTime(
   timestamp: number,
   now: number,
   t: (key: string, options?: { count?: number }) => string,

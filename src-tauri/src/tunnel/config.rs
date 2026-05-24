@@ -179,6 +179,8 @@ pub struct ShareUpstreamQuotaTier {
 pub struct ShareUpstreamQuota {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queried_at: Option<i64>,
     #[serde(default)]
     pub tiers: Vec<ShareUpstreamQuotaTier>,

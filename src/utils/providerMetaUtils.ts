@@ -100,6 +100,7 @@ export function isManagedOauthProvider(
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
     (appId === "codex" && isCodexOfficialWithManagedAuth(provider)) ||
     (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider))
@@ -120,7 +121,8 @@ export function canTestProvider(
 
   if (
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
-    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH
+    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH
   ) {
     return true;
   }
@@ -151,6 +153,7 @@ export type ProviderQuotaSource =
   | "codex_oauth"
   | "claude_oauth"
   | "google_gemini_oauth"
+  | "kiro_oauth"
   | "official"
   | "none";
 
@@ -179,6 +182,10 @@ export function getProviderQuotaSource(
 
   if (provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH) {
     return "google_gemini_oauth";
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH) {
+    return "kiro_oauth";
   }
 
   if (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider)) {

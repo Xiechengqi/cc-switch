@@ -32,6 +32,15 @@ pub struct QuotaTier {
     pub utilization: f64,
     /// ISO 8601 重置时间
     pub resets_at: Option<String>,
+    /// 原始已用量（Kiro Credits 等非时间窗口额度使用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<f64>,
+    /// 原始额度上限（Kiro Credits 等非时间窗口额度使用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<f64>,
+    /// 原始额度单位
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
 }
 
 /// 超额使用信息
@@ -513,6 +522,9 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
                         name: normalize_claude_tier_name(tier_name).to_string(),
                         utilization: util,
                         resets_at: w.resets_at,
+                        used: None,
+                        limit: None,
+                        unit: None,
                     });
                 }
             }
@@ -531,6 +543,9 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
                         name: normalize_claude_tier_name(key).to_string(),
                         utilization: util,
                         resets_at: w.resets_at,
+                        used: None,
+                        limit: None,
+                        unit: None,
                     });
                 }
             }
@@ -856,6 +871,9 @@ pub(crate) async fn query_codex_quota(
                         .unwrap_or_else(|| "unknown".to_string()),
                     utilization: used,
                     resets_at: window.reset_at.and_then(unix_ts_to_iso),
+                    used: None,
+                    limit: None,
+                    unit: None,
                 });
             }
         }
@@ -1327,6 +1345,9 @@ async fn query_gemini_quota(access_token: &str) -> SubscriptionQuota {
             name,
             utilization: (1.0 - remaining) * 100.0,
             resets_at: reset_time,
+            used: None,
+            limit: None,
+            unit: None,
         })
         .collect();
 

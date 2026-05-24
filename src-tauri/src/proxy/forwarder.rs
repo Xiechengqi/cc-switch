@@ -940,6 +940,16 @@ impl RequestForwarder {
             return Ok((response, Some("anthropic".to_string())));
         }
 
+        if matches!(app_type, AppType::Claude) && provider.is_kiro_oauth_provider() {
+            let response = super::providers::kiro_claude::forward_kiro_claude(
+                self.app_handle.as_ref(),
+                provider,
+                body,
+            )
+            .await?;
+            return Ok((response, Some("anthropic".to_string())));
+        }
+
         // Gemini Official/OAuth 对齐 Claude/Codex official：本地代理不要求用户配置
         // base_url，后续会直接改写到 Code Assist 内部接口。
         let mut base_url = extract_forward_base_url(app_type, provider, adapter)?;

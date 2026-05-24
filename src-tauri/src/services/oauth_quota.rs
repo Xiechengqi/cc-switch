@@ -7,13 +7,16 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{broadcast, RwLock};
 
 use crate::app_config::AppType;
-use crate::commands::{ClaudeOAuthState, CodexOAuthState, CopilotAuthState, GeminiOAuthState};
+use crate::commands::{
+    ClaudeOAuthState, CodexOAuthState, CopilotAuthState, GeminiOAuthState, KiroOAuthState,
+};
 use crate::database::Database;
 use crate::provider::Provider;
 use crate::proxy::providers::claude_oauth_auth::ClaudeOAuthManager;
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::{CopilotAuthManager, CopilotUsageResponse};
 use crate::proxy::providers::gemini_oauth_auth::GeminiOAuthManager;
+use crate::proxy::providers::kiro_oauth_auth::{KiroOAuthManager, KiroUsageLimitsResponse};
 use crate::services::subscription::{
     query_claude_quota_with_token, query_codex_quota, query_gemini_quota_with_token,
     CredentialStatus, QuotaTier, SubscriptionQuota,
@@ -253,6 +256,7 @@ impl OauthQuotaService {
             "claude_oauth" => refresh_claude_quota(managers, &target.account_id).await,
             "google_gemini_oauth" => refresh_gemini_quota(managers, &target.account_id).await,
             "github_copilot" => refresh_copilot_quota(managers, &target.account_id).await,
+            "kiro_oauth" => refresh_kiro_quota(managers, &target.account_id).await,
             other => SubscriptionQuota::error(
                 other,
                 CredentialStatus::NotFound,
@@ -334,6 +338,7 @@ pub struct OauthQuotaManagers {
     pub claude: Arc<RwLock<ClaudeOAuthManager>>,
     pub gemini: Arc<RwLock<GeminiOAuthManager>>,
     pub copilot: Arc<RwLock<CopilotAuthManager>>,
+    pub kiro: Arc<RwLock<KiroOAuthManager>>,
 }
 
 impl OauthQuotaManagers {
@@ -342,12 +347,14 @@ impl OauthQuotaManagers {
         claude: &ClaudeOAuthState,
         gemini: &GeminiOAuthState,
         copilot: &CopilotAuthState,
+        kiro: &KiroOAuthState,
     ) -> Self {
         Self {
             codex: Arc::clone(&codex.0),
             claude: Arc::clone(&claude.0),
             gemini: Arc::clone(&gemini.0),
             copilot: Arc::clone(&copilot.0),
+            kiro: Arc::clone(&kiro.0),
         }
     }
 }
@@ -376,6 +383,9 @@ fn provider_auth_provider(app_type: &AppType, provider: &Provider) -> Option<Str
         .and_then(|meta| meta.provider_type.as_deref());
     if matches!(app_type, AppType::Claude) && provider_type == Some("claude_oauth") {
         return Some("claude_oauth".to_string());
+    }
+    if matches!(app_type, AppType::Claude) && provider_type == Some("kiro_oauth") {
+        return Some("kiro_oauth".to_string());
     }
     if matches!(app_type, AppType::Claude)
         && (provider_type == Some("github_copilot")
@@ -418,6 +428,7 @@ async fn resolve_provider_account_id(
     match auth_provider {
         "codex_oauth" => managers.codex.read().await.default_account_id().await,
         "claude_oauth" => managers.claude.read().await.default_account_id().await,
+        "kiro_oauth" => managers.kiro.read().await.default_account_id().await,
         "google_gemini_oauth" => managers.gemini.read().await.default_account_id().await,
         "github_copilot" => managers
             .copilot
@@ -444,6 +455,7 @@ pub async fn resolve_account_id_for_auth_provider(
     match auth_provider {
         "codex_oauth" => managers.codex.read().await.default_account_id().await,
         "claude_oauth" => managers.claude.read().await.default_account_id().await,
+        "kiro_oauth" => managers.kiro.read().await.default_account_id().await,
         "google_gemini_oauth" => managers.gemini.read().await.default_account_id().await,
         "github_copilot" => managers
             .copilot
@@ -522,6 +534,74 @@ async fn refresh_gemini_quota(
     }
 }
 
+async fn refresh_kiro_quota(managers: &OauthQuotaManagers, account_id: &str) -> SubscriptionQuota {
+    let manager = managers.kiro.read().await;
+    match manager.get_usage_limits_for_account(account_id).await {
+        Ok(usage) => kiro_usage_to_subscription_quota(usage),
+        Err(err) => SubscriptionQuota::error(
+            "kiro_oauth",
+            CredentialStatus::Expired,
+            format!("Kiro OAuth usage limits unavailable: {err}"),
+        ),
+    }
+}
+
+fn kiro_usage_to_subscription_quota(usage: KiroUsageLimitsResponse) -> SubscriptionQuota {
+    let current_usage = usage.current_usage();
+    let usage_limit = usage.usage_limit();
+    let utilization = if usage_limit > 0.0 {
+        (current_usage / usage_limit) * 100.0
+    } else {
+        0.0
+    };
+    let resets_at = usage.next_reset_timestamp().and_then(timestamp_to_rfc3339);
+    let credential_message = usage
+        .subscription_title()
+        .map(str::to_string)
+        .or_else(|| Some("Kiro OAuth".to_string()));
+    let extra_usage =
+        usage
+            .overage_enabled()
+            .map(|enabled| crate::services::subscription::ExtraUsage {
+                is_enabled: enabled,
+                monthly_limit: None,
+                used_credits: None,
+                utilization: None,
+                currency: None,
+            });
+
+    SubscriptionQuota {
+        tool: "kiro_oauth".to_string(),
+        credential_status: CredentialStatus::Valid,
+        credential_message,
+        success: true,
+        tiers: vec![QuotaTier {
+            name: "kiro_agentic_requests".to_string(),
+            utilization,
+            resets_at,
+            used: Some(current_usage),
+            limit: Some(usage_limit),
+            unit: Some("credits".to_string()),
+        }],
+        extra_usage,
+        error: None,
+        queried_at: Some(now_millis()),
+        failure: None,
+    }
+}
+
+fn timestamp_to_rfc3339(value: f64) -> Option<String> {
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    let millis = if value > 1_000_000_000_000.0 {
+        value.round() as i64
+    } else {
+        (value * 1000.0).round() as i64
+    };
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis).map(|dt| dt.to_rfc3339())
+}
+
 fn copilot_usage_to_subscription_quota(usage: CopilotUsageResponse) -> SubscriptionQuota {
     let premium = usage.quota_snapshots.premium_interactions;
     let utilization = if premium.entitlement > 0 {
@@ -538,6 +618,9 @@ fn copilot_usage_to_subscription_quota(usage: CopilotUsageResponse) -> Subscript
             name: "premium".to_string(),
             utilization,
             resets_at: Some(usage.quota_reset_date),
+            used: None,
+            limit: None,
+            unit: None,
         }],
         extra_usage: None,
         error: None,
@@ -567,4 +650,74 @@ fn read_refresh_interval() -> Duration {
 
 fn now_millis() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proxy::providers::kiro_oauth_auth::{
+        KiroBonus, KiroFreeTrialInfo, KiroOverageConfiguration, KiroSubscriptionInfo,
+        KiroUsageBreakdown, KiroUsageLimitsResponse,
+    };
+
+    #[test]
+    fn kiro_usage_maps_to_agentic_requests_tier() {
+        let quota = kiro_usage_to_subscription_quota(KiroUsageLimitsResponse {
+            next_date_reset: Some(1_774_000_000.0),
+            subscription_info: Some(KiroSubscriptionInfo {
+                subscription_title: Some("KIRO PRO+".to_string()),
+                overage_capability: Some("OVERAGE_CAPABLE".to_string()),
+            }),
+            usage_breakdown_list: vec![KiroUsageBreakdown {
+                current_usage_with_precision: 40.0,
+                bonuses: vec![
+                    KiroBonus {
+                        current_usage: 5.0,
+                        usage_limit: 10.0,
+                        status: Some("ACTIVE".to_string()),
+                    },
+                    KiroBonus {
+                        current_usage: 100.0,
+                        usage_limit: 100.0,
+                        status: Some("EXPIRED".to_string()),
+                    },
+                ],
+                free_trial_info: Some(KiroFreeTrialInfo {
+                    current_usage_with_precision: 5.0,
+                    free_trial_status: Some("ACTIVE".to_string()),
+                    usage_limit_with_precision: 10.0,
+                }),
+                next_date_reset: None,
+                usage_limit_with_precision: 80.0,
+            }],
+            overage_configuration: Some(KiroOverageConfiguration {
+                overage_enabled: Some(true),
+                overage_status: None,
+            }),
+        });
+
+        assert!(quota.success);
+        assert_eq!(quota.tool, "kiro_oauth");
+        assert_eq!(quota.credential_message.as_deref(), Some("KIRO PRO+"));
+        assert_eq!(quota.tiers.len(), 1);
+        assert_eq!(quota.tiers[0].name, "kiro_agentic_requests");
+        assert_eq!(quota.tiers[0].utilization, 50.0);
+        assert_eq!(quota.tiers[0].used, Some(50.0));
+        assert_eq!(quota.tiers[0].limit, Some(100.0));
+        assert_eq!(quota.tiers[0].unit.as_deref(), Some("credits"));
+        assert!(quota.tiers[0].resets_at.is_some());
+        assert_eq!(
+            quota.extra_usage.as_ref().map(|item| item.is_enabled),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn timestamp_to_rfc3339_accepts_seconds_and_millis() {
+        assert_eq!(
+            timestamp_to_rfc3339(1_774_000_000.0),
+            timestamp_to_rfc3339(1_774_000_000_000.0)
+        );
+        assert!(timestamp_to_rfc3339(0.0).is_none());
+    }
 }

@@ -28,6 +28,8 @@ mod gemini;
 pub mod gemini_oauth_auth;
 pub(crate) mod gemini_schema;
 pub mod gemini_shadow;
+pub mod kiro_claude;
+pub mod kiro_oauth_auth;
 pub mod models;
 pub mod streaming;
 pub mod streaming_codex_chat;
@@ -80,6 +82,8 @@ pub enum ProviderType {
     ClaudeOAuth,
     /// DeepSeek Account (DeepSeek Web 账号，Claude Messages API 本地适配)
     DeepSeekAccount,
+    /// Kiro OAuth (Kiro 账号，Claude Messages API 本地适配)
+    KiroOAuth,
 }
 
 impl ProviderType {
@@ -95,6 +99,7 @@ impl ProviderType {
             ProviderType::CodexOAuth => true,
             ProviderType::OpenRouter => false,
             ProviderType::DeepSeekAccount => false,
+            ProviderType::KiroOAuth => false,
             _ => false,
         }
     }
@@ -114,6 +119,7 @@ impl ProviderType {
             ProviderType::GitHubCopilot => "https://api.githubcopilot.com",
             ProviderType::CodexOAuth => "https://chatgpt.com/backend-api/codex",
             ProviderType::DeepSeekAccount => "https://chat.deepseek.com",
+            ProviderType::KiroOAuth => "https://q.us-east-1.amazonaws.com",
         }
     }
 
@@ -145,6 +151,9 @@ impl ProviderType {
                     }
                     if meta.provider_type.as_deref() == Some("deepseek_account") {
                         return ProviderType::DeepSeekAccount;
+                    }
+                    if meta.provider_type.as_deref() == Some("kiro_oauth") {
+                        return ProviderType::KiroOAuth;
                     }
                 }
 
@@ -227,6 +236,7 @@ impl ProviderType {
             ProviderType::CodexOAuth => "codex_oauth",
             ProviderType::ClaudeOAuth => "claude_oauth",
             ProviderType::DeepSeekAccount => "deepseek_account",
+            ProviderType::KiroOAuth => "kiro_oauth",
         }
     }
 }
@@ -256,6 +266,7 @@ impl std::str::FromStr for ProviderType {
             "deepseek_account" | "deepseek-account" | "deepseekaccount" => {
                 Ok(ProviderType::DeepSeekAccount)
             }
+            "kiro_oauth" | "kiro-oauth" | "kirooauth" => Ok(ProviderType::KiroOAuth),
             _ => Err(format!("Invalid provider type: {s}")),
         }
     }
@@ -284,7 +295,8 @@ pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> Box<dyn Pr
         | ProviderType::GitHubCopilot
         | ProviderType::CodexOAuth
         | ProviderType::ClaudeOAuth
-        | ProviderType::DeepSeekAccount => Box::new(ClaudeAdapter::new()),
+        | ProviderType::DeepSeekAccount
+        | ProviderType::KiroOAuth => Box::new(ClaudeAdapter::new()),
         ProviderType::Codex => Box::new(CodexAdapter::new()),
         ProviderType::Gemini | ProviderType::GeminiCli => Box::new(GeminiAdapter::new()),
     }

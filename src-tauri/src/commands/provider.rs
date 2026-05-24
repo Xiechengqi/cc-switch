@@ -118,6 +118,7 @@ pub fn switch_provider(
     claude_state: State<'_, crate::commands::ClaudeOAuthState>,
     gemini_state: State<'_, crate::commands::GeminiOAuthState>,
     copilot_state: State<'_, crate::commands::CopilotAuthState>,
+    kiro_state: State<'_, crate::commands::KiroOAuthState>,
     app: String,
     id: String,
 ) -> Result<SwitchResult, String> {
@@ -132,6 +133,7 @@ pub fn switch_provider(
         &claude_state,
         &gemini_state,
         &copilot_state,
+        &kiro_state,
     );
     tauri::async_runtime::spawn(async move {
         service

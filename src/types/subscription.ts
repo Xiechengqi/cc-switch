@@ -8,6 +8,9 @@ export interface QuotaTier {
   name: string;
   utilization: number; // 0-100
   resetsAt: string | null;
+  used?: number | null;
+  limit?: number | null;
+  unit?: string | null;
 }
 
 export interface ExtraUsage {

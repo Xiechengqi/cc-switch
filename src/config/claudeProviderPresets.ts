@@ -60,12 +60,14 @@ export interface ProviderPreset {
   // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
   // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
   // - "claude_oauth": Claude 官方订阅 OAuth（Anthropic 官方）
+  // - "kiro_oauth": Kiro OAuth 账号反代 Anthropic API
   // - "deepseek_account": DeepSeek 账号
   providerType?:
     | "github_copilot"
     | "codex_oauth"
     | "claude_oauth"
     | "google_gemini_oauth"
+    | "kiro_oauth"
     | "deepseek_account";
 
   // 是否需要 OAuth 认证（而非 API Key）
@@ -97,6 +99,30 @@ export const providerPresets: ProviderPreset[] = [
     },
     icon: "anthropic",
     iconColor: "#D4915D",
+  },
+  {
+    name: "Kiro OAuth",
+    websiteUrl: "https://kiro.dev",
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: "https://q.us-east-1.amazonaws.com",
+        ANTHROPIC_MODEL: "claude-sonnet-4-5",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-5",
+      },
+    },
+    isOfficial: true,
+    category: "official",
+    providerType: "kiro_oauth",
+    requiresOAuth: true,
+    theme: {
+      icon: "generic",
+      backgroundColor: "#111827",
+      textColor: "#FFFFFF",
+    },
+    icon: "generic",
+    iconColor: "#111827",
   },
   {
     name: "OpenAI Official",

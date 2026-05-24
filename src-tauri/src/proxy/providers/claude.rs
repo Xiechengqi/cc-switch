@@ -230,6 +230,7 @@ impl ClaudeAdapter {
     /// - ClaudeOAuth: meta.provider_type 为 claude_oauth
     /// - GitHubCopilot: meta.provider_type 为 github_copilot 或 base_url 包含 githubcopilot.com
     /// - CodexOAuth: meta.provider_type 为 codex_oauth
+    /// - KiroOAuth: meta.provider_type 为 kiro_oauth
     /// - OpenRouter: base_url 包含 openrouter.ai
     /// - ClaudeAuth: auth_mode 为 bearer_only
     /// - Claude: 默认 Anthropic 官方
@@ -237,6 +238,10 @@ impl ClaudeAdapter {
         // 检测 Claude OAuth（官方订阅）
         if self.is_claude_oauth(provider) {
             return ProviderType::ClaudeOAuth;
+        }
+
+        if self.is_kiro_oauth(provider) {
+            return ProviderType::KiroOAuth;
         }
 
         // 检测 Gemini Native 格式
@@ -290,6 +295,14 @@ impl ClaudeAdapter {
             }
         }
         false
+    }
+
+    fn is_kiro_oauth(&self, provider: &Provider) -> bool {
+        provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("kiro_oauth")
     }
 
     /// 检测是否为 GitHub Copilot 供应商

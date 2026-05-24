@@ -19,6 +19,7 @@ import CopilotQuotaFooter from "@/components/CopilotQuotaFooter";
 import CodexOauthQuotaFooter from "@/components/CodexOauthQuotaFooter";
 import ClaudeOauthQuotaFooter from "@/components/ClaudeOauthQuotaFooter";
 import GeminiOauthQuotaFooter from "@/components/GeminiOauthQuotaFooter";
+import KiroOauthQuotaFooter from "@/components/KiroOauthQuotaFooter";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
@@ -151,6 +152,7 @@ const quotaSourceToAuthProvider = (
   if (quotaSource === "claude_oauth") return PROVIDER_TYPES.CLAUDE_OAUTH;
   if (quotaSource === "google_gemini_oauth")
     return PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH;
+  if (quotaSource === "kiro_oauth") return PROVIDER_TYPES.KIRO_OAUTH;
   return null;
 };
 
@@ -479,6 +481,14 @@ export function ProviderCard({
                 />
               ) : quotaSource === "google_gemini_oauth" ? (
                 <GeminiOauthQuotaFooter
+                  meta={provider.meta}
+                  inline={true}
+                  appId={appId}
+                  providerId={provider.id}
+                  isCurrent={isCurrent}
+                />
+              ) : quotaSource === "kiro_oauth" ? (
+                <KiroOauthQuotaFooter
                   meta={provider.meta}
                   inline={true}
                   appId={appId}

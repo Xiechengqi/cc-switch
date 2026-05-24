@@ -37,6 +37,7 @@ import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
 import { CopilotAuthSection } from "./CopilotAuthSection";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { ClaudeOAuthSection } from "./ClaudeOAuthSection";
+import { KiroOAuthSection } from "./KiroOAuthSection";
 import { DeepSeekAccountSection } from "./DeepSeekAccountSection";
 import {
   copilotGetModels,
@@ -103,6 +104,11 @@ interface ClaudeFormFieldsProps {
   isClaudeOauthAuthenticated?: boolean;
   selectedClaudeAccountId?: string | null;
   onClaudeAccountSelect?: (accountId: string | null) => void;
+
+  // Kiro OAuth
+  isKiroOauthPreset?: boolean;
+  selectedKiroAccountId?: string | null;
+  onKiroAccountSelect?: (accountId: string | null) => void;
 
   // DeepSeek Account
   isDeepSeekAccountPreset?: boolean;
@@ -175,6 +181,9 @@ export function ClaudeFormFields({
   isClaudeOauthPreset,
   selectedClaudeAccountId,
   onClaudeAccountSelect,
+  isKiroOauthPreset,
+  selectedKiroAccountId,
+  onKiroAccountSelect,
   isDeepSeekAccountPreset,
   selectedDeepSeekAccountId,
   onDeepSeekAccountSelect,
@@ -593,6 +602,13 @@ export function ClaudeFormFields({
         <ClaudeOAuthSection
           selectedAccountId={selectedClaudeAccountId}
           onAccountSelect={onClaudeAccountSelect}
+        />
+      )}
+
+      {isKiroOauthPreset && (
+        <KiroOAuthSection
+          selectedAccountId={selectedKiroAccountId}
+          onAccountSelect={onKiroAccountSelect}
         />
       )}
 

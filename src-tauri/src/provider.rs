@@ -139,6 +139,13 @@ impl Provider {
             == Some("deepseek_account")
     }
 
+    pub fn is_kiro_oauth_provider(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("kiro_oauth")
+    }
+
     /// 是否为通过代理访问的托管 OAuth 官方订阅。
     pub fn is_managed_oauth_provider(&self) -> bool {
         self.is_codex_official_with_managed_auth()
@@ -152,6 +159,7 @@ impl Provider {
             || self.is_claude_oauth_provider()
             || self.is_google_gemini_oauth_provider()
             || self.is_deepseek_account_provider()
+            || self.is_kiro_oauth_provider()
             || self.is_google_gemini_official_with_managed_auth()
     }
 
@@ -168,7 +176,9 @@ impl Provider {
     pub fn supports_stream_check(&self, app_type: &AppType) -> bool {
         match app_type {
             AppType::Claude => {
-                self.is_claude_oauth_provider() || self.is_codex_official_with_managed_auth()
+                self.is_claude_oauth_provider()
+                    || self.is_kiro_oauth_provider()
+                    || self.is_codex_official_with_managed_auth()
             }
             AppType::Codex => self.is_codex_official_with_managed_auth(),
             AppType::Gemini => {
@@ -182,6 +192,9 @@ impl Provider {
     pub fn stream_check_base_url_override(&self, app_type: &AppType) -> Option<&'static str> {
         match app_type {
             AppType::Claude if self.is_claude_oauth_provider() => Some("https://api.anthropic.com"),
+            AppType::Claude if self.is_kiro_oauth_provider() => {
+                Some("https://q.us-east-1.amazonaws.com")
+            }
             AppType::Codex if self.is_codex_official_with_managed_auth() => {
                 Some("https://chatgpt.com/backend-api/codex")
             }

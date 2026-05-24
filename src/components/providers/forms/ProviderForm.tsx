@@ -101,6 +101,7 @@ import {
   useCodexOauth,
   useClaudeOauth,
   useGeminiOauth,
+  useKiroOauth,
   useDeepSeekAccount,
 } from "./hooks";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -453,6 +454,11 @@ function ProviderFormFull({
     defaultAccountId: defaultGeminiAccountId,
   } = useGeminiOauth();
   const {
+    isAuthenticated: isKiroOauthAuthenticated,
+    accounts: kiroOauthAccounts,
+    defaultAccountId: defaultKiroAccountId,
+  } = useKiroOauth();
+  const {
     isAuthenticated: isDeepSeekAccountAuthenticated,
     accounts: deepSeekAccounts,
     defaultAccountId: defaultDeepSeekAccountId,
@@ -478,6 +484,9 @@ function ProviderFormFull({
   const [selectedGeminiAccountId, setSelectedGeminiAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "google_gemini_oauth"));
+  const [selectedKiroAccountId, setSelectedKiroAccountId] = useState<
+    string | null
+  >(() => resolveManagedAccountId(initialData?.meta, "kiro_oauth"));
   const [selectedDeepSeekAccountId, setSelectedDeepSeekAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "deepseek_account"));
@@ -668,8 +677,27 @@ function ProviderFormFull({
     currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
     currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
+    currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
     currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
     isCodexOfficialPreset;
+
+  useEffect(() => {
+    const isKiroOauthPreset = currentProviderType === PROVIDER_TYPES.KIRO_OAUTH;
+    if (!isKiroOauthPreset || selectedKiroAccountId) {
+      return;
+    }
+
+    const preferredAccountId =
+      defaultKiroAccountId ?? kiroOauthAccounts[0]?.id ?? null;
+    if (preferredAccountId) {
+      setSelectedKiroAccountId(preferredAccountId);
+    }
+  }, [
+    currentProviderType,
+    defaultKiroAccountId,
+    kiroOauthAccounts,
+    selectedKiroAccountId,
+  ]);
 
   useEffect(() => {
     const isDeepSeekAccountPreset =
@@ -1123,6 +1151,9 @@ function ProviderFormFull({
     const isGeminiOauthProvider =
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
+    const isKiroOauthProvider =
+      templatePreset?.providerType === "kiro_oauth" ||
+      initialData?.meta?.providerType === "kiro_oauth";
     const isDeepSeekAccountProvider =
       templatePreset?.providerType === "deepseek_account" ||
       initialData?.meta?.providerType === "deepseek_account";
@@ -1187,6 +1218,24 @@ function ProviderFormFull({
         }),
       );
       return;
+    }
+    if (isKiroOauthProvider) {
+      if (!isKiroOauthAuthenticated) {
+        toast.error(
+          t("kiroOauth.loginRequired", {
+            defaultValue: "请先登录 Kiro 账号",
+          }),
+        );
+        return;
+      }
+      if (!selectedKiroAccountId) {
+        toast.error(
+          t("kiroOauth.selectAccountRequired", {
+            defaultValue: "Kiro OAuth 必须绑定一个 Kiro 账号",
+          }),
+        );
+        return;
+      }
     }
     if (isDeepSeekAccountProvider) {
       if (!isDeepSeekAccountAuthenticated) {
@@ -1323,6 +1372,9 @@ function ProviderFormFull({
     const isGeminiOauthProvider =
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
+    const isKiroOauthProvider =
+      templatePreset?.providerType === "kiro_oauth" ||
+      initialData?.meta?.providerType === "kiro_oauth";
     const isDeepSeekAccountProvider =
       templatePreset?.providerType === "deepseek_account" ||
       initialData?.meta?.providerType === "deepseek_account";
@@ -1524,13 +1576,19 @@ function ProviderFormFull({
                   authProvider: "google_gemini_oauth",
                   accountId: selectedGeminiAccountId ?? undefined,
                 }
-              : isDeepSeekAccountProvider
+              : isKiroOauthProvider
                 ? {
                     source: "managed_account",
-                    authProvider: "deepseek_account",
-                    accountId: selectedDeepSeekAccountId ?? undefined,
+                    authProvider: "kiro_oauth",
+                    accountId: selectedKiroAccountId ?? undefined,
                   }
-                : undefined,
+                : isDeepSeekAccountProvider
+                  ? {
+                      source: "managed_account",
+                      authProvider: "deepseek_account",
+                      accountId: selectedDeepSeekAccountId ?? undefined,
+                    }
+                  : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         isCopilotProvider && selectedGitHubAccountId
@@ -2160,6 +2218,10 @@ function ProviderFormFull({
                 templatePreset?.providerType === "claude_oauth" ||
                 initialData?.meta?.providerType === "claude_oauth"
               }
+              isKiroOauthPreset={
+                templatePreset?.providerType === "kiro_oauth" ||
+                initialData?.meta?.providerType === "kiro_oauth"
+              }
               isDeepSeekAccountPreset={
                 templatePreset?.providerType === "deepseek_account" ||
                 initialData?.meta?.providerType === "deepseek_account"
@@ -2173,6 +2235,8 @@ function ProviderFormFull({
                 initialData?.meta?.providerType === "codex_oauth" ||
                 templatePreset?.providerType === "claude_oauth" ||
                 initialData?.meta?.providerType === "claude_oauth" ||
+                templatePreset?.providerType === "kiro_oauth" ||
+                initialData?.meta?.providerType === "kiro_oauth" ||
                 templatePreset?.providerType === "deepseek_account" ||
                 initialData?.meta?.providerType === "deepseek_account"
               }
@@ -2185,6 +2249,8 @@ function ProviderFormFull({
               isClaudeOauthAuthenticated={isClaudeOauthAuthenticated}
               selectedClaudeAccountId={selectedClaudeAccountId}
               onClaudeAccountSelect={setSelectedClaudeAccountId}
+              selectedKiroAccountId={selectedKiroAccountId}
+              onKiroAccountSelect={setSelectedKiroAccountId}
               selectedDeepSeekAccountId={selectedDeepSeekAccountId}
               onDeepSeekAccountSelect={setSelectedDeepSeekAccountId}
               codexFastMode={codexFastMode}

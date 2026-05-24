@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Github, ShieldCheck } from "lucide-react";
+import { ExternalLink, Github, KeyRound, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,7 @@ import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSectio
 import { ClaudeOAuthSection } from "@/components/providers/forms/ClaudeOAuthSection";
 import { DeepSeekAccountSection } from "@/components/providers/forms/DeepSeekAccountSection";
 import { GeminiOAuthSection } from "@/components/providers/forms/GeminiOAuthSection";
+import { KiroOAuthSection } from "@/components/providers/forms/KiroOAuthSection";
 import { settingsApi } from "@/lib/api";
 import { useSettingsQuery } from "@/lib/query";
 import {
@@ -73,6 +74,7 @@ export function AuthCenterPanel() {
       queryClient.invalidateQueries({
         queryKey: ["google_gemini_oauth", "quota"],
       }),
+      queryClient.invalidateQueries({ queryKey: ["kiro_oauth", "quota"] }),
       queryClient.invalidateQueries({ queryKey: ["copilot", "quota"] }),
     ]);
     toast.success(
@@ -218,6 +220,24 @@ export function AuthCenterPanel() {
         </div>
 
         <CodexOAuthSection showLoggedInAccounts />
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+            <KeyRound className="h-5 w-5" />
+          </div>
+          <div>
+            <h4 className="font-medium">Kiro OAuth</h4>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.authCenter.kiroOauthDescription", {
+                defaultValue: "管理 Kiro OAuth 账号",
+              })}
+            </p>
+          </div>
+        </div>
+
+        <KiroOAuthSection showLoggedInAccounts />
       </section>
 
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">

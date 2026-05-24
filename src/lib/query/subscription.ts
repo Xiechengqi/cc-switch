@@ -47,6 +47,11 @@ export interface UseGeminiOauthQuotaOptions {
   autoQuery?: boolean;
 }
 
+export interface UseKiroOauthQuotaOptions {
+  enabled?: boolean;
+  autoQuery?: boolean;
+}
+
 export function useClaudeOauthQuota(
   meta: ProviderMeta | undefined,
   options: UseClaudeOauthQuotaOptions = {},
@@ -112,6 +117,25 @@ export function useGeminiOauthQuota(
           accountId,
         )
       )?.quota,
+    enabled,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+export function useKiroOauthQuota(
+  meta: ProviderMeta | undefined,
+  options: UseKiroOauthQuotaOptions = {},
+) {
+  const { enabled = true } = options;
+  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.KIRO_OAUTH);
+  return useQuery({
+    queryKey: ["kiro_oauth", "quota", accountId ?? "default"],
+    queryFn: async () =>
+      (await subscriptionApi.getCachedOauthQuota("kiro_oauth", accountId))
+        ?.quota,
     enabled,
     refetchInterval: false,
     refetchOnWindowFocus: false,

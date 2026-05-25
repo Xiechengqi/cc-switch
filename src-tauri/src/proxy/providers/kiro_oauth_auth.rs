@@ -7,6 +7,7 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -68,6 +69,10 @@ impl From<std::io::Error> for KiroOAuthError {
 struct SocialTokenResponse {
     #[serde(rename = "accessToken")]
     access_token: String,
+    #[serde(default, rename = "idToken")]
+    id_token: Option<String>,
+    #[serde(default, rename = "id_token")]
+    id_token_snake: Option<String>,
     #[serde(default)]
     email: Option<String>,
     #[serde(default, rename = "accountEmail")]
@@ -628,9 +633,13 @@ impl KiroOAuthManager {
         let mut account = KiroAccountData {
             account_id: account_id.clone(),
             email: first_email([
-                token.email.as_deref(),
-                token.account_email.as_deref(),
-                token.user_email.as_deref(),
+                token.email.clone(),
+                token.account_email.clone(),
+                token.user_email.clone(),
+                token.id_token.as_deref().and_then(email_from_jwt),
+                token.id_token_snake.as_deref().and_then(email_from_jwt),
+                email_from_jwt(&token.access_token),
+                email_from_jwt(&refresh_token),
             ]),
             refresh_token,
             profile_arn: token.profile_arn.clone(),
@@ -743,10 +752,23 @@ impl KiroOAuthManager {
 
         let token = self.refresh_social_token(&account).await?;
         let access_token = token.access_token.clone();
+        let refreshed_email = first_email([
+            token.email.clone(),
+            token.account_email.clone(),
+            token.user_email.clone(),
+            token.id_token.as_deref().and_then(email_from_jwt),
+            token.id_token_snake.as_deref().and_then(email_from_jwt),
+            email_from_jwt(&token.access_token),
+            email_from_jwt(account.refresh_token.as_str()),
+            token.refresh_token.as_deref().and_then(email_from_jwt),
+        ]);
 
         {
             let mut accounts = self.accounts.write().await;
             if let Some(existing) = accounts.get_mut(account_id) {
+                if existing.email.is_none() {
+                    existing.email = refreshed_email;
+                }
                 if let Some(new_refresh_token) = token.refresh_token.clone() {
                     existing.refresh_token = new_refresh_token;
                     existing.machine_id =
@@ -1146,13 +1168,51 @@ fn sha256_hex(input: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn first_email<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+fn first_email(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
     values
         .into_iter()
         .flatten()
-        .map(str::trim)
+        .map(|value| value.trim().to_string())
         .find(|value| value.contains('@') && !value.is_empty())
-        .map(str::to_string)
+}
+
+fn email_from_jwt(token: &str) -> Option<String> {
+    let mut parts = token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+
+    first_email_claim(&claims, &["email", "preferred_username", "username", "upn"]).or_else(|| {
+        claims
+            .get("identities")
+            .and_then(Value::as_array)
+            .and_then(|identities| {
+                identities.iter().find_map(|identity| {
+                    first_email_claim(
+                        identity,
+                        &[
+                            "email",
+                            "userId",
+                            "user_id",
+                            "providerName",
+                            "provider_user_id",
+                        ],
+                    )
+                })
+            })
+    })
+}
+
+fn first_email_claim(claims: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        claims
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| value.contains('@') && !value.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn short_id(value: &str) -> String {

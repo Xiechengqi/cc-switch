@@ -261,6 +261,10 @@ pub struct ShareModelHealthResult {
 pub struct ShareRuntimeSnapshot {
     pub share_id: String,
     pub queried_at: i64,
+    pub token_limit: i64,
+    pub tokens_used: i64,
+    pub requests_count: i64,
+    pub share_status: String,
     pub support: ShareSupport,
     pub app_runtimes: ShareAppRuntimes,
     #[serde(default)]

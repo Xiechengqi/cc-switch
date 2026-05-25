@@ -541,6 +541,10 @@ pub(crate) async fn build_share_runtime_snapshot(
     ShareRuntimeSnapshot {
         share_id: share.id.clone(),
         queried_at: chrono::Utc::now().timestamp(),
+        token_limit: share.token_limit,
+        tokens_used: share.tokens_used,
+        requests_count: share.requests_count,
+        share_status: share.status.clone(),
         support,
         app_runtimes,
         model_health,

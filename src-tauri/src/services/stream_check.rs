@@ -252,7 +252,7 @@ impl StreamCheckService {
     /// 合并供应商单独配置和全局配置
     ///
     /// 如果供应商配置了 meta.testConfig 且 enabled 为 true，则使用供应商配置覆盖全局配置
-    fn merge_provider_config(
+    pub(crate) fn merge_provider_config(
         provider: &Provider,
         global_config: &StreamCheckConfig,
     ) -> StreamCheckConfig {

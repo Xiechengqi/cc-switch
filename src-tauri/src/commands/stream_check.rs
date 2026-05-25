@@ -11,14 +11,16 @@ use crate::services::stream_check::{
     HealthStatus, StreamCheckConfig, StreamCheckResult, StreamCheckService,
 };
 use crate::store::AppState;
+use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::Instant;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 /// 流式健康检查（单个供应商）
 #[tauri::command]
 pub async fn stream_check_provider(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
     codex_oauth_state: State<'_, CodexOAuthState>,
@@ -39,6 +41,17 @@ pub async fn stream_check_provider(
         let result =
             check_deepseek_account_provider(provider, &config, deepseek_account_state.0.clone())
                 .await;
+        let _ = state.db.save_stream_check_log(
+            &provider_id,
+            &provider.name,
+            app_type.as_str(),
+            &result,
+        );
+        return Ok(result);
+    }
+
+    if matches!(app_type, AppType::Claude) && provider.is_kiro_oauth_provider() {
+        let result = check_kiro_oauth_provider(&app_handle, provider, &config).await;
         let _ = state.db.save_stream_check_log(
             &provider_id,
             &provider.name,
@@ -112,6 +125,10 @@ pub(crate) async fn run_stream_check_for_provider(
             deepseek_account_state.0.clone(),
         )
         .await);
+    }
+
+    if matches!(app_type, AppType::Claude) && provider.is_kiro_oauth_provider() {
+        return Ok(check_kiro_oauth_provider(app_handle, provider, &config).await);
     }
 
     let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
@@ -372,6 +389,179 @@ async fn check_deepseek_account_provider(
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
         },
+    }
+}
+
+async fn check_kiro_oauth_provider(
+    app_handle: &AppHandle,
+    provider: &crate::provider::Provider,
+    config: &StreamCheckConfig,
+) -> StreamCheckResult {
+    let effective_config = StreamCheckService::merge_provider_config(provider, config);
+    let mut last_result = None;
+
+    for attempt in 0..=effective_config.max_retries {
+        let result = check_kiro_oauth_provider_once(app_handle, provider, &effective_config).await;
+        if result.success || attempt >= effective_config.max_retries {
+            return StreamCheckResult {
+                retry_count: attempt,
+                ..result
+            };
+        }
+        last_result = Some(result);
+    }
+
+    last_result.unwrap_or_else(|| StreamCheckResult {
+        status: HealthStatus::Failed,
+        success: false,
+        message: "Kiro OAuth 检查失败".to_string(),
+        response_time_ms: None,
+        http_status: None,
+        model_used: StreamCheckService::resolve_effective_test_model(
+            &AppType::Claude,
+            provider,
+            &effective_config,
+        ),
+        tested_at: chrono::Utc::now().timestamp(),
+        retry_count: effective_config.max_retries,
+        error_category: None,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+    })
+}
+
+async fn check_kiro_oauth_provider_once(
+    app_handle: &AppHandle,
+    provider: &crate::provider::Provider,
+    config: &StreamCheckConfig,
+) -> StreamCheckResult {
+    let start = Instant::now();
+    let model =
+        StreamCheckService::resolve_effective_test_model(&AppType::Claude, provider, config);
+    let body = json!({
+        "model": model,
+        "max_tokens": 1,
+        "stream": true,
+        "messages": [{
+            "role": "user",
+            "content": config.test_prompt
+        }]
+    });
+
+    let timeout = std::time::Duration::from_secs(config.timeout_secs);
+    let probe = async {
+        let response = crate::proxy::providers::kiro_claude::forward_kiro_claude(
+            Some(app_handle),
+            provider,
+            &body,
+        )
+        .await
+        .map_err(proxy_error_to_app_error)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .bytes()
+                .await
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
+                .unwrap_or_default();
+            return Err(AppError::HttpStatus {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let status_code = status.as_u16();
+        let mut stream = response.bytes_stream();
+        match stream.next().await {
+            Some(Ok(_)) => Ok(status_code),
+            Some(Err(err)) => Err(AppError::Message(format!("Kiro OAuth 读取响应失败: {err}"))),
+            None => Err(AppError::Message(
+                "Kiro OAuth 检查出错: No response data received".to_string(),
+            )),
+        }
+    };
+
+    let result = tokio::time::timeout(timeout, probe)
+        .await
+        .unwrap_or_else(|_| {
+            Err(AppError::Message(format!(
+                "Kiro OAuth 检查超时: {} 秒",
+                config.timeout_secs
+            )))
+        });
+
+    let response_time = start.elapsed().as_millis() as u64;
+    let tested_at = chrono::Utc::now().timestamp();
+
+    match result {
+        Ok(status_code) => StreamCheckResult {
+            status: if response_time > config.degraded_threshold_ms {
+                HealthStatus::Degraded
+            } else {
+                HealthStatus::Operational
+            },
+            success: true,
+            message: "Check succeeded".to_string(),
+            response_time_ms: Some(response_time),
+            http_status: Some(status_code),
+            model_used: model,
+            tested_at,
+            retry_count: 0,
+            error_category: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        },
+        Err(AppError::HttpStatus { status, body }) => StreamCheckResult {
+            status: HealthStatus::Failed,
+            success: false,
+            message: if body.trim().is_empty() {
+                format!("Kiro OAuth 检查出错: HTTP {status}")
+            } else {
+                format!("Kiro OAuth 检查出错: HTTP {status}: {}", body.trim())
+            },
+            response_time_ms: Some(response_time),
+            http_status: Some(status),
+            model_used: model,
+            tested_at,
+            retry_count: 0,
+            error_category: StreamCheckService::detect_error_category(status, &body)
+                .map(str::to_string),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        },
+        Err(error) => StreamCheckResult {
+            status: HealthStatus::Failed,
+            success: false,
+            message: format!("Kiro OAuth 检查出错: {error}"),
+            response_time_ms: Some(response_time),
+            http_status: None,
+            model_used: model,
+            tested_at,
+            retry_count: 0,
+            error_category: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        },
+    }
+}
+
+fn proxy_error_to_app_error(error: crate::proxy::ProxyError) -> AppError {
+    match error {
+        crate::proxy::ProxyError::UpstreamError { status, body } => AppError::HttpStatus {
+            status,
+            body: body.unwrap_or_default(),
+        },
+        other => AppError::Message(other.to_string()),
     }
 }
 

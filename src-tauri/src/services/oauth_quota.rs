@@ -663,9 +663,15 @@ mod tests {
     #[test]
     fn kiro_usage_maps_to_agentic_requests_tier() {
         let quota = kiro_usage_to_subscription_quota(KiroUsageLimitsResponse {
+            email: None,
+            account_email: None,
+            user_email: None,
             next_date_reset: Some(1_774_000_000.0),
             subscription_info: Some(KiroSubscriptionInfo {
                 subscription_title: Some("KIRO PRO+".to_string()),
+                email: None,
+                account_email: None,
+                user_email: None,
                 overage_capability: Some("OVERAGE_CAPABLE".to_string()),
             }),
             usage_breakdown_list: vec![KiroUsageBreakdown {

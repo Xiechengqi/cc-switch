@@ -68,6 +68,12 @@ impl From<std::io::Error> for KiroOAuthError {
 struct SocialTokenResponse {
     #[serde(rename = "accessToken")]
     access_token: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default, rename = "accountEmail")]
+    account_email: Option<String>,
+    #[serde(default, rename = "userEmail")]
+    user_email: Option<String>,
     #[serde(default, rename = "refreshToken")]
     refresh_token: Option<String>,
     #[serde(default, rename = "expiresAt")]
@@ -81,6 +87,12 @@ struct SocialTokenResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KiroUsageLimitsResponse {
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub account_email: Option<String>,
+    #[serde(default)]
+    pub user_email: Option<String>,
     #[serde(default)]
     pub next_date_reset: Option<f64>,
     #[serde(default)]
@@ -96,6 +108,12 @@ pub struct KiroUsageLimitsResponse {
 pub struct KiroSubscriptionInfo {
     #[serde(default)]
     pub subscription_title: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub account_email: Option<String>,
+    #[serde(default)]
+    pub user_email: Option<String>,
     #[serde(default)]
     pub overage_capability: Option<String>,
 }
@@ -165,6 +183,27 @@ impl KiroFreeTrialInfo {
 }
 
 impl KiroUsageLimitsResponse {
+    pub fn account_email(&self) -> Option<&str> {
+        [
+            self.email.as_deref(),
+            self.account_email.as_deref(),
+            self.user_email.as_deref(),
+            self.subscription_info
+                .as_ref()
+                .and_then(|info| info.email.as_deref()),
+            self.subscription_info
+                .as_ref()
+                .and_then(|info| info.account_email.as_deref()),
+            self.subscription_info
+                .as_ref()
+                .and_then(|info| info.user_email.as_deref()),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| value.contains('@') && !value.is_empty())
+    }
+
     pub fn subscription_title(&self) -> Option<&str> {
         self.subscription_info
             .as_ref()
@@ -277,7 +316,8 @@ impl From<&KiroAccountData> for GitHubAccount {
             id: data.account_id.clone(),
             login: data
                 .email
-                .clone()
+                .as_deref()
+                .map(|email| format!("Kiro({email})"))
                 .unwrap_or_else(|| format!("Kiro ({})", short_id(&data.account_id))),
             avatar_url: None,
             authenticated_at: data.authenticated_at,
@@ -585,9 +625,13 @@ impl KiroOAuthManager {
             KiroOAuthError::TokenFetchFailed("响应缺少 refresh_token".to_string())
         })?;
         let account_id = format!("kiro_{}", sha256_hex(&refresh_token)[..24].to_string());
-        let account = KiroAccountData {
+        let mut account = KiroAccountData {
             account_id: account_id.clone(),
-            email: None,
+            email: first_email([
+                token.email.as_deref(),
+                token.account_email.as_deref(),
+                token.user_email.as_deref(),
+            ]),
             refresh_token,
             profile_arn: token.profile_arn.clone(),
             auth_region: DEFAULT_REGION.to_string(),
@@ -597,6 +641,15 @@ impl KiroOAuthManager {
             )),
             authenticated_at: chrono::Utc::now().timestamp(),
         };
+
+        if account.email.is_none() {
+            if let Some(email) = self
+                .fetch_account_email_from_usage(&account, &token.access_token)
+                .await
+            {
+                account.email = Some(email);
+            }
+        }
 
         {
             let mut accounts = self.accounts.write().await;
@@ -611,6 +664,27 @@ impl KiroOAuthManager {
         self.cache_access_token(&account_id, token).await;
         self.save_to_disk().await?;
         Ok(account)
+    }
+
+    async fn fetch_account_email_from_usage(
+        &self,
+        account: &KiroAccountData,
+        token: &str,
+    ) -> Option<String> {
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            let response = self.send_usage_limits_request(account, token).await.ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response
+                .json::<KiroUsageLimitsResponse>()
+                .await
+                .ok()
+                .and_then(|usage| usage.account_email().map(str::to_string))
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     async fn cache_access_token(&self, account_id: &str, token: SocialTokenResponse) {
@@ -873,12 +947,53 @@ impl KiroOAuthManager {
     }
 
     pub async fn get_status(&self) -> KiroOAuthStatus {
+        self.hydrate_missing_account_emails().await;
         let accounts = self.accounts.read().await;
         let default_account_id = self.resolve_default_account_id().await;
         KiroOAuthStatus {
             authenticated: !accounts.is_empty(),
             default_account_id: default_account_id.clone(),
             accounts: Self::sorted_public_accounts(&accounts, default_account_id.as_deref()),
+        }
+    }
+
+    async fn hydrate_missing_account_emails(&self) {
+        let account_ids: Vec<String> = {
+            let accounts = self.accounts.read().await;
+            accounts
+                .values()
+                .filter(|account| account.email.is_none())
+                .map(|account| account.account_id.clone())
+                .collect()
+        };
+        if account_ids.is_empty() {
+            return;
+        }
+
+        let mut changed = false;
+        for account_id in account_ids {
+            let Ok(token) = self.get_valid_token_for_account(&account_id).await else {
+                continue;
+            };
+            let Some(mut account) = self.get_account(&account_id).await else {
+                continue;
+            };
+            if account.email.is_some() {
+                continue;
+            }
+            let Some(email) = self.fetch_account_email_from_usage(&account, &token).await else {
+                continue;
+            };
+            account.email = Some(email);
+            self.accounts
+                .write()
+                .await
+                .insert(account_id.clone(), account);
+            changed = true;
+        }
+
+        if changed {
+            let _ = self.save_to_disk().await;
         }
     }
 
@@ -1029,6 +1144,15 @@ fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn first_email<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| value.contains('@') && !value.is_empty())
+        .map(str::to_string)
 }
 
 fn short_id(value: &str) -> String {

@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-05-26
+
+- **上游分支：** `main`
+- **上游 HEAD：** `62928c62`
+- **共同祖先：** `00b6cc68`
+- **合并提交数：** 50
+- **主要变更：**
+  - feat(codex): Codex Chat Completions 路由大幅扩展——22 个第三方 preset 支持 Chat 路由、Chat→Responses bridge、自适应 reasoning 检测、stream_options.include_usage 注入、错误响应转 Responses envelope、Stream Check 走 Chat 路径
+  - feat(codex): 第三方 history provider 统一迁移到稳定 "custom" bucket（provider id `ccswitch`→`custom`、新增 `codex_history_migration.rs` 启动迁移、模型 catalog 文件 `cc-switch-model-catalog.json`）
+  - feat(settings): About 页扩展为工具管理面板——托管 CLI 工具静默安装/更新生命周期、源感知卸载提示、anchored 升级（含 Windows 原生路径）、冲突诊断、批量更新
+  - feat(codex): 第三方 provider 切换时保留 OAuth 登录态；保留 live 读取时的 Codex 模型 catalog
+  - fix(proxy): managed-account Claude takeover 仅注入 `ANTHROPIC_API_KEY`；从目标 provider 取 takeover model 字段
+  - fix(quota): ZhiPu tiers 排序修复；refactor(proxy) 去除 panic-prone unwrap/expect
+  - chore(sponsors): 移除 AICoding 合作伙伴；fix(ui): AppSwitcher 文本宽度裁剪
+- **冲突解决：**
+  - `src-tauri/src/codex_config.rs`：保留本仓代理用 `PROXY_MODEL_PROVIDER_KEY = "cc-switch"`；采纳上游 `CC_SWITCH_CODEX_MODEL_PROVIDER_ID = "custom"` 及 catalog 常量（history 迁移依赖）
+  - `src-tauri/src/lib.rs`：保留本仓"不自动 seed official providers"策略（丢弃上游重新加入的 `init_default_official_providers()`）；采纳上游新增的 codex history bucket 启动迁移 spawn
+  - `src-tauri/src/settings.rs`：并存本仓 `share_router_domain` 与上游 `local_migrations`（含 `LocalMigrations`/`CodexThirdPartyHistoryProviderBucketMigration` 结构）
+  - `src-tauri/src/services/stream_check.rs`：`resolve_codex_endpoint_urls` 采纳上游泛化版本（`endpoint_suffix` + `is_origin_only_url`，与原 backend-api/codex 行为等价）；测试块保留本仓 share/tunnel 测试（`*_share_origin_*`、`detects_share_tunnel_subdomain_from_configured_domain`）并入上游新增 chat-stream/full-endpoint 测试
+  - `src/types.ts`：并存 `shareRouterDomain` 与 `localMigrations`
+  - `src/components/providers/ProviderCard.tsx`：合并 import（保留 providerMetaUtils 的 `canTestProvider`/`getProviderQuotaSource`/`isManagedOauthProvider`，并入上游 `extractCodexExperimentalBearerToken`）；因本仓已移除路由提示 UI（commits 98f78830/b1810aba），剔除未使用的 `extractCodexWireApi`/`isCodexChatWireApi`
+  - `src/components/providers/forms/CodexFormFields.tsx`：保留本仓 `CodexOAuthSection`；采纳上游 `ModelDropdown` 与 `needsLocalRouting` 开关式 UI（取代本仓 apiFormat 下拉框，二者驱动同一 `apiFormat` 状态）
+  - `src/components/settings/AboutSection.tsx`：保留本仓 build-info（`getBuildInfo()` 的 commit/buildTime 显示）与 Windows 工具检查禁用守卫（commit f8c1f173），丢弃上游 `getVersion()` 路径
+- **验证：** `cargo check` 通过（exit 0）、`cargo check --tests` 无 error、`tsc --noEmit` 通过
+
+---
+
 ## 2026-05-20
 
 - **上游分支：** `main`

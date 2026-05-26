@@ -22,5 +22,7 @@ export { useCopilotAuth } from "./useCopilotAuth";
 export { useCodexOauth } from "./useCodexOauth";
 export { useClaudeOauth } from "./useClaudeOauth";
 export { useGeminiOauth } from "./useGeminiOauth";
+export { useAntigravityOauth } from "./useAntigravityOauth";
+export { useCursorOauth } from "./useCursorOauth";
 export { useKiroOauth } from "./useKiroOauth";
 export { useDeepSeekAccount } from "./useDeepSeekAccount";

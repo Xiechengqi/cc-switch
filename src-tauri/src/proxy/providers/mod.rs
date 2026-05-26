@@ -12,6 +12,7 @@
 //! - `transform`: 格式转换
 
 mod adapter;
+pub mod antigravity_oauth_auth;
 mod auth;
 mod claude;
 pub mod claude_oauth_auth;
@@ -21,6 +22,10 @@ pub mod codex_chat_history;
 pub mod codex_oauth_auth;
 pub mod copilot_auth;
 pub mod copilot_model_map;
+pub mod cursor_claude;
+pub mod cursor_codex;
+pub mod cursor_oauth_auth;
+pub mod cursor_protocol;
 pub mod deepseek_account_auth;
 pub mod deepseek_claude;
 pub mod deepseek_client;
@@ -90,6 +95,10 @@ pub enum ProviderType {
     DeepSeekAccount,
     /// Kiro OAuth (Kiro 账号，Claude Messages API 本地适配)
     KiroOAuth,
+    /// Cursor OAuth (Cursor 订阅，Claude/Codex API 本地适配)
+    CursorOAuth,
+    /// Antigravity OAuth (Google OAuth + Antigravity Cloud Code internal API)
+    AntigravityOAuth,
 }
 
 impl ProviderType {
@@ -106,6 +115,8 @@ impl ProviderType {
             ProviderType::OpenRouter => false,
             ProviderType::DeepSeekAccount => false,
             ProviderType::KiroOAuth => false,
+            ProviderType::CursorOAuth => false,
+            ProviderType::AntigravityOAuth => true,
             _ => false,
         }
     }
@@ -126,6 +137,8 @@ impl ProviderType {
             ProviderType::CodexOAuth => "https://chatgpt.com/backend-api/codex",
             ProviderType::DeepSeekAccount => "https://chat.deepseek.com",
             ProviderType::KiroOAuth => "https://q.us-east-1.amazonaws.com",
+            ProviderType::CursorOAuth => "https://api2.cursor.sh",
+            ProviderType::AntigravityOAuth => "https://daily-cloudcode-pa.googleapis.com",
         }
     }
 
@@ -136,6 +149,12 @@ impl ProviderType {
     pub fn from_app_type_and_config(app_type: &AppType, provider: &Provider) -> Self {
         match app_type {
             AppType::Claude | AppType::ClaudeDesktop => {
+                if let Some(meta) = provider.meta.as_ref() {
+                    if meta.provider_type.as_deref() == Some("antigravity_oauth") {
+                        return ProviderType::AntigravityOAuth;
+                    }
+                }
+
                 if get_claude_api_format(provider) == "gemini_native" {
                     let adapter = ClaudeAdapter::new();
                     return match adapter.extract_auth(provider).map(|auth| auth.strategy) {
@@ -160,6 +179,9 @@ impl ProviderType {
                     }
                     if meta.provider_type.as_deref() == Some("kiro_oauth") {
                         return ProviderType::KiroOAuth;
+                    }
+                    if meta.provider_type.as_deref() == Some("cursor_oauth") {
+                        return ProviderType::CursorOAuth;
                     }
                 }
 
@@ -197,8 +219,26 @@ impl ProviderType {
                 }
                 ProviderType::Claude
             }
-            AppType::Codex => ProviderType::Codex,
+            AppType::Codex => {
+                if provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.provider_type.as_deref())
+                    == Some("cursor_oauth")
+                {
+                    return ProviderType::CursorOAuth;
+                }
+                ProviderType::Codex
+            }
             AppType::Gemini => {
+                if provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.provider_type.as_deref())
+                    == Some("antigravity_oauth")
+                {
+                    return ProviderType::AntigravityOAuth;
+                }
                 if provider
                     .meta
                     .as_ref()
@@ -243,6 +283,8 @@ impl ProviderType {
             ProviderType::ClaudeOAuth => "claude_oauth",
             ProviderType::DeepSeekAccount => "deepseek_account",
             ProviderType::KiroOAuth => "kiro_oauth",
+            ProviderType::CursorOAuth => "cursor_oauth",
+            ProviderType::AntigravityOAuth => "antigravity_oauth",
         }
     }
 }
@@ -273,6 +315,10 @@ impl std::str::FromStr for ProviderType {
                 Ok(ProviderType::DeepSeekAccount)
             }
             "kiro_oauth" | "kiro-oauth" | "kirooauth" => Ok(ProviderType::KiroOAuth),
+            "cursor_oauth" | "cursor-oauth" | "cursoroauth" => Ok(ProviderType::CursorOAuth),
+            "antigravity_oauth" | "antigravity-oauth" | "antigravityoauth" => {
+                Ok(ProviderType::AntigravityOAuth)
+            }
             _ => Err(format!("Invalid provider type: {s}")),
         }
     }
@@ -302,7 +348,9 @@ pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> Box<dyn Pr
         | ProviderType::CodexOAuth
         | ProviderType::ClaudeOAuth
         | ProviderType::DeepSeekAccount
-        | ProviderType::KiroOAuth => Box::new(ClaudeAdapter::new()),
+        | ProviderType::KiroOAuth
+        | ProviderType::CursorOAuth
+        | ProviderType::AntigravityOAuth => Box::new(ClaudeAdapter::new()),
         ProviderType::Codex => Box::new(CodexAdapter::new()),
         ProviderType::Gemini | ProviderType::GeminiCli => Box::new(GeminiAdapter::new()),
     }
@@ -338,6 +386,7 @@ mod tests {
         assert!(!ProviderType::Gemini.needs_transform());
         assert!(!ProviderType::GeminiCli.needs_transform());
         assert!(!ProviderType::OpenRouter.needs_transform());
+        assert!(ProviderType::AntigravityOAuth.needs_transform());
         assert!(ProviderType::GitHubCopilot.needs_transform());
     }
 
@@ -370,6 +419,10 @@ mod tests {
         assert_eq!(
             ProviderType::GitHubCopilot.default_endpoint(),
             "https://api.githubcopilot.com"
+        );
+        assert_eq!(
+            ProviderType::AntigravityOAuth.default_endpoint(),
+            "https://daily-cloudcode-pa.googleapis.com"
         );
     }
 
@@ -419,6 +472,10 @@ mod tests {
             "githubcopilot".parse::<ProviderType>().unwrap(),
             ProviderType::GitHubCopilot
         );
+        assert_eq!(
+            "antigravity_oauth".parse::<ProviderType>().unwrap(),
+            ProviderType::AntigravityOAuth
+        );
         assert!("invalid".parse::<ProviderType>().is_err());
     }
 
@@ -431,6 +488,7 @@ mod tests {
         assert_eq!(ProviderType::GeminiCli.as_str(), "gemini_cli");
         assert_eq!(ProviderType::OpenRouter.as_str(), "openrouter");
         assert_eq!(ProviderType::GitHubCopilot.as_str(), "github_copilot");
+        assert_eq!(ProviderType::AntigravityOAuth.as_str(), "antigravity_oauth");
     }
 
     #[test]
@@ -541,6 +599,28 @@ mod tests {
     }
 
     #[test]
+    fn test_from_app_type_antigravity_oauth_prefers_metadata() {
+        let mut provider = create_provider(json!({
+            "env": {
+                "GEMINI_API_KEY": "ya29.test-access-token"
+            }
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("antigravity_oauth".to_string()),
+            ..Default::default()
+        });
+
+        let claude_type = ProviderType::from_app_type_and_config(&AppType::Claude, &provider);
+        let desktop_type =
+            ProviderType::from_app_type_and_config(&AppType::ClaudeDesktop, &provider);
+        let gemini_type = ProviderType::from_app_type_and_config(&AppType::Gemini, &provider);
+
+        assert_eq!(claude_type, ProviderType::AntigravityOAuth);
+        assert_eq!(desktop_type, ProviderType::AntigravityOAuth);
+        assert_eq!(gemini_type, ProviderType::AntigravityOAuth);
+    }
+
+    #[test]
     fn test_get_adapter_for_provider_type() {
         let adapter = get_adapter_for_provider_type(&ProviderType::Claude);
         assert_eq!(adapter.name(), "Claude");
@@ -562,5 +642,8 @@ mod tests {
 
         let adapter = get_adapter_for_provider_type(&ProviderType::GeminiCli);
         assert_eq!(adapter.name(), "Gemini");
+
+        let adapter = get_adapter_for_provider_type(&ProviderType::AntigravityOAuth);
+        assert_eq!(adapter.name(), "Claude");
     }
 }

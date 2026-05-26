@@ -1,8 +1,10 @@
 use tauri::State;
 
+use crate::commands::antigravity_oauth::AntigravityOAuthState;
 use crate::commands::claude_oauth::ClaudeOAuthState;
 use crate::commands::codex_oauth::CodexOAuthState;
 use crate::commands::copilot::CopilotAuthState;
+use crate::commands::cursor_oauth::CursorOAuthState;
 use crate::commands::gemini_oauth::GeminiOAuthState;
 use crate::commands::kiro_oauth::KiroOAuthState;
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthError;
@@ -14,7 +16,9 @@ const AUTH_PROVIDER_GITHUB_COPILOT: &str = "github_copilot";
 const AUTH_PROVIDER_CODEX_OAUTH: &str = "codex_oauth";
 const AUTH_PROVIDER_CLAUDE_OAUTH: &str = "claude_oauth";
 const AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH: &str = "google_gemini_oauth";
+const AUTH_PROVIDER_ANTIGRAVITY_OAUTH: &str = "antigravity_oauth";
 const AUTH_PROVIDER_KIRO_OAUTH: &str = "kiro_oauth";
+const AUTH_PROVIDER_CURSOR_OAUTH: &str = "cursor_oauth";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ManagedAuthAccount {
@@ -52,7 +56,9 @@ fn ensure_auth_provider(auth_provider: &str) -> Result<&'static str, String> {
         AUTH_PROVIDER_CODEX_OAUTH => Ok(AUTH_PROVIDER_CODEX_OAUTH),
         AUTH_PROVIDER_CLAUDE_OAUTH => Ok(AUTH_PROVIDER_CLAUDE_OAUTH),
         AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH => Ok(AUTH_PROVIDER_GOOGLE_GEMINI_OAUTH),
+        AUTH_PROVIDER_ANTIGRAVITY_OAUTH => Ok(AUTH_PROVIDER_ANTIGRAVITY_OAUTH),
         AUTH_PROVIDER_KIRO_OAUTH => Ok(AUTH_PROVIDER_KIRO_OAUTH),
+        AUTH_PROVIDER_CURSOR_OAUTH => Ok(AUTH_PROVIDER_CURSOR_OAUTH),
         _ => Err(format!("Unsupported auth provider: {auth_provider}")),
     }
 }
@@ -95,7 +101,9 @@ pub async fn auth_start_login(
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    antigravity_oauth_state: State<'_, AntigravityOAuthState>,
     kiro_oauth_state: State<'_, KiroOAuthState>,
+    cursor_oauth_state: State<'_, CursorOAuthState>,
 ) -> Result<ManagedAuthDeviceCodeResponse, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -149,6 +157,21 @@ pub async fn auth_start_login(
                 interval: 5,
             })
         }
+        AUTH_PROVIDER_ANTIGRAVITY_OAUTH => {
+            let auth_manager = antigravity_oauth_state.0.read().await;
+            let response = auth_manager
+                .start_browser_flow()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(ManagedAuthDeviceCodeResponse {
+                provider: auth_provider.to_string(),
+                device_code: response.state,
+                user_code: String::new(),
+                verification_uri: response.auth_url,
+                expires_in: 300,
+                interval: 5,
+            })
+        }
         AUTH_PROVIDER_KIRO_OAUTH => {
             let auth_manager = kiro_oauth_state.0.read().await;
             let response = auth_manager
@@ -164,6 +187,21 @@ pub async fn auth_start_login(
                 interval: 5,
             })
         }
+        AUTH_PROVIDER_CURSOR_OAUTH => {
+            let auth_manager = cursor_oauth_state.0.read().await;
+            let response = auth_manager
+                .start_browser_flow()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(ManagedAuthDeviceCodeResponse {
+                provider: auth_provider.to_string(),
+                device_code: response.state,
+                user_code: String::new(),
+                verification_uri: response.auth_url,
+                expires_in: 300,
+                interval: 2,
+            })
+        }
         _ => unreachable!(),
     }
 }
@@ -177,7 +215,9 @@ pub async fn auth_poll_for_account(
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    antigravity_oauth_state: State<'_, AntigravityOAuthState>,
     kiro_oauth_state: State<'_, KiroOAuthState>,
+    cursor_oauth_state: State<'_, CursorOAuthState>,
 ) -> Result<Option<ManagedAuthAccount>, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -242,8 +282,38 @@ pub async fn auth_poll_for_account(
                 Err(e) => Err(e.to_string()),
             }
         }
+        AUTH_PROVIDER_ANTIGRAVITY_OAUTH => {
+            let auth_manager = antigravity_oauth_state.0.read().await;
+            match auth_manager.poll_callback_result(&device_code).await {
+                Ok(Some(account)) => {
+                    let default_account_id = auth_manager.get_status().await.default_account_id;
+                    Ok(Some(map_account(
+                        auth_provider,
+                        account,
+                        default_account_id.as_deref(),
+                    )))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            }
+        }
         AUTH_PROVIDER_KIRO_OAUTH => {
             let auth_manager = kiro_oauth_state.0.read().await;
+            match auth_manager.poll_callback_result(&device_code).await {
+                Ok(Some(account)) => {
+                    let status = auth_manager.get_status().await;
+                    Ok(Some(map_account(
+                        auth_provider,
+                        account,
+                        status.default_account_id.as_deref(),
+                    )))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        AUTH_PROVIDER_CURSOR_OAUTH => {
+            let auth_manager = cursor_oauth_state.0.read().await;
             match auth_manager.poll_callback_result(&device_code).await {
                 Ok(Some(account)) => {
                     let status = auth_manager.get_status().await;
@@ -268,7 +338,9 @@ pub async fn auth_list_accounts(
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    antigravity_oauth_state: State<'_, AntigravityOAuthState>,
     kiro_oauth_state: State<'_, KiroOAuthState>,
+    cursor_oauth_state: State<'_, CursorOAuthState>,
 ) -> Result<Vec<ManagedAuthAccount>, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -312,8 +384,28 @@ pub async fn auth_list_accounts(
                 .map(|account| map_account(auth_provider, account, default_account_id.as_deref()))
                 .collect())
         }
+        AUTH_PROVIDER_ANTIGRAVITY_OAUTH => {
+            let auth_manager = antigravity_oauth_state.0.read().await;
+            let status = auth_manager.get_status().await;
+            let default_account_id = status.default_account_id.clone();
+            Ok(status
+                .accounts
+                .into_iter()
+                .map(|account| map_account(auth_provider, account, default_account_id.as_deref()))
+                .collect())
+        }
         AUTH_PROVIDER_KIRO_OAUTH => {
             let auth_manager = kiro_oauth_state.0.read().await;
+            let status = auth_manager.get_status().await;
+            let default_account_id = status.default_account_id.clone();
+            Ok(status
+                .accounts
+                .into_iter()
+                .map(|account| map_account(auth_provider, account, default_account_id.as_deref()))
+                .collect())
+        }
+        AUTH_PROVIDER_CURSOR_OAUTH => {
+            let auth_manager = cursor_oauth_state.0.read().await;
             let status = auth_manager.get_status().await;
             let default_account_id = status.default_account_id.clone();
             Ok(status
@@ -333,7 +425,9 @@ pub async fn auth_get_status(
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    antigravity_oauth_state: State<'_, AntigravityOAuthState>,
     kiro_oauth_state: State<'_, KiroOAuthState>,
+    cursor_oauth_state: State<'_, CursorOAuthState>,
 ) -> Result<ManagedAuthStatus, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -409,8 +503,44 @@ pub async fn auth_get_status(
                     .collect(),
             })
         }
+        AUTH_PROVIDER_ANTIGRAVITY_OAUTH => {
+            let auth_manager = antigravity_oauth_state.0.read().await;
+            let status = auth_manager.get_status().await;
+            let default_account_id = status.default_account_id.clone();
+            Ok(ManagedAuthStatus {
+                provider: auth_provider.to_string(),
+                authenticated: status.authenticated,
+                default_account_id: default_account_id.clone(),
+                migration_error: None,
+                accounts: status
+                    .accounts
+                    .into_iter()
+                    .map(|account| {
+                        map_account(auth_provider, account, default_account_id.as_deref())
+                    })
+                    .collect(),
+            })
+        }
         AUTH_PROVIDER_KIRO_OAUTH => {
             let auth_manager = kiro_oauth_state.0.read().await;
+            let status = auth_manager.get_status().await;
+            let default_account_id = status.default_account_id.clone();
+            Ok(ManagedAuthStatus {
+                provider: auth_provider.to_string(),
+                authenticated: status.authenticated,
+                default_account_id: default_account_id.clone(),
+                migration_error: None,
+                accounts: status
+                    .accounts
+                    .into_iter()
+                    .map(|account| {
+                        map_account(auth_provider, account, default_account_id.as_deref())
+                    })
+                    .collect(),
+            })
+        }
+        AUTH_PROVIDER_CURSOR_OAUTH => {
+            let auth_manager = cursor_oauth_state.0.read().await;
             let status = auth_manager.get_status().await;
             let default_account_id = status.default_account_id.clone();
             Ok(ManagedAuthStatus {
@@ -439,7 +569,9 @@ pub async fn auth_remove_account(
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    antigravity_oauth_state: State<'_, AntigravityOAuthState>,
     kiro_oauth_state: State<'_, KiroOAuthState>,
+    cursor_oauth_state: State<'_, CursorOAuthState>,
 ) -> Result<(), String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -471,8 +603,22 @@ pub async fn auth_remove_account(
                 .await
                 .map_err(|e| e.to_string())
         }
+        AUTH_PROVIDER_ANTIGRAVITY_OAUTH => {
+            let auth_manager = antigravity_oauth_state.0.write().await;
+            auth_manager
+                .remove_account(&account_id)
+                .await
+                .map_err(|e| e.to_string())
+        }
         AUTH_PROVIDER_KIRO_OAUTH => {
             let auth_manager = kiro_oauth_state.0.write().await;
+            auth_manager
+                .remove_account(&account_id)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        AUTH_PROVIDER_CURSOR_OAUTH => {
+            let auth_manager = cursor_oauth_state.0.write().await;
             auth_manager
                 .remove_account(&account_id)
                 .await
@@ -490,7 +636,9 @@ pub async fn auth_set_default_account(
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    antigravity_oauth_state: State<'_, AntigravityOAuthState>,
     kiro_oauth_state: State<'_, KiroOAuthState>,
+    cursor_oauth_state: State<'_, CursorOAuthState>,
 ) -> Result<(), String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -522,8 +670,22 @@ pub async fn auth_set_default_account(
                 .await
                 .map_err(|e| e.to_string())
         }
+        AUTH_PROVIDER_ANTIGRAVITY_OAUTH => {
+            let auth_manager = antigravity_oauth_state.0.write().await;
+            auth_manager
+                .set_default_account(&account_id)
+                .await
+                .map_err(|e| e.to_string())
+        }
         AUTH_PROVIDER_KIRO_OAUTH => {
             let auth_manager = kiro_oauth_state.0.write().await;
+            auth_manager
+                .set_default_account(&account_id)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        AUTH_PROVIDER_CURSOR_OAUTH => {
+            let auth_manager = cursor_oauth_state.0.write().await;
             auth_manager
                 .set_default_account(&account_id)
                 .await
@@ -540,7 +702,9 @@ pub async fn auth_logout(
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    antigravity_oauth_state: State<'_, AntigravityOAuthState>,
     kiro_oauth_state: State<'_, KiroOAuthState>,
+    cursor_oauth_state: State<'_, CursorOAuthState>,
 ) -> Result<(), String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
     match auth_provider {
@@ -560,9 +724,17 @@ pub async fn auth_logout(
             let auth_manager = gemini_oauth_state.0.write().await;
             auth_manager.clear_auth().await.map_err(|e| e.to_string())
         }
+        AUTH_PROVIDER_ANTIGRAVITY_OAUTH => {
+            let auth_manager = antigravity_oauth_state.0.write().await;
+            auth_manager.clear_auth().await.map_err(|e| e.to_string())
+        }
         AUTH_PROVIDER_KIRO_OAUTH => {
             let auth_manager = kiro_oauth_state.0.write().await;
             auth_manager.logout().await.map_err(|e| e.to_string())
+        }
+        AUTH_PROVIDER_CURSOR_OAUTH => {
+            let auth_manager = cursor_oauth_state.0.write().await;
+            auth_manager.clear_auth().await.map_err(|e| e.to_string())
         }
         _ => unreachable!(),
     }

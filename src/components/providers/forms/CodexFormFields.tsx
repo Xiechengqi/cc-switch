@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { CodexOAuthSection } from "./CodexOAuthSection";
+import { CursorOAuthSection } from "./CursorOAuthSection";
 import { ApiKeySection, EndpointField, ModelDropdown } from "./shared";
 import {
   fetchModelsForConfig,
@@ -51,6 +52,9 @@ interface CodexFormFieldsProps {
   isCodexOauthAuthenticated?: boolean;
   selectedCodexAccountId?: string | null;
   onCodexAccountSelect?: (accountId: string | null) => void;
+  isCursorOauthPreset?: boolean;
+  selectedCursorAccountId?: string | null;
+  onCursorAccountSelect?: (accountId: string | null) => void;
 
   // Base URL
   shouldShowSpeedTest: boolean;
@@ -120,6 +124,9 @@ export function CodexFormFields({
   isCodexOauthAuthenticated = false,
   selectedCodexAccountId,
   onCodexAccountSelect,
+  isCursorOauthPreset = false,
+  selectedCursorAccountId,
+  onCursorAccountSelect,
   shouldShowSpeedTest,
   codexBaseUrl,
   onBaseUrlChange,
@@ -293,7 +300,7 @@ export function CodexFormFields({
 
   return (
     <>
-      {isCodexOfficialPreset && (
+      {isCodexOfficialPreset && !isCursorOauthPreset && (
         <CodexOAuthSection
           selectedAccountId={selectedCodexAccountId}
           onAccountSelect={onCodexAccountSelect}
@@ -301,34 +308,45 @@ export function CodexFormFields({
         />
       )}
 
-      {/* Codex API Key 输入框 */}
-      <ApiKeySection
-        id="codexApiKey"
-        label="API Key"
-        value={codexApiKey}
-        onChange={onApiKeyChange}
-        category={category}
-        shouldShowLink={shouldShowApiKeyLink}
-        websiteUrl={websiteUrl}
-        isPartner={isPartner}
-        partnerPromotionKey={partnerPromotionKey}
-        placeholder={{
-          official: t("providerForm.codexOfficialNoApiKey", {
-            defaultValue: "官方供应商无需 API Key",
-          }),
-          thirdParty: t("providerForm.codexApiKeyAutoFill", {
-            defaultValue: "输入 API Key，将自动填充到配置",
-          }),
-        }}
-      />
-
-      {isCodexOfficialPreset && !isCodexOauthAuthenticated && (
-        <p className="text-xs text-destructive">
-          {t("codexOauth.loginRequired", {
-            defaultValue: "请先登录 ChatGPT 账号",
-          })}
-        </p>
+      {isCursorOauthPreset && (
+        <CursorOAuthSection
+          selectedAccountId={selectedCursorAccountId}
+          onAccountSelect={onCursorAccountSelect}
+        />
       )}
+
+      {/* Codex API Key 输入框 */}
+      {!isCursorOauthPreset && (
+        <ApiKeySection
+          id="codexApiKey"
+          label="API Key"
+          value={codexApiKey}
+          onChange={onApiKeyChange}
+          category={category}
+          shouldShowLink={shouldShowApiKeyLink}
+          websiteUrl={websiteUrl}
+          isPartner={isPartner}
+          partnerPromotionKey={partnerPromotionKey}
+          placeholder={{
+            official: t("providerForm.codexOfficialNoApiKey", {
+              defaultValue: "官方供应商无需 API Key",
+            }),
+            thirdParty: t("providerForm.codexApiKeyAutoFill", {
+              defaultValue: "输入 API Key，将自动填充到配置",
+            }),
+          }}
+        />
+      )}
+
+      {isCodexOfficialPreset &&
+        !isCursorOauthPreset &&
+        !isCodexOauthAuthenticated && (
+          <p className="text-xs text-destructive">
+            {t("codexOauth.loginRequired", {
+              defaultValue: "请先登录 ChatGPT 账号",
+            })}
+          </p>
+        )}
 
       {/* Codex Base URL 输入框 */}
       {shouldShowSpeedTest && !isCodexOfficialPreset && (

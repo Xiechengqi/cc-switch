@@ -162,6 +162,9 @@ const quotaSourceToAuthProvider = (
   if (quotaSource === "claude_oauth") return PROVIDER_TYPES.CLAUDE_OAUTH;
   if (quotaSource === "google_gemini_oauth")
     return PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH;
+  if (quotaSource === "antigravity_oauth")
+    return PROVIDER_TYPES.ANTIGRAVITY_OAUTH;
+  if (quotaSource === "cursor_oauth") return PROVIDER_TYPES.CURSOR_OAUTH;
   if (quotaSource === "kiro_oauth") return PROVIDER_TYPES.KIRO_OAUTH;
   return null;
 };
@@ -497,7 +500,9 @@ export function ProviderCard({
                   providerId={provider.id}
                   isCurrent={isCurrent}
                 />
-              ) : quotaSource === "kiro_oauth" ? (
+              ) : quotaSource === "antigravity_oauth" ||
+                quotaSource === "cursor_oauth" ? null : quotaSource ===
+                "kiro_oauth" ? (
                 <KiroOauthQuotaFooter
                   meta={provider.meta}
                   inline={true}

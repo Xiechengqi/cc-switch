@@ -1021,6 +1021,22 @@ pub fn run() {
                 log::info!("✓ GeminiOAuthManager initialized");
             }
 
+            // 初始化 AntigravityOAuthManager (Antigravity OAuth 反代)
+            {
+                use crate::proxy::providers::antigravity_oauth_auth::{
+                    set_global_antigravity_oauth_manager, AntigravityOAuthManager,
+                };
+                use commands::AntigravityOAuthState;
+                use tokio::sync::RwLock;
+
+                let app_config_dir = crate::config::get_app_config_dir();
+                let antigravity_oauth_manager =
+                    Arc::new(RwLock::new(AntigravityOAuthManager::new(app_config_dir)));
+                set_global_antigravity_oauth_manager(Arc::clone(&antigravity_oauth_manager));
+                app.manage(AntigravityOAuthState(antigravity_oauth_manager));
+                log::info!("✓ AntigravityOAuthManager initialized");
+            }
+
             // 初始化 KiroOAuthManager (Kiro OAuth)
             {
                 use crate::proxy::providers::kiro_oauth_auth::KiroOAuthManager;
@@ -1031,6 +1047,18 @@ pub fn run() {
                 let kiro_oauth_manager = KiroOAuthManager::new(app_config_dir);
                 app.manage(KiroOAuthState(Arc::new(RwLock::new(kiro_oauth_manager))));
                 log::info!("✓ KiroOAuthManager initialized");
+            }
+
+            // 初始化 CursorOAuthManager (Cursor OAuth)
+            {
+                use crate::proxy::providers::cursor_oauth_auth::CursorOAuthManager;
+                use commands::CursorOAuthState;
+                use tokio::sync::RwLock;
+
+                let app_config_dir = crate::config::get_app_config_dir();
+                let cursor_oauth_manager = CursorOAuthManager::new(app_config_dir);
+                app.manage(CursorOAuthState(Arc::new(RwLock::new(cursor_oauth_manager))));
+                log::info!("✓ CursorOAuthManager initialized");
             }
 
             // 初始化 DeepSeekAccountManager (DeepSeek 账号)

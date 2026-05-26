@@ -26,7 +26,7 @@ export interface GeminiProviderPreset {
   partnerPromotionKey?: string;
   endpointCandidates?: string[];
   theme?: GeminiPresetTheme;
-  providerType?: "google_gemini_oauth";
+  providerType?: "google_gemini_oauth" | "antigravity_oauth";
   requiresOAuth?: boolean;
   // 图标配置
   icon?: string; // 图标名称
@@ -34,6 +34,35 @@ export interface GeminiProviderPreset {
 }
 
 export const geminiProviderPresets: GeminiProviderPreset[] = [
+  {
+    name: "Antigravity OAuth",
+    websiteUrl: "https://antigravity.google",
+    settingsConfig: {
+      env: {
+        GOOGLE_GEMINI_BASE_URL: "https://daily-cloudcode-pa.googleapis.com",
+        GEMINI_MODEL: "gemini-3-pro-preview",
+      },
+      config: {
+        general: {
+          previewFeatures: true,
+        },
+      },
+    },
+    baseURL: "https://daily-cloudcode-pa.googleapis.com",
+    model: "gemini-3-pro-preview",
+    description: "Antigravity OAuth",
+    category: "official",
+    providerType: "antigravity_oauth",
+    requiresOAuth: true,
+    partnerPromotionKey: "antigravity-oauth",
+    theme: {
+      icon: "gemini",
+      backgroundColor: "#1A73E8",
+      textColor: "#FFFFFF",
+    },
+    icon: "gemini",
+    iconColor: "#1A73E8",
+  },
   {
     name: "Google Official",
     websiteUrl: "https://ai.google.dev/",

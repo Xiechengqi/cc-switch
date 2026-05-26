@@ -100,6 +100,7 @@ export function isManagedOauthProvider(
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
     (appId === "codex" && isCodexOfficialWithManagedAuth(provider)) ||
@@ -122,6 +123,7 @@ export function canTestProvider(
   if (
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH
   ) {
     return true;
@@ -136,6 +138,7 @@ export function canTestProvider(
 
   if (
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
     (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider))
   ) {
     return true;
@@ -153,6 +156,8 @@ export type ProviderQuotaSource =
   | "codex_oauth"
   | "claude_oauth"
   | "google_gemini_oauth"
+  | "antigravity_oauth"
+  | "cursor_oauth"
   | "kiro_oauth"
   | "official"
   | "none";
@@ -182,6 +187,14 @@ export function getProviderQuotaSource(
 
   if (provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH) {
     return "google_gemini_oauth";
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH) {
+    return "antigravity_oauth";
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.CURSOR_OAUTH) {
+    return "cursor_oauth";
   }
 
   if (provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH) {

@@ -37,6 +37,8 @@ import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
 import { CopilotAuthSection } from "./CopilotAuthSection";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { ClaudeOAuthSection } from "./ClaudeOAuthSection";
+import { AntigravityOAuthSection } from "./AntigravityOAuthSection";
+import { CursorOAuthSection } from "./CursorOAuthSection";
 import { KiroOAuthSection } from "./KiroOAuthSection";
 import { DeepSeekAccountSection } from "./DeepSeekAccountSection";
 import {
@@ -104,6 +106,16 @@ interface ClaudeFormFieldsProps {
   isClaudeOauthAuthenticated?: boolean;
   selectedClaudeAccountId?: string | null;
   onClaudeAccountSelect?: (accountId: string | null) => void;
+
+  // Antigravity OAuth
+  isAntigravityOauthPreset?: boolean;
+  selectedAntigravityAccountId?: string | null;
+  onAntigravityAccountSelect?: (accountId: string | null) => void;
+
+  // Kiro OAuth
+  isCursorOauthPreset?: boolean;
+  selectedCursorAccountId?: string | null;
+  onCursorAccountSelect?: (accountId: string | null) => void;
 
   // Kiro OAuth
   isKiroOauthPreset?: boolean;
@@ -181,6 +193,12 @@ export function ClaudeFormFields({
   isClaudeOauthPreset,
   selectedClaudeAccountId,
   onClaudeAccountSelect,
+  isAntigravityOauthPreset,
+  selectedAntigravityAccountId,
+  onAntigravityAccountSelect,
+  isCursorOauthPreset,
+  selectedCursorAccountId,
+  onCursorAccountSelect,
   isKiroOauthPreset,
   selectedKiroAccountId,
   onKiroAccountSelect,
@@ -605,10 +623,24 @@ export function ClaudeFormFields({
         />
       )}
 
+      {isAntigravityOauthPreset && (
+        <AntigravityOAuthSection
+          selectedAccountId={selectedAntigravityAccountId}
+          onAccountSelect={onAntigravityAccountSelect}
+        />
+      )}
+
       {isKiroOauthPreset && (
         <KiroOAuthSection
           selectedAccountId={selectedKiroAccountId}
           onAccountSelect={onKiroAccountSelect}
+        />
+      )}
+
+      {isCursorOauthPreset && (
+        <CursorOAuthSection
+          selectedAccountId={selectedCursorAccountId}
+          onAccountSelect={onCursorAccountSelect}
         />
       )}
 

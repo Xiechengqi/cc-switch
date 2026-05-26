@@ -5,6 +5,7 @@ import { Download, Info, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import EndpointSpeedTest from "./EndpointSpeedTest";
+import { AntigravityOAuthSection } from "./AntigravityOAuthSection";
 import GeminiOAuthSection from "./GeminiOAuthSection";
 import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
 import {
@@ -33,6 +34,10 @@ interface GeminiFormFieldsProps {
   isGeminiOauthAuthenticated?: boolean;
   selectedGeminiAccountId?: string | null;
   onGeminiAccountSelect?: (accountId: string | null) => void;
+  isAntigravityOauthPreset?: boolean;
+  isAntigravityOauthAuthenticated?: boolean;
+  selectedAntigravityAccountId?: string | null;
+  onAntigravityAccountSelect?: (accountId: string | null) => void;
 
   // Base URL
   shouldShowSpeedTest: boolean;
@@ -67,6 +72,10 @@ export function GeminiFormFields({
   isGeminiOauthAuthenticated = false,
   selectedGeminiAccountId,
   onGeminiAccountSelect,
+  isAntigravityOauthPreset = false,
+  isAntigravityOauthAuthenticated = false,
+  selectedAntigravityAccountId,
+  onAntigravityAccountSelect,
   shouldShowSpeedTest,
   baseUrl,
   onBaseUrlChange,
@@ -112,8 +121,10 @@ export function GeminiFormFields({
       .finally(() => setIsFetchingModels(false));
   }, [baseUrl, apiKey, t]);
 
-  // Google Official is identified explicitly by providerType=google_gemini_oauth.
+  // Official OAuth presets are identified explicitly by providerType metadata.
   const isGoogleOfficial = isGeminiOfficialPreset;
+  const isAntigravityOfficial = isAntigravityOauthPreset;
+  const usesManagedOAuth = isGoogleOfficial || isAntigravityOfficial;
 
   return (
     <>
@@ -155,8 +166,45 @@ export function GeminiFormFields({
         </>
       )}
 
+      {isAntigravityOfficial && (
+        <>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950">
+            <div className="flex gap-3">
+              <Info className="h-5 w-5 flex-shrink-0 text-blue-600 dark:text-blue-400" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                  {t("provider.form.gemini.antigravityOauthTitle", {
+                    defaultValue: "Antigravity OAuth 认证模式",
+                  })}
+                </p>
+                <p className="text-sm text-blue-700 dark:text-blue-300">
+                  {t("provider.form.gemini.antigravityOauthHint", {
+                    defaultValue:
+                      "Antigravity OAuth 使用 cc-switch 托管的 Antigravity 账号，无需填写 API Key。",
+                  })}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <AntigravityOAuthSection
+            selectedAccountId={selectedAntigravityAccountId}
+            onAccountSelect={onAntigravityAccountSelect}
+            allowDefaultAccountOption={false}
+          />
+
+          {!isAntigravityOauthAuthenticated && (
+            <p className="text-sm text-amber-600 dark:text-amber-400">
+              {t("antigravityOauth.loginRequired", {
+                defaultValue: "请先登录 Antigravity 账号",
+              })}
+            </p>
+          )}
+        </>
+      )}
+
       {/* API Key 输入框 */}
-      {shouldShowApiKey && !isGoogleOfficial && (
+      {shouldShowApiKey && !usesManagedOAuth && (
         <ApiKeySection
           value={apiKey}
           onChange={onApiKeyChange}

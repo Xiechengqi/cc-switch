@@ -60,6 +60,7 @@ export interface ProviderPreset {
   // - "github_copilot": GitHub Copilot 供应商（需要 OAuth 认证）
   // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
   // - "claude_oauth": Claude 官方订阅 OAuth（Anthropic 官方）
+  // - "cursor_oauth": Cursor OAuth 订阅反代 Anthropic/Codex API
   // - "kiro_oauth": Kiro OAuth 账号反代 Anthropic API
   // - "deepseek_account": DeepSeek 账号
   providerType?:
@@ -67,6 +68,8 @@ export interface ProviderPreset {
     | "codex_oauth"
     | "claude_oauth"
     | "google_gemini_oauth"
+    | "antigravity_oauth"
+    | "cursor_oauth"
     | "kiro_oauth"
     | "deepseek_account";
 
@@ -82,6 +85,29 @@ export interface ProviderPreset {
 }
 
 export const providerPresets: ProviderPreset[] = [
+  {
+    name: "Antigravity OAuth",
+    websiteUrl: "https://antigravity.google",
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: "https://daily-cloudcode-pa.googleapis.com",
+        ANTHROPIC_MODEL: "gemini-3-pro-preview",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gemini-3-flash",
+      },
+    },
+    isOfficial: true,
+    category: "official",
+    providerType: "antigravity_oauth",
+    requiresOAuth: true,
+    apiFormat: "gemini_native",
+    theme: {
+      icon: "gemini",
+      backgroundColor: "#1A73E8",
+      textColor: "#FFFFFF",
+    },
+    icon: "gemini",
+    iconColor: "#1A73E8",
+  },
   {
     name: "Claude Official",
     websiteUrl: "https://www.anthropic.com/claude-code",
@@ -125,6 +151,30 @@ export const providerPresets: ProviderPreset[] = [
     },
     icon: "generic",
     iconColor: "#111827",
+  },
+  {
+    name: "Cursor OAuth",
+    websiteUrl: "https://cursor.com",
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: "https://api2.cursor.sh",
+        ANTHROPIC_MODEL: "claude-sonnet-4-5",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-7",
+      },
+    },
+    isOfficial: true,
+    category: "official",
+    providerType: "cursor_oauth",
+    requiresOAuth: true,
+    theme: {
+      icon: "generic",
+      backgroundColor: "#111111",
+      textColor: "#FFFFFF",
+    },
+    icon: "generic",
+    iconColor: "#111111",
   },
   {
     name: "OpenAI Official",

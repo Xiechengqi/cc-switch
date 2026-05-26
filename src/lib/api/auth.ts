@@ -5,6 +5,8 @@ export type ManagedAuthProvider =
   | "codex_oauth"
   | "claude_oauth"
   | "google_gemini_oauth"
+  | "antigravity_oauth"
+  | "cursor_oauth"
   | "kiro_oauth";
 
 export interface DeepSeekAccount {

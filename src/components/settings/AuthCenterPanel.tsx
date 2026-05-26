@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Github, KeyRound, ShieldCheck } from "lucide-react";
+import {
+  ExternalLink,
+  Github,
+  KeyRound,
+  ShieldCheck,
+  Sparkles as SparklesIcon,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -14,8 +20,10 @@ import {
   GeminiIcon,
 } from "@/components/BrandIcons";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
+import { AntigravityOAuthSection } from "@/components/providers/forms/AntigravityOAuthSection";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
 import { ClaudeOAuthSection } from "@/components/providers/forms/ClaudeOAuthSection";
+import { CursorOAuthSection } from "@/components/providers/forms/CursorOAuthSection";
 import { DeepSeekAccountSection } from "@/components/providers/forms/DeepSeekAccountSection";
 import { GeminiOAuthSection } from "@/components/providers/forms/GeminiOAuthSection";
 import { KiroOAuthSection } from "@/components/providers/forms/KiroOAuthSection";
@@ -243,6 +251,24 @@ export function AuthCenterPanel() {
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">
         <div className="mb-4 flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+            <KeyRound className="h-5 w-5" />
+          </div>
+          <div>
+            <h4 className="font-medium">Cursor OAuth</h4>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.authCenter.cursorOauthDescription", {
+                defaultValue: "管理 Cursor 订阅账号",
+              })}
+            </p>
+          </div>
+        </div>
+
+        <CursorOAuthSection showLoggedInAccounts />
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
             <GeminiIcon size={20} />
           </div>
           <div>
@@ -256,6 +282,24 @@ export function AuthCenterPanel() {
         </div>
 
         <GeminiOAuthSection showLoggedInAccounts />
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+            <SparklesIcon />
+          </div>
+          <div>
+            <h4 className="font-medium">Antigravity OAuth</h4>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.authCenter.antigravityOauthDescription", {
+                defaultValue: "管理 Antigravity 订阅账号",
+              })}
+            </p>
+          </div>
+        </div>
+
+        <AntigravityOAuthSection showLoggedInAccounts />
       </section>
 
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">

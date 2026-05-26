@@ -31,6 +31,9 @@ export interface CodexProviderPreset {
   iconColor?: string; // 图标颜色
   // Codex API 格式
   apiFormat?: CodexApiFormat;
+  // 特殊供应商类型
+  providerType?: "cursor_oauth";
+  requiresOAuth?: boolean;
   // Codex Chat 本地路由模式下的模型目录
   modelCatalog?: CodexCatalogModel[];
   // Codex Responses -> Chat Completions reasoning capability defaults
@@ -85,6 +88,33 @@ function modelCatalog(
 }
 
 export const codexProviderPresets: CodexProviderPreset[] = [
+  {
+    name: "Cursor OAuth",
+    websiteUrl: "https://cursor.com",
+    isOfficial: true,
+    category: "official",
+    auth: {},
+    config: `model = "gpt-5.3-codex"
+model_provider = "cursor"
+model_reasoning_effort = "high"
+disable_response_storage = true
+
+[model_providers.cursor]
+name = "Cursor"
+base_url = "https://api2.cursor.sh"
+wire_api = "responses"
+requires_openai_auth = true`,
+    providerType: "cursor_oauth",
+    requiresOAuth: true,
+    apiFormat: "openai_responses",
+    theme: {
+      icon: "generic",
+      backgroundColor: "#111111",
+      textColor: "#FFFFFF",
+    },
+    icon: "generic",
+    iconColor: "#111111",
+  },
   {
     name: "OpenAI Official",
     websiteUrl: "https://chatgpt.com/codex",

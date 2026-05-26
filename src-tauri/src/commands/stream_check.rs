@@ -1,6 +1,7 @@
 //! 流式健康检查命令
 
 use crate::app_config::AppType;
+use crate::commands::antigravity_oauth::AntigravityOAuthState;
 use crate::commands::claude_oauth::ClaudeOAuthState;
 use crate::commands::codex_oauth::CodexOAuthState;
 use crate::commands::copilot::CopilotAuthState;
@@ -26,6 +27,7 @@ pub async fn stream_check_provider(
     codex_oauth_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    antigravity_oauth_state: State<'_, AntigravityOAuthState>,
     deepseek_account_state: State<'_, DeepSeekAccountState>,
     app_type: AppType,
     provider_id: String,
@@ -52,6 +54,25 @@ pub async fn stream_check_provider(
 
     if matches!(app_type, AppType::Claude) && provider.is_kiro_oauth_provider() {
         let result = check_kiro_oauth_provider(&app_handle, provider, &config).await;
+        let _ = state.db.save_stream_check_log(
+            &provider_id,
+            &provider.name,
+            app_type.as_str(),
+            &result,
+        );
+        return Ok(result);
+    }
+
+    if matches!(app_type, AppType::Claude | AppType::Gemini)
+        && provider.is_antigravity_oauth_provider()
+    {
+        let result = check_antigravity_oauth_provider(
+            &app_type,
+            provider,
+            &config,
+            antigravity_oauth_state.0.clone(),
+        )
+        .await;
         let _ = state.db.save_stream_check_log(
             &provider_id,
             &provider.name,
@@ -116,6 +137,7 @@ pub(crate) async fn run_stream_check_for_provider(
     let codex_oauth_state = app_handle.state::<CodexOAuthState>();
     let claude_oauth_state = app_handle.state::<ClaudeOAuthState>();
     let gemini_oauth_state = app_handle.state::<GeminiOAuthState>();
+    let antigravity_oauth_state = app_handle.state::<AntigravityOAuthState>();
     let deepseek_account_state = app_handle.state::<DeepSeekAccountState>();
 
     if matches!(app_type, AppType::Claude) && provider.is_deepseek_account_provider() {
@@ -129,6 +151,18 @@ pub(crate) async fn run_stream_check_for_provider(
 
     if matches!(app_type, AppType::Claude) && provider.is_kiro_oauth_provider() {
         return Ok(check_kiro_oauth_provider(app_handle, provider, &config).await);
+    }
+
+    if matches!(app_type, AppType::Claude | AppType::Gemini)
+        && provider.is_antigravity_oauth_provider()
+    {
+        return Ok(check_antigravity_oauth_provider(
+            app_type,
+            provider,
+            &config,
+            antigravity_oauth_state.0.clone(),
+        )
+        .await);
     }
 
     let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
@@ -172,6 +206,7 @@ pub async fn stream_check_all_providers(
     codex_oauth_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
+    antigravity_oauth_state: State<'_, AntigravityOAuthState>,
     deepseek_account_state: State<'_, DeepSeekAccountState>,
     app_type: AppType,
     proxy_targets_only: bool,
@@ -207,6 +242,23 @@ pub async fn stream_check_all_providers(
                 &provider,
                 &config,
                 deepseek_account_state.0.clone(),
+            )
+            .await;
+            let _ = state
+                .db
+                .save_stream_check_log(&id, &provider.name, app_type.as_str(), &result);
+            results.push((id, result));
+            continue;
+        }
+
+        if matches!(app_type, AppType::Claude | AppType::Gemini)
+            && provider.is_antigravity_oauth_provider()
+        {
+            let result = check_antigravity_oauth_provider(
+                &app_type,
+                &provider,
+                &config,
+                antigravity_oauth_state.0.clone(),
             )
             .await;
             let _ = state
@@ -389,6 +441,265 @@ async fn check_deepseek_account_provider(
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
         },
+    }
+}
+
+async fn check_antigravity_oauth_provider(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+    config: &StreamCheckConfig,
+    manager: std::sync::Arc<
+        tokio::sync::RwLock<
+            crate::proxy::providers::antigravity_oauth_auth::AntigravityOAuthManager,
+        >,
+    >,
+) -> StreamCheckResult {
+    let effective_config = StreamCheckService::merge_provider_config(provider, config);
+    let mut last_result = None;
+
+    for attempt in 0..=effective_config.max_retries {
+        let result = check_antigravity_oauth_provider_once(
+            app_type,
+            provider,
+            &effective_config,
+            manager.clone(),
+        )
+        .await;
+        if result.success || attempt >= effective_config.max_retries {
+            return StreamCheckResult {
+                retry_count: attempt,
+                ..result
+            };
+        }
+        last_result = Some(result);
+    }
+
+    last_result.unwrap_or_else(|| StreamCheckResult {
+        status: HealthStatus::Failed,
+        success: false,
+        message: "Antigravity OAuth 检查失败".to_string(),
+        response_time_ms: None,
+        http_status: None,
+        model_used: StreamCheckService::resolve_effective_test_model(
+            app_type,
+            provider,
+            &effective_config,
+        ),
+        tested_at: chrono::Utc::now().timestamp(),
+        retry_count: effective_config.max_retries,
+        error_category: None,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+    })
+}
+
+async fn check_antigravity_oauth_provider_once(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+    config: &StreamCheckConfig,
+    manager: std::sync::Arc<
+        tokio::sync::RwLock<
+            crate::proxy::providers::antigravity_oauth_auth::AntigravityOAuthManager,
+        >,
+    >,
+) -> StreamCheckResult {
+    let start = Instant::now();
+    let model = StreamCheckService::resolve_effective_test_model(app_type, provider, config);
+    let timeout = std::time::Duration::from_secs(config.timeout_secs);
+
+    let probe = async {
+        let (account_id, token, project_id) =
+            resolve_antigravity_oauth_credentials(provider, manager.clone()).await?;
+        match send_antigravity_oauth_stream_check(
+            &model,
+            &config.test_prompt,
+            timeout,
+            &token,
+            &project_id,
+        )
+        .await
+        {
+            Err(AppError::HttpStatus { status: 401, .. }) => {
+                manager
+                    .read()
+                    .await
+                    .invalidate_cached_token(&account_id)
+                    .await;
+                let (_, token, project_id) =
+                    resolve_antigravity_oauth_credentials(provider, manager.clone()).await?;
+                send_antigravity_oauth_stream_check(
+                    &model,
+                    &config.test_prompt,
+                    timeout,
+                    &token,
+                    &project_id,
+                )
+                .await
+            }
+            other => other,
+        }
+    };
+
+    let result = tokio::time::timeout(timeout, probe)
+        .await
+        .unwrap_or_else(|_| {
+            Err(AppError::Message(format!(
+                "Antigravity OAuth 检查超时: {} 秒",
+                config.timeout_secs
+            )))
+        });
+
+    let response_time = start.elapsed().as_millis() as u64;
+    let tested_at = chrono::Utc::now().timestamp();
+
+    match result {
+        Ok(status_code) => StreamCheckResult {
+            status: if response_time > config.degraded_threshold_ms {
+                HealthStatus::Degraded
+            } else {
+                HealthStatus::Operational
+            },
+            success: true,
+            message: "Check succeeded".to_string(),
+            response_time_ms: Some(response_time),
+            http_status: Some(status_code),
+            model_used: model,
+            tested_at,
+            retry_count: 0,
+            error_category: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        },
+        Err(AppError::HttpStatus { status, body }) => StreamCheckResult {
+            status: HealthStatus::Failed,
+            success: false,
+            message: if body.trim().is_empty() {
+                format!("Antigravity OAuth 检查出错: HTTP {status}")
+            } else {
+                format!("Antigravity OAuth 检查出错: HTTP {status}: {}", body.trim())
+            },
+            response_time_ms: Some(response_time),
+            http_status: Some(status),
+            model_used: model,
+            tested_at,
+            retry_count: 0,
+            error_category: StreamCheckService::detect_error_category(status, &body)
+                .map(str::to_string),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        },
+        Err(error) => StreamCheckResult {
+            status: HealthStatus::Failed,
+            success: false,
+            message: format!("Antigravity OAuth 检查出错: {error}"),
+            response_time_ms: Some(response_time),
+            http_status: None,
+            model_used: model,
+            tested_at,
+            retry_count: 0,
+            error_category: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        },
+    }
+}
+
+async fn resolve_antigravity_oauth_credentials(
+    provider: &crate::provider::Provider,
+    manager: std::sync::Arc<
+        tokio::sync::RwLock<
+            crate::proxy::providers::antigravity_oauth_auth::AntigravityOAuthManager,
+        >,
+    >,
+) -> Result<(String, String, String), AppError> {
+    let auth_manager = manager.read().await;
+    let account_id = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("antigravity_oauth"));
+    let resolved_account_id = match account_id {
+        Some(id) => id,
+        None => auth_manager.default_account_id().await.ok_or_else(|| {
+            AppError::Message("Antigravity OAuth 认证失败: 未找到可用账号".to_string())
+        })?,
+    };
+
+    let token = auth_manager
+        .get_valid_token_for_account(&resolved_account_id)
+        .await
+        .map_err(|e| AppError::Message(format!("Antigravity OAuth 认证失败: {e}")))?;
+    let project_id = auth_manager
+        .project_id_for_account(&resolved_account_id)
+        .await
+        .map_err(|e| AppError::Message(format!("Antigravity OAuth project 读取失败: {e}")))?;
+
+    Ok((resolved_account_id, token, project_id))
+}
+
+async fn send_antigravity_oauth_stream_check(
+    model: &str,
+    test_prompt: &str,
+    timeout: std::time::Duration,
+    access_token: &str,
+    project_id: &str,
+) -> Result<u16, AppError> {
+    let request = json!({
+        "model": model,
+        "contents": [{
+            "role": "user",
+            "parts": [{ "text": test_prompt }]
+        }],
+        "generationConfig": { "maxOutputTokens": 1 },
+        "stream": true
+    });
+    let endpoint = format!("/v1beta/models/{model}:streamGenerateContent?alt=sse");
+    let session_id = format!("stream-check-{}", uuid::Uuid::new_v4());
+    let (url, mut body) =
+        crate::proxy::build_antigravity_forward_request(&endpoint, &request, &session_id)
+            .map_err(proxy_error_to_app_error)?;
+    body["project"] = json!(project_id);
+
+    let response = crate::proxy::http_client::get()
+        .post(&url)
+        .timeout(timeout)
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("user-agent", crate::proxy::antigravity_user_agent())
+        .header("x-request-source", "local")
+        .header("content-type", "application/json")
+        .header("accept", "text/event-stream")
+        .header("accept-encoding", "identity")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AppError::Message(format!("Antigravity OAuth 请求失败: {e}")))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::HttpStatus {
+            status: status.as_u16(),
+            body,
+        });
+    }
+
+    let status_code = status.as_u16();
+    let mut stream = response.bytes_stream();
+    match stream.next().await {
+        Some(Ok(_)) => Ok(status_code),
+        Some(Err(err)) => Err(AppError::Message(format!(
+            "Antigravity OAuth 读取响应失败: {err}"
+        ))),
+        None => Err(AppError::Message(
+            "Antigravity OAuth 检查出错: No response data received".to_string(),
+        )),
     }
 }
 

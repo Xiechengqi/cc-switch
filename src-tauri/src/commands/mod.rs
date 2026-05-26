@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+mod antigravity_oauth;
 mod auth;
 mod balance;
 mod claude_oauth;
@@ -7,6 +8,7 @@ mod codex_oauth;
 mod coding_plan;
 mod config;
 mod copilot;
+mod cursor_oauth;
 mod deeplink;
 mod deepseek_account;
 mod email_auth;
@@ -40,6 +42,7 @@ mod usage;
 mod webdav_sync;
 mod workspace;
 
+pub use antigravity_oauth::*;
 pub use auth::*;
 pub use balance::*;
 pub use claude_oauth::*;
@@ -47,6 +50,7 @@ pub use codex_oauth::*;
 pub use coding_plan::*;
 pub use config::*;
 pub use copilot::*;
+pub use cursor_oauth::*;
 pub use deeplink::*;
 pub use deepseek_account::*;
 pub use email_auth::*;

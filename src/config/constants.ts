@@ -4,6 +4,8 @@ export const PROVIDER_TYPES = {
   CODEX_OAUTH: "codex_oauth",
   CLAUDE_OAUTH: "claude_oauth",
   GOOGLE_GEMINI_OAUTH: "google_gemini_oauth",
+  ANTIGRAVITY_OAUTH: "antigravity_oauth",
+  CURSOR_OAUTH: "cursor_oauth",
   KIRO_OAUTH: "kiro_oauth",
   DEEPSEEK_ACCOUNT: "deepseek_account",
 } as const;

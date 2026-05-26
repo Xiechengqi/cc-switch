@@ -104,6 +104,8 @@ import {
   useCodexOauth,
   useClaudeOauth,
   useGeminiOauth,
+  useAntigravityOauth,
+  useCursorOauth,
   useKiroOauth,
   useDeepSeekAccount,
 } from "./hooks";
@@ -523,6 +525,16 @@ function ProviderFormFull({
     defaultAccountId: defaultGeminiAccountId,
   } = useGeminiOauth();
   const {
+    isAuthenticated: isAntigravityOauthAuthenticated,
+    accounts: antigravityOauthAccounts,
+    defaultAccountId: defaultAntigravityAccountId,
+  } = useAntigravityOauth();
+  const {
+    isAuthenticated: isCursorOauthAuthenticated,
+    accounts: cursorOauthAccounts,
+    defaultAccountId: defaultCursorAccountId,
+  } = useCursorOauth();
+  const {
     isAuthenticated: isKiroOauthAuthenticated,
     accounts: kiroOauthAccounts,
     defaultAccountId: defaultKiroAccountId,
@@ -557,6 +569,13 @@ function ProviderFormFull({
   const [selectedGeminiAccountId, setSelectedGeminiAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "google_gemini_oauth"));
+  const [selectedAntigravityAccountId, setSelectedAntigravityAccountId] =
+    useState<string | null>(() =>
+      resolveManagedAccountId(initialData?.meta, "antigravity_oauth"),
+    );
+  const [selectedCursorAccountId, setSelectedCursorAccountId] = useState<
+    string | null
+  >(() => resolveManagedAccountId(initialData?.meta, "cursor_oauth"));
   const [selectedKiroAccountId, setSelectedKiroAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "kiro_oauth"));
@@ -564,7 +583,16 @@ function ProviderFormFull({
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "deepseek_account"));
 
-  const isCodexOfficialPreset = appId === "codex" && category === "official";
+  const selectedCodexPresetProviderType =
+    appId === "codex" && selectedPresetId?.startsWith("codex-")
+      ? codexProviderPresets[Number(selectedPresetId.slice("codex-".length))]
+          ?.providerType
+      : undefined;
+  const isCodexOfficialPreset =
+    appId === "codex" &&
+    category === "official" &&
+    (selectedCodexPresetProviderType || initialData?.meta?.providerType) !==
+      "cursor_oauth";
 
   useEffect(() => {
     if (!isCodexOfficialPreset || selectedCodexAccountId) {
@@ -743,11 +771,16 @@ function ProviderFormFull({
   const isGeminiOfficialPreset =
     appId === "gemini" &&
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH;
+  const isGeminiAntigravityOauthPreset =
+    appId === "gemini" &&
+    currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH;
   const isManagedOauthNameReadOnly =
     currentProviderType === PROVIDER_TYPES.GITHUB_COPILOT ||
     currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
     currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
+    currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
     currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
     currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
     isCodexOfficialPreset;
@@ -768,6 +801,25 @@ function ProviderFormFull({
     defaultKiroAccountId,
     kiroOauthAccounts,
     selectedKiroAccountId,
+  ]);
+
+  useEffect(() => {
+    const isCursorOauthPreset =
+      currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH;
+    if (!isCursorOauthPreset || selectedCursorAccountId) {
+      return;
+    }
+
+    const preferredAccountId =
+      defaultCursorAccountId ?? cursorOauthAccounts[0]?.id ?? null;
+    if (preferredAccountId) {
+      setSelectedCursorAccountId(preferredAccountId);
+    }
+  }, [
+    currentProviderType,
+    cursorOauthAccounts,
+    defaultCursorAccountId,
+    selectedCursorAccountId,
   ]);
 
   useEffect(() => {
@@ -804,6 +856,26 @@ function ProviderFormFull({
     geminiOauthAccounts,
     isGeminiOfficialPreset,
     selectedGeminiAccountId,
+  ]);
+
+  useEffect(() => {
+    if (
+      currentProviderType !== PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+      selectedAntigravityAccountId
+    ) {
+      return;
+    }
+
+    const preferredAccountId =
+      defaultAntigravityAccountId ?? antigravityOauthAccounts[0]?.id ?? null;
+    if (preferredAccountId) {
+      setSelectedAntigravityAccountId(preferredAccountId);
+    }
+  }, [
+    antigravityOauthAccounts,
+    currentProviderType,
+    defaultAntigravityAccountId,
+    selectedAntigravityAccountId,
   ]);
 
   const {
@@ -1222,6 +1294,12 @@ function ProviderFormFull({
     const isGeminiOauthProvider =
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
+    const isAntigravityOauthProvider =
+      templatePreset?.providerType === "antigravity_oauth" ||
+      initialData?.meta?.providerType === "antigravity_oauth";
+    const isCursorOauthProvider =
+      templatePreset?.providerType === "cursor_oauth" ||
+      initialData?.meta?.providerType === "cursor_oauth";
     const isKiroOauthProvider =
       templatePreset?.providerType === "kiro_oauth" ||
       initialData?.meta?.providerType === "kiro_oauth";
@@ -1245,7 +1323,25 @@ function ProviderFormFull({
       );
       return;
     }
-    if (isCodexOfficialPreset) {
+    if (isCursorOauthProvider) {
+      if (!isCursorOauthAuthenticated) {
+        toast.error(
+          t("cursorOauth.loginRequired", {
+            defaultValue: "请先登录 Cursor 账号",
+          }),
+        );
+        return;
+      }
+      if (!selectedCursorAccountId) {
+        toast.error(
+          t("cursorOauth.selectAccountRequired", {
+            defaultValue: "Cursor OAuth 必须绑定一个 Cursor 账号",
+          }),
+        );
+        return;
+      }
+    }
+    if (isCodexOfficialPreset && !isCursorOauthProvider) {
       if (!isCodexOauthAuthenticated) {
         toast.error(
           t("codexOauth.loginRequired", {
@@ -1276,6 +1372,24 @@ function ProviderFormFull({
         toast.error(
           t("geminiOauth.selectAccountRequired", {
             defaultValue: "Google Official 必须绑定一个 Google Gemini 账号",
+          }),
+        );
+        return;
+      }
+    }
+    if (isAntigravityOauthProvider || isGeminiAntigravityOauthPreset) {
+      if (!isAntigravityOauthAuthenticated) {
+        toast.error(
+          t("antigravityOauth.loginRequired", {
+            defaultValue: "请先登录 Antigravity 账号",
+          }),
+        );
+        return;
+      }
+      if (!selectedAntigravityAccountId) {
+        toast.error(
+          t("antigravityOauth.selectAccountRequired", {
+            defaultValue: "Antigravity OAuth 必须绑定一个 Antigravity 账号",
           }),
         );
         return;
@@ -1364,6 +1478,7 @@ function ProviderFormFull({
       if (appId === "claude") {
         if (
           !isCodexOauthProvider &&
+          !isCursorOauthProvider &&
           !isDeepSeekAccountProvider &&
           !baseUrl.trim()
         ) {
@@ -1376,6 +1491,7 @@ function ProviderFormFull({
         if (
           !isCopilotProvider &&
           !isCodexOauthProvider &&
+          !isCursorOauthProvider &&
           !isDeepSeekAccountProvider &&
           !apiKey.trim()
         ) {
@@ -1443,6 +1559,12 @@ function ProviderFormFull({
     const isGeminiOauthProvider =
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
+    const isAntigravityOauthProvider =
+      templatePreset?.providerType === "antigravity_oauth" ||
+      initialData?.meta?.providerType === "antigravity_oauth";
+    const isCursorOauthProvider =
+      templatePreset?.providerType === "cursor_oauth" ||
+      initialData?.meta?.providerType === "cursor_oauth";
     const isKiroOauthProvider =
       templatePreset?.providerType === "kiro_oauth" ||
       initialData?.meta?.providerType === "kiro_oauth";
@@ -1647,37 +1769,49 @@ function ProviderFormFull({
             authProvider: "github_copilot",
             accountId: selectedGitHubAccountId ?? undefined,
           }
-        : isCodexOauthProvider || isCodexOfficialPreset
+        : isCursorOauthProvider
           ? {
               source: "managed_account",
-              authProvider: "codex_oauth",
-              accountId: selectedCodexAccountId ?? undefined,
+              authProvider: "cursor_oauth",
+              accountId: selectedCursorAccountId ?? undefined,
             }
-          : isClaudeOauthProvider
+          : isCodexOauthProvider || isCodexOfficialPreset
             ? {
                 source: "managed_account",
-                authProvider: "claude_oauth",
-                accountId: selectedClaudeAccountId ?? undefined,
+                authProvider: "codex_oauth",
+                accountId: selectedCodexAccountId ?? undefined,
               }
-            : isGeminiOauthProvider || isGeminiOfficialPreset
+            : isClaudeOauthProvider
               ? {
                   source: "managed_account",
-                  authProvider: "google_gemini_oauth",
-                  accountId: selectedGeminiAccountId ?? undefined,
+                  authProvider: "claude_oauth",
+                  accountId: selectedClaudeAccountId ?? undefined,
                 }
-              : isKiroOauthProvider
+              : isGeminiOauthProvider || isGeminiOfficialPreset
                 ? {
                     source: "managed_account",
-                    authProvider: "kiro_oauth",
-                    accountId: selectedKiroAccountId ?? undefined,
+                    authProvider: "google_gemini_oauth",
+                    accountId: selectedGeminiAccountId ?? undefined,
                   }
-                : isDeepSeekAccountProvider
+                : isAntigravityOauthProvider || isGeminiAntigravityOauthPreset
                   ? {
                       source: "managed_account",
-                      authProvider: "deepseek_account",
-                      accountId: selectedDeepSeekAccountId ?? undefined,
+                      authProvider: "antigravity_oauth",
+                      accountId: selectedAntigravityAccountId ?? undefined,
                     }
-                  : undefined,
+                  : isKiroOauthProvider
+                    ? {
+                        source: "managed_account",
+                        authProvider: "kiro_oauth",
+                        accountId: selectedKiroAccountId ?? undefined,
+                      }
+                    : isDeepSeekAccountProvider
+                      ? {
+                          source: "managed_account",
+                          authProvider: "deepseek_account",
+                          accountId: selectedDeepSeekAccountId ?? undefined,
+                        }
+                      : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         isCopilotProvider && selectedGitHubAccountId
@@ -2315,9 +2449,17 @@ function ProviderFormFull({
                 templatePreset?.providerType === "claude_oauth" ||
                 initialData?.meta?.providerType === "claude_oauth"
               }
+              isAntigravityOauthPreset={
+                templatePreset?.providerType === "antigravity_oauth" ||
+                initialData?.meta?.providerType === "antigravity_oauth"
+              }
               isKiroOauthPreset={
                 templatePreset?.providerType === "kiro_oauth" ||
                 initialData?.meta?.providerType === "kiro_oauth"
+              }
+              isCursorOauthPreset={
+                templatePreset?.providerType === "cursor_oauth" ||
+                initialData?.meta?.providerType === "cursor_oauth"
               }
               isDeepSeekAccountPreset={
                 templatePreset?.providerType === "deepseek_account" ||
@@ -2332,8 +2474,12 @@ function ProviderFormFull({
                 initialData?.meta?.providerType === "codex_oauth" ||
                 templatePreset?.providerType === "claude_oauth" ||
                 initialData?.meta?.providerType === "claude_oauth" ||
+                templatePreset?.providerType === "antigravity_oauth" ||
+                initialData?.meta?.providerType === "antigravity_oauth" ||
                 templatePreset?.providerType === "kiro_oauth" ||
                 initialData?.meta?.providerType === "kiro_oauth" ||
+                templatePreset?.providerType === "cursor_oauth" ||
+                initialData?.meta?.providerType === "cursor_oauth" ||
                 templatePreset?.providerType === "deepseek_account" ||
                 initialData?.meta?.providerType === "deepseek_account"
               }
@@ -2346,8 +2492,12 @@ function ProviderFormFull({
               isClaudeOauthAuthenticated={isClaudeOauthAuthenticated}
               selectedClaudeAccountId={selectedClaudeAccountId}
               onClaudeAccountSelect={setSelectedClaudeAccountId}
+              selectedAntigravityAccountId={selectedAntigravityAccountId}
+              onAntigravityAccountSelect={setSelectedAntigravityAccountId}
               selectedKiroAccountId={selectedKiroAccountId}
               onKiroAccountSelect={setSelectedKiroAccountId}
+              selectedCursorAccountId={selectedCursorAccountId}
+              onCursorAccountSelect={setSelectedCursorAccountId}
               selectedDeepSeekAccountId={selectedDeepSeekAccountId}
               onDeepSeekAccountSelect={setSelectedDeepSeekAccountId}
               codexFastMode={codexFastMode}
@@ -2396,10 +2546,18 @@ function ProviderFormFull({
               websiteUrl={codexWebsiteUrl}
               isPartner={isCodexPartner}
               partnerPromotionKey={codexPartnerPromotionKey}
-              isCodexOfficialPreset={category === "official"}
+              isCodexOfficialPreset={
+                category === "official" &&
+                currentProviderType !== PROVIDER_TYPES.CURSOR_OAUTH
+              }
               isCodexOauthAuthenticated={isCodexOauthAuthenticated}
               selectedCodexAccountId={selectedCodexAccountId}
               onCodexAccountSelect={setSelectedCodexAccountId}
+              isCursorOauthPreset={
+                currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH
+              }
+              selectedCursorAccountId={selectedCursorAccountId}
+              onCursorAccountSelect={setSelectedCursorAccountId}
               shouldShowSpeedTest={shouldShowSpeedTest}
               codexBaseUrl={codexBaseUrl}
               onBaseUrlChange={handleCodexBaseUrlChange}
@@ -2440,6 +2598,10 @@ function ProviderFormFull({
               isGeminiOauthAuthenticated={isGeminiOauthAuthenticated}
               selectedGeminiAccountId={selectedGeminiAccountId}
               onGeminiAccountSelect={setSelectedGeminiAccountId}
+              isAntigravityOauthPreset={isGeminiAntigravityOauthPreset}
+              isAntigravityOauthAuthenticated={isAntigravityOauthAuthenticated}
+              selectedAntigravityAccountId={selectedAntigravityAccountId}
+              onAntigravityAccountSelect={setSelectedAntigravityAccountId}
               shouldShowSpeedTest={shouldShowSpeedTest}
               baseUrl={geminiBaseUrl}
               onBaseUrlChange={handleGeminiBaseUrlChange}

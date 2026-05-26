@@ -21,7 +21,9 @@ use super::{
     types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
-use crate::commands::{ClaudeOAuthState, CodexOAuthState, CopilotAuthState, GeminiOAuthState};
+use crate::commands::{
+    AntigravityOAuthState, ClaudeOAuthState, CodexOAuthState, CopilotAuthState, GeminiOAuthState,
+};
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{app_config::AppType, provider::Provider};
@@ -36,8 +38,10 @@ use tokio::sync::RwLock;
 use twox_hash::XxHash64;
 
 const GEMINI_CODE_ASSIST_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
+const ANTIGRAVITY_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
 const GEMINI_CLI_VERSION: &str = "0.31.0";
 const GEMINI_CLI_API_CLIENT_HEADER: &str = "google-genai-sdk/1.41.0 gl-node/v22.19.0";
+const ANTIGRAVITY_MAX_OUTPUT_TOKENS: i64 = 16_384;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
@@ -953,6 +957,27 @@ impl RequestForwarder {
             return Ok((response, Some("anthropic".to_string())));
         }
 
+        if matches!(app_type, AppType::Claude) && provider.is_cursor_oauth_provider() {
+            let response = super::providers::cursor_claude::forward_cursor_claude(
+                self.app_handle.as_ref(),
+                provider,
+                body,
+            )
+            .await?;
+            return Ok((response, Some("anthropic".to_string())));
+        }
+
+        if matches!(app_type, AppType::Codex) && provider.is_cursor_oauth_provider() {
+            let response = super::providers::cursor_codex::forward_cursor_codex(
+                self.app_handle.as_ref(),
+                provider,
+                endpoint,
+                body,
+            )
+            .await?;
+            return Ok((response, Some("openai".to_string())));
+        }
+
         // Gemini Official/OAuth 对齐 Claude/Codex official：本地代理不要求用户配置
         // base_url，后续会直接改写到 Code Assist 内部接口。
         let mut base_url = extract_forward_base_url(app_type, provider, adapter)?;
@@ -1254,6 +1279,16 @@ impl RequestForwarder {
         } else {
             None
         };
+        let mut antigravity_project_id: Option<String>;
+        if is_antigravity_oauth_provider(app_type, provider) {
+            let (antigravity_url, antigravity_body) = build_antigravity_forward_request(
+                &effective_endpoint,
+                &filtered_body,
+                self.session_id.as_str(),
+            )?;
+            url = antigravity_url;
+            filtered_body = antigravity_body;
+        }
 
         // OAuth 401 重试：如果上游返回 401 且本次请求使用了 OAuth 账号注入，
         // 作废该账号的缓存 access_token 后重试一次（仅一次，避免雪崩）。
@@ -1263,6 +1298,7 @@ impl RequestForwarder {
             Codex,
             Copilot,
             Gemini,
+            Antigravity,
         }
         let mut oauth_retried = false;
 
@@ -1271,13 +1307,16 @@ impl RequestForwarder {
             let mut codex_oauth_account_id: Option<String> = None;
             let mut should_send_codex_oauth_session_headers = false;
             let mut gemini_oauth_access_token: Option<String> = None;
+            let mut antigravity_oauth_access_token: Option<String> = None;
+            antigravity_project_id = None;
             // 本次 attempt 实际使用的 OAuth 账号（用于 401 重试时精准作废缓存）
             let mut oauth_kind_used: Option<(OAuthKind, String)> = None;
 
             // 获取认证头（提前准备，用于内联替换）
             let extracted_auth = adapter.extract_auth(provider).or_else(|| {
-                is_gemini_code_assist_provider(app_type, provider)
-                    .then(|| AuthInfo::with_access_token(String::new(), String::new()))
+                (is_gemini_code_assist_provider(app_type, provider)
+                    || is_antigravity_oauth_provider(app_type, provider))
+                .then(|| AuthInfo::with_access_token(String::new(), String::new()))
             });
             let mut auth_headers = if let Some(mut auth) = extracted_auth {
                 // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
@@ -1440,6 +1479,59 @@ impl RequestForwarder {
                     }
                 }
 
+                // Antigravity OAuth: 从 AntigravityOAuthManager 获取 access_token 和 project_id。
+                if auth.strategy == AuthStrategy::GoogleOAuth
+                    && is_antigravity_oauth_provider(app_type, provider)
+                {
+                    if let Some(app_handle) = &self.app_handle {
+                        let antigravity_state = app_handle.state::<AntigravityOAuthState>();
+                        let antigravity_auth = antigravity_state.0.read().await;
+
+                        let account_id = provider
+                            .meta
+                            .as_ref()
+                            .and_then(|m| m.managed_account_id_for("antigravity_oauth"));
+
+                        let resolved_account_id = match account_id {
+                            Some(id) => id,
+                            None => {
+                                antigravity_auth.default_account_id().await.ok_or_else(|| {
+                                    ProxyError::AuthError(
+                                        "Antigravity OAuth 认证失败: 未找到可用账号".to_string(),
+                                    )
+                                })?
+                            }
+                        };
+
+                        let token = antigravity_auth
+                            .get_valid_token_for_account(&resolved_account_id)
+                            .await
+                            .map_err(|e| {
+                                ProxyError::AuthError(format!("Antigravity OAuth 认证失败: {e}"))
+                            })?;
+                        let project_id = antigravity_auth
+                            .project_id_for_account(&resolved_account_id)
+                            .await
+                            .map_err(|e| {
+                                ProxyError::AuthError(format!(
+                                    "Antigravity OAuth project 读取失败: {e}"
+                                ))
+                            })?;
+
+                        auth.api_key = token.clone();
+                        auth.access_token = Some(token.clone());
+                        antigravity_oauth_access_token = Some(token);
+                        antigravity_project_id = Some(project_id);
+                        oauth_kind_used =
+                            Some((OAuthKind::Antigravity, resolved_account_id.clone()));
+                    } else {
+                        log::error!("[AntigravityOAuth] AppHandle 不可用");
+                        return Err(ProxyError::AuthError(
+                            "Antigravity OAuth 认证不可用（无 AppHandle）".to_string(),
+                        ));
+                    }
+                }
+
                 // Google Gemini OAuth: 从 GeminiOAuthManager 获取真实 access_token。
                 // 本地代理端口转发到 Google Official 时不能沿用客户端传入的
                 // x-goog-api-key，需要在这里按当前绑定账号动态注入 OAuth token。
@@ -1522,6 +1614,32 @@ impl RequestForwarder {
                     http::HeaderName::from_static("x-goog-api-client"),
                     http::HeaderValue::from_static(GEMINI_CLI_API_CLIENT_HEADER),
                 );
+            }
+
+            if is_antigravity_oauth_provider(app_type, provider) {
+                upsert_header(
+                    &mut auth_headers,
+                    http::HeaderName::from_static("user-agent"),
+                    http::HeaderValue::from_str(&antigravity_user_agent()).map_err(|e| {
+                        ProxyError::Internal(format!("Invalid Antigravity User-Agent: {e}"))
+                    })?,
+                );
+                upsert_header(
+                    &mut auth_headers,
+                    http::HeaderName::from_static("x-request-source"),
+                    http::HeaderValue::from_static("local"),
+                );
+                if self.session_client_provided {
+                    upsert_header(
+                        &mut auth_headers,
+                        http::HeaderName::from_static("x-machine-session-id"),
+                        http::HeaderValue::from_str(&self.session_id).map_err(|e| {
+                            ProxyError::Internal(format!("Invalid Antigravity session header: {e}"))
+                        })?,
+                    );
+                }
+                auth_headers
+                    .retain(|(name, _)| !name.as_str().eq_ignore_ascii_case("x-goog-api-client"));
             }
 
             // 注入 Codex OAuth 的 ChatGPT-Account-Id header（如果有 account_id）
@@ -1788,6 +1906,19 @@ impl RequestForwarder {
                     outbound_body["project"] = serde_json::json!(project_id);
                 }
             }
+            if is_antigravity_oauth_provider(app_type, provider) {
+                if antigravity_oauth_access_token.is_none() {
+                    return Err(ProxyError::AuthError(
+                        "Antigravity OAuth 认证失败: 未获取到 access token".to_string(),
+                    ));
+                }
+                let project_id = antigravity_project_id.as_deref().ok_or_else(|| {
+                    ProxyError::AuthError(
+                        "Antigravity OAuth 认证失败: 未获取到 project id".to_string(),
+                    )
+                })?;
+                outbound_body["project"] = serde_json::json!(project_id);
+            }
 
             // 序列化请求体
             let body_bytes = serde_json::to_vec(&outbound_body).map_err(|e| {
@@ -1927,6 +2058,15 @@ impl RequestForwarder {
                                     .invalidate_cached_token(&account_id)
                                     .await;
                             }
+                            OAuthKind::Antigravity => {
+                                let state = app_handle.state::<AntigravityOAuthState>();
+                                state
+                                    .0
+                                    .read()
+                                    .await
+                                    .invalidate_cached_token(&account_id)
+                                    .await;
+                            }
                         }
                         oauth_retried = true;
                         // 消费响应体，释放底层连接
@@ -2023,6 +2163,9 @@ impl RequestForwarder {
         body: &Value,
         is_copilot: bool,
     ) -> String {
+        if provider.is_antigravity_oauth_provider() {
+            return "gemini_native".to_string();
+        }
         if !is_copilot {
             return super::providers::get_claude_api_format(provider).to_string();
         }
@@ -2286,6 +2429,13 @@ fn is_gemini_code_assist_provider(app_type: &AppType, provider: &Provider) -> bo
             || provider.is_google_gemini_official_with_managed_auth())
 }
 
+fn is_antigravity_oauth_provider(app_type: &AppType, provider: &Provider) -> bool {
+    matches!(
+        app_type,
+        AppType::Claude | AppType::ClaudeDesktop | AppType::Gemini
+    ) && provider.is_antigravity_oauth_provider()
+}
+
 fn extract_forward_base_url(
     app_type: &AppType,
     provider: &Provider,
@@ -2293,6 +2443,9 @@ fn extract_forward_base_url(
 ) -> Result<String, ProxyError> {
     if is_gemini_code_assist_provider(app_type, provider) {
         return Ok(GEMINI_CODE_ASSIST_BASE_URL.to_string());
+    }
+    if is_antigravity_oauth_provider(app_type, provider) {
+        return Ok(ANTIGRAVITY_BASE_URL.to_string());
     }
 
     adapter.extract_base_url(provider)
@@ -2350,6 +2503,208 @@ fn build_gemini_code_assist_forward_request(
     Ok((url, body, model))
 }
 
+pub(crate) fn build_antigravity_forward_request(
+    endpoint: &str,
+    request_body: &Value,
+    session_id: &str,
+) -> Result<(String, Value), ProxyError> {
+    let model = extract_gemini_model_from_endpoint(endpoint)
+        .or_else(|| {
+            request_body
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string)
+        })
+        .map(|model| super::gemini_url::normalize_gemini_model_id(&model).to_string())
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| {
+            ProxyError::ConfigError("Antigravity OAuth 反代缺少模型名，无法构造请求".to_string())
+        })?;
+
+    let is_stream = endpoint.contains("streamGenerateContent")
+        || endpoint.contains("alt=sse")
+        || request_body
+            .get("stream")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+    let action = if is_stream {
+        "streamGenerateContent"
+    } else {
+        "generateContent"
+    };
+    let url = if is_stream {
+        format!("{ANTIGRAVITY_BASE_URL}/v1internal:{action}?alt=sse")
+    } else {
+        format!("{ANTIGRAVITY_BASE_URL}/v1internal:{action}")
+    };
+
+    let mut inner_request = sanitize_antigravity_request(request_body.clone());
+    if let Some(obj) = inner_request.as_object_mut() {
+        obj.remove("model");
+        obj.remove("project");
+        obj.remove("stream");
+        obj.remove("safetySettings");
+        obj.entry("sessionId")
+            .or_insert_with(|| serde_json::json!(session_id));
+    }
+
+    let body = serde_json::json!({
+        "model": model,
+        "userAgent": "antigravity",
+        "requestType": "agent",
+        "requestId": format!("agent-{}", uuid::Uuid::new_v4()),
+        "request": inner_request,
+    });
+
+    Ok((url, body))
+}
+
+fn sanitize_antigravity_request(mut request: Value) -> Value {
+    clamp_antigravity_max_output_tokens(&mut request);
+    sanitize_antigravity_contents(&mut request);
+    sanitize_antigravity_tools(&mut request);
+    request
+}
+
+fn clamp_antigravity_max_output_tokens(request: &mut Value) {
+    let Some(max_tokens) = request
+        .get_mut("generationConfig")
+        .and_then(|value| value.get_mut("maxOutputTokens"))
+    else {
+        return;
+    };
+    if max_tokens
+        .as_i64()
+        .map(|value| value > ANTIGRAVITY_MAX_OUTPUT_TOKENS)
+        .unwrap_or(false)
+    {
+        *max_tokens = serde_json::json!(ANTIGRAVITY_MAX_OUTPUT_TOKENS);
+    }
+}
+
+fn sanitize_antigravity_contents(request: &mut Value) {
+    let Some(contents) = request
+        .get_mut("contents")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+
+    for content in contents {
+        let has_function_response = content
+            .get("parts")
+            .and_then(|value| value.as_array())
+            .map(|parts| {
+                parts
+                    .iter()
+                    .any(|part| part.get("functionResponse").is_some())
+            })
+            .unwrap_or(false);
+        if has_function_response {
+            content["role"] = serde_json::json!("user");
+        }
+
+        let Some(parts) = content
+            .get_mut("parts")
+            .and_then(|value| value.as_array_mut())
+        else {
+            continue;
+        };
+        parts.retain(|part| {
+            let has_function_call = part.get("functionCall").is_some();
+            let has_text = part.get("text").is_some();
+            if part.get("thought").and_then(|value| value.as_bool()) == Some(true)
+                && !has_function_call
+            {
+                return false;
+            }
+            if part.get("thoughtSignature").is_some() && !has_function_call && !has_text {
+                return false;
+            }
+            true
+        });
+    }
+}
+
+fn sanitize_antigravity_tools(request: &mut Value) {
+    let Some(tools) = request
+        .get_mut("tools")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+
+    let mut declarations = Vec::new();
+    for group in tools.iter_mut() {
+        let Some(functions) = group
+            .get_mut("functionDeclarations")
+            .and_then(|value| value.as_array_mut())
+        else {
+            continue;
+        };
+        for function in functions.iter_mut() {
+            if let Some(name) = function
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string)
+            {
+                function["name"] = serde_json::json!(sanitize_antigravity_function_name(&name));
+            }
+            if function.get("parameters").is_none() {
+                function["parameters"] = serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "description": "Brief explanation"
+                        }
+                    },
+                    "required": ["reason"]
+                });
+            }
+            declarations.push(function.clone());
+        }
+    }
+
+    if declarations.is_empty() {
+        request.as_object_mut().map(|obj| obj.remove("tools"));
+        return;
+    }
+
+    *tools = vec![serde_json::json!({ "functionDeclarations": declarations })];
+    request["toolConfig"] = serde_json::json!({
+        "functionCallingConfig": { "mode": "VALIDATED" }
+    });
+}
+
+fn sanitize_antigravity_function_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len().min(64));
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-') {
+            result.push(ch);
+        } else {
+            result.push('_');
+        }
+        if result.len() >= 64 {
+            break;
+        }
+    }
+    if !result
+        .chars()
+        .next()
+        .map(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        .unwrap_or(false)
+    {
+        result.insert(0, '_');
+        result.truncate(64);
+    }
+    if result.is_empty() {
+        "_unknown".to_string()
+    } else {
+        result
+    }
+}
+
 fn normalize_gemini_code_assist_model(model: &str) -> &str {
     match model {
         "gemini-3-flash-preview" => "gemini-3-flash",
@@ -2381,6 +2736,14 @@ fn gemini_cli_user_agent(model: &str) -> String {
         "GeminiCLI/{GEMINI_CLI_VERSION}/{model} ({}; {})",
         gemini_cli_platform(),
         gemini_cli_arch()
+    )
+}
+
+pub(crate) fn antigravity_user_agent() -> String {
+    format!(
+        "antigravity/1.107.0 {}/{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
     )
 }
 
@@ -3555,6 +3918,66 @@ mod tests {
 
         assert_eq!(model, "gemini-2.5-flash");
         assert_eq!(body["model"], "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn build_antigravity_forward_request_wraps_cloud_code_envelope() {
+        let (url, body) = build_antigravity_forward_request(
+            "/v1beta/models/gemini-3-pro-preview:streamGenerateContent?alt=sse",
+            &json!({
+                "contents": [{
+                    "role": "model",
+                    "parts": [
+                        { "thought": true, "text": "hidden" },
+                        { "text": "visible" }
+                    ]
+                }],
+                "generationConfig": { "maxOutputTokens": 20000 },
+                "tools": [
+                    {
+                        "functionDeclarations": [
+                            { "name": "1 bad name!", "parameters": { "type": "object" } }
+                        ]
+                    }
+                ],
+                "stream": true
+            }),
+            "session-1",
+        )
+        .expect("build antigravity request");
+
+        assert_eq!(
+            url,
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+        );
+        assert_eq!(body["model"], "gemini-3-pro-preview");
+        assert_eq!(body["userAgent"], "antigravity");
+        assert_eq!(body["requestType"], "agent");
+        assert!(body["requestId"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("agent-")));
+        assert_eq!(body["request"]["sessionId"], "session-1");
+        assert_eq!(
+            body["request"]["generationConfig"]["maxOutputTokens"],
+            ANTIGRAVITY_MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(
+            body["request"]["contents"][0]["parts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            body["request"]["tools"][0]["functionDeclarations"][0]["name"],
+            "_1_bad_name_"
+        );
+        assert_eq!(
+            body["request"]["toolConfig"]["functionCallingConfig"]["mode"],
+            "VALIDATED"
+        );
+        assert!(body["request"].get("stream").is_none());
+        assert!(body.get("project").is_none());
     }
 
     #[test]

@@ -2295,11 +2295,22 @@ impl ProviderService {
 
                 if provider.category.as_deref() == Some("official")
                     && !provider.is_codex_official_with_managed_auth()
+                    && !provider.is_cursor_oauth_provider()
                 {
                     return Err(AppError::localized(
                         "provider.codex.official.account_required",
                         "OpenAI Official 必须绑定一个 ChatGPT 账号",
                         "OpenAI Official must be bound to a ChatGPT account",
+                    ));
+                }
+
+                if provider.is_cursor_oauth_provider()
+                    && !provider.has_managed_auth_binding("cursor_oauth")
+                {
+                    return Err(AppError::localized(
+                        "provider.cursor.official.account_required",
+                        "Cursor OAuth 必须绑定一个 Cursor 账号",
+                        "Cursor OAuth must be bound to a Cursor account",
                     ));
                 }
             }
@@ -2314,6 +2325,16 @@ impl ProviderService {
                         "provider.gemini.official.account_required",
                         "Google Official 必须绑定一个 Gemini OAuth 账号",
                         "Google Official must be bound to a Gemini OAuth account",
+                    ));
+                }
+
+                if provider.is_antigravity_oauth_provider()
+                    && !provider.has_managed_auth_binding("antigravity_oauth")
+                {
+                    return Err(AppError::localized(
+                        "provider.antigravity.official.account_required",
+                        "Antigravity OAuth 必须绑定一个 Antigravity 账号",
+                        "Antigravity OAuth must be bound to an Antigravity account",
                     ));
                 }
             }

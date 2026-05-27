@@ -19,7 +19,9 @@ use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::{CopilotAuthManager, CopilotUsageResponse};
 use crate::proxy::providers::cursor_oauth_auth::CursorOAuthManager;
 use crate::proxy::providers::gemini_oauth_auth::GeminiOAuthManager;
-use crate::proxy::providers::kiro_oauth_auth::{KiroOAuthManager, KiroUsageLimitsResponse};
+use crate::proxy::providers::kiro_oauth_auth::{
+    KiroOAuthError, KiroOAuthManager, KiroUsageLimitsResponse,
+};
 use crate::services::subscription::{
     query_claude_quota_with_token, query_codex_quota, query_gemini_quota_with_token,
     CredentialStatus, QuotaTier, SubscriptionQuota,
@@ -630,11 +632,19 @@ async fn refresh_kiro_quota(managers: &OauthQuotaManagers, account_id: &str) -> 
     let manager = managers.kiro.read().await;
     match manager.get_usage_limits_for_account(account_id).await {
         Ok(usage) => kiro_usage_to_subscription_quota(usage),
-        Err(err) => SubscriptionQuota::error(
-            "kiro_oauth",
-            CredentialStatus::Expired,
-            format!("Kiro OAuth usage limits unavailable: {err}"),
-        ),
+        Err(err) => {
+            let credential_status = match &err {
+                KiroOAuthError::RefreshTokenInvalid | KiroOAuthError::LegacyAccountUnsupported => {
+                    CredentialStatus::Expired
+                }
+                _ => CredentialStatus::Valid,
+            };
+            SubscriptionQuota::error(
+                "kiro_oauth",
+                credential_status,
+                format!("Kiro OAuth usage limits unavailable: {err}"),
+            )
+        }
     }
 }
 

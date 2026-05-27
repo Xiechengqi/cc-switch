@@ -1264,40 +1264,76 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
             // Write user's env vars as-is (e.g. GEMINI_MODEL, custom vars).
             write_gemini_env_atomic(&env_map)?;
 
+            let is_antigravity = provider.is_antigravity_oauth_provider();
+            let auth_binding_key = if is_antigravity {
+                "antigravity_oauth"
+            } else {
+                "google_gemini_oauth"
+            };
+
             let account_id = provider
                 .meta
                 .as_ref()
-                .and_then(|meta| meta.managed_account_id_for("google_gemini_oauth"))
+                .and_then(|meta| meta.managed_account_id_for(auth_binding_key))
                 .ok_or_else(|| {
-                    AppError::localized(
-                        "provider.gemini.official.account_required",
-                        "Google Official 必须绑定一个 Gemini OAuth 账号。",
-                        "Google Official requires a bound Gemini OAuth account.",
-                    )
+                    if is_antigravity {
+                        AppError::localized(
+                            "provider.antigravity.official.account_required",
+                            "Antigravity OAuth 必须绑定一个 Antigravity 账号。",
+                            "Antigravity OAuth requires a bound Antigravity account.",
+                        )
+                    } else {
+                        AppError::localized(
+                            "provider.gemini.official.account_required",
+                            "Google Official 必须绑定一个 Gemini OAuth 账号。",
+                            "Google Official requires a bound Gemini OAuth account.",
+                        )
+                    }
                 })?;
 
-            let manager = crate::proxy::providers::gemini_oauth_auth::global_gemini_oauth_manager()
-                .ok_or_else(|| AppError::Message("Gemini OAuth manager unavailable".to_string()))?;
+            let (access_token, refresh_token, expiry_date) = if is_antigravity {
+                let manager =
+                    crate::proxy::providers::antigravity_oauth_auth::global_antigravity_oauth_manager()
+                        .ok_or_else(|| {
+                            AppError::Message("Antigravity OAuth manager unavailable".to_string())
+                        })?;
+                let creds = futures::executor::block_on(async {
+                    let manager = manager.read().await;
+                    manager
+                        .export_cli_credentials_for_account(&account_id)
+                        .await
+                })
+                .map_err(|e| {
+                    AppError::localized(
+                        "provider.antigravity.official.account_sync_failed",
+                        format!("同步 Antigravity OAuth 账号凭据失败: {e}"),
+                        format!("Failed to sync Antigravity OAuth credentials: {e}"),
+                    )
+                })?;
+                (creds.access_token, creds.refresh_token, creds.expiry_date)
+            } else {
+                let manager =
+                    crate::proxy::providers::gemini_oauth_auth::global_gemini_oauth_manager()
+                        .ok_or_else(|| {
+                            AppError::Message("Gemini OAuth manager unavailable".to_string())
+                        })?;
+                let creds = futures::executor::block_on(async {
+                    let manager = manager.read().await;
+                    manager
+                        .export_cli_credentials_for_account(&account_id)
+                        .await
+                })
+                .map_err(|e| {
+                    AppError::localized(
+                        "provider.gemini.official.account_sync_failed",
+                        format!("同步 Gemini OAuth 账号凭据失败: {e}"),
+                        format!("Failed to sync Gemini OAuth credentials: {e}"),
+                    )
+                })?;
+                (creds.access_token, creds.refresh_token, creds.expiry_date)
+            };
 
-            let credentials = futures::executor::block_on(async {
-                let manager = manager.read().await;
-                manager
-                    .export_cli_credentials_for_account(&account_id)
-                    .await
-            })
-            .map_err(|e| {
-                AppError::localized(
-                    "provider.gemini.official.account_sync_failed",
-                    format!("同步 Gemini OAuth 账号凭据失败: {e}"),
-                    format!("Failed to sync Gemini OAuth credentials: {e}"),
-                )
-            })?;
-
-            write_google_oauth_creds(
-                &credentials.access_token,
-                &credentials.refresh_token,
-                credentials.expiry_date,
-            )?;
+            write_google_oauth_creds(&access_token, &refresh_token, expiry_date)?;
         }
         GeminiAuthType::Packycode | GeminiAuthType::Generic => {
             // API Key mode -- require GEMINI_API_KEY

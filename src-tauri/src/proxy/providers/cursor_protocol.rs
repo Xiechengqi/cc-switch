@@ -39,6 +39,7 @@ pub async fn send_cursor_request(
     let url = format!("{DEFAULT_API_BASE_URL}{CHAT_PATH}");
     let encoded = encode_cursor_chat_request(&ctx.body);
     let client = reqwest::Client::builder()
+        .http2_prior_knowledge()
         .http2_adaptive_window(true)
         .build()
         .map_err(|e| ProxyError::ForwardFailed(format!("创建 Cursor HTTP/2 client 失败: {e}")))?;

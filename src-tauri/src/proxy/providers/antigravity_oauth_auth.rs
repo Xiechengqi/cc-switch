@@ -51,6 +51,10 @@ pub fn set_global_antigravity_oauth_manager(manager: Arc<RwLock<AntigravityOAuth
     let _ = GLOBAL_ANTIGRAVITY_OAUTH_MANAGER.set(manager);
 }
 
+pub fn global_antigravity_oauth_manager() -> Option<Arc<RwLock<AntigravityOAuthManager>>> {
+    GLOBAL_ANTIGRAVITY_OAUTH_MANAGER.get().cloned()
+}
+
 fn env_or_default(name: &str, default: &str) -> String {
     std::env::var(name)
         .ok()

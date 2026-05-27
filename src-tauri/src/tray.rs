@@ -457,6 +457,8 @@ fn handle_provider_click(
             Some(gemini_state),
             Some(copilot_state),
             Some(kiro_state),
+            Some(antigravity_state),
+            Some(cursor_state),
         ) = (
             app.try_state::<crate::commands::OauthQuotaState>(),
             app.try_state::<crate::commands::CodexOAuthState>(),
@@ -464,6 +466,8 @@ fn handle_provider_click(
             app.try_state::<crate::commands::GeminiOAuthState>(),
             app.try_state::<crate::commands::CopilotAuthState>(),
             app.try_state::<crate::commands::KiroOAuthState>(),
+            app.try_state::<crate::commands::AntigravityOAuthState>(),
+            app.try_state::<crate::commands::CursorOAuthState>(),
         ) {
             let app_handle = app.clone();
             let db = app_state.db.clone();
@@ -474,6 +478,8 @@ fn handle_provider_click(
                 &gemini_state,
                 &copilot_state,
                 &kiro_state,
+                &antigravity_state,
+                &cursor_state,
             );
             tauri::async_runtime::spawn(async move {
                 service

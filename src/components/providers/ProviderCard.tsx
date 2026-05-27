@@ -20,6 +20,8 @@ import CodexOauthQuotaFooter from "@/components/CodexOauthQuotaFooter";
 import ClaudeOauthQuotaFooter from "@/components/ClaudeOauthQuotaFooter";
 import GeminiOauthQuotaFooter from "@/components/GeminiOauthQuotaFooter";
 import KiroOauthQuotaFooter from "@/components/KiroOauthQuotaFooter";
+import AntigravityOauthQuotaFooter from "@/components/AntigravityOauthQuotaFooter";
+import CursorOauthQuotaFooter from "@/components/CursorOauthQuotaFooter";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
@@ -500,9 +502,23 @@ export function ProviderCard({
                   providerId={provider.id}
                   isCurrent={isCurrent}
                 />
-              ) : quotaSource === "antigravity_oauth" ||
-                quotaSource === "cursor_oauth" ? null : quotaSource ===
-                "kiro_oauth" ? (
+              ) : quotaSource === "antigravity_oauth" ? (
+                <AntigravityOauthQuotaFooter
+                  meta={provider.meta}
+                  inline={true}
+                  appId={appId}
+                  providerId={provider.id}
+                  isCurrent={isCurrent}
+                />
+              ) : quotaSource === "cursor_oauth" ? (
+                <CursorOauthQuotaFooter
+                  meta={provider.meta}
+                  inline={true}
+                  appId={appId}
+                  providerId={provider.id}
+                  isCurrent={isCurrent}
+                />
+              ) : quotaSource === "kiro_oauth" ? (
                 <KiroOauthQuotaFooter
                   meta={provider.meta}
                   inline={true}

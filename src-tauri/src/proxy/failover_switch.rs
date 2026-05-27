@@ -120,6 +120,8 @@ impl FailoverSwitchManager {
                         Some(gemini_state),
                         Some(copilot_state),
                         Some(kiro_state),
+                        Some(antigravity_state),
+                        Some(cursor_state),
                     ) = (
                         app.try_state::<crate::commands::OauthQuotaState>(),
                         app.try_state::<crate::commands::CodexOAuthState>(),
@@ -127,6 +129,8 @@ impl FailoverSwitchManager {
                         app.try_state::<crate::commands::GeminiOAuthState>(),
                         app.try_state::<crate::commands::CopilotAuthState>(),
                         app.try_state::<crate::commands::KiroOAuthState>(),
+                        app.try_state::<crate::commands::AntigravityOAuthState>(),
+                        app.try_state::<crate::commands::CursorOAuthState>(),
                     ) {
                         let service = std::sync::Arc::clone(&oauth_quota_state.0);
                         let managers =
@@ -136,6 +140,8 @@ impl FailoverSwitchManager {
                                 &gemini_state,
                                 &copilot_state,
                                 &kiro_state,
+                                &antigravity_state,
+                                &cursor_state,
                             );
                         let app_handle = app.clone();
                         tauri::async_runtime::spawn(async move {

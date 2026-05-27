@@ -6,6 +6,7 @@ use crate::error::AppError;
 use crate::provider::Provider;
 
 const GOOGLE_GEMINI_OAUTH_PROVIDER_TYPE: &str = "google_gemini_oauth";
+const ANTIGRAVITY_OAUTH_PROVIDER_TYPE: &str = "antigravity_oauth";
 
 /// Gemini authentication type enumeration
 ///
@@ -35,14 +36,15 @@ const PACKYCODE_KEYWORDS: [&str; 3] = ["packycode", "packyapi", "packy"];
 /// - `GeminiAuthType::Packycode`: PackyCode provider, uses API Key
 /// - `GeminiAuthType::Generic`: Other generic providers, uses API Key
 pub(crate) fn detect_gemini_auth_type(provider: &Provider) -> GeminiAuthType {
-    // Priority 1: explicit providerType
-    if provider
+    // Priority 1: explicit providerType (OAuth-based, no API Key needed)
+    if let Some(pt) = provider
         .meta
         .as_ref()
         .and_then(|meta| meta.provider_type.as_deref())
-        == Some(GOOGLE_GEMINI_OAUTH_PROVIDER_TYPE)
     {
-        return GeminiAuthType::GoogleOfficial;
+        if pt == GOOGLE_GEMINI_OAUTH_PROVIDER_TYPE || pt == ANTIGRAVITY_OAUTH_PROVIDER_TYPE {
+            return GeminiAuthType::GoogleOfficial;
+        }
     }
 
     // Priority 2: Check partner_promotion_key for PackyCode only.

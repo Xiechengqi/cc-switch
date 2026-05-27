@@ -25,6 +25,11 @@ export const subscriptionApi = {
     accountId: string | null,
   ): Promise<CachedOauthQuota | null> =>
     invoke("get_cached_oauth_quota", { authProvider, accountId }),
+  refreshOauthQuota: (
+    authProvider: string,
+    accountId: string | null,
+  ): Promise<CachedOauthQuota | null> =>
+    invoke("refresh_oauth_quota", { authProvider, accountId }),
   getCodingPlanQuota: (
     baseUrl: string,
     apiKey: string,

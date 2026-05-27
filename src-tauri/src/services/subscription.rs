@@ -448,6 +448,150 @@ pub async fn query_gemini_quota_with_token(
     result
 }
 
+pub async fn query_antigravity_quota_with_token(
+    access_token: &str,
+    project_id: Option<&str>,
+    tool_name: &str,
+) -> SubscriptionQuota {
+    let mut result = retrieve_user_quota(access_token, project_id).await;
+    result.tool = tool_name.to_string();
+    result
+}
+
+pub async fn query_cursor_quota(access_token: &str, account_id: &str) -> SubscriptionQuota {
+    let client = crate::proxy::http_client::get();
+
+    // Parallel: Stripe status + GetCurrentPeriodUsage
+    let (stripe_result, usage_result) = tokio::join!(
+        fetch_cursor_stripe_status(&client, access_token, account_id),
+        fetch_cursor_period_usage(&client, access_token),
+    );
+
+    let credential_message = stripe_result
+        .as_ref()
+        .ok()
+        .and_then(|s| s.get("membershipType").and_then(|v| v.as_str()))
+        .map(format_cursor_membership_label)
+        .or(Some("Cursor".to_string()));
+
+    let tiers = match usage_result {
+        Ok(usage) => parse_cursor_usage_tiers(&usage),
+        Err(_) => vec![],
+    };
+
+    SubscriptionQuota {
+        tool: "cursor_oauth".to_string(),
+        credential_status: CredentialStatus::Valid,
+        credential_message,
+        success: true,
+        tiers,
+        extra_usage: None,
+        error: None,
+        queried_at: Some(chrono::Utc::now().timestamp_millis()),
+        failure: None,
+    }
+}
+
+async fn fetch_cursor_stripe_status(
+    client: &reqwest::Client,
+    access_token: &str,
+    account_id: &str,
+) -> Result<serde_json::Value, String> {
+    let cookie = format!(
+        "WorkosCursorSessionToken={}%3A%3A{}",
+        account_id, access_token
+    );
+    let resp = client
+        .get("https://cursor.com/api/auth/stripe")
+        .header("cookie", &cookie)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("stripe status {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+async fn fetch_cursor_period_usage(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> Result<serde_json::Value, String> {
+    let resp = client
+        .post("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("connect-protocol-version", "1")
+        .header("content-type", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .body("{}")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("usage status {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+fn format_cursor_membership_label(membership_type: &str) -> String {
+    match membership_type.to_lowercase().as_str() {
+        "free" => "Cursor Free".to_string(),
+        "pro" => "Cursor Pro".to_string(),
+        "pro_plus" | "pro+" => "Cursor Pro+".to_string(),
+        "ultra" => "Cursor Ultra".to_string(),
+        other => format!("Cursor {other}"),
+    }
+}
+
+fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
+    let plan_usage = match usage.get("planUsage") {
+        Some(pu) => pu,
+        None => return vec![],
+    };
+
+    let limit = plan_usage
+        .get("limit")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    if limit <= 0.0 {
+        return vec![];
+    }
+
+    let used = plan_usage
+        .get("used")
+        .and_then(|v| v.as_f64())
+        .or_else(|| {
+            let remaining = plan_usage.get("remaining").and_then(|v| v.as_f64())?;
+            Some(limit - remaining)
+        })
+        .unwrap_or(0.0);
+
+    let utilization = plan_usage
+        .get("totalPercentUsed")
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| (used / limit) * 100.0);
+
+    let resets_at = usage
+        .get("billingCycleEnd")
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_f64().map(|f| f as i64))
+                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+        })
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .map(|dt| dt.to_rfc3339());
+
+    vec![QuotaTier {
+        name: "cursor_credits".to_string(),
+        utilization,
+        resets_at,
+        used: Some(used / 100.0),
+        limit: Some(limit / 100.0),
+        unit: Some("USD".to_string()),
+    }]
+}
+
 /// 查询 Claude 官方订阅额度
 async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
     let client = crate::proxy::http_client::get();
@@ -1253,9 +1397,19 @@ async fn query_gemini_quota(access_token: &str) -> SubscriptionQuota {
         .and_then(extract_project_id);
 
     // ── Step 2: retrieveUserQuota 获取配额 ──
+    retrieve_user_quota(access_token, project_id.as_deref()).await
+}
+
+/// 调用 retrieveUserQuota 获取按模型分桶的配额数据。
+///
+/// 被 Gemini（先 loadCodeAssist 取得 project_id）与 Antigravity（project_id 已知，
+/// 跳过 loadCodeAssist）复用，两者共享 Google Cloud AI Companion 后端。
+async fn retrieve_user_quota(access_token: &str, project_id: Option<&str>) -> SubscriptionQuota {
+    let client = crate::proxy::http_client::get();
+
     let mut quota_body = serde_json::json!({});
-    if let Some(ref pid) = project_id {
-        quota_body["project"] = serde_json::Value::String(pid.clone());
+    if let Some(pid) = project_id {
+        quota_body["project"] = serde_json::Value::String(pid.to_string());
     }
 
     let quota_resp = client
@@ -1498,4 +1652,67 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn membership_label_maps_known_tiers() {
+        assert_eq!(format_cursor_membership_label("free"), "Cursor Free");
+        assert_eq!(format_cursor_membership_label("pro"), "Cursor Pro");
+        assert_eq!(format_cursor_membership_label("pro_plus"), "Cursor Pro+");
+        assert_eq!(format_cursor_membership_label("ultra"), "Cursor Ultra");
+        // 大小写不敏感
+        assert_eq!(format_cursor_membership_label("PRO"), "Cursor Pro");
+        // 未知等级回落到原值
+        assert_eq!(format_cursor_membership_label("team"), "Cursor team");
+    }
+
+    #[test]
+    fn parse_usage_tiers_reads_plan_usage() {
+        let usage = serde_json::json!({
+            "planUsage": {
+                "limit": 40000.0,       // cents
+                "used": 4230.0,         // cents
+                "totalPercentUsed": 10.575
+            },
+            "billingCycleEnd": 1_700_000_000_000_i64
+        });
+        let tiers = parse_cursor_usage_tiers(&usage);
+        assert_eq!(tiers.len(), 1);
+        let tier = &tiers[0];
+        assert_eq!(tier.name, "cursor_credits");
+        assert_eq!(tier.unit.as_deref(), Some("USD"));
+        assert_eq!(tier.used, Some(42.30));
+        assert_eq!(tier.limit, Some(400.0));
+        assert!((tier.utilization - 10.575).abs() < 1e-6);
+        assert!(tier.resets_at.is_some());
+    }
+
+    #[test]
+    fn parse_usage_tiers_derives_used_from_remaining() {
+        let usage = serde_json::json!({
+            "planUsage": {
+                "limit": 1000.0,
+                "remaining": 250.0
+            }
+        });
+        let tiers = parse_cursor_usage_tiers(&usage);
+        assert_eq!(tiers.len(), 1);
+        let tier = &tiers[0];
+        assert_eq!(tier.used, Some(7.5)); // (1000 - 250) / 100
+                                          // 无 totalPercentUsed 时按 used/limit 推算
+        assert!((tier.utilization - 75.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_usage_tiers_empty_when_no_limit() {
+        assert!(parse_cursor_usage_tiers(&serde_json::json!({})).is_empty());
+        assert!(parse_cursor_usage_tiers(&serde_json::json!({
+            "planUsage": { "limit": 0.0 }
+        }))
+        .is_empty());
+    }
 }

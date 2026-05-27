@@ -1,13 +1,13 @@
 import React from "react";
 import type { ProviderMeta } from "@/types";
-import { useGeminiOauthQuota } from "@/lib/query/subscription";
+import { useAntigravityOauthQuota } from "@/lib/query/subscription";
 import { subscriptionApi } from "@/lib/api/subscription";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
 import type { AppId } from "@/lib/api";
 import { SubscriptionQuotaView } from "@/components/SubscriptionQuotaFooter";
 
-interface GeminiOauthQuotaFooterProps {
+interface AntigravityOauthQuotaFooterProps {
   meta?: ProviderMeta;
   appId?: AppId;
   providerId?: string;
@@ -15,21 +15,20 @@ interface GeminiOauthQuotaFooterProps {
   isCurrent?: boolean;
 }
 
-const GeminiOauthQuotaFooter: React.FC<GeminiOauthQuotaFooterProps> = ({
-  meta,
-  inline = false,
-}) => {
+const AntigravityOauthQuotaFooter: React.FC<
+  AntigravityOauthQuotaFooterProps
+> = ({ meta, inline = false }) => {
   const {
     data: quota,
     isFetching: loading,
     refetch,
-  } = useGeminiOauthQuota(meta, { enabled: true });
+  } = useAntigravityOauthQuota(meta, { enabled: true });
   const accountId = resolveManagedAccountId(
     meta,
-    PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH,
+    PROVIDER_TYPES.ANTIGRAVITY_OAUTH,
   );
   const handleRefresh = React.useCallback(async () => {
-    await subscriptionApi.refreshOauthQuota("google_gemini_oauth", accountId);
+    await subscriptionApi.refreshOauthQuota("antigravity_oauth", accountId);
     await refetch();
   }, [accountId, refetch]);
 
@@ -38,10 +37,10 @@ const GeminiOauthQuotaFooter: React.FC<GeminiOauthQuotaFooterProps> = ({
       quota={quota}
       loading={loading}
       refetch={handleRefresh}
-      appIdForExpiredHint="google_gemini_oauth"
+      appIdForExpiredHint="antigravity_oauth"
       inline={inline}
     />
   );
 };
 
-export default GeminiOauthQuotaFooter;
+export default AntigravityOauthQuotaFooter;

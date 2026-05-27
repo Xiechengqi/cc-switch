@@ -2,7 +2,7 @@ import React from "react";
 import { Clock, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ProviderMeta } from "@/types";
-import { useKiroOauthQuota } from "@/lib/query/subscription";
+import { useCursorOauthQuota } from "@/lib/query/subscription";
 import { subscriptionApi } from "@/lib/api/subscription";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
@@ -14,7 +14,7 @@ import {
   utilizationColor,
 } from "@/components/SubscriptionQuotaFooter";
 
-interface KiroOauthQuotaFooterProps {
+interface CursorOauthQuotaFooterProps {
   meta?: ProviderMeta;
   appId?: AppId;
   providerId?: string;
@@ -22,7 +22,7 @@ interface KiroOauthQuotaFooterProps {
   isCurrent?: boolean;
 }
 
-const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
+const CursorOauthQuotaFooter: React.FC<CursorOauthQuotaFooterProps> = ({
   meta,
   inline = false,
 }) => {
@@ -31,10 +31,10 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
     data: quota,
     isFetching: loading,
     refetch,
-  } = useKiroOauthQuota(meta, { enabled: true });
-  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.KIRO_OAUTH);
+  } = useCursorOauthQuota(meta, { enabled: true });
+  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CURSOR_OAUTH);
   const handleRefresh = React.useCallback(async () => {
-    await subscriptionApi.refreshOauthQuota("kiro_oauth", accountId);
+    await subscriptionApi.refreshOauthQuota("cursor_oauth", accountId);
     await refetch();
   }, [accountId, refetch]);
 
@@ -45,12 +45,12 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
     return () => clearInterval(interval);
   }, [quota?.queriedAt]);
 
-  const tier = quota?.tiers?.find(
-    (item) => item.name === "kiro_agentic_requests",
-  );
+  const membership = quota?.credentialMessage ?? undefined;
+  const tier = quota?.tiers?.find((item) => item.name === "cursor_credits");
   const creditUsed = tier?.used;
   const creditLimit = tier?.limit;
 
+  // 无 usage tier 时（如 Stripe 成功但 Usage 接口失败），仍展示会员等级标签
   if (
     !quota?.success ||
     !tier ||
@@ -59,31 +59,30 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
   ) {
     return (
       <SubscriptionQuotaView
-        quota={quota}
+        quota={quota && membership ? { ...quota, tiers: [] } : quota}
         loading={loading}
         refetch={handleRefresh}
-        appIdForExpiredHint="kiro_oauth"
+        appIdForExpiredHint="cursor_oauth"
         inline={inline}
-        visibleTierNames={["kiro_agentic_requests"]}
       />
     );
   }
 
-  const used = formatCredits(creditUsed, i18n.language);
-  const limit = formatCredits(creditLimit, i18n.language);
+  const used = formatUsd(creditUsed, i18n.language);
+  const limit = formatUsd(creditLimit, i18n.language);
   const utilization = Math.round(tier.utilization);
   const resetCountdown = countdownStr(tier.resetsAt);
   const resetDate = formatResetDate(tier.resetsAt, i18n.language);
-  const usageText = t("subscription.kiroCreditsUsage", {
-    used,
-    limit,
-    defaultValue: `${used} used / ${limit} covered in plan`,
-  });
 
   if (inline) {
     return (
       <div className="flex flex-col items-end gap-1 text-xs whitespace-nowrap flex-shrink-0">
         <div className="flex items-center gap-2 justify-end">
+          {membership && (
+            <span className="text-[10px] font-medium text-foreground">
+              {membership}
+            </span>
+          )}
           <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
             <Clock size={10} />
             {quota.queriedAt
@@ -103,9 +102,6 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
           </button>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="text-gray-500 dark:text-gray-400">
-            {t("subscription.kiroCredits", { defaultValue: "Credits" })}:
-          </span>
           <span className="font-medium tabular-nums text-foreground">
             {used} / {limit}
           </span>
@@ -129,12 +125,14 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
     <div className="mt-3 rounded-xl border border-border-default bg-card px-4 py-3 shadow-sm">
       <div className="flex items-center justify-between mb-2">
         <div className="min-w-0">
-          <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
-            {t("subscription.kiroEstimatedUsage", {
-              defaultValue: "Estimated Usage",
-            })}
+          <div className="text-xs text-gray-500 dark:text-gray-400 font-medium flex items-center gap-2">
+            {membership && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-foreground">
+                {membership}
+              </span>
+            )}
             {resetDate && (
-              <span className="ml-2 font-normal text-muted-foreground/70">
+              <span className="font-normal text-muted-foreground/70">
                 {t("subscription.kiroResetsOn", {
                   date: resetDate,
                   defaultValue: `resets on ${resetDate}`,
@@ -142,11 +140,6 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
               </span>
             )}
           </div>
-          {quota.credentialMessage && (
-            <div className="mt-0.5 text-[10px] uppercase tracking-normal text-muted-foreground truncate">
-              {quota.credentialMessage}
-            </div>
-          )}
         </div>
         <div className="flex items-center gap-2">
           {quota.queriedAt && (
@@ -168,7 +161,7 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
 
       <div className="flex items-center gap-3 text-xs">
         <span className="text-gray-500 dark:text-gray-400 font-medium w-20 flex-shrink-0">
-          {t("subscription.kiroCredits", { defaultValue: "Credits" })}
+          {t("subscription.cursorCredits", { defaultValue: "Usage" })}
         </span>
         <div className="flex-1 min-w-0">
           <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
@@ -184,7 +177,7 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
             />
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground tabular-nums truncate">
-            {usageText}
+            {used} / {limit}
           </div>
         </div>
         <span
@@ -197,8 +190,10 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
   );
 };
 
-function formatCredits(value: number, locale: string): string {
+function formatUsd(value: number, locale: string): string {
   return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: "USD",
     maximumFractionDigits: value % 1 === 0 ? 0 : 2,
   }).format(value);
 }
@@ -216,4 +211,4 @@ function formatResetDate(
   }).format(date);
 }
 
-export default KiroOauthQuotaFooter;
+export default CursorOauthQuotaFooter;

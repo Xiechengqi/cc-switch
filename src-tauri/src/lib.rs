@@ -1091,12 +1091,16 @@ pub fn run() {
                 let gemini_state = app.state::<commands::GeminiOAuthState>();
                 let copilot_state = app.state::<commands::CopilotAuthState>();
                 let kiro_state = app.state::<commands::KiroOAuthState>();
+                let antigravity_state = app.state::<commands::AntigravityOAuthState>();
+                let cursor_state = app.state::<commands::CursorOAuthState>();
                 let managers = crate::services::oauth_quota::OauthQuotaManagers::from_states(
                     &codex_state,
                     &claude_state,
                     &gemini_state,
                     &copilot_state,
                     &kiro_state,
+                    &antigravity_state,
+                    &cursor_state,
                 );
                 crate::services::oauth_quota::spawn_oauth_quota_refresher(
                     app.handle().clone(),
@@ -1385,6 +1389,7 @@ pub fn run() {
             commands::get_codex_oauth_quota,
             commands::get_claude_oauth_quota,
             commands::get_cached_oauth_quota,
+            commands::refresh_oauth_quota,
             commands::get_codex_oauth_models,
             commands::get_coding_plan_quota,
             commands::get_balance,

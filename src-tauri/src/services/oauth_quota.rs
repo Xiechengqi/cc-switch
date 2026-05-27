@@ -8,13 +8,16 @@ use tokio::sync::{broadcast, RwLock};
 
 use crate::app_config::AppType;
 use crate::commands::{
-    ClaudeOAuthState, CodexOAuthState, CopilotAuthState, GeminiOAuthState, KiroOAuthState,
+    AntigravityOAuthState, ClaudeOAuthState, CodexOAuthState, CopilotAuthState, CursorOAuthState,
+    GeminiOAuthState, KiroOAuthState,
 };
 use crate::database::Database;
 use crate::provider::Provider;
+use crate::proxy::providers::antigravity_oauth_auth::AntigravityOAuthManager;
 use crate::proxy::providers::claude_oauth_auth::ClaudeOAuthManager;
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::{CopilotAuthManager, CopilotUsageResponse};
+use crate::proxy::providers::cursor_oauth_auth::CursorOAuthManager;
 use crate::proxy::providers::gemini_oauth_auth::GeminiOAuthManager;
 use crate::proxy::providers::kiro_oauth_auth::{KiroOAuthManager, KiroUsageLimitsResponse};
 use crate::services::subscription::{
@@ -129,12 +132,48 @@ impl OauthQuotaService {
         let targets = self.discover_selected_targets(db, managers).await;
         for target in dedupe_targets(targets) {
             if let Err(err) = self
-                .refresh_target(app, managers, target, source, None)
+                .refresh_target(app, managers, target, source, None, false)
                 .await
             {
                 log::debug!("[OauthQuota] refresh selected target skipped/failed: {err}");
             }
         }
+    }
+
+    pub async fn refresh_all_targets(
+        &self,
+        app: Option<&AppHandle>,
+        db: &Arc<Database>,
+        managers: &OauthQuotaManagers,
+        source: &str,
+    ) {
+        let targets = self.discover_all_oauth_targets(db, managers).await;
+        for target in dedupe_targets(targets) {
+            if let Err(err) = self
+                .refresh_target(app, managers, target, source, None, false)
+                .await
+            {
+                log::debug!("[OauthQuota] refresh all target skipped/failed: {err}");
+            }
+        }
+    }
+
+    pub async fn force_refresh(
+        &self,
+        app: Option<&AppHandle>,
+        managers: &OauthQuotaManagers,
+        auth_provider: &str,
+        account_id: &str,
+    ) -> Result<CachedOauthQuota, String> {
+        let target = OauthQuotaTarget {
+            app_type: String::new(),
+            provider_id: String::new(),
+            provider_name: String::new(),
+            auth_provider: auth_provider.to_string(),
+            account_id: account_id.to_string(),
+        };
+        self.refresh_target(app, managers, target, "manual", None, true)
+            .await
     }
 
     async fn discover_selected_targets(
@@ -176,6 +215,35 @@ impl OauthQuotaService {
         targets
     }
 
+    async fn discover_all_oauth_targets(
+        &self,
+        db: &Arc<Database>,
+        managers: &OauthQuotaManagers,
+    ) -> Vec<OauthQuotaTarget> {
+        let mut targets = Vec::new();
+        for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+            let providers = match db.get_all_providers(app_type.as_str()) {
+                Ok(map) => map,
+                Err(err) => {
+                    log::debug!(
+                        "[OauthQuota] failed to list providers for {}: {err}",
+                        app_type.as_str()
+                    );
+                    continue;
+                }
+            };
+            for (provider_id, provider) in &providers {
+                if let Some(target) = self
+                    .target_from_provider(&app_type, provider_id, provider, managers)
+                    .await
+                {
+                    targets.push(target);
+                }
+            }
+        }
+        targets
+    }
+
     async fn target_from_provider(
         &self,
         app_type: &AppType,
@@ -201,16 +269,19 @@ impl OauthQuotaService {
         target: OauthQuotaTarget,
         source: &str,
         interval_secs_override: Option<i64>,
+        force: bool,
     ) -> Result<CachedOauthQuota, String> {
         let key = OauthQuotaKey {
             auth_provider: target.auth_provider.clone(),
             account_id: target.account_id.clone(),
         };
-        if let Some(cached) = self
-            .cache_hit_for_cooldown(&key, source, interval_secs_override)
-            .await
-        {
-            return Ok(cached);
+        if !force {
+            if let Some(cached) = self
+                .cache_hit_for_cooldown(&key, source, interval_secs_override)
+                .await
+            {
+                return Ok(cached);
+            }
         }
 
         // 选一个角色：
@@ -257,6 +328,8 @@ impl OauthQuotaService {
             "google_gemini_oauth" => refresh_gemini_quota(managers, &target.account_id).await,
             "github_copilot" => refresh_copilot_quota(managers, &target.account_id).await,
             "kiro_oauth" => refresh_kiro_quota(managers, &target.account_id).await,
+            "antigravity_oauth" => refresh_antigravity_quota(managers, &target.account_id).await,
+            "cursor_oauth" => refresh_cursor_quota(managers, &target.account_id).await,
             other => SubscriptionQuota::error(
                 other,
                 CredentialStatus::NotFound,
@@ -339,6 +412,8 @@ pub struct OauthQuotaManagers {
     pub gemini: Arc<RwLock<GeminiOAuthManager>>,
     pub copilot: Arc<RwLock<CopilotAuthManager>>,
     pub kiro: Arc<RwLock<KiroOAuthManager>>,
+    pub antigravity: Arc<RwLock<AntigravityOAuthManager>>,
+    pub cursor: Arc<RwLock<CursorOAuthManager>>,
 }
 
 impl OauthQuotaManagers {
@@ -348,6 +423,8 @@ impl OauthQuotaManagers {
         gemini: &GeminiOAuthState,
         copilot: &CopilotAuthState,
         kiro: &KiroOAuthState,
+        antigravity: &AntigravityOAuthState,
+        cursor: &CursorOAuthState,
     ) -> Self {
         Self {
             codex: Arc::clone(&codex.0),
@@ -355,6 +432,8 @@ impl OauthQuotaManagers {
             gemini: Arc::clone(&gemini.0),
             copilot: Arc::clone(&copilot.0),
             kiro: Arc::clone(&kiro.0),
+            antigravity: Arc::clone(&antigravity.0),
+            cursor: Arc::clone(&cursor.0),
         }
     }
 }
@@ -369,7 +448,7 @@ pub fn spawn_oauth_quota_refresher(
         tokio::time::sleep(Duration::from_secs(STARTUP_REFRESH_DELAY_SECS)).await;
         loop {
             service
-                .refresh_selected_targets(Some(&app), &db, &managers, "background")
+                .refresh_all_targets(Some(&app), &db, &managers, "background")
                 .await;
             tokio::time::sleep(read_refresh_interval()).await;
         }
@@ -409,6 +488,15 @@ fn provider_auth_provider(app_type: &AppType, provider: &Provider) -> Option<Str
     {
         return Some("google_gemini_oauth".to_string());
     }
+    if matches!(app_type, AppType::Claude | AppType::Gemini)
+        && provider_type == Some("antigravity_oauth")
+    {
+        return Some("antigravity_oauth".to_string());
+    }
+    if matches!(app_type, AppType::Claude | AppType::Codex) && provider_type == Some("cursor_oauth")
+    {
+        return Some("cursor_oauth".to_string());
+    }
     None
 }
 
@@ -430,6 +518,8 @@ async fn resolve_provider_account_id(
         "claude_oauth" => managers.claude.read().await.default_account_id().await,
         "kiro_oauth" => managers.kiro.read().await.default_account_id().await,
         "google_gemini_oauth" => managers.gemini.read().await.default_account_id().await,
+        "antigravity_oauth" => managers.antigravity.read().await.default_account_id().await,
+        "cursor_oauth" => managers.cursor.read().await.default_account_id().await,
         "github_copilot" => managers
             .copilot
             .read()
@@ -457,6 +547,8 @@ pub async fn resolve_account_id_for_auth_provider(
         "claude_oauth" => managers.claude.read().await.default_account_id().await,
         "kiro_oauth" => managers.kiro.read().await.default_account_id().await,
         "google_gemini_oauth" => managers.gemini.read().await.default_account_id().await,
+        "antigravity_oauth" => managers.antigravity.read().await.default_account_id().await,
+        "cursor_oauth" => managers.cursor.read().await.default_account_id().await,
         "github_copilot" => managers
             .copilot
             .read()
@@ -544,6 +636,50 @@ async fn refresh_kiro_quota(managers: &OauthQuotaManagers, account_id: &str) -> 
             format!("Kiro OAuth usage limits unavailable: {err}"),
         ),
     }
+}
+
+async fn refresh_antigravity_quota(
+    managers: &OauthQuotaManagers,
+    account_id: &str,
+) -> SubscriptionQuota {
+    let manager = managers.antigravity.read().await;
+    let token = match manager.get_valid_token_for_account(account_id).await {
+        Ok(t) => t,
+        Err(err) => {
+            return SubscriptionQuota::error(
+                "antigravity_oauth",
+                CredentialStatus::Expired,
+                format!("Antigravity OAuth token unavailable: {err}"),
+            )
+        }
+    };
+    let project_id = manager.project_id_for_account(account_id).await.ok();
+    drop(manager);
+    crate::services::subscription::query_antigravity_quota_with_token(
+        &token,
+        project_id.as_deref(),
+        "antigravity_oauth",
+    )
+    .await
+}
+
+async fn refresh_cursor_quota(
+    managers: &OauthQuotaManagers,
+    account_id: &str,
+) -> SubscriptionQuota {
+    let manager = managers.cursor.read().await;
+    let token = match manager.get_valid_token_for_account(account_id).await {
+        Ok(t) => t,
+        Err(err) => {
+            return SubscriptionQuota::error(
+                "cursor_oauth",
+                CredentialStatus::Expired,
+                format!("Cursor OAuth token unavailable: {err}"),
+            )
+        }
+    };
+    drop(manager);
+    crate::services::subscription::query_cursor_quota(&token, account_id).await
 }
 
 fn kiro_usage_to_subscription_quota(usage: KiroUsageLimitsResponse) -> SubscriptionQuota {

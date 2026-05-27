@@ -119,6 +119,8 @@ pub fn switch_provider(
     gemini_state: State<'_, crate::commands::GeminiOAuthState>,
     copilot_state: State<'_, crate::commands::CopilotAuthState>,
     kiro_state: State<'_, crate::commands::KiroOAuthState>,
+    antigravity_state: State<'_, crate::commands::AntigravityOAuthState>,
+    cursor_state: State<'_, crate::commands::CursorOAuthState>,
     app: String,
     id: String,
 ) -> Result<SwitchResult, String> {
@@ -134,6 +136,8 @@ pub fn switch_provider(
         &gemini_state,
         &copilot_state,
         &kiro_state,
+        &antigravity_state,
+        &cursor_state,
     );
     tauri::async_runtime::spawn(async move {
         service

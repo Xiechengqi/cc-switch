@@ -286,6 +286,8 @@ pub async fn switch_proxy_provider(
     gemini_state: tauri::State<'_, crate::commands::GeminiOAuthState>,
     copilot_state: tauri::State<'_, crate::commands::CopilotAuthState>,
     kiro_state: tauri::State<'_, crate::commands::KiroOAuthState>,
+    antigravity_state: tauri::State<'_, crate::commands::AntigravityOAuthState>,
+    cursor_state: tauri::State<'_, crate::commands::CursorOAuthState>,
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
@@ -301,6 +303,8 @@ pub async fn switch_proxy_provider(
         &gemini_state,
         &copilot_state,
         &kiro_state,
+        &antigravity_state,
+        &cursor_state,
     );
     oauth_quota_state
         .0

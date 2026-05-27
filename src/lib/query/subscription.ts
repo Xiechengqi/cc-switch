@@ -12,6 +12,26 @@ export const subscriptionKeys = {
   quota: (appId: AppId) => [...subscriptionKeys.all, "quota", appId] as const,
 };
 
+/**
+ * 读取缓存的 OAuth 用量；若缓存未命中（后台刷新尚未覆盖该 provider），
+ * 主动触发一次强制刷新拉取新数据。后台事件仍是主刷新通道，此处仅兜底首次加载。
+ */
+async function fetchOauthQuotaWithFallback(
+  authProvider: string,
+  accountId: string | null,
+) {
+  const cached = await subscriptionApi.getCachedOauthQuota(
+    authProvider,
+    accountId,
+  );
+  if (cached?.quota) return cached.quota;
+  const refreshed = await subscriptionApi.refreshOauthQuota(
+    authProvider,
+    accountId,
+  );
+  return refreshed?.quota;
+}
+
 export function useSubscriptionQuota(
   appId: AppId,
   enabled: boolean,
@@ -60,9 +80,7 @@ export function useClaudeOauthQuota(
   const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CLAUDE_OAUTH);
   return useQuery({
     queryKey: ["claude_oauth", "quota", accountId ?? "default"],
-    queryFn: async () =>
-      (await subscriptionApi.getCachedOauthQuota("claude_oauth", accountId))
-        ?.quota,
+    queryFn: async () => fetchOauthQuotaWithFallback("claude_oauth", accountId),
     enabled,
     refetchInterval: false,
     refetchOnWindowFocus: false,
@@ -88,9 +106,7 @@ export function useCodexOauthQuota(
   const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CODEX_OAUTH);
   return useQuery({
     queryKey: ["codex_oauth", "quota", accountId ?? "default"],
-    queryFn: async () =>
-      (await subscriptionApi.getCachedOauthQuota("codex_oauth", accountId))
-        ?.quota,
+    queryFn: async () => fetchOauthQuotaWithFallback("codex_oauth", accountId),
     enabled,
     refetchInterval: false,
     refetchOnWindowFocus: false,
@@ -111,12 +127,7 @@ export function useGeminiOauthQuota(
   return useQuery({
     queryKey: ["google_gemini_oauth", "quota", accountId ?? "default"],
     queryFn: async () =>
-      (
-        await subscriptionApi.getCachedOauthQuota(
-          "google_gemini_oauth",
-          accountId,
-        )
-      )?.quota,
+      fetchOauthQuotaWithFallback("google_gemini_oauth", accountId),
     enabled,
     refetchInterval: false,
     refetchOnWindowFocus: false,
@@ -133,9 +144,55 @@ export function useKiroOauthQuota(
   const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.KIRO_OAUTH);
   return useQuery({
     queryKey: ["kiro_oauth", "quota", accountId ?? "default"],
+    queryFn: async () => fetchOauthQuotaWithFallback("kiro_oauth", accountId),
+    enabled,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+export interface UseAntigravityOauthQuotaOptions {
+  enabled?: boolean;
+  autoQuery?: boolean;
+}
+
+export interface UseCursorOauthQuotaOptions {
+  enabled?: boolean;
+  autoQuery?: boolean;
+}
+
+export function useAntigravityOauthQuota(
+  meta: ProviderMeta | undefined,
+  options: UseAntigravityOauthQuotaOptions = {},
+) {
+  const { enabled = true } = options;
+  const accountId = resolveManagedAccountId(
+    meta,
+    PROVIDER_TYPES.ANTIGRAVITY_OAUTH,
+  );
+  return useQuery({
+    queryKey: ["antigravity_oauth", "quota", accountId ?? "default"],
     queryFn: async () =>
-      (await subscriptionApi.getCachedOauthQuota("kiro_oauth", accountId))
-        ?.quota,
+      fetchOauthQuotaWithFallback("antigravity_oauth", accountId),
+    enabled,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+export function useCursorOauthQuota(
+  meta: ProviderMeta | undefined,
+  options: UseCursorOauthQuotaOptions = {},
+) {
+  const { enabled = true } = options;
+  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CURSOR_OAUTH);
+  return useQuery({
+    queryKey: ["cursor_oauth", "quota", accountId ?? "default"],
+    queryFn: async () => fetchOauthQuotaWithFallback("cursor_oauth", accountId),
     enabled,
     refetchInterval: false,
     refetchOnWindowFocus: false,

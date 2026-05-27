@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-05-27
+
+- **上游分支：** `main`
+- **上游 HEAD：** `3c3d4174`
+- **共同祖先：** `62928c62`
+- **合并提交数：** 10
+- **主要变更：**
+  - feat(i18n): 新增繁體中文 (zh-TW) 本地化；navigator.language 自动检测 zh/zh-TW/ja/en
+  - feat(codex): Codex provider 模板启用 goals；包含已归档的 Codex sessions
+  - feat(proxy): MiMo reasoning_content 支持 Claude Code 代理；Claude Desktop Cowork egress profile 修复
+  - fix(proxy): Claude 兼容模式下空 tool_calls 数组导致流式 block 重置；proxy takeover 期间同步 Claude Desktop profile
+  - fix(usage): 自定义 usage script summaries 修复
+  - refactor: JSON deep copy → deepClone helper + useTauriEvent hook 提取
+  - docs: 德语 README 翻译
+- **冲突解决：**
+  - `src/i18n/index.ts`：采纳上游 navigator.language 自动检测逻辑（zh/zh-TW/ja/en fallback）
+  - `src/App.tsx`：移除 HEAD 重复的 `universal-provider-synced` useEffect（已由 useTauriEvent 覆盖）；`webdav-sync-status-updated` 迁移到 useTauriEvent；采纳上游新增 `proxy-official-warning` 事件；本仓 `oauth-quota-updated` 监听同步迁移到 useTauriEvent 模式
+  - `src/lib/schemas/settings.ts`：language enum 添加 `"zh-TW"`；保留本仓 `oauthQuotaRefreshIntervalMinutes`
+  - `tests/msw/state.ts`：保留本仓 `ShareConnectInfo` 类型（share 功能依赖）
+- **验证：** `cargo check` 通过、`tsc --noEmit` 通过
+
+---
+
 ## 2026-05-26
 
 - **上游分支：** `main`

@@ -346,7 +346,7 @@ export interface Settings {
   // OAuth 额度自动刷新间隔（分钟，默认 5）
   oauthQuotaRefreshIntervalMinutes?: number;
   // 首选语言（可选，默认中文）
-  language?: "en" | "zh" | "ja";
+  language?: "en" | "zh" | "zh-TW" | "ja";
 
   // 主页面显示的应用（默认全部显示）
   visibleApps?: VisibleApps;

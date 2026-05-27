@@ -1111,6 +1111,7 @@ mod tests {
     use super::*;
     use crate::database::Database;
     use crate::provider::{ClaudeDesktopModelRoute, ProviderMeta};
+    use crate::proxy::types::GlobalProxyConfig;
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -1126,7 +1127,19 @@ mod tests {
     }
 
     fn test_db() -> Database {
-        Database::memory().expect("memory db")
+        let db = Database::memory().expect("memory db");
+        futures::executor::block_on(async {
+            let _ = db.get_proxy_config().await.expect("init proxy config");
+            db.update_global_proxy_config(GlobalProxyConfig {
+                proxy_enabled: true,
+                listen_address: "127.0.0.1".to_string(),
+                listen_port: 15721,
+                enable_logging: true,
+            })
+            .await
+            .expect("set test proxy config");
+        });
+        db
     }
 
     fn direct_provider(id: &str) -> Provider {

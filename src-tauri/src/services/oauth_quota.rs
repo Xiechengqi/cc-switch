@@ -673,6 +673,7 @@ mod tests {
                 account_email: None,
                 user_email: None,
                 overage_capability: Some("OVERAGE_CAPABLE".to_string()),
+                extra: std::collections::HashMap::new(),
             }),
             usage_breakdown_list: vec![KiroUsageBreakdown {
                 current_usage_with_precision: 40.0,
@@ -700,6 +701,7 @@ mod tests {
                 overage_enabled: Some(true),
                 overage_status: None,
             }),
+            extra: std::collections::HashMap::new(),
         });
 
         assert!(quota.success);

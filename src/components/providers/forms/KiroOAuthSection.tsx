@@ -63,6 +63,12 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
     onAccountSelect?.(value === "none" ? null : value);
   };
 
+  const accountDisplayName = (account: {
+    email?: string | null;
+    login: string;
+  }) =>
+    account.email || account.login;
+
   const handleRemoveAccount = (accountId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
@@ -125,7 +131,7 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
                 <div className="flex min-w-0 items-center gap-2">
                   <User className="h-5 w-5 shrink-0 text-muted-foreground" />
                   <span className="truncate text-sm font-medium">
-                    {account.login}
+                    {accountDisplayName(account)}
                   </span>
                   {defaultAccountId === account.id && (
                     <Badge variant="secondary" className="text-xs">
@@ -207,7 +213,7 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
                 <SelectItem key={account.id} value={account.id}>
                   <div className="flex items-center gap-2">
                     <User className="h-4 w-4 text-muted-foreground" />
-                    <span>{account.login}</span>
+                    <span>{accountDisplayName(account)}</span>
                   </div>
                 </SelectItem>
               ))}

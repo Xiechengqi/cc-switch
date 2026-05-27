@@ -27,6 +27,7 @@ export interface ManagedAuthAccount {
   id: string;
   provider: ManagedAuthProvider;
   login: string;
+  email?: string | null;
   avatar_url: string | null;
   authenticated_at: number;
   is_default: boolean;

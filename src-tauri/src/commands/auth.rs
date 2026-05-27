@@ -25,6 +25,7 @@ pub struct ManagedAuthAccount {
     pub id: String,
     pub provider: String,
     pub login: String,
+    pub email: Option<String>,
     pub avatar_url: Option<String>,
     pub authenticated_at: i64,
     pub is_default: bool,
@@ -73,6 +74,7 @@ fn map_account(
         id: account.id,
         provider: provider.to_string(),
         login: account.login,
+        email: account.email,
         avatar_url: account.avatar_url,
         authenticated_at: account.authenticated_at,
         github_domain: account.github_domain,
@@ -295,6 +297,13 @@ pub async fn auth_poll_for_account(
             match auth_manager.poll_for_token(&device_code).await {
                 Ok(Some(account)) => {
                     let status = auth_manager.get_status().await;
+                    let account_id = account.id.clone();
+                    let account = status
+                        .accounts
+                        .iter()
+                        .find(|item| item.id == account_id)
+                        .cloned()
+                        .unwrap_or(account);
                     Ok(Some(map_account(
                         auth_provider,
                         account,
@@ -313,6 +322,13 @@ pub async fn auth_poll_for_account(
             match auth_manager.poll_callback_result(&device_code).await {
                 Ok(Some(account)) => {
                     let status = auth_manager.get_status().await;
+                    let account_id = account.id.clone();
+                    let account = status
+                        .accounts
+                        .iter()
+                        .find(|item| item.id == account_id)
+                        .cloned()
+                        .unwrap_or(account);
                     Ok(Some(map_account(
                         auth_provider,
                         account,

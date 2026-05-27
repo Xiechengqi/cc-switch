@@ -19,6 +19,9 @@ use super::copilot_auth::GitHubAccount;
 
 const ANTIGRAVITY_CLIENT_ID_ENV: &str = "CC_SWITCH_ANTIGRAVITY_CLIENT_ID";
 const ANTIGRAVITY_CLIENT_SECRET_ENV: &str = "CC_SWITCH_ANTIGRAVITY_CLIENT_SECRET";
+const DEFAULT_ANTIGRAVITY_CLIENT_ID: &str =
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+const DEFAULT_ANTIGRAVITY_CLIENT_SECRET: &str = "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";
 const ANTIGRAVITY_AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const ANTIGRAVITY_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const ANTIGRAVITY_USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v1/userinfo";
@@ -48,27 +51,26 @@ pub fn set_global_antigravity_oauth_manager(manager: Arc<RwLock<AntigravityOAuth
     let _ = GLOBAL_ANTIGRAVITY_OAUTH_MANAGER.set(manager);
 }
 
-fn required_env(name: &str, label: &str) -> Result<String, AntigravityOAuthError> {
+fn env_or_default(name: &str, default: &str) -> String {
     std::env::var(name)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AntigravityOAuthError::TokenFetchFailed(format!(
-                "{label} 未配置，请设置环境变量 {name}"
-            ))
-        })
+        .unwrap_or_else(|| default.to_string())
 }
 
 fn antigravity_client_id() -> Result<String, AntigravityOAuthError> {
-    required_env(ANTIGRAVITY_CLIENT_ID_ENV, "Antigravity OAuth Client ID")
+    Ok(env_or_default(
+        ANTIGRAVITY_CLIENT_ID_ENV,
+        DEFAULT_ANTIGRAVITY_CLIENT_ID,
+    ))
 }
 
 fn antigravity_client_secret() -> Result<String, AntigravityOAuthError> {
-    required_env(
+    Ok(env_or_default(
         ANTIGRAVITY_CLIENT_SECRET_ENV,
-        "Antigravity OAuth Client Secret",
-    )
+        DEFAULT_ANTIGRAVITY_CLIENT_SECRET,
+    ))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -285,6 +287,7 @@ impl From<&AntigravityAccountData> for GitHubAccount {
         GitHubAccount {
             id: data.account_id.clone(),
             login: data.email.clone(),
+            email: Some(data.email.clone()),
             avatar_url: data.avatar_url.clone(),
             authenticated_at: data.authenticated_at,
             github_domain: "google.com".to_string(),
@@ -668,7 +671,9 @@ impl AntigravityOAuthManager {
 
     fn client_metadata() -> serde_json::Value {
         serde_json::json!({
-            "ideType": "ANTIGRAVITY",
+            "ideType": 9,
+            "platform": antigravity_platform_enum(),
+            "pluginType": 2,
         })
     }
 
@@ -697,6 +702,13 @@ impl AntigravityOAuthManager {
         headers.insert(
             reqwest::header::USER_AGENT,
             reqwest::header::HeaderValue::from_str(&antigravity_request_user_agent())
+                .map_err(|e| AntigravityOAuthError::ParseError(e.to_string()))?,
+        );
+        let metadata_json = serde_json::to_string(&Self::client_metadata())
+            .map_err(|e| AntigravityOAuthError::ParseError(e.to_string()))?;
+        headers.insert(
+            reqwest::header::HeaderName::from_static("client-metadata"),
+            reqwest::header::HeaderValue::from_str(&metadata_json)
                 .map_err(|e| AntigravityOAuthError::ParseError(e.to_string()))?,
         );
         Ok(headers)
@@ -793,7 +805,7 @@ impl AntigravityOAuthManager {
             });
         }
 
-        for _ in 0..5 {
+        for _ in 0..10 {
             let result = self
                 .onboard_user_once(access_token, &candidate.tier_id)
                 .await?;
@@ -808,7 +820,7 @@ impl AntigravityOAuthManager {
                     });
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
 
         Err(AntigravityOAuthError::Timeout)
@@ -1281,9 +1293,11 @@ fn compute_expires_at_ms(expires_in: Option<i64>) -> i64 {
     chrono::Utc::now().timestamp_millis() + expires_in * 1000
 }
 
+const ANTIGRAVITY_IDE_VERSION: &str = "1.23.2";
+
 fn antigravity_request_user_agent() -> String {
     format!(
-        "antigravity/1.107.0 {}/{}",
+        "antigravity/{ANTIGRAVITY_IDE_VERSION} {}/{}",
         std::env::consts::OS,
         std::env::consts::ARCH
     )
@@ -1300,13 +1314,24 @@ fn antigravity_load_code_assist_user_agent() -> String {
 fn antigravity_version_from_user_agent(user_agent: &str) -> String {
     let user_agent = user_agent.trim();
     let Some(rest) = user_agent.strip_prefix("antigravity/") else {
-        return "1.107.0".to_string();
+        return ANTIGRAVITY_IDE_VERSION.to_string();
     };
     rest.split_whitespace()
         .next()
         .filter(|value| !value.is_empty())
-        .unwrap_or("1.107.0")
+        .unwrap_or(ANTIGRAVITY_IDE_VERSION)
         .to_string()
+}
+
+fn antigravity_platform_enum() -> i32 {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => 2,
+        ("macos", _) => 1,
+        ("linux", "aarch64") => 4,
+        ("linux", _) => 3,
+        ("windows", _) => 5,
+        _ => 0,
+    }
 }
 
 fn parse_callback_request(request: &str) -> Result<(String, String), AntigravityOAuthError> {
@@ -1456,7 +1481,8 @@ mod tests {
         let records = records.lock().await;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].path, "/load");
-        assert!(records[0].body.contains(r#""ideType":"ANTIGRAVITY""#));
+        assert!(records[0].body.contains(r#""ideType":9"#));
+        assert!(records[0].raw.to_lowercase().contains("client-metadata"));
         assert!(!records[0].raw.to_lowercase().contains("x-goog-api-client"));
     }
 

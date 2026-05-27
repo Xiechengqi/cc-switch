@@ -334,6 +334,9 @@ pub struct GitHubAccount {
     pub id: String,
     /// GitHub 用户名
     pub login: String,
+    /// 真实邮箱（仅当 OAuth 提供商能可靠获取时返回）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     /// 头像 URL
     pub avatar_url: Option<String>,
     /// 认证时间戳
@@ -348,6 +351,7 @@ impl From<&GitHubAccountData> for GitHubAccount {
         GitHubAccount {
             id: composite_account_id(&data.github_domain, data.user.id),
             login: data.user.login.clone(),
+            email: None,
             avatar_url: data.user.avatar_url.clone(),
             authenticated_at: data.authenticated_at,
             github_domain: data.github_domain.clone(),
@@ -560,6 +564,7 @@ impl CopilotAuthManager {
         let account = GitHubAccount {
             id: account_id.clone(),
             login: user.login.clone(),
+            email: None,
             avatar_url: user.avatar_url.clone(),
             authenticated_at: now,
             github_domain,
@@ -1570,6 +1575,7 @@ mod tests {
             accounts: vec![GitHubAccount {
                 id: "12345".to_string(),
                 login: "testuser".to_string(),
+                email: None,
                 avatar_url: Some("https://example.com/avatar.png".to_string()),
                 authenticated_at: 1234567890,
                 github_domain: DEFAULT_GITHUB_DOMAIN.to_string(),

@@ -201,6 +201,7 @@ impl From<&CodexAccountData> for GitHubAccount {
                 .email
                 .clone()
                 .unwrap_or_else(|| format!("ChatGPT ({})", &data.account_id)),
+            email: data.email.clone(),
             avatar_url: None,
             authenticated_at: data.authenticated_at,
             github_domain: "github.com".to_string(),

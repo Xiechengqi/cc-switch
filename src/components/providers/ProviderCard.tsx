@@ -193,7 +193,7 @@ function useManagedOauthAccountLogin(
     ? authStatus?.accounts.find((item) => item.id === accountId)
     : undefined;
 
-  return account?.login ?? null;
+  return account?.email || account?.login || null;
 }
 
 export function ProviderCard({

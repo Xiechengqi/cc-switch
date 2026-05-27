@@ -159,6 +159,8 @@ pub struct KiroUsageLimitsResponse {
     pub usage_breakdown_list: Vec<KiroUsageBreakdown>,
     #[serde(default)]
     pub overage_configuration: Option<KiroOverageConfiguration>,
+    #[serde(default, flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -174,6 +176,8 @@ pub struct KiroSubscriptionInfo {
     pub user_email: Option<String>,
     #[serde(default)]
     pub overage_capability: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -259,7 +263,13 @@ impl KiroUsageLimitsResponse {
         .into_iter()
         .flatten()
         .map(str::trim)
-        .find(|value| value.contains('@') && !value.is_empty())
+        .find_map(valid_email)
+        .or_else(|| self.extra.values().find_map(find_email_in_value))
+        .or_else(|| {
+            self.subscription_info
+                .as_ref()
+                .and_then(|info| info.extra.values().find_map(find_email_in_value))
+        })
     }
 
     pub fn subscription_title(&self) -> Option<&str> {
@@ -381,20 +391,20 @@ impl KiroAccountData {
 
 impl From<&KiroAccountData> for GitHubAccount {
     fn from(data: &KiroAccountData) -> Self {
+        let display_email = data.email.as_deref().and_then(valid_email);
         let login = if data.is_builder_id() {
-            data.email
-                .as_deref()
+            display_email
                 .map(|email| format!("Kiro({email})"))
                 .unwrap_or_else(|| format!("Kiro Builder ID ({})", short_id(&data.account_id)))
         } else {
-            data.email
-                .as_deref()
+            display_email
                 .map(|email| format!("Kiro Legacy({email})"))
                 .unwrap_or_else(|| format!("Kiro Legacy ({})", short_id(&data.account_id)))
         };
 
         GitHubAccount {
             id: data.account_id.clone(),
+            email: display_email.map(str::to_string),
             login,
             avatar_url: None,
             authenticated_at: data.authenticated_at,
@@ -1257,7 +1267,7 @@ fn first_email(values: impl IntoIterator<Item = Option<String>>) -> Option<Strin
         .into_iter()
         .flatten()
         .map(|value| value.trim().to_string())
-        .find(|value| value.contains('@') && !value.is_empty())
+        .find_map(|value| valid_email(&value).map(str::to_string))
 }
 
 fn email_from_jwt(token: &str) -> Option<String> {
@@ -1294,9 +1304,47 @@ fn first_email_claim(claims: &Value, keys: &[&str]) -> Option<String> {
             .get(*key)
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|value| value.contains('@') && !value.is_empty())
+            .and_then(valid_email)
             .map(str::to_string)
     })
+}
+
+fn valid_email(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.len() < 3 || trimmed.contains(char::is_whitespace) {
+        return None;
+    }
+    let (local, domain) = trimmed.split_once('@')?;
+    if local.is_empty() || domain.is_empty() || !domain.contains('.') {
+        return None;
+    }
+    Some(trimmed)
+}
+
+fn find_email_in_value(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(value) => valid_email(value),
+        Value::Array(values) => values.iter().find_map(find_email_in_value),
+        Value::Object(map) => {
+            for key in [
+                "email",
+                "accountEmail",
+                "account_email",
+                "preferredEmail",
+                "preferred_email",
+                "preferredUsername",
+                "preferred_username",
+                "userEmail",
+                "user_email",
+            ] {
+                if let Some(email) = map.get(key).and_then(Value::as_str).and_then(valid_email) {
+                    return Some(email);
+                }
+            }
+            map.values().find_map(find_email_in_value)
+        }
+        _ => None,
+    }
 }
 
 fn short_id(value: &str) -> String {
@@ -1304,5 +1352,65 @@ fn short_id(value: &str) -> String {
         format!("{}...{}", &value[..6], &value[value.len() - 4..])
     } else {
         value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn builder_account(email: Option<&str>) -> KiroAccountData {
+        KiroAccountData {
+            account_id: "kiro_test_account_1234".to_string(),
+            email: email.map(str::to_string),
+            refresh_token: "rt".to_string(),
+            profile_arn: None,
+            auth_region: DEFAULT_REGION.to_string(),
+            api_region: DEFAULT_REGION.to_string(),
+            machine_id: None,
+            client_id: Some("client".to_string()),
+            client_secret: Some("secret".to_string()),
+            client_secret_expires_at: None,
+            start_url: Some(DEFAULT_START_URL.to_string()),
+            auth_method: Some(KIRO_AUTH_METHOD_BUILDER_ID.to_string()),
+            authenticated_at: 1,
+        }
+    }
+
+    #[test]
+    fn github_account_exposes_only_valid_kiro_email() {
+        let public = GitHubAccount::from(&builder_account(Some("builder-subject")));
+        assert_eq!(public.email, None);
+        assert_eq!(public.login, "Kiro Builder ID (kiro_t...1234)");
+
+        let public = GitHubAccount::from(&builder_account(Some("user@example.com")));
+        assert_eq!(public.email.as_deref(), Some("user@example.com"));
+        assert_eq!(public.login, "Kiro(user@example.com)");
+    }
+
+    #[test]
+    fn usage_response_finds_nested_valid_email() {
+        let usage = KiroUsageLimitsResponse {
+            email: Some("subject-without-at".to_string()),
+            account_email: None,
+            user_email: None,
+            next_date_reset: None,
+            subscription_info: Some(KiroSubscriptionInfo {
+                subscription_title: None,
+                email: None,
+                account_email: None,
+                user_email: None,
+                overage_capability: None,
+                extra: HashMap::from([(
+                    "profile".to_string(),
+                    serde_json::json!({ "preferredEmail": "user@example.com" }),
+                )]),
+            }),
+            usage_breakdown_list: Vec::new(),
+            overage_configuration: None,
+            extra: HashMap::new(),
+        };
+
+        assert_eq!(usage.account_email(), Some("user@example.com"));
     }
 }

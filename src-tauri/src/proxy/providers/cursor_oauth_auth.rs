@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -181,6 +181,7 @@ impl From<&CursorAccountData> for GitHubAccount {
             login: display_email
                 .map(|email| format!("Cursor({email})"))
                 .unwrap_or_else(|| format!("Cursor({})", short_id(&data.account_id))),
+            email: display_email.map(ToString::to_string),
             avatar_url: None,
             authenticated_at: data.authenticated_at,
             github_domain: "cursor.com".to_string(),
@@ -580,6 +581,7 @@ impl CursorOAuthManager {
     }
 
     pub async fn get_status(&self) -> CursorOAuthStatus {
+        self.hydrate_missing_account_emails().await;
         let accounts = self.accounts.read().await;
         let default_account_id = self.resolve_default_account_id().await;
         CursorOAuthStatus {
@@ -587,6 +589,66 @@ impl CursorOAuthManager {
             default_account_id: default_account_id.clone(),
             accounts: Self::sorted_public_accounts(&accounts, default_account_id.as_deref()),
         }
+    }
+
+    async fn hydrate_missing_account_emails(&self) {
+        let account_items: Vec<(CursorAccountData, bool)> = {
+            let accounts = self.accounts.read().await;
+            let allow_single_account_local_fallback = accounts.len() == 1;
+            accounts
+                .values()
+                .filter(|account| account.email.is_none())
+                .cloned()
+                .map(|account| (account, allow_single_account_local_fallback))
+                .collect()
+        };
+        if account_items.is_empty() {
+            return;
+        }
+
+        let mut changed = false;
+        for (account, allow_single_account_local_fallback) in account_items {
+            let mut email = None;
+            if let Ok(token) = self.get_valid_token_for_account(&account.account_id).await {
+                email =
+                    email_from_jwt(&token).or(self.fetch_user_email(&token).await.ok().flatten());
+            }
+            if email.is_none() {
+                email = Self::cursor_local_cached_email_for_account(
+                    account.clone(),
+                    allow_single_account_local_fallback,
+                )
+                .await;
+            }
+            let Some(email) = email else {
+                continue;
+            };
+
+            let mut accounts = self.accounts.write().await;
+            let Some(existing) = accounts.get_mut(&account.account_id) else {
+                continue;
+            };
+            if existing.email.is_none() {
+                existing.email = Some(email);
+                changed = true;
+            }
+        }
+
+        if changed {
+            let _ = self.save_to_disk().await;
+        }
+    }
+
+    async fn cursor_local_cached_email_for_account(
+        account: CursorAccountData,
+        allow_single_account_fallback: bool,
+    ) -> Option<String> {
+        tokio::task::spawn_blocking(move || {
+            read_cursor_local_cached_email_for_account(&account, allow_single_account_fallback)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     fn fallback_default_account_id(
@@ -756,9 +818,14 @@ fn find_email_in_value(value: &serde_json::Value) -> Option<String> {
         serde_json::Value::Object(map) => {
             for key in [
                 "email",
+                "accountEmail",
+                "account_email",
                 "preferred_email",
+                "preferredEmail",
                 "preferredUsername",
                 "preferred_username",
+                "userEmail",
+                "user_email",
             ] {
                 if let Some(email) = map
                     .get(key)
@@ -774,6 +841,122 @@ fn find_email_in_value(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+fn read_cursor_local_cached_email_for_account(
+    account: &CursorAccountData,
+    allow_single_account_fallback: bool,
+) -> Option<String> {
+    let storage_path = default_cursor_storage_path()?;
+    let storage = read_cursor_local_storage(&storage_path).ok()?;
+    let email = storage
+        .get("cursorAuth/cachedEmail")
+        .and_then(|value| valid_email(value))
+        .map(ToString::to_string)
+        .or_else(|| {
+            storage
+                .get("cursorAuth/accessToken")
+                .and_then(|token| email_from_jwt(token))
+        })?;
+
+    let refresh_token_matches = storage
+        .get("cursorAuth/refreshToken")
+        .map(|refresh_token| refresh_token == &account.refresh_token)
+        .unwrap_or(false);
+
+    if refresh_token_matches || allow_single_account_fallback {
+        Some(email)
+    } else {
+        None
+    }
+}
+
+fn default_cursor_storage_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        return dirs::home_dir().map(|home| {
+            home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return dirs::data_dir().map(|data_dir| {
+            data_dir
+                .join("Cursor")
+                .join("User")
+                .join("globalStorage")
+                .join("state.vscdb")
+        });
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        dirs::home_dir().map(|home| {
+            home.join(".config")
+                .join("Cursor")
+                .join("User")
+                .join("globalStorage")
+                .join("state.vscdb")
+        })
+    }
+}
+
+fn read_cursor_local_storage(path: &Path) -> Result<HashMap<String, String>, CursorOAuthError> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| CursorOAuthError::IoError(e.to_string()))?;
+
+    let keys = [
+        "cursorAuth/accessToken",
+        "cursorAuth/refreshToken",
+        "cursorAuth/cachedEmail",
+    ];
+    let quoted_keys = keys
+        .iter()
+        .map(|key| format!("'{}'", key.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let mut out = HashMap::new();
+    for table in ["ItemTable", "cursorDiskKV"] {
+        let sql = format!("SELECT key, value FROM {table} WHERE key IN ({quoted_keys})");
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            continue;
+        };
+        let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) else {
+            continue;
+        };
+        for row in rows.flatten() {
+            out.insert(row.0, coerce_cursor_storage_value(&row.1));
+        }
+    }
+
+    Ok(out)
+}
+
+fn coerce_cursor_storage_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(value) = parsed.as_str() {
+            return value.to_string();
+        }
+        if let Some(value) = parsed.get("value").and_then(|value| value.as_str()) {
+            return value.to_string();
+        }
+    }
+    value.to_string()
+}
+
 impl From<&CursorOAuthStartResponse> for GitHubDeviceCodeResponse {
     fn from(value: &CursorOAuthStartResponse) -> Self {
         GitHubDeviceCodeResponse {
@@ -783,5 +966,51 @@ impl From<&CursorOAuthStartResponse> for GitHubDeviceCodeResponse {
             expires_in: BROWSER_FLOW_TIMEOUT_SECS as u64,
             interval: 2,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cursor_account(refresh_token: &str) -> CursorAccountData {
+        CursorAccountData {
+            account_id: "cursor_test_account_1234".to_string(),
+            email: None,
+            refresh_token: refresh_token.to_string(),
+            id_token: None,
+            cursor_service_machine_id: None,
+            cursor_client_version: None,
+            cursor_config_version: None,
+            cursor_client_id: None,
+            authenticated_at: 1,
+        }
+    }
+
+    #[test]
+    fn coerce_cursor_storage_value_reads_wrapped_value() {
+        assert_eq!(
+            coerce_cursor_storage_value(r#"{"value":"user@example.com"}"#),
+            "user@example.com"
+        );
+        assert_eq!(
+            coerce_cursor_storage_value(r#""user@example.com""#),
+            "user@example.com"
+        );
+        assert_eq!(coerce_cursor_storage_value("plain"), "plain");
+    }
+
+    #[test]
+    fn github_account_exposes_only_valid_cursor_email() {
+        let mut account = cursor_account("rt");
+        account.email = Some("not-an-email".to_string());
+        let public = GitHubAccount::from(&account);
+        assert_eq!(public.email, None);
+        assert_eq!(public.login, "Cursor(cursor_t)");
+
+        account.email = Some("user@example.com".to_string());
+        let public = GitHubAccount::from(&account);
+        assert_eq!(public.email.as_deref(), Some("user@example.com"));
+        assert_eq!(public.login, "Cursor(user@example.com)");
     }
 }

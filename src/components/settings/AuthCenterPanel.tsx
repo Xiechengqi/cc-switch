@@ -3,7 +3,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   ExternalLink,
   Github,
-  KeyRound,
   ShieldCheck,
   Sparkles as SparklesIcon,
 } from "lucide-react";
@@ -27,6 +26,7 @@ import { CursorOAuthSection } from "@/components/providers/forms/CursorOAuthSect
 import { DeepSeekAccountSection } from "@/components/providers/forms/DeepSeekAccountSection";
 import { GeminiOAuthSection } from "@/components/providers/forms/GeminiOAuthSection";
 import { KiroOAuthSection } from "@/components/providers/forms/KiroOAuthSection";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { settingsApi } from "@/lib/api";
 import { useSettingsQuery } from "@/lib/query";
 import {
@@ -233,7 +233,7 @@ export function AuthCenterPanel() {
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">
         <div className="mb-4 flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-            <KeyRound className="h-5 w-5" />
+            <ProviderIcon icon="kiro" name="Kiro" size={24} />
           </div>
           <div>
             <h4 className="font-medium">Kiro OAuth</h4>
@@ -251,7 +251,7 @@ export function AuthCenterPanel() {
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">
         <div className="mb-4 flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-            <KeyRound className="h-5 w-5" />
+            <ProviderIcon icon="cursor" name="Cursor" size={24} />
           </div>
           <div>
             <h4 className="font-medium">Cursor OAuth</h4>

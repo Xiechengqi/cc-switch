@@ -149,6 +149,7 @@ impl From<&GeminiAccountData> for GitHubAccount {
         GitHubAccount {
             id: data.account_id.clone(),
             login: data.email.clone(),
+            email: Some(data.email.clone()),
             avatar_url: data.avatar_url.clone(),
             authenticated_at: data.authenticated_at,
             github_domain: "google.com".to_string(),

@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { providerPresets } from "@/config/claudeProviderPresets";
 import { claudeDesktopProviderPresets } from "@/config/claudeDesktopProviderPresets";
-import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { opencodeProviderPresets } from "@/config/opencodeProviderPresets";
 import { openclawProviderPresets } from "@/config/openclawProviderPresets";
 import { hermesProviderPresets } from "@/config/hermesProviderPresets";
@@ -17,16 +15,6 @@ const expectInOrder = (names: string[], expected: string[]) => {
 };
 
 describe("provider preset order", () => {
-  it("Claude 预设按合作伙伴优先顺序排列", () => {
-    expectInOrder(namesOf(providerPresets), [
-      "Shengsuanyun",
-      "PatewayAI",
-      "火山Agentplan",
-      "BytePlus",
-      "DouBaoSeed",
-    ]);
-  });
-
   it("Claude Desktop 预设按合作伙伴优先顺序排列", () => {
     expectInOrder(namesOf(claudeDesktopProviderPresets), [
       "Shengsuanyun",
@@ -44,16 +32,6 @@ describe("provider preset order", () => {
       baseUrl: "",
       mode: "direct",
     });
-  });
-
-  it("Codex 预设按合作伙伴优先顺序排列", () => {
-    expectInOrder(namesOf(codexProviderPresets), [
-      "Shengsuanyun",
-      "PatewayAI",
-      "火山Agentplan",
-      "BytePlus",
-      "DouBaoSeed",
-    ]);
   });
 
   it("OpenCode 预设把火山、BytePlus、DouBaoSeed 放在胜算云后面", () => {

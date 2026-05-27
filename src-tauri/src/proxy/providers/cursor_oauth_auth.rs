@@ -353,23 +353,27 @@ impl CursorOAuthManager {
                     .to_string(),
             )
         })?;
-        let email = poll
-            .display_email()
-            .or_else(|| email_from_jwt(&access_token))
-            .or_else(|| poll.auth_id().and_then(email_from_auth_id))
-            .or(self.fetch_user_email(&access_token).await.ok().flatten());
-        let account_id = format!("cursor_{}", sha256_hex(refresh_token)[..24].to_string());
-        let account = CursorAccountData {
+        let account_id = format!("cursor_{}", &sha256_hex(refresh_token)[..24]);
+        let mut account = CursorAccountData {
             account_id: account_id.clone(),
-            email,
+            email: None,
             refresh_token: refresh_token.to_string(),
-            id_token: poll.id_token,
+            id_token: poll.id_token.clone(),
             cursor_service_machine_id: Some(state.to_string()),
             cursor_client_version: Some(DEFAULT_CURSOR_CLIENT_VERSION.to_string()),
             cursor_config_version: Some(uuid::Uuid::new_v4().to_string()),
             cursor_client_id: Some(CURSOR_CLIENT_ID.to_string()),
             authenticated_at: chrono::Utc::now().timestamp(),
         };
+        account.email = poll
+            .display_email()
+            .or_else(|| email_from_jwt(&access_token))
+            .or_else(|| poll.auth_id().and_then(email_from_auth_id))
+            .or(self
+                .fetch_user_email(&account, &access_token)
+                .await
+                .ok()
+                .flatten());
 
         {
             let mut accounts = self.accounts.write().await;
@@ -442,7 +446,11 @@ impl CursorOAuthManager {
         let refreshed_email = if account.email.is_none() {
             email_from_jwt(&access_token)
                 .or_else(|| token.id_token.as_deref().and_then(email_from_jwt))
-                .or(self.fetch_user_email(&access_token).await.ok().flatten())
+                .or(self
+                    .fetch_user_email(&account, &access_token)
+                    .await
+                    .ok()
+                    .flatten())
         } else {
             None
         };
@@ -498,9 +506,10 @@ impl CursorOAuthManager {
 
     async fn fetch_user_email(
         &self,
+        account: &CursorAccountData,
         access_token: &str,
     ) -> Result<Option<String>, CursorOAuthError> {
-        let resp = self
+        let mut req = self
             .http_client
             .get(USER_INFO_URL)
             .bearer_auth(access_token)
@@ -508,9 +517,11 @@ impl CursorOAuthManager {
             .header(
                 "User-Agent",
                 format!("Cursor/{DEFAULT_CURSOR_CLIENT_VERSION} (cc-switch user info)"),
-            )
-            .send()
-            .await?;
+            );
+        for (key, value) in super::cursor_protocol::cursor_identity_headers(account, access_token) {
+            req = req.header(key, value);
+        }
+        let resp = req.send().await?;
         if !resp.status().is_success() {
             return Ok(None);
         }
@@ -610,8 +621,11 @@ impl CursorOAuthManager {
         for (account, allow_single_account_local_fallback) in account_items {
             let mut email = None;
             if let Ok(token) = self.get_valid_token_for_account(&account.account_id).await {
-                email =
-                    email_from_jwt(&token).or(self.fetch_user_email(&token).await.ok().flatten());
+                email = email_from_jwt(&token).or(self
+                    .fetch_user_email(&account, &token)
+                    .await
+                    .ok()
+                    .flatten());
             }
             if email.is_none() {
                 email = Self::cursor_local_cached_email_for_account(
@@ -778,6 +792,20 @@ fn expiry_from_jwt_ms(token: &str) -> Option<i64> {
         .get("exp")?
         .as_i64()
         .map(|exp| exp * 1000)
+}
+
+/// Extract the WorkOS user id from a Cursor access token's `sub` claim.
+/// Cursor encodes it as e.g. `auth0|user_01XYZ`; the WorkOS session cookie
+/// needs only the trailing id, not the provider prefix.
+pub fn workos_user_id_from_token(token: &str) -> Option<String> {
+    let claims = decode_jwt_payload(token)?;
+    let sub = claims.get("sub")?.as_str()?;
+    let id = sub.rsplit('|').next().unwrap_or(sub).trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
 }
 
 fn email_from_jwt(token: &str) -> Option<String> {

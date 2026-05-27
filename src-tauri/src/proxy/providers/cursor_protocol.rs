@@ -416,10 +416,7 @@ fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
 }
 
 fn build_cursor_headers(account: &CursorAccountData, token: &str) -> Vec<(String, String)> {
-    let machine_id = account.machine_id();
-    let config_version = account.config_version();
-    let session_id = uuid::Uuid::new_v4().to_string();
-    vec![
+    let mut headers = vec![
         ("Authorization".to_string(), format!("Bearer {token}")),
         (
             "Content-Type".to_string(),
@@ -436,6 +433,19 @@ fn build_cursor_headers(account: &CursorAccountData, token: &str) -> Vec<(String
             "x-amzn-trace-id".to_string(),
             uuid::Uuid::new_v4().to_string(),
         ),
+    ];
+    headers.extend(cursor_identity_headers(account, token));
+    headers
+}
+
+/// Identity headers Cursor's API endpoints expect (checksum + client metadata).
+///
+/// Shared between the protobuf chat path and the JSON REST calls (usage query,
+/// `/v0/me`). Excludes transport-specific headers like Content-Type/Accept so
+/// each caller can set its own.
+pub fn cursor_identity_headers(account: &CursorAccountData, token: &str) -> Vec<(String, String)> {
+    let machine_id = account.machine_id();
+    vec![
         ("x-client-key".to_string(), sha256_hex(token)),
         (
             "x-cursor-checksum".to_string(),
@@ -455,10 +465,16 @@ fn build_cursor_headers(account: &CursorAccountData, token: &str) -> Vec<(String
             "x-cursor-client-device-type".to_string(),
             "desktop".to_string(),
         ),
-        ("x-cursor-config-version".to_string(), config_version),
+        (
+            "x-cursor-config-version".to_string(),
+            account.config_version(),
+        ),
         ("x-cursor-timezone".to_string(), "UTC".to_string()),
         ("x-ghost-mode".to_string(), "true".to_string()),
-        ("x-session-id".to_string(), session_id),
+        (
+            "x-session-id".to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        ),
         ("x-request-id".to_string(), uuid::Uuid::new_v4().to_string()),
     ]
 }

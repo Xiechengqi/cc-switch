@@ -458,13 +458,16 @@ pub async fn query_antigravity_quota_with_token(
     result
 }
 
-pub async fn query_cursor_quota(access_token: &str, account_id: &str) -> SubscriptionQuota {
+pub async fn query_cursor_quota(
+    account: &crate::proxy::providers::cursor_oauth_auth::CursorAccountData,
+    access_token: &str,
+) -> SubscriptionQuota {
     let client = crate::proxy::http_client::get();
 
     // Parallel: Stripe status + GetCurrentPeriodUsage
     let (stripe_result, usage_result) = tokio::join!(
-        fetch_cursor_stripe_status(&client, access_token, account_id),
-        fetch_cursor_period_usage(&client, access_token),
+        fetch_cursor_stripe_status(&client, account, access_token),
+        fetch_cursor_period_usage(&client, account, access_token),
     );
 
     let credential_message = stripe_result
@@ -494,12 +497,18 @@ pub async fn query_cursor_quota(access_token: &str, account_id: &str) -> Subscri
 
 async fn fetch_cursor_stripe_status(
     client: &reqwest::Client,
+    account: &crate::proxy::providers::cursor_oauth_auth::CursorAccountData,
     access_token: &str,
-    account_id: &str,
 ) -> Result<serde_json::Value, String> {
+    // The WorkOS session cookie expects the real WorkOS user id (carried in the
+    // access token's `sub` claim), not our synthetic account id. Fall back to
+    // the account id only if the token can't be decoded.
+    let session_user =
+        crate::proxy::providers::cursor_oauth_auth::workos_user_id_from_token(access_token)
+            .unwrap_or_else(|| account.account_id.clone());
     let cookie = format!(
         "WorkosCursorSessionToken={}%3A%3A{}",
-        account_id, access_token
+        session_user, access_token
     );
     let resp = client
         .get("https://cursor.com/api/auth/stripe")
@@ -516,14 +525,21 @@ async fn fetch_cursor_stripe_status(
 
 async fn fetch_cursor_period_usage(
     client: &reqwest::Client,
+    account: &crate::proxy::providers::cursor_oauth_auth::CursorAccountData,
     access_token: &str,
 ) -> Result<serde_json::Value, String> {
-    let resp = client
+    let mut req = client
         .post("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage")
         .header("authorization", format!("Bearer {access_token}"))
         .header("connect-protocol-version", "1")
         .header("content-type", "application/json")
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(10));
+    for (key, value) in
+        crate::proxy::providers::cursor_protocol::cursor_identity_headers(account, access_token)
+    {
+        req = req.header(key, value);
+    }
+    let resp = req
         .body("{}")
         .send()
         .await

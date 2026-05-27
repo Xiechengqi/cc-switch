@@ -688,8 +688,18 @@ async fn refresh_cursor_quota(
             )
         }
     };
+    let account = match manager.get_account(account_id).await {
+        Some(account) => account,
+        None => {
+            return SubscriptionQuota::error(
+                "cursor_oauth",
+                CredentialStatus::Expired,
+                format!("Cursor OAuth account not found: {account_id}"),
+            )
+        }
+    };
     drop(manager);
-    crate::services::subscription::query_cursor_quota(&token, account_id).await
+    crate::services::subscription::query_cursor_quota(&account, &token).await
 }
 
 fn kiro_usage_to_subscription_quota(usage: KiroUsageLimitsResponse) -> SubscriptionQuota {

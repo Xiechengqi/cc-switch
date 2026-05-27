@@ -25,6 +25,14 @@ const KIRO_CLIENT_NAME: &str = "kiro-oauth-client";
 const KIRO_CLIENT_TYPE: &str = "public";
 const KIRO_ISSUER_URL: &str = "https://identitycenter.amazonaws.com/ssoins-722374e8c3c8e6c6";
 const KIRO_AUTH_METHOD_BUILDER_ID: &str = "builder-id";
+// Default Kiro profile ARNs used by the official Kiro IDE. AWS Builder ID
+// device-flow logins usually return no profileArn of their own, but
+// getUsageLimits (which also carries the account email) requires one, so we
+// fall back to these shared defaults to keep email + usage working.
+const BUILDER_ID_PROFILE_ARN: &str =
+    "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
+const SOCIAL_PROFILE_ARN: &str =
+    "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KiroOAuthError {
@@ -386,6 +394,22 @@ impl KiroAccountData {
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
                 .is_some()
+    }
+}
+
+fn default_profile_arn(account: &KiroAccountData) -> &'static str {
+    let is_social = account
+        .auth_method
+        .as_deref()
+        .map(|method| {
+            let method = method.to_ascii_lowercase();
+            method == "social" || method == "google" || method == "github"
+        })
+        .unwrap_or(false);
+    if is_social {
+        SOCIAL_PROFILE_ARN
+    } else {
+        BUILDER_ID_PROFILE_ARN
     }
 }
 
@@ -983,14 +1007,13 @@ impl KiroOAuthManager {
         let mut url = format!(
             "https://{host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
         );
-        if let Some(profile_arn) = account
+        let profile_arn = account
             .profile_arn
             .as_deref()
             .filter(|value| !value.is_empty())
-        {
-            url.push_str("&profileArn=");
-            url.push_str(&urlencoding::encode(profile_arn));
-        }
+            .unwrap_or_else(|| default_profile_arn(account));
+        url.push_str("&profileArn=");
+        url.push_str(&urlencoding::encode(profile_arn));
 
         let machine_id = account
             .machine_id

@@ -239,7 +239,7 @@ export function AuthCenterPanel() {
             <h4 className="font-medium">Kiro OAuth</h4>
             <p className="text-sm text-muted-foreground">
               {t("settings.authCenter.kiroOauthDescription", {
-                defaultValue: "管理 Kiro OAuth 账号",
+                defaultValue: "管理 Kiro AWS Builder ID 账号",
               })}
             </p>
           </div>

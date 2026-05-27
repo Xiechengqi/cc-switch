@@ -175,17 +175,10 @@ pub async fn auth_start_login(
         AUTH_PROVIDER_KIRO_OAUTH => {
             let auth_manager = kiro_oauth_state.0.read().await;
             let response = auth_manager
-                .start_browser_flow()
+                .start_device_flow()
                 .await
                 .map_err(|e| e.to_string())?;
-            Ok(ManagedAuthDeviceCodeResponse {
-                provider: auth_provider.to_string(),
-                device_code: response.state,
-                user_code: String::new(),
-                verification_uri: response.auth_url,
-                expires_in: 300,
-                interval: 5,
-            })
+            Ok(map_device_code_response(auth_provider, response))
         }
         AUTH_PROVIDER_CURSOR_OAUTH => {
             let auth_manager = cursor_oauth_state.0.read().await;
@@ -299,7 +292,7 @@ pub async fn auth_poll_for_account(
         }
         AUTH_PROVIDER_KIRO_OAUTH => {
             let auth_manager = kiro_oauth_state.0.read().await;
-            match auth_manager.poll_callback_result(&device_code).await {
+            match auth_manager.poll_for_token(&device_code).await {
                 Ok(Some(account)) => {
                     let status = auth_manager.get_status().await;
                     Ok(Some(map_account(
@@ -309,6 +302,9 @@ pub async fn auth_poll_for_account(
                     )))
                 }
                 Ok(None) => Ok(None),
+                Err(
+                    crate::proxy::providers::kiro_oauth_auth::KiroOAuthError::AuthorizationPending,
+                ) => Ok(None),
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -529,7 +525,7 @@ pub async fn auth_get_status(
                 provider: auth_provider.to_string(),
                 authenticated: status.authenticated,
                 default_account_id: default_account_id.clone(),
-                migration_error: None,
+                migration_error: status.migration_error,
                 accounts: status
                     .accounts
                     .into_iter()

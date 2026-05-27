@@ -762,9 +762,14 @@ function ProviderFormFull({
     initialData?.meta,
     PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH,
   );
+  const hasCursorOauthAuthBinding = hasManagedAuthBinding(
+    initialData?.meta,
+    PROVIDER_TYPES.CURSOR_OAUTH,
+  );
   const currentProviderType =
     currentPresetProviderType ||
     initialData?.meta?.providerType ||
+    (hasCursorOauthAuthBinding ? PROVIDER_TYPES.CURSOR_OAUTH : undefined) ||
     (appId === "gemini" && category === "official" && hasGoogleGeminiAuthBinding
       ? PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH
       : undefined);
@@ -1286,24 +1291,31 @@ function ProviderFormFull({
       initialData?.meta?.providerType === "github_copilot" ||
       baseUrl.includes("githubcopilot.com");
     const isCodexOauthProvider =
+      currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
       templatePreset?.providerType === "codex_oauth" ||
       initialData?.meta?.providerType === "codex_oauth";
     const isClaudeOauthProvider =
+      currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
       templatePreset?.providerType === "claude_oauth" ||
       initialData?.meta?.providerType === "claude_oauth";
     const isGeminiOauthProvider =
+      currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
     const isAntigravityOauthProvider =
+      currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
       templatePreset?.providerType === "antigravity_oauth" ||
       initialData?.meta?.providerType === "antigravity_oauth";
     const isCursorOauthProvider =
+      currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
       templatePreset?.providerType === "cursor_oauth" ||
       initialData?.meta?.providerType === "cursor_oauth";
     const isKiroOauthProvider =
+      currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
       templatePreset?.providerType === "kiro_oauth" ||
       initialData?.meta?.providerType === "kiro_oauth";
     const isDeepSeekAccountProvider =
+      currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
       templatePreset?.providerType === "deepseek_account" ||
       initialData?.meta?.providerType === "deepseek_account";
     // GitHub Copilot 必须先登录才能添加
@@ -1408,7 +1420,7 @@ function ProviderFormFull({
       if (!isKiroOauthAuthenticated) {
         toast.error(
           t("kiroOauth.loginRequired", {
-            defaultValue: "请先登录 Kiro 账号",
+            defaultValue: "请先登录 AWS Builder ID 账号",
           }),
         );
         return;
@@ -1416,7 +1428,7 @@ function ProviderFormFull({
       if (!selectedKiroAccountId) {
         toast.error(
           t("kiroOauth.selectAccountRequired", {
-            defaultValue: "Kiro OAuth 必须绑定一个 Kiro 账号",
+            defaultValue: "Kiro OAuth 必须绑定一个 AWS Builder ID 账号",
           }),
         );
         return;
@@ -1551,24 +1563,31 @@ function ProviderFormFull({
       initialData?.meta?.providerType === "github_copilot" ||
       baseUrl.includes("githubcopilot.com");
     const isCodexOauthProvider =
+      currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
       templatePreset?.providerType === "codex_oauth" ||
       initialData?.meta?.providerType === "codex_oauth";
     const isClaudeOauthProvider =
+      currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
       templatePreset?.providerType === "claude_oauth" ||
       initialData?.meta?.providerType === "claude_oauth";
     const isGeminiOauthProvider =
+      currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
     const isAntigravityOauthProvider =
+      currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
       templatePreset?.providerType === "antigravity_oauth" ||
       initialData?.meta?.providerType === "antigravity_oauth";
     const isCursorOauthProvider =
+      currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
       templatePreset?.providerType === "cursor_oauth" ||
       initialData?.meta?.providerType === "cursor_oauth";
     const isKiroOauthProvider =
+      currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
       templatePreset?.providerType === "kiro_oauth" ||
       initialData?.meta?.providerType === "kiro_oauth";
     const isDeepSeekAccountProvider =
+      currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
       templatePreset?.providerType === "deepseek_account" ||
       initialData?.meta?.providerType === "deepseek_account";
 
@@ -1747,7 +1766,9 @@ function ProviderFormFull({
 
     // 确定 providerType（新建时从预设获取，编辑时从现有数据获取）
     const providerType =
-      templatePreset?.providerType || initialData?.meta?.providerType;
+      currentProviderType ||
+      templatePreset?.providerType ||
+      initialData?.meta?.providerType;
 
     const nextMeta: ProviderMeta = {
       ...(baseMeta ?? {}),

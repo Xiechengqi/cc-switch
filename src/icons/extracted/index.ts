@@ -4,9 +4,11 @@
 import _claudeapi from "./ClaudeApi.png";
 import _byteplus from "./byteplus.png";
 import _claudecn from "./claudecn.png";
+import _cursor from "./cursor.png";
 import _eflowcode from "./eflowcode.png";
 import _hermes from "./hermes.png";
 import _huoshan from "./huoshan.png";
+import _kiro from "./kiro.png";
 import _lemondata from "./lemondata.png";
 import _pateway from "./pateway.jpg";
 import _pipellm from "./pipellm.png";
@@ -90,9 +92,11 @@ export const iconUrls: Record<string, string> = {
   byteplus: _byteplus,
   claudeapi: _claudeapi,
   claudecn: _claudecn,
+  cursor: _cursor,
   eflowcode: _eflowcode,
   hermes: _hermes,
   huoshan: _huoshan,
+  kiro: _kiro,
   lemondata: _lemondata,
   pateway: _pateway,
   pipellm: _pipellm,

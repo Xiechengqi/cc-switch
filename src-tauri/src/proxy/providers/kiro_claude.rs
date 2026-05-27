@@ -19,8 +19,6 @@ const DEFAULT_SYSTEM_VERSION: &str = "macos";
 const DEFAULT_NODE_VERSION: &str = "22.22.0";
 const BUILDER_ID_PROFILE_ARN: &str =
     "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
-const SOCIAL_PROFILE_ARN: &str =
-    "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK";
 
 pub async fn forward_kiro_claude(
     app_handle: Option<&tauri::AppHandle>,
@@ -210,7 +208,7 @@ fn anthropic_to_kiro_request(body: &Value, account: &KiroAccountData) -> Result<
     let profile_arn = account
         .profile_arn
         .clone()
-        .unwrap_or_else(|| SOCIAL_PROFILE_ARN.to_string());
+        .unwrap_or_else(|| BUILDER_ID_PROFILE_ARN.to_string());
     Ok(json!({
         "conversationState": {
             "agentTaskType": "vibe",

@@ -133,6 +133,12 @@ export const iconMetadata: Record<string, IconMetadata> = {
     keywords: ["cubence", "api", "relay"],
     defaultColor: "#4B5563",
   },
+  cursor: {
+    name: "cursor",
+    displayName: "Cursor",
+    category: "ai-provider",
+    keywords: ["cursor", "cursor oauth", "editor"],
+  },
   deepseek: {
     name: "deepseek",
     displayName: "DeepSeek",
@@ -216,6 +222,12 @@ export const iconMetadata: Record<string, IconMetadata> = {
     category: "other",
     keywords: [],
     defaultColor: "currentColor",
+  },
+  kiro: {
+    name: "kiro",
+    displayName: "Kiro",
+    category: "ai-provider",
+    keywords: ["kiro", "kiro oauth", "aws"],
   },
   kimi: {
     name: "kimi",

@@ -1,6 +1,6 @@
 //! Kiro OAuth Authentication Module
 //!
-//! Implements Kiro portal OAuth (PKCE browser flow) with multi-account
+//! Implements Kiro AWS Builder ID device-code authentication with multi-account
 //! management. Providers bind to accounts through `meta.authBinding` using
 //! `auth_provider = "kiro_oauth"`.
 
@@ -15,19 +15,16 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tokio::task::JoinHandle;
 
-use super::copilot_auth::GitHubAccount;
+use super::copilot_auth::{GitHubAccount, GitHubDeviceCodeResponse};
 
-const KIRO_PORTAL_URL: &str = "https://app.kiro.dev";
-const CALLBACK_PORTS: &[u16] = &[
-    3128, 4649, 6588, 8008, 9091, 49153, 50153, 51153, 52153, 53153,
-];
-const CALLBACK_PATH: &str = "/oauth/callback";
-const CALLBACK_TIMEOUT_SECS: u64 = 300;
 const TOKEN_REFRESH_BUFFER_MS: i64 = 60_000;
 const DEFAULT_REGION: &str = "us-east-1";
-const DEFAULT_KIRO_VERSION: &str = "2.3.0";
+const DEFAULT_START_URL: &str = "https://view.awsapps.com/start";
+const KIRO_CLIENT_NAME: &str = "kiro-oauth-client";
+const KIRO_CLIENT_TYPE: &str = "public";
+const KIRO_ISSUER_URL: &str = "https://identitycenter.amazonaws.com/ssoins-722374e8c3c8e6c6";
+const KIRO_AUTH_METHOD_BUILDER_ID: &str = "builder-id";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KiroOAuthError {
@@ -49,8 +46,8 @@ pub enum KiroOAuthError {
     IoError(String),
     #[error("账号不存在: {0}")]
     AccountNotFound(String),
-    #[error("回调服务器错误: {0}")]
-    CallbackServerError(String),
+    #[error("旧版 Kiro Portal OAuth 账号不可用，请重新添加 AWS Builder ID 账号")]
+    LegacyAccountUnsupported,
 }
 
 impl From<reqwest::Error> for KiroOAuthError {
@@ -66,27 +63,83 @@ impl From<std::io::Error> for KiroOAuthError {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct SocialTokenResponse {
-    #[serde(rename = "accessToken")]
-    access_token: String,
-    #[serde(default, rename = "idToken")]
-    id_token: Option<String>,
-    #[serde(default, rename = "id_token")]
-    id_token_snake: Option<String>,
+#[serde(rename_all = "camelCase")]
+struct RegisterClientResponse {
+    client_id: String,
+    client_secret: String,
     #[serde(default)]
-    email: Option<String>,
-    #[serde(default, rename = "accountEmail")]
-    account_email: Option<String>,
-    #[serde(default, rename = "userEmail")]
-    user_email: Option<String>,
-    #[serde(default, rename = "refreshToken")]
+    client_secret_expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceAuthorizationResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
+    expires_in: u64,
+    #[serde(default)]
+    interval: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingDeviceFlow {
+    client_id: String,
+    client_secret: String,
+    client_secret_expires_at: Option<i64>,
+    region: String,
+    start_url: String,
+    expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuilderIdTokenResponse {
+    #[serde(default, alias = "access_token")]
+    access_token: Option<String>,
+    #[serde(default, alias = "refresh_token")]
     refresh_token: Option<String>,
-    #[serde(default, rename = "expiresAt")]
-    expires_at: Option<String>,
-    #[serde(default, rename = "expiresIn")]
+    #[serde(default, alias = "expires_in")]
     expires_in: Option<i64>,
-    #[serde(default, rename = "profileArn")]
+    #[serde(default, alias = "profile_arn")]
     profile_arn: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default, alias = "error_description")]
+    error_description: Option<String>,
+    #[serde(flatten)]
+    extra: Value,
+}
+
+impl BuilderIdTokenResponse {
+    fn first_email(&self) -> Option<String> {
+        first_email([
+            self.extra
+                .get("email")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            self.extra
+                .get("accountEmail")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            self.extra
+                .get("userEmail")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            self.extra
+                .get("idToken")
+                .and_then(Value::as_str)
+                .and_then(email_from_jwt),
+            self.extra
+                .get("id_token")
+                .and_then(Value::as_str)
+                .and_then(email_from_jwt),
+            self.access_token.as_deref().and_then(email_from_jwt),
+            self.refresh_token.as_deref().and_then(email_from_jwt),
+        ])
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -285,19 +338,6 @@ impl CachedAccessToken {
     }
 }
 
-#[derive(Debug, Clone)]
-struct PendingOAuthFlow {
-    code_verifier: String,
-    redirect_uri: String,
-    expires_at_ms: i64,
-}
-
-#[derive(Debug)]
-enum FlowResult {
-    Pending,
-    Ready(Result<GitHubAccount, String>),
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KiroAccountData {
     pub account_id: String,
@@ -312,18 +352,50 @@ pub struct KiroAccountData {
     pub api_region: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
     pub authenticated_at: i64,
+}
+
+impl KiroAccountData {
+    fn is_builder_id(&self) -> bool {
+        self.client_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .is_some()
+            && self
+                .client_secret
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .is_some()
+    }
 }
 
 impl From<&KiroAccountData> for GitHubAccount {
     fn from(data: &KiroAccountData) -> Self {
-        GitHubAccount {
-            id: data.account_id.clone(),
-            login: data
-                .email
+        let login = if data.is_builder_id() {
+            data.email
                 .as_deref()
                 .map(|email| format!("Kiro({email})"))
-                .unwrap_or_else(|| format!("Kiro ({})", short_id(&data.account_id))),
+                .unwrap_or_else(|| format!("Kiro Builder ID ({})", short_id(&data.account_id)))
+        } else {
+            data.email
+                .as_deref()
+                .map(|email| format!("Kiro Legacy({email})"))
+                .unwrap_or_else(|| format!("Kiro Legacy ({})", short_id(&data.account_id)))
+        };
+
+        GitHubAccount {
+            id: data.account_id.clone(),
+            login,
             avatar_url: None,
             authenticated_at: data.authenticated_at,
             github_domain: "kiro.dev".to_string(),
@@ -347,9 +419,7 @@ pub struct KiroOAuthManager {
     default_account_id: Arc<RwLock<Option<String>>>,
     access_tokens: Arc<RwLock<HashMap<String, CachedAccessToken>>>,
     refresh_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
-    pending_flows: Arc<RwLock<HashMap<String, PendingOAuthFlow>>>,
-    flow_results: Arc<RwLock<HashMap<String, FlowResult>>>,
-    active_flow_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    pending_device_flows: Arc<RwLock<HashMap<String, PendingDeviceFlow>>>,
     http_client: Client,
     storage_path: PathBuf,
 }
@@ -362,9 +432,7 @@ impl KiroOAuthManager {
             default_account_id: Arc::new(RwLock::new(None)),
             access_tokens: Arc::new(RwLock::new(HashMap::new())),
             refresh_locks: Arc::new(RwLock::new(HashMap::new())),
-            pending_flows: Arc::new(RwLock::new(HashMap::new())),
-            flow_results: Arc::new(RwLock::new(HashMap::new())),
-            active_flow_handle: Arc::new(Mutex::new(None)),
+            pending_device_flows: Arc::new(RwLock::new(HashMap::new())),
             http_client: Client::new(),
             storage_path,
         };
@@ -374,257 +442,214 @@ impl KiroOAuthManager {
         manager
     }
 
-    fn generate_code_verifier() -> String {
-        use rand::RngCore;
-        let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
-        URL_SAFE_NO_PAD.encode(bytes)
-    }
-
-    fn generate_code_challenge(verifier: &str) -> String {
-        let hash = Sha256::digest(verifier.as_bytes());
-        URL_SAFE_NO_PAD.encode(hash)
-    }
-
-    fn generate_state() -> String {
-        use rand::RngCore;
-        let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
-        URL_SAFE_NO_PAD.encode(bytes)
-    }
-
-    pub async fn start_browser_flow(&self) -> Result<KiroOAuthStartResponse, KiroOAuthError> {
-        let code_verifier = Self::generate_code_verifier();
-        let code_challenge = Self::generate_code_challenge(&code_verifier);
-        let state = Self::generate_state();
-
-        let (listener, callback_port) = Self::bind_callback_listener().await?;
-        let redirect_uri = format!("http://127.0.0.1:{callback_port}");
-        let auth_url = format!(
-            "{KIRO_PORTAL_URL}/signin?state={}&code_challenge={}&code_challenge_method=S256&redirect_uri={}&redirect_from=KiroIDE",
-            urlencoding::encode(&state),
-            urlencoding::encode(&code_challenge),
-            urlencoding::encode(&redirect_uri),
-        );
-
-        {
-            let mut handle_guard = self.active_flow_handle.lock().await;
-            if let Some(prev) = handle_guard.take() {
-                prev.abort();
-                let _ = prev.await;
-            }
-        }
-        self.flow_results.write().await.clear();
-
+    pub async fn start_device_flow(&self) -> Result<GitHubDeviceCodeResponse, KiroOAuthError> {
+        let region = DEFAULT_REGION.to_string();
+        let start_url = DEFAULT_START_URL.to_string();
+        let client = self.register_client(&region).await?;
+        let device = self
+            .request_device_authorization(&region, &client, &start_url)
+            .await?;
         let expires_at_ms =
-            chrono::Utc::now().timestamp_millis() + (CALLBACK_TIMEOUT_SECS as i64) * 1000;
+            chrono::Utc::now().timestamp_millis() + (device.expires_in as i64 * 1000);
+
         {
-            let mut pending = self.pending_flows.write().await;
+            let mut pending = self.pending_device_flows.write().await;
             let now_ms = chrono::Utc::now().timestamp_millis();
             pending.retain(|_, flow| flow.expires_at_ms > now_ms);
             pending.insert(
-                state.clone(),
-                PendingOAuthFlow {
-                    code_verifier,
-                    redirect_uri,
+                device.device_code.clone(),
+                PendingDeviceFlow {
+                    client_id: client.client_id,
+                    client_secret: client.client_secret,
+                    client_secret_expires_at: client.client_secret_expires_at,
+                    region,
+                    start_url,
                     expires_at_ms,
                 },
             );
         }
-        self.flow_results
-            .write()
-            .await
-            .insert(state.clone(), FlowResult::Pending);
 
-        let manager = self.clone();
-        let state_clone = state.clone();
-        let handle = tokio::spawn(async move {
-            let result = manager
-                .run_callback_on_listener(listener, &state_clone)
-                .await;
-            manager.flow_results.write().await.insert(
-                state_clone,
-                FlowResult::Ready(result.map_err(|e| e.to_string())),
-            );
-        });
-        *self.active_flow_handle.lock().await = Some(handle);
-
-        Ok(KiroOAuthStartResponse {
-            auth_url,
-            state,
-            callback_port,
+        Ok(GitHubDeviceCodeResponse {
+            device_code: device.device_code,
+            user_code: device.user_code,
+            verification_uri: device
+                .verification_uri_complete
+                .unwrap_or(device.verification_uri),
+            expires_in: device.expires_in,
+            interval: device.interval.unwrap_or(5),
         })
     }
 
-    async fn bind_callback_listener() -> Result<(tokio::net::TcpListener, u16), KiroOAuthError> {
-        let mut errors = Vec::new();
-        for port in CALLBACK_PORTS {
-            let addr = format!("127.0.0.1:{port}");
-            match tokio::net::TcpListener::bind(&addr).await {
-                Ok(listener) => return Ok((listener, *port)),
-                Err(err) => errors.push(format!("{port}: {err}")),
-            }
-        }
-
-        Err(KiroOAuthError::CallbackServerError(format!(
-            "无法绑定 Kiro OAuth 回调端口，已尝试 {:?}: {}",
-            CALLBACK_PORTS,
-            errors.join("; ")
-        )))
-    }
-
-    pub async fn poll_callback_result(
+    async fn register_client(
         &self,
-        state: &str,
-    ) -> Result<Option<GitHubAccount>, KiroOAuthError> {
-        let mut results = self.flow_results.write().await;
-        match results.get(state) {
-            None => Err(KiroOAuthError::TokenFetchFailed(
-                "未找到对应的 OAuth 流程（state 不匹配或已过期），请重新登录".to_string(),
-            )),
-            Some(FlowResult::Pending) => Ok(None),
-            Some(FlowResult::Ready(_)) => {
-                let entry = results.remove(state).expect("checked above");
-                match entry {
-                    FlowResult::Ready(Ok(account)) => Ok(Some(account)),
-                    FlowResult::Ready(Err(e)) => Err(KiroOAuthError::TokenFetchFailed(e)),
-                    FlowResult::Pending => Ok(None),
-                }
-            }
-        }
-    }
-
-    async fn run_callback_on_listener(
-        &self,
-        listener: tokio::net::TcpListener,
-        state: &str,
-    ) -> Result<GitHubAccount, KiroOAuthError> {
-        let result = tokio::time::timeout(
-            tokio::time::Duration::from_secs(CALLBACK_TIMEOUT_SECS),
-            async { Self::accept_callback(&listener).await },
-        )
-        .await
-        .map_err(|_| KiroOAuthError::Timeout)??;
-
-        if result.state != state {
-            return Err(KiroOAuthError::TokenFetchFailed(
-                "OAuth state 不匹配".to_string(),
-            ));
-        }
-
-        let flow = self
-            .pending_flows
-            .write()
-            .await
-            .remove(state)
-            .ok_or_else(|| KiroOAuthError::TokenFetchFailed("OAuth 流程已过期".to_string()))?;
-
-        let redirect_uri = if result.login_option.is_empty() {
-            format!("{}{}", flow.redirect_uri, result.path)
-        } else {
-            format!(
-                "{}{}?login_option={}",
-                flow.redirect_uri,
-                result.path,
-                urlencoding::encode(&result.login_option)
-            )
-        };
-        let token = self
-            .exchange_code_for_token(&result.code, &flow.code_verifier, &redirect_uri)
-            .await?;
-        let account = self.store_token_response(token).await?;
-        Ok(GitHubAccount::from(&account))
-    }
-
-    async fn accept_callback(
-        listener: &tokio::net::TcpListener,
-    ) -> Result<KiroCallback, KiroOAuthError> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        loop {
-            let (mut stream, _) = listener.accept().await?;
-            let mut buf = vec![0u8; 8192];
-            let n = stream.read(&mut buf).await?;
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let first_line = request.lines().next().unwrap_or("");
-
-            let path = first_line
-                .strip_prefix("GET ")
-                .and_then(|s| {
-                    s.strip_suffix(" HTTP/1.1")
-                        .or_else(|| s.strip_suffix(" HTTP/1.0"))
-                })
-                .unwrap_or("");
-
-            if let Some(callback) = parse_callback(path) {
-                let body = "<html><head><meta charset='utf-8'><title>Kiro OAuth</title></head><body style='font-family:sans-serif;text-align:center;padding:60px'><h2>Login complete</h2><p>You can close this tab and return to CC Switch.</p></body></html>";
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(), body
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-                let _ = stream.flush().await;
-                return Ok(callback);
-            }
-
-            if path.contains("error=") {
-                let body =
-                    "<html><body>Login failed. Please close this tab and retry.</body></html>";
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(), body
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-                return Err(KiroOAuthError::UserCancelled);
-            }
-
-            let _ = stream
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
-                .await;
-        }
-    }
-
-    async fn exchange_code_for_token(
-        &self,
-        code: &str,
-        code_verifier: &str,
-        redirect_uri: &str,
-    ) -> Result<SocialTokenResponse, KiroOAuthError> {
-        let url = format!("https://prod.{DEFAULT_REGION}.auth.desktop.kiro.dev/oauth/token");
-        let resp = self
+        region: &str,
+    ) -> Result<RegisterClientResponse, KiroOAuthError> {
+        let url = format!("https://oidc.{region}.amazonaws.com/client/register");
+        let response = self
             .http_client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/json")
-            .header("User-Agent", format!("KiroIDE-{DEFAULT_KIRO_VERSION}"))
-            .header(
-                "host",
-                format!("prod.{DEFAULT_REGION}.auth.desktop.kiro.dev"),
-            )
+            .header("Accept", "application/json")
             .json(&serde_json::json!({
-                "code": code,
-                "code_verifier": code_verifier,
-                "redirect_uri": redirect_uri,
-                "invitation_code": null
+                "clientName": KIRO_CLIENT_NAME,
+                "clientType": KIRO_CLIENT_TYPE,
+                "scopes": [
+                    "codewhisperer:completions",
+                    "codewhisperer:analysis",
+                    "codewhisperer:conversations"
+                ],
+                "grantTypes": [
+                    "urn:ietf:params:oauth:grant-type:device_code",
+                    "refresh_token"
+                ],
+                "issuerUrl": KIRO_ISSUER_URL
             }))
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             return Err(KiroOAuthError::TokenFetchFailed(format!(
-                "token exchange failed: {status} {body}"
+                "client registration failed: {status} {body}"
             )));
         }
 
-        resp.json::<SocialTokenResponse>()
+        response
+            .json::<RegisterClientResponse>()
             .await
             .map_err(|e| KiroOAuthError::ParseError(e.to_string()))
     }
 
+    async fn request_device_authorization(
+        &self,
+        region: &str,
+        client: &RegisterClientResponse,
+        start_url: &str,
+    ) -> Result<DeviceAuthorizationResponse, KiroOAuthError> {
+        let url = format!("https://oidc.{region}.amazonaws.com/device_authorization");
+        let response = self
+            .http_client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .json(&serde_json::json!({
+                "clientId": client.client_id,
+                "clientSecret": client.client_secret,
+                "startUrl": start_url
+            }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(KiroOAuthError::TokenFetchFailed(format!(
+                "device authorization failed: {status} {body}"
+            )));
+        }
+
+        response
+            .json::<DeviceAuthorizationResponse>()
+            .await
+            .map_err(|e| KiroOAuthError::ParseError(e.to_string()))
+    }
+
+    pub async fn poll_for_token(
+        &self,
+        device_code: &str,
+    ) -> Result<Option<GitHubAccount>, KiroOAuthError> {
+        let flow = {
+            let pending = self.pending_device_flows.read().await;
+            pending
+                .get(device_code)
+                .cloned()
+                .ok_or_else(|| KiroOAuthError::TokenFetchFailed("设备码流程已过期".to_string()))?
+        };
+
+        if flow.expires_at_ms <= chrono::Utc::now().timestamp_millis() {
+            self.pending_device_flows.write().await.remove(device_code);
+            return Err(KiroOAuthError::Timeout);
+        }
+
+        let token = self
+            .poll_builder_id_token(
+                &flow.region,
+                &flow.client_id,
+                &flow.client_secret,
+                device_code,
+            )
+            .await?;
+        let Some(access_token) = token.access_token.clone() else {
+            return Ok(None);
+        };
+
+        self.pending_device_flows.write().await.remove(device_code);
+        let account = self.store_token_response(token, flow, access_token).await?;
+        Ok(Some(GitHubAccount::from(&account)))
+    }
+
+    async fn poll_builder_id_token(
+        &self,
+        region: &str,
+        client_id: &str,
+        client_secret: &str,
+        device_code: &str,
+    ) -> Result<BuilderIdTokenResponse, KiroOAuthError> {
+        let url = format!("https://oidc.{region}.amazonaws.com/token");
+        let response = self
+            .http_client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .json(&serde_json::json!({
+                "clientId": client_id,
+                "clientSecret": client_secret,
+                "deviceCode": device_code,
+                "grantType": "urn:ietf:params:oauth:grant-type:device_code"
+            }))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let token: BuilderIdTokenResponse = match serde_json::from_str(&body) {
+            Ok(token) => token,
+            Err(_) if !status.is_success() => {
+                return Err(KiroOAuthError::TokenFetchFailed(format!(
+                    "token poll failed: {status} {body}"
+                )));
+            }
+            Err(err) => return Err(KiroOAuthError::ParseError(format!("{err}: {body}"))),
+        };
+
+        if let Some(error) = token.error.as_deref() {
+            return match error {
+                "authorization_pending" | "slow_down" => Err(KiroOAuthError::AuthorizationPending),
+                "expired_token" => Err(KiroOAuthError::Timeout),
+                "access_denied" => Err(KiroOAuthError::UserCancelled),
+                _ => Err(KiroOAuthError::TokenFetchFailed(format!(
+                    "{}: {}",
+                    error,
+                    token.error_description.unwrap_or_default()
+                ))),
+            };
+        }
+
+        if !status.is_success() {
+            return Err(KiroOAuthError::TokenFetchFailed(format!(
+                "token poll failed: {status} {body}"
+            )));
+        }
+
+        Ok(token)
+    }
+
     async fn store_token_response(
         &self,
-        token: SocialTokenResponse,
+        token: BuilderIdTokenResponse,
+        flow: PendingDeviceFlow,
+        access_token: String,
     ) -> Result<KiroAccountData, KiroOAuthError> {
         let refresh_token = token.refresh_token.clone().ok_or_else(|| {
             KiroOAuthError::TokenFetchFailed("响应缺少 refresh_token".to_string())
@@ -632,28 +657,25 @@ impl KiroOAuthManager {
         let account_id = format!("kiro_{}", sha256_hex(&refresh_token)[..24].to_string());
         let mut account = KiroAccountData {
             account_id: account_id.clone(),
-            email: first_email([
-                token.email.clone(),
-                token.account_email.clone(),
-                token.user_email.clone(),
-                token.id_token.as_deref().and_then(email_from_jwt),
-                token.id_token_snake.as_deref().and_then(email_from_jwt),
-                email_from_jwt(&token.access_token),
-                email_from_jwt(&refresh_token),
-            ]),
+            email: token.first_email(),
             refresh_token,
             profile_arn: token.profile_arn.clone(),
-            auth_region: DEFAULT_REGION.to_string(),
-            api_region: DEFAULT_REGION.to_string(),
+            auth_region: flow.region.clone(),
+            api_region: flow.region.clone(),
             machine_id: Some(machine_id_from_refresh_token(
                 token.refresh_token.as_deref().unwrap_or_default(),
             )),
+            client_id: Some(flow.client_id),
+            client_secret: Some(flow.client_secret),
+            client_secret_expires_at: flow.client_secret_expires_at,
+            start_url: Some(flow.start_url),
+            auth_method: Some(KIRO_AUTH_METHOD_BUILDER_ID.to_string()),
             authenticated_at: chrono::Utc::now().timestamp(),
         };
 
         if account.email.is_none() {
             if let Some(email) = self
-                .fetch_account_email_from_usage(&account, &token.access_token)
+                .fetch_account_email_from_usage(&account, &access_token)
                 .await
             {
                 account.email = Some(email);
@@ -670,7 +692,13 @@ impl KiroOAuthManager {
                 *default = Some(account_id.clone());
             }
         }
-        self.cache_access_token(&account_id, token).await;
+        self.cache_access_token(
+            &account_id,
+            access_token,
+            token.expires_in,
+            token.refresh_token.as_deref(),
+        )
+        .await;
         self.save_to_disk().await?;
         Ok(account)
     }
@@ -696,31 +724,38 @@ impl KiroOAuthManager {
         .flatten()
     }
 
-    async fn cache_access_token(&self, account_id: &str, token: SocialTokenResponse) {
-        let expires_at_ms = token
-            .expires_at
-            .as_deref()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.timestamp_millis())
-            .or_else(|| {
-                token
-                    .expires_in
-                    .map(|s| chrono::Utc::now().timestamp_millis() + s * 1000)
-            })
+    async fn cache_access_token(
+        &self,
+        account_id: &str,
+        access_token: String,
+        expires_in: Option<i64>,
+        refresh_token: Option<&str>,
+    ) {
+        let expires_at_ms = expires_in
+            .map(|s| chrono::Utc::now().timestamp_millis() + s * 1000)
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() + 15 * 60 * 1000);
         self.access_tokens.write().await.insert(
             account_id.to_string(),
             CachedAccessToken {
-                token: token.access_token,
+                token: access_token,
                 expires_at_ms,
             },
         );
+        if let Some(refresh_token) = refresh_token {
+            let mut accounts = self.accounts.write().await;
+            if let Some(existing) = accounts.get_mut(account_id) {
+                existing.refresh_token = refresh_token.to_string();
+                existing.machine_id = Some(machine_id_from_refresh_token(refresh_token));
+            }
+        }
     }
 
     pub async fn get_valid_token_for_account(
         &self,
         account_id: &str,
     ) -> Result<String, KiroOAuthError> {
+        self.require_builder_account(account_id).await?;
+
         if let Some(cached) = self.access_tokens.read().await.get(account_id).cloned() {
             if !cached.is_expiring_soon() {
                 return Ok(cached.token);
@@ -742,26 +777,14 @@ impl KiroOAuthManager {
             }
         }
 
-        let account = self
-            .accounts
-            .read()
-            .await
-            .get(account_id)
-            .cloned()
-            .ok_or_else(|| KiroOAuthError::AccountNotFound(account_id.to_string()))?;
+        let account = self.require_builder_account(account_id).await?;
 
-        let token = self.refresh_social_token(&account).await?;
-        let access_token = token.access_token.clone();
-        let refreshed_email = first_email([
-            token.email.clone(),
-            token.account_email.clone(),
-            token.user_email.clone(),
-            token.id_token.as_deref().and_then(email_from_jwt),
-            token.id_token_snake.as_deref().and_then(email_from_jwt),
-            email_from_jwt(&token.access_token),
-            email_from_jwt(account.refresh_token.as_str()),
-            token.refresh_token.as_deref().and_then(email_from_jwt),
-        ]);
+        let token = self.refresh_builder_id_token(&account).await?;
+        let access_token = token.access_token.clone().ok_or_else(|| {
+            KiroOAuthError::TokenFetchFailed("refresh response missing accessToken".to_string())
+        })?;
+        let refreshed_email = token.first_email();
+        let new_refresh_token = token.refresh_token.clone();
 
         {
             let mut accounts = self.accounts.write().await;
@@ -769,64 +792,85 @@ impl KiroOAuthManager {
                 if existing.email.is_none() {
                     existing.email = refreshed_email;
                 }
-                if let Some(new_refresh_token) = token.refresh_token.clone() {
-                    existing.refresh_token = new_refresh_token;
-                    existing.machine_id =
-                        Some(machine_id_from_refresh_token(&existing.refresh_token));
-                }
                 if let Some(profile_arn) = token.profile_arn.clone() {
                     existing.profile_arn = Some(profile_arn);
                 }
             }
         }
-        self.cache_access_token(account_id, token).await;
+        self.cache_access_token(
+            account_id,
+            access_token.clone(),
+            token.expires_in,
+            new_refresh_token.as_deref(),
+        )
+        .await;
         self.save_to_disk().await?;
         Ok(access_token)
     }
 
-    async fn refresh_social_token(
+    async fn refresh_builder_id_token(
         &self,
         account: &KiroAccountData,
-    ) -> Result<SocialTokenResponse, KiroOAuthError> {
+    ) -> Result<BuilderIdTokenResponse, KiroOAuthError> {
+        let client_id = account
+            .client_id
+            .as_deref()
+            .ok_or_else(|| KiroOAuthError::RefreshTokenInvalid)?;
+        let client_secret = account
+            .client_secret
+            .as_deref()
+            .ok_or_else(|| KiroOAuthError::RefreshTokenInvalid)?;
         let region = if account.auth_region.trim().is_empty() {
             DEFAULT_REGION
         } else {
             account.auth_region.as_str()
         };
-        let url = format!("https://prod.{region}.auth.desktop.kiro.dev/refreshToken");
-        let machine_id = account
-            .machine_id
-            .clone()
-            .unwrap_or_else(|| machine_id_from_refresh_token(&account.refresh_token));
+        let url = format!("https://oidc.{region}.amazonaws.com/token");
 
-        let resp = self
+        let response = self
             .http_client
             .post(&url)
-            .header("Accept", "application/json, text/plain, */*")
             .header("Content-Type", "application/json")
-            .header(
-                "User-Agent",
-                format!("KiroIDE-{DEFAULT_KIRO_VERSION}-{machine_id}"),
-            )
-            .header("host", format!("prod.{region}.auth.desktop.kiro.dev"))
-            .json(&serde_json::json!({ "refreshToken": account.refresh_token }))
+            .header("Accept", "application/json")
+            .json(&serde_json::json!({
+                "clientId": client_id,
+                "clientSecret": client_secret,
+                "refreshToken": account.refresh_token,
+                "grantType": "refresh_token"
+            }))
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            if status.as_u16() == 400 && body.contains("invalid_grant") {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let token: BuilderIdTokenResponse = match serde_json::from_str(&body) {
+            Ok(token) => token,
+            Err(_) if !status.is_success() => {
+                return Err(KiroOAuthError::TokenFetchFailed(format!(
+                    "refresh failed: {status} {body}"
+                )));
+            }
+            Err(err) => return Err(KiroOAuthError::ParseError(format!("{err}: {body}"))),
+        };
+
+        if let Some(error) = token.error.as_deref() {
+            if error == "invalid_grant" {
                 return Err(KiroOAuthError::RefreshTokenInvalid);
             }
+            return Err(KiroOAuthError::TokenFetchFailed(format!(
+                "{}: {}",
+                error,
+                token.error_description.unwrap_or_default()
+            )));
+        }
+
+        if !status.is_success() {
             return Err(KiroOAuthError::TokenFetchFailed(format!(
                 "refresh failed: {status} {body}"
             )));
         }
 
-        resp.json::<SocialTokenResponse>()
-            .await
-            .map_err(|e| KiroOAuthError::ParseError(e.to_string()))
+        Ok(token)
     }
 
     pub async fn get_valid_token(&self) -> Result<String, KiroOAuthError> {
@@ -843,7 +887,29 @@ impl KiroOAuthManager {
     }
 
     pub async fn get_account(&self, account_id: &str) -> Option<KiroAccountData> {
-        self.accounts.read().await.get(account_id).cloned()
+        self.accounts
+            .read()
+            .await
+            .get(account_id)
+            .filter(|account| account.is_builder_id())
+            .cloned()
+    }
+
+    async fn require_builder_account(
+        &self,
+        account_id: &str,
+    ) -> Result<KiroAccountData, KiroOAuthError> {
+        let account = self
+            .accounts
+            .read()
+            .await
+            .get(account_id)
+            .cloned()
+            .ok_or_else(|| KiroOAuthError::AccountNotFound(account_id.to_string()))?;
+        if !account.is_builder_id() {
+            return Err(KiroOAuthError::LegacyAccountUnsupported);
+        }
+        Ok(account)
     }
 
     pub async fn get_default_account(&self) -> Option<KiroAccountData> {
@@ -882,10 +948,15 @@ impl KiroOAuthManager {
             )));
         }
 
-        response
+        let usage = response
             .json::<KiroUsageLimitsResponse>()
             .await
-            .map_err(|e| KiroOAuthError::ParseError(e.to_string()))
+            .map_err(|e| KiroOAuthError::ParseError(e.to_string()))?;
+        if let Some(email) = usage.account_email().map(str::to_string) {
+            self.update_account_email_if_missing(account_id, email)
+                .await?;
+        }
+        Ok(usage)
     }
 
     async fn send_usage_limits_request(
@@ -916,10 +987,9 @@ impl KiroOAuthManager {
             .clone()
             .unwrap_or_else(|| machine_id_from_refresh_token(&account.refresh_token));
         let user_agent = format!(
-            "aws-sdk-js/1.0.0 ua/2.1 os/macos lang/js md/nodejs#22.22.0 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{DEFAULT_KIRO_VERSION}-{machine_id}"
+            "aws-sdk-js/1.0.0 ua/2.1 os/macos lang/js md/nodejs#22.22.0 api/codewhispererruntime#1.0.0 m/N,E KiroIDE-2.3.0-{machine_id}"
         );
-        let amz_user_agent =
-            format!("aws-sdk-js/1.0.0 KiroIDE-{DEFAULT_KIRO_VERSION}-{machine_id}");
+        let amz_user_agent = format!("aws-sdk-js/1.0.0 KiroIDE-2.3.0-{machine_id}");
 
         self.http_client
             .get(url)
@@ -933,6 +1003,30 @@ impl KiroOAuthManager {
             .send()
             .await
             .map_err(KiroOAuthError::from)
+    }
+
+    pub async fn update_account_email_if_missing(
+        &self,
+        account_id: &str,
+        email: String,
+    ) -> Result<(), KiroOAuthError> {
+        if !email.contains('@') {
+            return Ok(());
+        }
+        let mut changed = false;
+        {
+            let mut accounts = self.accounts.write().await;
+            if let Some(account) = accounts.get_mut(account_id) {
+                if account.email.is_none() {
+                    account.email = Some(email);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.save_to_disk().await?;
+        }
+        Ok(())
     }
 
     pub async fn remove_account(&self, account_id: &str) -> Result<(), KiroOAuthError> {
@@ -954,7 +1048,14 @@ impl KiroOAuthManager {
     }
 
     pub async fn set_default_account(&self, account_id: &str) -> Result<(), KiroOAuthError> {
-        if !self.accounts.read().await.contains_key(account_id) {
+        let is_usable_account = self
+            .accounts
+            .read()
+            .await
+            .get(account_id)
+            .map(|account| account.is_builder_id())
+            .unwrap_or(false);
+        if !is_usable_account {
             return Err(KiroOAuthError::AccountNotFound(account_id.to_string()));
         }
         *self.default_account_id.write().await = Some(account_id.to_string());
@@ -964,6 +1065,7 @@ impl KiroOAuthManager {
     pub async fn logout(&self) -> Result<(), KiroOAuthError> {
         self.accounts.write().await.clear();
         self.access_tokens.write().await.clear();
+        self.pending_device_flows.write().await.clear();
         *self.default_account_id.write().await = None;
         self.save_to_disk().await
     }
@@ -972,10 +1074,23 @@ impl KiroOAuthManager {
         self.hydrate_missing_account_emails().await;
         let accounts = self.accounts.read().await;
         let default_account_id = self.resolve_default_account_id().await;
+        let legacy_count = accounts
+            .values()
+            .filter(|account| !account.is_builder_id())
+            .count();
+        let public_accounts =
+            Self::sorted_public_accounts(&accounts, default_account_id.as_deref());
         KiroOAuthStatus {
-            authenticated: !accounts.is_empty(),
+            authenticated: !public_accounts.is_empty(),
             default_account_id: default_account_id.clone(),
-            accounts: Self::sorted_public_accounts(&accounts, default_account_id.as_deref()),
+            accounts: public_accounts,
+            migration_error: if legacy_count > 0 {
+                Some(format!(
+                    "检测到 {legacy_count} 个旧版 Kiro Portal OAuth 账号。Kiro 已切换为 AWS Builder ID 设备码登录，请重新添加账号。"
+                ))
+            } else {
+                None
+            },
         }
     }
 
@@ -984,7 +1099,7 @@ impl KiroOAuthManager {
             let accounts = self.accounts.read().await;
             accounts
                 .values()
-                .filter(|account| account.email.is_none())
+                .filter(|account| account.email.is_none() && account.is_builder_id())
                 .map(|account| account.account_id.clone())
                 .collect()
         };
@@ -1020,14 +1135,22 @@ impl KiroOAuthManager {
     }
 
     fn fallback_default_account_id(accounts: &HashMap<String, KiroAccountData>) -> Option<String> {
-        accounts.keys().min().cloned()
+        accounts
+            .values()
+            .filter(|account| account.is_builder_id())
+            .map(|account| account.account_id.clone())
+            .min()
     }
 
     fn sorted_public_accounts(
         accounts: &HashMap<String, KiroAccountData>,
         default_account_id: Option<&str>,
     ) -> Vec<GitHubAccount> {
-        let mut out: Vec<_> = accounts.values().map(GitHubAccount::from).collect();
+        let mut out: Vec<_> = accounts
+            .values()
+            .filter(|account| account.is_builder_id())
+            .map(GitHubAccount::from)
+            .collect();
         out.sort_by(|a, b| {
             let a_default = default_account_id == Some(a.id.as_str());
             let b_default = default_account_id == Some(b.id.as_str());
@@ -1043,7 +1166,11 @@ impl KiroOAuthManager {
         let stored = self.default_account_id.read().await.clone();
         let accounts = self.accounts.read().await;
         if let Some(id) = stored {
-            if accounts.contains_key(&id) {
+            if accounts
+                .get(&id)
+                .map(|account| account.is_builder_id())
+                .unwrap_or(false)
+            {
                 return Some(id);
             }
         }
@@ -1054,7 +1181,7 @@ impl KiroOAuthManager {
         let accounts = self.accounts.read().await.clone();
         let default_account_id = self.resolve_default_account_id().await;
         let store = KiroOAuthStore {
-            version: 1,
+            version: 2,
             accounts,
             default_account_id,
         };
@@ -1093,6 +1220,9 @@ impl KiroOAuthManager {
             if account.machine_id.is_none() {
                 account.machine_id = Some(machine_id_from_refresh_token(&account.refresh_token));
             }
+            if account.client_id.is_some() && account.auth_method.is_none() {
+                account.auth_method = Some(KIRO_AUTH_METHOD_BUILDER_ID.to_string());
+            }
         }
         if let Ok(mut accounts) = self.accounts.try_write() {
             *accounts = store.accounts;
@@ -1105,57 +1235,11 @@ impl KiroOAuthManager {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct KiroOAuthStartResponse {
-    pub auth_url: String,
-    pub state: String,
-    pub callback_port: u16,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct KiroOAuthStatus {
     pub authenticated: bool,
     pub default_account_id: Option<String>,
     pub accounts: Vec<GitHubAccount>,
-}
-
-#[derive(Debug)]
-struct KiroCallback {
-    code: String,
-    path: String,
-    login_option: String,
-    state: String,
-}
-
-fn parse_callback(path_and_query: &str) -> Option<KiroCallback> {
-    let (path, query) = path_and_query.split_once('?')?;
-    if path != CALLBACK_PATH && path != "/oauth/callback" && path != "/signin/callback" {
-        return None;
-    }
-    let params = parse_query_string(query);
-    if params.contains_key("error") {
-        return None;
-    }
-    Some(KiroCallback {
-        code: params.get("code")?.clone(),
-        path: path.to_string(),
-        login_option: params.get("login_option").cloned().unwrap_or_default(),
-        state: params.get("state").cloned().unwrap_or_default(),
-    })
-}
-
-fn parse_query_string(query: &str) -> HashMap<String, String> {
-    query
-        .split('&')
-        .filter_map(|pair| {
-            let mut iter = pair.splitn(2, '=');
-            let key = iter.next()?.to_string();
-            let raw = iter.next().unwrap_or_default().replace('+', " ");
-            let value = urlencoding::decode(&raw)
-                .map(|s| s.into_owned())
-                .unwrap_or(raw);
-            Some((key, value))
-        })
-        .collect()
+    pub migration_error: Option<String>,
 }
 
 pub fn machine_id_from_refresh_token(refresh_token: &str) -> String {

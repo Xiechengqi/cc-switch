@@ -145,12 +145,10 @@ export const providerPresets: ProviderPreset[] = [
     providerType: "kiro_oauth",
     requiresOAuth: true,
     theme: {
-      icon: "generic",
       backgroundColor: "#111827",
       textColor: "#FFFFFF",
     },
-    icon: "generic",
-    iconColor: "#111827",
+    icon: "kiro",
   },
   {
     name: "Cursor OAuth",
@@ -169,12 +167,10 @@ export const providerPresets: ProviderPreset[] = [
     providerType: "cursor_oauth",
     requiresOAuth: true,
     theme: {
-      icon: "generic",
       backgroundColor: "#111111",
       textColor: "#FFFFFF",
     },
-    icon: "generic",
-    iconColor: "#111111",
+    icon: "cursor",
   },
   {
     name: "OpenAI Official",

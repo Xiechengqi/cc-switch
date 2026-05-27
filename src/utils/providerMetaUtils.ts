@@ -91,6 +91,15 @@ export function isGoogleGeminiOfficialWithManagedAuth(
   );
 }
 
+export function isCursorOauthWithManagedAuth(
+  provider: Pick<Provider, "meta">,
+): boolean {
+  return (
+    provider.meta?.providerType === PROVIDER_TYPES.CURSOR_OAUTH ||
+    hasManagedAuthBinding(provider.meta, PROVIDER_TYPES.CURSOR_OAUTH)
+  );
+}
+
 export function isManagedOauthProvider(
   provider: Pick<Provider, "category" | "meta">,
   appId: AppId,
@@ -101,6 +110,7 @@ export function isManagedOauthProvider(
     provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    isCursorOauthWithManagedAuth(provider) ||
     provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
     (appId === "codex" && isCodexOfficialWithManagedAuth(provider)) ||
@@ -124,6 +134,7 @@ export function canTestProvider(
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    isCursorOauthWithManagedAuth(provider) ||
     provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH
   ) {
     return true;
@@ -193,7 +204,7 @@ export function getProviderQuotaSource(
     return "antigravity_oauth";
   }
 
-  if (provider.meta?.providerType === PROVIDER_TYPES.CURSOR_OAUTH) {
+  if (isCursorOauthWithManagedAuth(provider)) {
     return "cursor_oauth";
   }
 

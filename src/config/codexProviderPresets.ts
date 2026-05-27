@@ -108,12 +108,10 @@ requires_openai_auth = true`,
     requiresOAuth: true,
     apiFormat: "openai_responses",
     theme: {
-      icon: "generic",
       backgroundColor: "#111111",
       textColor: "#FFFFFF",
     },
-    icon: "generic",
-    iconColor: "#111111",
+    icon: "cursor",
   },
   {
     name: "OpenAI Official",

@@ -25,12 +25,14 @@ const ANTIGRAVITY_USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v1/use
 const ANTIGRAVITY_LOAD_CODE_ASSIST_URL: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 const ANTIGRAVITY_ONBOARD_USER_URL: &str =
-    "https://cloudcode-pa.googleapis.com/v1internal:onboardUser";
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser";
 const CALLBACK_PORT: u16 = 54547;
 const CALLBACK_PATH: &str = "/callback";
 const CALLBACK_TIMEOUT_SECS: u64 = 300;
 const TOKEN_REFRESH_BUFFER_MS: i64 = 60_000;
 const ANTIGRAVITY_USER_AGENT: &str = "cc-switch-antigravity-oauth";
+const ANTIGRAVITY_NODE_API_CLIENT_UA: &str = "google-api-nodejs-client/10.3.0";
+const ANTIGRAVITY_GOOG_API_CLIENT_UA: &str = "gl-node/22.21.1";
 const ANTIGRAVITY_SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/cloud-platform",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -46,20 +48,27 @@ pub fn set_global_antigravity_oauth_manager(manager: Arc<RwLock<AntigravityOAuth
     let _ = GLOBAL_ANTIGRAVITY_OAUTH_MANAGER.set(manager);
 }
 
-fn required_env(name: &str) -> Result<String, AntigravityOAuthError> {
+fn required_env(name: &str, label: &str) -> Result<String, AntigravityOAuthError> {
     std::env::var(name)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| AntigravityOAuthError::TokenFetchFailed(format!("{name} 未配置")))
+        .ok_or_else(|| {
+            AntigravityOAuthError::TokenFetchFailed(format!(
+                "{label} 未配置，请设置环境变量 {name}"
+            ))
+        })
 }
 
 fn antigravity_client_id() -> Result<String, AntigravityOAuthError> {
-    required_env(ANTIGRAVITY_CLIENT_ID_ENV)
+    required_env(ANTIGRAVITY_CLIENT_ID_ENV, "Antigravity OAuth Client ID")
 }
 
 fn antigravity_client_secret() -> Result<String, AntigravityOAuthError> {
-    required_env(ANTIGRAVITY_CLIENT_SECRET_ENV)
+    required_env(
+        ANTIGRAVITY_CLIENT_SECRET_ENV,
+        "Antigravity OAuth Client Secret",
+    )
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -130,22 +139,53 @@ struct UserInfoResponse {
 struct LoadCodeAssistResponse {
     #[serde(default, rename = "cloudaicompanionProject")]
     cloudaicompanion_project: Option<ProjectRef>,
+    #[serde(default, rename = "projectId")]
+    project_id: Option<ProjectRef>,
+    #[serde(default)]
+    project: Option<ProjectRef>,
     #[serde(default, rename = "allowedTiers")]
     allowed_tiers: Vec<TierRef>,
+}
+
+impl LoadCodeAssistResponse {
+    fn extracted_project_id(&self) -> Option<String> {
+        self.cloudaicompanion_project
+            .clone()
+            .and_then(ProjectRef::into_id)
+            .or_else(|| self.project_id.clone().and_then(ProjectRef::into_id))
+            .or_else(|| self.project.clone().and_then(ProjectRef::into_id))
+    }
+
+    fn default_tier_id(&self) -> String {
+        self.allowed_tiers
+            .iter()
+            .find(|tier| tier.is_default)
+            .and_then(|tier| tier.id.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("free-tier")
+            .to_string()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum ProjectRef {
     Id(String),
-    Object { id: Option<String> },
+    Object {
+        id: Option<String>,
+        #[serde(default, rename = "projectId")]
+        project_id: Option<String>,
+    },
 }
 
 impl ProjectRef {
     fn into_id(self) -> Option<String> {
         match self {
             ProjectRef::Id(id) => Some(id.trim().to_string()),
-            ProjectRef::Object { id } => id.map(|value| value.trim().to_string()),
+            ProjectRef::Object { id, project_id } => {
+                id.or(project_id).map(|value| value.trim().to_string())
+            }
         }
         .filter(|value| !value.is_empty())
     }
@@ -165,6 +205,12 @@ struct AntigravityOnboarding {
     tier_id: String,
 }
 
+#[derive(Debug, Clone)]
+struct AntigravityOnboardingCandidate {
+    project_id: Option<String>,
+    tier_id: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct OnboardUserResponse {
     #[serde(default)]
@@ -177,6 +223,19 @@ struct OnboardUserResponse {
 struct OnboardUserPayload {
     #[serde(default, rename = "cloudaicompanionProject")]
     cloudaicompanion_project: Option<ProjectRef>,
+    #[serde(default, rename = "projectId")]
+    project_id: Option<ProjectRef>,
+    #[serde(default)]
+    project: Option<ProjectRef>,
+}
+
+impl OnboardUserPayload {
+    fn extracted_project_id(self) -> Option<String> {
+        self.cloudaicompanion_project
+            .and_then(ProjectRef::into_id)
+            .or_else(|| self.project_id.and_then(ProjectRef::into_id))
+            .or_else(|| self.project.and_then(ProjectRef::into_id))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +274,10 @@ struct AntigravityAccountData {
     pub project_id: String,
     pub tier_id: String,
     pub authenticated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token_expires_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_refreshed_at: Option<i64>,
 }
 
 impl From<&AntigravityAccountData> for GitHubAccount {
@@ -239,6 +302,25 @@ struct AntigravityOAuthStore {
     default_account_id: Option<String>,
 }
 
+#[derive(Clone)]
+struct AntigravityOAuthEndpoints {
+    token_url: String,
+    userinfo_url: String,
+    load_code_assist_url: String,
+    onboard_user_url: String,
+}
+
+impl Default for AntigravityOAuthEndpoints {
+    fn default() -> Self {
+        Self {
+            token_url: ANTIGRAVITY_TOKEN_URL.to_string(),
+            userinfo_url: ANTIGRAVITY_USERINFO_URL.to_string(),
+            load_code_assist_url: ANTIGRAVITY_LOAD_CODE_ASSIST_URL.to_string(),
+            onboard_user_url: ANTIGRAVITY_ONBOARD_USER_URL.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AntigravityOAuthCredentials {
     pub access_token: String,
@@ -256,6 +338,7 @@ pub struct AntigravityOAuthManager {
     flow_results: Arc<RwLock<HashMap<String, FlowResult>>>,
     active_flow_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     http_client: Client,
+    endpoints: AntigravityOAuthEndpoints,
     storage_path: PathBuf,
 }
 
@@ -272,6 +355,7 @@ impl AntigravityOAuthManager {
             flow_results: Arc::new(RwLock::new(HashMap::new())),
             active_flow_handle: Arc::new(Mutex::new(None)),
             http_client: Client::new(),
+            endpoints: AntigravityOAuthEndpoints::default(),
             storage_path,
         };
 
@@ -280,6 +364,26 @@ impl AntigravityOAuthManager {
         }
 
         manager
+    }
+
+    #[cfg(test)]
+    fn new_for_test(
+        data_dir: PathBuf,
+        http_client: Client,
+        endpoints: AntigravityOAuthEndpoints,
+    ) -> Self {
+        Self {
+            accounts: Arc::new(RwLock::new(HashMap::new())),
+            default_account_id: Arc::new(RwLock::new(None)),
+            access_tokens: Arc::new(RwLock::new(HashMap::new())),
+            refresh_locks: Arc::new(RwLock::new(HashMap::new())),
+            pending_flows: Arc::new(RwLock::new(HashMap::new())),
+            flow_results: Arc::new(RwLock::new(HashMap::new())),
+            active_flow_handle: Arc::new(Mutex::new(None)),
+            http_client,
+            endpoints,
+            storage_path: data_dir.join("antigravity_oauth_auth.json"),
+        }
     }
 
     fn generate_state() -> String {
@@ -472,13 +576,14 @@ impl AntigravityOAuthManager {
         })?;
         let onboarding = self.complete_onboarding(&tokens.access_token).await?;
 
+        let access_token_expires_at_ms = compute_expires_at_ms(tokens.expires_in);
         {
             let mut tokens_cache = self.access_tokens.write().await;
             tokens_cache.insert(
                 email.clone(),
                 CachedAccessToken {
                     token: tokens.access_token.clone(),
-                    expires_at_ms: compute_expires_at_ms(tokens.expires_in),
+                    expires_at_ms: access_token_expires_at_ms,
                 },
             );
         }
@@ -491,6 +596,8 @@ impl AntigravityOAuthManager {
                 onboarding.tier_id,
                 userinfo.name,
                 userinfo.picture,
+                Some(access_token_expires_at_ms),
+                Some(chrono::Utc::now().timestamp_millis()),
             )
             .await?;
 
@@ -507,7 +614,7 @@ impl AntigravityOAuthManager {
 
         let response = self
             .http_client
-            .post(ANTIGRAVITY_TOKEN_URL)
+            .post(&self.endpoints.token_url)
             .header("User-Agent", ANTIGRAVITY_USER_AGENT)
             .form(&[
                 ("client_id", client_id.as_str()),
@@ -539,7 +646,7 @@ impl AntigravityOAuthManager {
     ) -> Result<UserInfoResponse, AntigravityOAuthError> {
         let response = self
             .http_client
-            .get(ANTIGRAVITY_USERINFO_URL)
+            .get(&self.endpoints.userinfo_url)
             .header("Authorization", format!("Bearer {access_token}"))
             .header("User-Agent", ANTIGRAVITY_USER_AGENT)
             .send()
@@ -561,13 +668,19 @@ impl AntigravityOAuthManager {
 
     fn client_metadata() -> serde_json::Value {
         serde_json::json!({
-            "ideType": 9,
-            "platform": antigravity_platform_enum(),
-            "pluginType": 2,
+            "ideType": "ANTIGRAVITY",
         })
     }
 
-    fn antigravity_api_headers(
+    fn control_plane_metadata(user_agent: &str) -> serde_json::Value {
+        serde_json::json!({
+            "ide_type": "ANTIGRAVITY",
+            "ide_version": antigravity_version_from_user_agent(user_agent),
+            "ide_name": "antigravity",
+        })
+    }
+
+    fn antigravity_load_code_assist_headers(
         &self,
         access_token: &str,
     ) -> Result<reqwest::header::HeaderMap, AntigravityOAuthError> {
@@ -583,18 +696,25 @@ impl AntigravityOAuthManager {
         );
         headers.insert(
             reqwest::header::USER_AGENT,
-            reqwest::header::HeaderValue::from_static("google-api-nodejs-client/9.15.1"),
+            reqwest::header::HeaderValue::from_str(&antigravity_request_user_agent())
+                .map_err(|e| AntigravityOAuthError::ParseError(e.to_string()))?,
+        );
+        Ok(headers)
+    }
+
+    fn antigravity_onboard_user_headers(
+        &self,
+        access_token: &str,
+    ) -> Result<reqwest::header::HeaderMap, AntigravityOAuthError> {
+        let mut headers = self.antigravity_load_code_assist_headers(access_token)?;
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            reqwest::header::HeaderValue::from_str(&antigravity_load_code_assist_user_agent())
+                .map_err(|e| AntigravityOAuthError::ParseError(e.to_string()))?,
         );
         headers.insert(
             reqwest::header::HeaderName::from_static("x-goog-api-client"),
-            reqwest::header::HeaderValue::from_static(
-                "google-cloud-sdk vscode_cloudshelleditor/0.1",
-            ),
-        );
-        headers.insert(
-            reqwest::header::HeaderName::from_static("client-metadata"),
-            reqwest::header::HeaderValue::from_str(&Self::client_metadata().to_string())
-                .map_err(|e| AntigravityOAuthError::ParseError(e.to_string()))?,
+            reqwest::header::HeaderValue::from_static(ANTIGRAVITY_GOOG_API_CLIENT_UA),
         );
         Ok(headers)
     }
@@ -602,11 +722,11 @@ impl AntigravityOAuthManager {
     async fn load_code_assist(
         &self,
         access_token: &str,
-    ) -> Result<AntigravityOnboarding, AntigravityOAuthError> {
+    ) -> Result<AntigravityOnboardingCandidate, AntigravityOAuthError> {
         let response = self
             .http_client
-            .post(ANTIGRAVITY_LOAD_CODE_ASSIST_URL)
-            .headers(self.antigravity_api_headers(access_token)?)
+            .post(&self.endpoints.load_code_assist_url)
+            .headers(self.antigravity_load_code_assist_headers(access_token)?)
             .json(&serde_json::json!({ "metadata": Self::client_metadata() }))
             .send()
             .await?;
@@ -623,27 +743,10 @@ impl AntigravityOAuthManager {
             .json()
             .await
             .map_err(|e| AntigravityOAuthError::ParseError(e.to_string()))?;
-        let project_id = payload
-            .cloudaicompanion_project
-            .and_then(ProjectRef::into_id)
-            .ok_or_else(|| {
-                AntigravityOAuthError::ParseError(
-                    "loadCodeAssist 响应缺少 cloudaicompanionProject".to_string(),
-                )
-            })?;
-        let tier_id = payload
-            .allowed_tiers
-            .iter()
-            .find(|tier| tier.is_default)
-            .and_then(|tier| tier.id.as_deref())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("legacy-tier")
-            .to_string();
 
-        Ok(AntigravityOnboarding {
-            project_id,
-            tier_id,
+        Ok(AntigravityOnboardingCandidate {
+            project_id: payload.extracted_project_id(),
+            tier_id: payload.default_tier_id(),
         })
     }
 
@@ -652,13 +755,14 @@ impl AntigravityOAuthManager {
         access_token: &str,
         tier_id: &str,
     ) -> Result<OnboardUserResponse, AntigravityOAuthError> {
+        let user_agent = antigravity_load_code_assist_user_agent();
         let response = self
             .http_client
-            .post(ANTIGRAVITY_ONBOARD_USER_URL)
-            .headers(self.antigravity_api_headers(access_token)?)
+            .post(&self.endpoints.onboard_user_url)
+            .headers(self.antigravity_onboard_user_headers(access_token)?)
             .json(&serde_json::json!({
-                "tierId": tier_id,
-                "metadata": Self::client_metadata(),
+                "tier_id": tier_id,
+                "metadata": Self::control_plane_metadata(&user_agent),
             }))
             .send()
             .await?;
@@ -681,22 +785,30 @@ impl AntigravityOAuthManager {
         &self,
         access_token: &str,
     ) -> Result<AntigravityOnboarding, AntigravityOAuthError> {
-        let mut onboarding = self.load_code_assist(access_token).await?;
-        for _ in 0..10 {
+        let candidate = self.load_code_assist(access_token).await?;
+        if let Some(project_id) = candidate.project_id {
+            return Ok(AntigravityOnboarding {
+                project_id,
+                tier_id: candidate.tier_id,
+            });
+        }
+
+        for _ in 0..5 {
             let result = self
-                .onboard_user_once(access_token, &onboarding.tier_id)
+                .onboard_user_once(access_token, &candidate.tier_id)
                 .await?;
             if result.done {
                 if let Some(project_id) = result
                     .response
-                    .and_then(|payload| payload.cloudaicompanion_project)
-                    .and_then(ProjectRef::into_id)
+                    .and_then(OnboardUserPayload::extracted_project_id)
                 {
-                    onboarding.project_id = project_id;
+                    return Ok(AntigravityOnboarding {
+                        project_id,
+                        tier_id: candidate.tier_id,
+                    });
                 }
-                return Ok(onboarding);
             }
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
 
         Err(AntigravityOAuthError::Timeout)
@@ -711,7 +823,7 @@ impl AntigravityOAuthManager {
 
         let response = self
             .http_client
-            .post(ANTIGRAVITY_TOKEN_URL)
+            .post(&self.endpoints.token_url)
             .header("User-Agent", ANTIGRAVITY_USER_AGENT)
             .form(&[
                 ("client_id", client_id.as_str()),
@@ -774,20 +886,23 @@ impl AntigravityOAuthManager {
         };
 
         let new_tokens = self.refresh_with_token(&refresh_token).await?;
-
-        if let Some(new_refresh) = new_tokens.refresh_token.clone() {
-            if new_refresh != refresh_token {
-                let mut accounts = self.accounts.write().await;
-                if let Some(account) = accounts.get_mut(account_id) {
-                    account.refresh_token = new_refresh;
-                }
-                drop(accounts);
-                self.save_to_disk().await?;
-            }
-        }
-
         let access_token = new_tokens.access_token.clone();
         let expires_at_ms = compute_expires_at_ms(new_tokens.expires_in);
+        let refreshed_at_ms = chrono::Utc::now().timestamp_millis();
+        {
+            let mut accounts = self.accounts.write().await;
+            if let Some(account) = accounts.get_mut(account_id) {
+                if let Some(new_refresh) = new_tokens.refresh_token.clone() {
+                    if new_refresh != refresh_token {
+                        account.refresh_token = new_refresh;
+                    }
+                }
+                account.access_token_expires_at_ms = Some(expires_at_ms);
+                account.last_refreshed_at = Some(refreshed_at_ms);
+            }
+        }
+        self.save_to_disk().await?;
+
         {
             let mut tokens = self.access_tokens.write().await;
             tokens.insert(
@@ -959,6 +1074,8 @@ impl AntigravityOAuthManager {
         tier_id: String,
         display_name: Option<String>,
         avatar_url: Option<String>,
+        access_token_expires_at_ms: Option<i64>,
+        last_refreshed_at: Option<i64>,
     ) -> Result<GitHubAccount, AntigravityOAuthError> {
         let now = chrono::Utc::now().timestamp();
         let data = AntigravityAccountData {
@@ -970,6 +1087,8 @@ impl AntigravityOAuthManager {
             project_id,
             tier_id,
             authenticated_at: now,
+            access_token_expires_at_ms,
+            last_refreshed_at,
         };
         let account = GitHubAccount::from(&data);
 
@@ -1162,13 +1281,32 @@ fn compute_expires_at_ms(expires_in: Option<i64>) -> i64 {
     chrono::Utc::now().timestamp_millis() + expires_in * 1000
 }
 
-fn antigravity_platform_enum() -> u8 {
-    match std::env::consts::OS {
-        "macos" => 1,
-        "windows" => 2,
-        "linux" => 3,
-        _ => 0,
-    }
+fn antigravity_request_user_agent() -> String {
+    format!(
+        "antigravity/1.107.0 {}/{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
+}
+
+fn antigravity_load_code_assist_user_agent() -> String {
+    format!(
+        "{} {}",
+        antigravity_request_user_agent(),
+        ANTIGRAVITY_NODE_API_CLIENT_UA
+    )
+}
+
+fn antigravity_version_from_user_agent(user_agent: &str) -> String {
+    let user_agent = user_agent.trim();
+    let Some(rest) = user_agent.strip_prefix("antigravity/") else {
+        return "1.107.0".to_string();
+    };
+    rest.split_whitespace()
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("1.107.0")
+        .to_string()
 }
 
 fn parse_callback_request(request: &str) -> Result<(String, String), AntigravityOAuthError> {
@@ -1222,5 +1360,170 @@ fn parse_callback_request(request: &str) -> Result<(String, String), Antigravity
         Err(AntigravityOAuthError::CallbackServerError(
             "回调请求缺少查询参数".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[derive(Debug, Clone)]
+    struct RecordedRequest {
+        path: String,
+        body: String,
+        raw: String,
+    }
+
+    async fn test_server(
+        responses: Vec<&'static str>,
+    ) -> (String, Arc<Mutex<Vec<RecordedRequest>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let base_url = format!("http://{addr}");
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let records_for_task = Arc::clone(&records);
+        let mut responses: VecDeque<String> = responses.into_iter().map(str::to_string).collect();
+
+        tokio::spawn(async move {
+            while let Some(body) = responses.pop_front() {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 16 * 1024];
+                let Ok(n) = stream.read(&mut buf).await else {
+                    break;
+                };
+                let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = raw
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("")
+                    .to_string();
+                let body_start = raw.find("\r\n\r\n").map(|idx| idx + 4).unwrap_or(raw.len());
+                records_for_task.lock().await.push(RecordedRequest {
+                    path,
+                    body: raw[body_start..].to_string(),
+                    raw,
+                });
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        (base_url, records)
+    }
+
+    fn test_manager(base_url: &str) -> AntigravityOAuthManager {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        AntigravityOAuthManager::new_for_test(
+            temp_dir.path().to_path_buf(),
+            Client::new(),
+            AntigravityOAuthEndpoints {
+                token_url: format!("{base_url}/token"),
+                userinfo_url: format!("{base_url}/userinfo"),
+                load_code_assist_url: format!("{base_url}/load"),
+                onboard_user_url: format!("{base_url}/onboard"),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn complete_onboarding_uses_existing_project_without_onboard() {
+        let (base_url, records) = test_server(vec![
+            r#"{
+            "cloudaicompanionProject": "project-from-load",
+            "allowedTiers": [{"id": "paid-tier", "isDefault": true}]
+        }"#,
+        ])
+        .await;
+        let manager = test_manager(&base_url);
+
+        let onboarding = manager.complete_onboarding("access-token").await.unwrap();
+
+        assert_eq!(onboarding.project_id, "project-from-load");
+        assert_eq!(onboarding.tier_id, "paid-tier");
+        let records = records.lock().await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].path, "/load");
+        assert!(records[0].body.contains(r#""ideType":"ANTIGRAVITY""#));
+        assert!(!records[0].raw.to_lowercase().contains("x-goog-api-client"));
+    }
+
+    #[tokio::test]
+    async fn complete_onboarding_falls_back_to_daily_onboard_when_project_missing() {
+        assert_eq!(
+            ANTIGRAVITY_ONBOARD_USER_URL,
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser"
+        );
+
+        let (base_url, records) = test_server(vec![
+            r#"{"allowedTiers":[{"id":"free-tier","isDefault":true}]}"#,
+            r#"{
+                "done": true,
+                "response": {
+                    "cloudaicompanionProject": {
+                        "id": "project-from-onboard"
+                    }
+                }
+            }"#,
+        ])
+        .await;
+        let manager = test_manager(&base_url);
+
+        let onboarding = manager.complete_onboarding("access-token").await.unwrap();
+
+        assert_eq!(onboarding.project_id, "project-from-onboard");
+        assert_eq!(onboarding.tier_id, "free-tier");
+        let records = records.lock().await;
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].path, "/load");
+        assert_eq!(records[1].path, "/onboard");
+        assert!(records[1].body.contains(r#""tier_id":"free-tier""#));
+        assert!(!records[1].body.contains("tierId"));
+        assert!(records[1].body.contains(r#""ide_type":"ANTIGRAVITY""#));
+        assert!(records[1]
+            .raw
+            .contains("x-goog-api-client: gl-node/22.21.1"));
+    }
+
+    #[test]
+    fn load_code_assist_project_extraction_accepts_known_variants() {
+        let payload: LoadCodeAssistResponse = serde_json::from_str(
+            r#"{
+                "projectId": {"projectId": "project-from-project-id"},
+                "allowedTiers": []
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            payload.extracted_project_id(),
+            Some("project-from-project-id".to_string())
+        );
+        assert_eq!(payload.default_tier_id(), "free-tier");
+
+        let payload: LoadCodeAssistResponse =
+            serde_json::from_str(r#"{"project":{"id":"project-from-project"}}"#).unwrap();
+        assert_eq!(
+            payload.extracted_project_id(),
+            Some("project-from-project".to_string())
+        );
+
+        let payload: OnboardUserPayload =
+            serde_json::from_str(r#"{"projectId":{"projectId":"project-from-onboard"}}"#).unwrap();
+        assert_eq!(
+            payload.extracted_project_id(),
+            Some("project-from-onboard".to_string())
+        );
     }
 }

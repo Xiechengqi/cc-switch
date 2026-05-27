@@ -39,6 +39,7 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
 }) => {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
+  const [copiedCode, setCopiedCode] = React.useState(false);
   const {
     accounts,
     hasAnyAccount,
@@ -50,6 +51,7 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
     isRemovingAccount,
     isSettingDefaultAccount,
     defaultAccountId,
+    migrationError,
     addAccount,
     cancelAuth,
     logout,
@@ -75,6 +77,13 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
     await copyText(deviceCode.verification_uri);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const copyUserCode = async () => {
+    if (!deviceCode?.user_code) return;
+    await copyText(deviceCode.user_code);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
   };
 
   return (
@@ -182,7 +191,7 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
             <SelectTrigger>
               <SelectValue
                 placeholder={t("kiroOauth.selectAccountPlaceholder", {
-                  defaultValue: "选择一个 Kiro 账号",
+                  defaultValue: "选择一个 AWS Builder ID 账号",
                 })}
               />
             </SelectTrigger>
@@ -207,6 +216,12 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
         </div>
       )}
 
+      {migrationError && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+          {migrationError}
+        </div>
+      )}
+
       {!hasAnyAccount && pollingState === "idle" && (
         <Button
           type="button"
@@ -216,7 +231,7 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
         >
           <Sparkles className="mr-2 h-4 w-4" />
           {t("kiroOauth.loginWithKiro", {
-            defaultValue: "使用 Kiro 登录",
+            defaultValue: "使用 AWS Builder ID 登录",
           })}
         </Button>
       )}
@@ -231,7 +246,7 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
         >
           <Plus className="mr-2 h-4 w-4" />
           {t("kiroOauth.addAnotherAccount", {
-            defaultValue: "添加其他账号",
+            defaultValue: "添加 AWS Builder ID 账号",
           })}
         </Button>
       )}
@@ -241,9 +256,38 @@ export const KiroOAuthSection: React.FC<KiroOAuthSectionProps> = ({
           <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             {t("kiroOauth.waitingForBrowser", {
-              defaultValue: "请在浏览器中完成 Kiro 授权...",
+              defaultValue: "请在浏览器中完成 AWS Builder ID 授权...",
             })}
           </div>
+          {deviceCode.user_code && (
+            <div className="rounded-md border bg-background/80 p-3">
+              <p className="mb-2 text-xs text-muted-foreground">
+                {t("kiroOauth.userCodeHint", {
+                  defaultValue: "AWS Builder ID 设备验证码：",
+                })}
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 rounded bg-muted px-3 py-2 text-center text-lg font-semibold tracking-widest">
+                  {deviceCode.user_code}
+                </code>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={copyUserCode}
+                  title={t("kiroOauth.copyUserCode", {
+                    defaultValue: "复制验证码",
+                  })}
+                >
+                  {copiedCode ? (
+                    <Check className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
           <div className="rounded-md border bg-background/80 p-3">
             <p className="mb-2 text-xs text-muted-foreground">
               {t("kiroOauth.openLinkHint", {

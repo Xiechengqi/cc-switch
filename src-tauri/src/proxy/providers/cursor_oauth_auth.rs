@@ -23,6 +23,7 @@ pub const DEFAULT_CURSOR_CLIENT_VERSION: &str = "cli-2026.01.09-231024f";
 const LOGIN_URL: &str = "https://www.cursor.com/loginDeepControl";
 const POLL_URL: &str = "https://api2.cursor.sh/auth/poll";
 const TOKEN_URL: &str = "https://api2.cursor.sh/oauth/token";
+const USER_INFO_URL: &str = "https://api.cursor.com/v0/me";
 const TOKEN_REFRESH_BUFFER_MS: i64 = 60_000;
 const BROWSER_FLOW_TIMEOUT_SECS: i64 = 300;
 
@@ -82,10 +83,16 @@ struct CursorPollResponse {
     access_token: Option<String>,
     #[serde(default, alias = "refreshToken")]
     refresh_token: Option<String>,
+    #[serde(default, alias = "idToken")]
+    id_token: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
     #[serde(default, alias = "authId")]
     auth_id: Option<String>,
     #[serde(default, alias = "apiKey")]
     api_key: Option<String>,
+    #[serde(flatten)]
+    extra: HashMap<String, serde_json::Value>,
 }
 
 impl CursorPollResponse {
@@ -99,6 +106,15 @@ impl CursorPollResponse {
 
     fn auth_id(&self) -> Option<&str> {
         self.auth_id.as_deref()
+    }
+
+    fn display_email(&self) -> Option<String> {
+        self.email
+            .as_deref()
+            .and_then(valid_email)
+            .map(ToString::to_string)
+            .or_else(|| self.id_token.as_deref().and_then(email_from_jwt))
+            .or_else(|| find_email_in_map(&self.extra))
     }
 }
 
@@ -159,13 +175,12 @@ impl CursorAccountData {
 
 impl From<&CursorAccountData> for GitHubAccount {
     fn from(data: &CursorAccountData) -> Self {
+        let display_email = data.email.as_deref().and_then(valid_email);
         GitHubAccount {
             id: data.account_id.clone(),
-            login: data
-                .email
-                .as_deref()
+            login: display_email
                 .map(|email| format!("Cursor({email})"))
-                .unwrap_or_else(|| format!("Cursor ({})", short_id(&data.account_id))),
+                .unwrap_or_else(|| format!("Cursor({})", short_id(&data.account_id))),
             avatar_url: None,
             authenticated_at: data.authenticated_at,
             github_domain: "cursor.com".to_string(),
@@ -337,15 +352,17 @@ impl CursorOAuthManager {
                     .to_string(),
             )
         })?;
-        let email = email_from_jwt(&access_token)
-            .or_else(|| poll.auth_id().map(email_from_auth_id))
-            .unwrap_or_else(|| "unknown@cursor.local".to_string());
+        let email = poll
+            .display_email()
+            .or_else(|| email_from_jwt(&access_token))
+            .or_else(|| poll.auth_id().and_then(email_from_auth_id))
+            .or(self.fetch_user_email(&access_token).await.ok().flatten());
         let account_id = format!("cursor_{}", sha256_hex(refresh_token)[..24].to_string());
         let account = CursorAccountData {
             account_id: account_id.clone(),
-            email: Some(email),
+            email,
             refresh_token: refresh_token.to_string(),
-            id_token: None,
+            id_token: poll.id_token,
             cursor_service_machine_id: Some(state.to_string()),
             cursor_client_version: Some(DEFAULT_CURSOR_CLIENT_VERSION.to_string()),
             cursor_config_version: Some(uuid::Uuid::new_v4().to_string()),
@@ -421,6 +438,14 @@ impl CursorOAuthManager {
             return Err(CursorOAuthError::RefreshTokenInvalid);
         }
 
+        let refreshed_email = if account.email.is_none() {
+            email_from_jwt(&access_token)
+                .or_else(|| token.id_token.as_deref().and_then(email_from_jwt))
+                .or(self.fetch_user_email(&access_token).await.ok().flatten())
+        } else {
+            None
+        };
+
         {
             let mut accounts = self.accounts.write().await;
             if let Some(existing) = accounts.get_mut(account_id) {
@@ -431,7 +456,7 @@ impl CursorOAuthManager {
                     existing.id_token = Some(id_token);
                 }
                 if existing.email.is_none() {
-                    existing.email = email_from_jwt(&access_token);
+                    existing.email = refreshed_email;
                 }
             }
         }
@@ -468,6 +493,31 @@ impl CursorOAuthManager {
         resp.json::<CursorRefreshResponse>()
             .await
             .map_err(|e| CursorOAuthError::ParseError(e.to_string()))
+    }
+
+    async fn fetch_user_email(
+        &self,
+        access_token: &str,
+    ) -> Result<Option<String>, CursorOAuthError> {
+        let resp = self
+            .http_client
+            .get(USER_INFO_URL)
+            .bearer_auth(access_token)
+            .header("Accept", "application/json")
+            .header(
+                "User-Agent",
+                format!("Cursor/{DEFAULT_CURSOR_CLIENT_VERSION} (cc-switch user info)"),
+            )
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let value = resp
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| CursorOAuthError::ParseError(e.to_string()))?;
+        Ok(find_email_in_value(&value))
     }
 
     pub async fn get_valid_token(&self) -> Result<String, CursorOAuthError> {
@@ -670,26 +720,58 @@ fn expiry_from_jwt_ms(token: &str) -> Option<i64> {
 
 fn email_from_jwt(token: &str) -> Option<String> {
     let claims = decode_jwt_payload(token)?;
-    claims
-        .get("email")
-        .and_then(|v| v.as_str())
-        .or_else(|| claims.get("sub").and_then(|v| v.as_str()))
+    ["email", "preferred_username", "upn"]
+        .iter()
+        .find_map(|key| claims.get(*key).and_then(|v| v.as_str()))
+        .and_then(valid_email)
         .map(ToString::to_string)
 }
 
-fn email_from_auth_id(auth_id: &str) -> String {
-    let tail = auth_id.rsplit('|').next().unwrap_or(auth_id);
-    let cleaned: String = tail
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
+fn email_from_auth_id(auth_id: &str) -> Option<String> {
+    valid_email(auth_id)
+        .or_else(|| auth_id.split('|').find_map(valid_email))
+        .map(ToString::to_string)
+}
+
+fn valid_email(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.len() < 3 || trimmed.contains(char::is_whitespace) {
+        return None;
+    }
+    let (local, domain) = trimmed.split_once('@')?;
+    if local.is_empty() || domain.is_empty() || !domain.contains('.') {
+        return None;
+    }
+    Some(trimmed)
+}
+
+fn find_email_in_map(map: &HashMap<String, serde_json::Value>) -> Option<String> {
+    map.values().find_map(find_email_in_value)
+}
+
+fn find_email_in_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => valid_email(value).map(ToString::to_string),
+        serde_json::Value::Array(values) => values.iter().find_map(find_email_in_value),
+        serde_json::Value::Object(map) => {
+            for key in [
+                "email",
+                "preferred_email",
+                "preferredUsername",
+                "preferred_username",
+            ] {
+                if let Some(email) = map
+                    .get(key)
+                    .and_then(|value| value.as_str())
+                    .and_then(valid_email)
+                {
+                    return Some(email.to_string());
+                }
             }
-        })
-        .collect();
-    format!("{cleaned}@cursor.local")
+            map.values().find_map(find_email_in_value)
+        }
+        _ => None,
+    }
 }
 
 impl From<&CursorOAuthStartResponse> for GitHubDeviceCodeResponse {

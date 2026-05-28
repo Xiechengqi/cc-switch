@@ -91,11 +91,6 @@ async fn issue_lease_inner(
     allow_identity_reset_retry: bool,
 ) -> Result<LeaseResponse, TunnelError> {
     let url = format!("{}/v1/tunnels/lease", config.get_server_addr());
-    if let Some(share) = share_metadata.as_ref() {
-        crate::email_auth::ensure_remote_owner_binding(config, &share.owner_email)
-            .await
-            .map_err(TunnelError::Api)?;
-    }
     let identity = identity::ensure_identity(client, config).await?;
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let nonce = uuid::Uuid::new_v4().to_string();
@@ -197,9 +192,6 @@ async fn claim_share_subdomain_inner(
     allow_identity_reset_retry: bool,
 ) -> Result<(), TunnelError> {
     let url = format!("{}/v1/shares/claim-subdomain", config.get_server_addr());
-    crate::email_auth::ensure_remote_owner_binding(config, &share_metadata.owner_email)
-        .await
-        .map_err(TunnelError::Api)?;
     let identity = identity::ensure_identity(client, config).await?;
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let nonce = uuid::Uuid::new_v4().to_string();

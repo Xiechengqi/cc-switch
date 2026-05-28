@@ -5,7 +5,7 @@
  * user-facing flow is framed as enabling or disabling share access.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2, Share2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -13,7 +13,6 @@ import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CreateShareDialog } from "@/components/share/CreateShareDialog";
-import { ShareOwnerLoginDialog } from "@/components/share/ShareOwnerLoginDialog";
 import {
   shareApi,
   type AppId,
@@ -23,7 +22,6 @@ import {
 import {
   useConfigureTunnelMutation,
   useCreateShareMutation,
-  useEmailAuthStatusQuery,
   useSettingsQuery,
 } from "@/lib/query";
 import { shareKeys } from "@/lib/query/share";
@@ -45,7 +43,6 @@ interface ProxyToggleProps {
 type ShareToggleStage =
   | "idle"
   | "checking"
-  | "owner-login"
   | "creating-share"
   | "confirm-start-share"
   | "starting-share"
@@ -63,14 +60,12 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
   const { data: settings } = useSettingsQuery();
   const { data: proxyStatus } = useProxyStatus();
   const { data: takeoverStatus } = useProxyTakeoverStatus();
-  const { data: emailAuthStatus } = useEmailAuthStatusQuery();
   const createShareMutation = useCreateShareMutation();
   const configureTunnelMutation = useConfigureTunnelMutation();
   const startProxyMutation = useStartProxyServer();
   const setTakeoverMutation = useSetProxyTakeoverForApp();
   const [stage, setStage] = useState<ShareToggleStage>("idle");
   const [createOpen, setCreateOpen] = useState(false);
-  const [ownerLoginOpen, setOwnerLoginOpen] = useState(false);
   const [startTarget, setStartTarget] = useState<ShareRecord | null>(null);
   const [pendingIntent, setPendingIntent] = useState<PendingIntent | null>(
     null,
@@ -114,12 +109,6 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
       queryClient.invalidateQueries({ queryKey: ["proxyStatus"] }),
       queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] }),
     ]);
-  };
-
-  const openOwnerLoginForIntent = (intent: PendingIntent) => {
-    setPendingIntent(intent);
-    setStage("owner-login");
-    setOwnerLoginOpen(true);
   };
 
   const ensureProxyRunning = async () => {
@@ -166,7 +155,6 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
   };
 
   const startShareAndEnable = async (share: ShareRecord) => {
-    let openedOwnerLogin = false;
     try {
       setStage("starting-share");
       await shareApi.enable(share.id);
@@ -176,14 +164,6 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
       setPendingIntent(null);
       setStage("idle");
     } catch (error) {
-      if (isOwnerAuthExpiredError(error)) {
-        openedOwnerLogin = true;
-        openOwnerLoginForIntent({
-          type: "start-and-enable",
-          shareId: share.id,
-        });
-        return;
-      }
       toast.error(
         t("share.toggle.enableFailed", {
           defaultValue: "开启分享失败：{{error}}",
@@ -192,64 +172,20 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
       );
       throw error;
     } finally {
-      if (!openedOwnerLogin) {
-        setStage("idle");
-      }
+      setStage("idle");
     }
   };
 
   const createAndEnable = async (params: CreateShareParams) => {
-    let openedOwnerLogin = false;
     try {
       setStage("creating-share");
       const created = await createShareMutation.mutateAsync(params);
       setCreateOpen(false);
       await startShareAndEnable(created);
-    } catch (error) {
-      if (isOwnerAuthExpiredError(error)) {
-        openedOwnerLogin = true;
-        openOwnerLoginForIntent({ type: "create-and-enable" });
-        return;
-      }
-      throw error;
     } finally {
-      if (!openedOwnerLogin) {
-        setStage("idle");
-      }
-    }
-  };
-
-  const continuePendingIntent = async () => {
-    if (!pendingIntent || !emailAuthStatus?.authenticated) return;
-    if (pendingIntent.type === "create-and-enable") {
-      setOwnerLoginOpen(false);
-      setCreateOpen(true);
-      setStage("creating-share");
-      return;
-    }
-
-    const shares = await fetchShares();
-    const share = shares.find((item) => item.id === pendingIntent.shareId);
-    if (!share) {
-      setPendingIntent(null);
       setStage("idle");
-      toast.error(
-        t("share.toggle.enableFailed", {
-          defaultValue: "开启分享失败：{{error}}",
-          error: t("share.notFound", { defaultValue: "Share not found" }),
-        }),
-      );
-      return;
     }
-    setOwnerLoginOpen(false);
-    await startShareAndEnable(share);
   };
-
-  useEffect(() => {
-    if (!pendingIntent || !emailAuthStatus?.authenticated) return;
-    void continuePendingIntent().catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emailAuthStatus?.authenticated]);
 
   const handleEnable = async () => {
     let flowContinuesInDialog = false;
@@ -258,11 +194,6 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
       const shares = await fetchShares();
       const share = selectBestShare(shares, activeApp);
       if (!share) {
-        if (!emailAuthStatus?.authenticated) {
-          flowContinuesInDialog = true;
-          openOwnerLoginForIntent({ type: "create-and-enable" });
-          return;
-        }
         flowContinuesInDialog = true;
         setPendingIntent({ type: "create-and-enable" });
         setCreateOpen(true);
@@ -377,7 +308,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
             setStage("idle");
           }
         }}
-        ownerEmail={emailAuthStatus?.email ?? null}
+        ownerEmail={null}
         defaultApp={activeApp}
         isSubmitting={
           createShareMutation.isPending || stage === "creating-share"
@@ -391,23 +322,6 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
           configureTunnelMutation.mutateAsync(config)
         }
         onSubmit={createAndEnable}
-      />
-
-      <ShareOwnerLoginDialog
-        open={ownerLoginOpen}
-        onOpenChange={(open) => {
-          setOwnerLoginOpen(open);
-          if (!open) {
-            setStage("idle");
-          }
-        }}
-        tunnelConfig={tunnelConfig}
-        tunnelConfigSaving={configureTunnelMutation.isPending}
-        currentEmail={emailAuthStatus?.email ?? null}
-        lockedOwnerEmail={startTarget?.ownerEmail ?? null}
-        onSaveTunnelConfig={(config) =>
-          configureTunnelMutation.mutateAsync(config)
-        }
       />
 
       <ConfirmDialog
@@ -458,14 +372,5 @@ function selectBestShare(shares: ShareRecord[], activeApp: AppId) {
     shares.find((share) => share.appType === activeApp) ??
     shares[0] ??
     null
-  );
-}
-
-function isOwnerAuthExpiredError(error: unknown) {
-  const message = extractErrorMessage(error);
-  return (
-    message.includes("当前邮箱登录凭证已过期") ||
-    message.includes("请重新登录") ||
-    message.includes("请先完成邮箱验证码登录")
   );
 }

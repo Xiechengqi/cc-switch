@@ -473,10 +473,7 @@ pub fn cursor_identity_headers(account: &CursorAccountData, token: &str) -> Vec<
         ),
         ("x-cursor-timezone".to_string(), "UTC".to_string()),
         ("x-ghost-mode".to_string(), "true".to_string()),
-        (
-            "x-session-id".to_string(),
-            uuid::Uuid::new_v4().to_string(),
-        ),
+        ("x-session-id".to_string(), uuid::Uuid::new_v4().to_string()),
         ("x-request-id".to_string(), uuid::Uuid::new_v4().to_string()),
     ]
 }

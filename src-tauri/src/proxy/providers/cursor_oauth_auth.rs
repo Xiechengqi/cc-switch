@@ -513,8 +513,8 @@ impl CursorOAuthManager {
     ) -> Result<Option<String>, CursorOAuthError> {
         // /api/auth/me 走的是浏览器站点的 WorkOS 会话，需要和 stripe 端点一样的 cookie：
         // WorkosCursorSessionToken=<workos_user_id>::<access_token>
-        let session_user = workos_user_id_from_token(access_token)
-            .unwrap_or_else(|| account.account_id.clone());
+        let session_user =
+            workos_user_id_from_token(access_token).unwrap_or_else(|| account.account_id.clone());
         let cookie = format!(
             "WorkosCursorSessionToken={}%3A%3A{}",
             session_user, access_token

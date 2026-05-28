@@ -27,6 +27,7 @@ export interface ShareRecord {
 }
 
 export interface CreateShareParams {
+  ownerEmail: string;
   appType: "claude" | "codex" | "gemini";
   description?: string;
   forSale: "Yes" | "No" | "Free";
@@ -96,6 +97,11 @@ export interface UpdateShareExpirationParams {
 export interface UpdateShareAutoStartParams {
   shareId: string;
   autoStart: boolean;
+}
+
+export interface UpdateShareOwnerEmailParams {
+  shareId: string;
+  ownerEmail: string;
 }
 
 export interface TunnelInfo {
@@ -205,6 +211,12 @@ async function updateAutoStart(
   return invoke<ShareRecord>("update_share_auto_start", { params });
 }
 
+async function updateOwnerEmail(
+  params: UpdateShareOwnerEmailParams,
+): Promise<ShareRecord> {
+  return invoke<ShareRecord>("update_share_owner_email", { params });
+}
+
 async function updateAcl(params: UpdateShareAclParams): Promise<ShareRecord> {
   return invoke<ShareRecord>("update_share_acl", { params });
 }
@@ -268,6 +280,7 @@ export const shareApi = {
   updateForSaleOfficialPricePercent,
   updateExpiration,
   updateAutoStart,
+  updateOwnerEmail,
   updateAcl,
   listMarkets,
   authorizeMarket,

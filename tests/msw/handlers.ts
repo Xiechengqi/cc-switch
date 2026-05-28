@@ -327,6 +327,7 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/create_share`, async ({ request }) => {
     const { params } = await withJson<{
       params: {
+        ownerEmail?: string;
         description?: string;
         forSale: "Yes" | "No" | "Free";
         tokenLimit: number;
@@ -346,8 +347,8 @@ export const handlers = [
     const now = Date.now();
     const share = {
       id: `share-${now}`,
-      name: "owner@example.com",
-      ownerEmail: "owner@example.com",
+      name: params.ownerEmail ?? "owner@example.com",
+      ownerEmail: params.ownerEmail ?? "owner@example.com",
       sharedWithEmails: [],
       description: params.description ?? null,
       forSale: params.forSale ?? "No",
@@ -430,6 +431,25 @@ export const handlers = [
         params: { shareId: string; autoStart: boolean };
       }>(request);
       updateShare(params.shareId, { autoStart: params.autoStart });
+      return success(getShare(params.shareId));
+    },
+  ),
+
+  http.post(
+    `${TAURI_ENDPOINT}/update_share_owner_email`,
+    async ({ request }) => {
+      const { params } = await withJson<{
+        params: { shareId: string; ownerEmail: string };
+      }>(request);
+      const ownerEmail = params.ownerEmail.trim().toLowerCase();
+      updateShare(params.shareId, {
+        name: ownerEmail,
+        ownerEmail,
+        sharedWithEmails:
+          getShare(params.shareId)?.sharedWithEmails.filter(
+            (email) => email !== ownerEmail,
+          ) ?? [],
+      });
       return success(getShare(params.shareId));
     },
   ),

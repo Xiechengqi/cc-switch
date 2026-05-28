@@ -1658,6 +1658,7 @@ pub fn run() {
             commands::update_share_for_sale_official_price_percent,
             commands::update_share_expiration,
             commands::update_share_auto_start,
+            commands::update_share_owner_email,
             commands::update_share_subdomain,
             commands::enable_share,
             commands::disable_share,

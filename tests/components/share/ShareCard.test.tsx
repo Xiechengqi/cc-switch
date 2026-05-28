@@ -94,6 +94,7 @@ describe("ShareCard", () => {
     onUpdateShareSalePricing: vi.fn(),
     onUpdateExpiration: vi.fn(),
     onUpdateAutoStart: vi.fn(),
+    onUpdateOwnerEmail: vi.fn(),
     onUpdateAcl: vi.fn(),
   });
 
@@ -212,19 +213,18 @@ describe("ShareCard", () => {
     expect(screen.getByText("share.expiresAt")).toBeInTheDocument();
     expect(screen.queryByText("share.editDescription")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "保存" }),
+      screen.queryByRole("button", { name: "保存设置" }),
     ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "share.edit" }));
 
-    expect(
-      screen.getByRole("button", {
-        name: /share\.exitEdit|Exit Edit|退出编辑/,
-      }),
-    ).toBeEnabled();
+    const saveButton = screen.getByRole("button", {
+      name: "保存设置",
+    });
+    expect(saveButton).toBeInTheDocument();
     const tokenLimitInput = screen.getByDisplayValue("1000");
     expect(tokenLimitInput).toBeEnabled();
-    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(saveButton).toBeDisabled();
   });
 
   it("keeps save disabled when the only difference is timestamp formatting", async () => {
@@ -243,7 +243,7 @@ describe("ShareCard", () => {
 
     await user.click(screen.getByRole("button", { name: "share.edit" }));
 
-    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
   });
 
   it("enables save after a field changes and submits the dirty field", async () => {
@@ -263,13 +263,40 @@ describe("ShareCard", () => {
     await user.clear(descriptionInput);
     await user.type(descriptionInput, "new description");
 
-    const saveButton = screen.getByRole("button", { name: "保存" });
+    const saveButton = screen.getByRole("button", { name: "保存设置" });
     expect(saveButton).toBeEnabled();
     await user.click(saveButton);
 
     expect(handlers.onUpdateDescription).toHaveBeenCalledWith(
       expect.objectContaining({ id: "share-1" }),
       "new description",
+    );
+  });
+
+  it("edits owner email as a normal share field", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    renderShareCard(
+      <ShareCard
+        share={baseShare}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    const ownerEmailInput = screen.getByDisplayValue("owner@example.com");
+    await user.clear(ownerEmailInput);
+    await user.type(ownerEmailInput, "new-owner@example.com");
+
+    const saveButton = screen.getByRole("button", { name: "保存设置" });
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+
+    expect(handlers.onUpdateOwnerEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "share-1" }),
+      "new-owner@example.com",
     );
   });
 
@@ -295,7 +322,7 @@ describe("ShareCard", () => {
     );
 
     expect(screen.getAllByText("Alpha Market").length).toBeGreaterThan(0);
-    const saveButton = screen.getByRole("button", { name: "保存" });
+    const saveButton = screen.getByRole("button", { name: "保存设置" });
     expect(saveButton).toBeEnabled();
     await user.click(saveButton);
 
@@ -325,7 +352,7 @@ describe("ShareCard", () => {
       screen.getByRole("combobox", { name: /Select market|选择 Market/i }),
     );
     await user.click(await screen.findByRole("option", { name: "All" }));
-    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
 
     expect(handlers.onUpdateAcl).toHaveBeenCalledWith(
       expect.objectContaining({ id: "share-1" }),
@@ -352,7 +379,7 @@ describe("ShareCard", () => {
       screen.getByRole("combobox", { name: /Select market|选择 Market/i }),
     );
     await user.click(await screen.findByRole("option", { name: "All" }));
-    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
 
     expect(handlers.onUpdateAcl).toHaveBeenCalledWith(
       expect.objectContaining({ id: "share-1" }),
@@ -385,7 +412,7 @@ describe("ShareCard", () => {
     const input = screen.getAllByRole("spinbutton")[0];
     await user.clear(input);
     await user.type(input, "15");
-    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
 
     expect(handlers.onUpdateShareSalePricing).toHaveBeenCalledWith(
       expect.objectContaining({ id: "share-1" }),
@@ -453,7 +480,7 @@ describe("ShareCard", () => {
 
     await user.click(screen.getByRole("button", { name: "share.edit" }));
     await user.click(screen.getByRole("button", { name: /Restore|还原/ }));
-    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
 
     expect(handlers.onUpdateAcl).toHaveBeenCalledTimes(1);
     expect(handlers.onUpdateAcl).toHaveBeenCalledWith(

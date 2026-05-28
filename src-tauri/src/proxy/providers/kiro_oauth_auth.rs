@@ -1003,18 +1003,6 @@ impl KiroOAuthManager {
         } else {
             account.api_region.as_str()
         };
-        let host = format!("q.{region}.amazonaws.com");
-        let mut url = format!(
-            "https://{host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
-        );
-        let profile_arn = account
-            .profile_arn
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| default_profile_arn(account));
-        url.push_str("&profileArn=");
-        url.push_str(&urlencoding::encode(profile_arn));
-
         let machine_id = account
             .machine_id
             .clone()
@@ -1024,11 +1012,46 @@ impl KiroOAuthManager {
         );
         let amz_user_agent = format!("aws-sdk-js/1.0.0 KiroIDE-2.3.0-{machine_id}");
 
+        // Try q.<region> first (requires valid profileArn).
+        let profile_arn = account.profile_arn.as_deref().filter(|v| !v.is_empty());
+
+        if let Some(arn) = profile_arn {
+            let host = format!("q.{region}.amazonaws.com");
+            let mut url = format!(
+                "https://{host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+            );
+            url.push_str("&profileArn=");
+            url.push_str(&urlencoding::encode(arn));
+
+            let resp = self
+                .http_client
+                .get(&url)
+                .header("x-amz-user-agent", &amz_user_agent)
+                .header("user-agent", &user_agent)
+                .header("host", &host)
+                .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+                .header("amz-sdk-request", "attempt=1; max=1")
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Connection", "close")
+                .send()
+                .await
+                .map_err(KiroOAuthError::from)?;
+
+            if resp.status().is_success() {
+                return Ok(resp);
+            }
+            // Non-2xx (e.g. 400 "Invalid profileArn") — fall through to codewhisperer endpoint.
+        }
+
+        // Fallback: codewhisperer.<region>.amazonaws.com works without profileArn
+        // (Builder ID accounts that have no stored profile_arn hit this path).
+        let cw_host = format!("codewhisperer.{region}.amazonaws.com");
+        let cw_url = format!("https://{cw_host}/getUsageLimits");
         self.http_client
-            .get(url)
-            .header("x-amz-user-agent", amz_user_agent)
-            .header("user-agent", user_agent)
-            .header("host", host)
+            .get(cw_url)
+            .header("x-amz-user-agent", &amz_user_agent)
+            .header("user-agent", &user_agent)
+            .header("host", &cw_host)
             .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
             .header("amz-sdk-request", "attempt=1; max=1")
             .header("Authorization", format!("Bearer {token}"))

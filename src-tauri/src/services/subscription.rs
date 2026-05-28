@@ -453,9 +453,63 @@ pub async fn query_antigravity_quota_with_token(
     project_id: Option<&str>,
     tool_name: &str,
 ) -> SubscriptionQuota {
-    let mut result = retrieve_user_quota(access_token, project_id).await;
+    // Fetch plan tier via loadCodeAssist (integer enums required for Antigravity).
+    let plan_label =
+        fetch_antigravity_plan_label(&crate::proxy::http_client::get(), access_token).await;
+    let mut result = retrieve_user_quota(access_token, project_id, plan_label).await;
     result.tool = tool_name.to_string();
     result
+}
+
+/// Call loadCodeAssist with Antigravity integer-enum metadata to get currentTier name.
+async fn fetch_antigravity_plan_label(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> Option<String> {
+    let platform: i64 = {
+        #[cfg(target_os = "macos")]
+        {
+            if cfg!(target_arch = "aarch64") {
+                2
+            } else {
+                1
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if cfg!(target_arch = "aarch64") {
+                4
+            } else {
+                3
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            5
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            0
+        }
+    };
+    let metadata = serde_json::json!({ "ideType": 9, "platform": platform, "pluginType": 2 });
+    let resp = client
+        .post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Content-Type", "application/json")
+        .header("client-metadata", metadata.to_string())
+        .json(&serde_json::json!({ "metadata": metadata }))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    body.pointer("/currentTier/name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 pub async fn query_cursor_quota(
@@ -539,11 +593,7 @@ async fn fetch_cursor_period_usage(
     {
         req = req.header(key, value);
     }
-    let resp = req
-        .body("{}")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp = req.body("{}").send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("usage status {}", resp.status()));
     }
@@ -609,10 +659,7 @@ fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
 
     // free 套餐：API 不暴露具体额度数字，只回传 totalPercentUsed。
     // 用百分比单独渲染一个 tier，至少让卡片有用量信息可看。
-    if let Some(pct) = plan_usage
-        .get("totalPercentUsed")
-        .and_then(|v| v.as_f64())
-    {
+    if let Some(pct) = plan_usage.get("totalPercentUsed").and_then(|v| v.as_f64()) {
         return vec![QuotaTier {
             name: "cursor_included_usage".to_string(),
             utilization: pct,
@@ -626,12 +673,22 @@ fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
     vec![]
 }
 
-/// 查询 Claude 官方订阅额度
-async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
-    let client = crate::proxy::http_client::get();
+fn format_claude_plan_label(org_type: &str) -> String {
+    match org_type {
+        "claude_pro" => "Claude Pro".to_string(),
+        "claude_max" => "Claude Max".to_string(),
+        "claude_free" => "Claude Free".to_string(),
+        "claude_team" => "Claude Team".to_string(),
+        "claude_enterprise" => "Claude Enterprise".to_string(),
+        other => other.to_string(),
+    }
+}
 
+/// Fetch /api/oauth/profile and extract a plan label from organization_type.
+/// Returns None on any error (non-fatal — quota still succeeds).
+async fn fetch_claude_plan_label(client: &reqwest::Client, access_token: &str) -> Option<String> {
     let resp = client
-        .get("https://api.anthropic.com/api/oauth/usage")
+        .get("https://api.anthropic.com/api/oauth/profile")
         .header("Authorization", format!("Bearer {access_token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("Accept", "application/json")
@@ -640,7 +697,36 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
         .header("x-app", "cli")
         .timeout(std::time::Duration::from_secs(10))
         .send()
-        .await;
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    let org_type = body
+        .pointer("/organization/organization_type")
+        .and_then(|v| v.as_str())?;
+    Some(format_claude_plan_label(org_type))
+}
+
+/// 查询 Claude 官方订阅额度
+async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
+    let client = crate::proxy::http_client::get();
+
+    let (resp, plan_label) = tokio::join!(
+        client
+            .get("https://api.anthropic.com/api/oauth/usage")
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .header("Accept", "application/json")
+            .header("accept-language", "*")
+            .header("user-agent", "claude-cli/2.1.2 (external, cli)")
+            .header("x-app", "cli")
+            .timeout(std::time::Duration::from_secs(10))
+            .send(),
+        fetch_claude_plan_label(&client, access_token),
+    );
+    let resp = resp;
 
     let resp = match resp {
         Ok(r) => r,
@@ -746,7 +832,7 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
     SubscriptionQuota {
         tool: "claude".to_string(),
         credential_status: CredentialStatus::Valid,
-        credential_message: None,
+        credential_message: plan_label,
         success: true,
         tiers,
         extra_usage,
@@ -926,6 +1012,17 @@ fn is_codex_token_stale(last_refresh: &str) -> bool {
 
 // ── Codex API 查询 ──────────────────────────────────────
 
+fn format_codex_plan_label(plan: &str) -> String {
+    match plan {
+        "plus" => "ChatGPT Plus".to_string(),
+        "pro" => "ChatGPT Pro".to_string(),
+        "free" => "ChatGPT Free".to_string(),
+        "team" => "ChatGPT Team".to_string(),
+        "enterprise" => "ChatGPT Enterprise".to_string(),
+        other => other.to_string(),
+    }
+}
+
 #[derive(Deserialize)]
 struct CodexRateLimitWindow {
     used_percent: Option<f64>,
@@ -941,6 +1038,7 @@ struct CodexRateLimit {
 
 #[derive(Deserialize)]
 struct CodexUsageResponse {
+    plan_type: Option<String>,
     rate_limit: Option<CodexRateLimit>,
 }
 
@@ -1034,6 +1132,8 @@ pub(crate) async fn query_codex_quota(
         }
     };
 
+    let plan_label = body.plan_type.as_deref().map(format_codex_plan_label);
+
     let mut tiers = Vec::new();
 
     if let Some(rate_limit) = body.rate_limit {
@@ -1060,7 +1160,7 @@ pub(crate) async fn query_codex_quota(
     SubscriptionQuota {
         tool: tool_label.to_string(),
         credential_status: CredentialStatus::Valid,
-        credential_message: None,
+        credential_message: plan_label,
         success: true,
         tiers,
         extra_usage: None,
@@ -1316,6 +1416,8 @@ async fn refresh_gemini_token(refresh_token: &str) -> Option<String> {
 struct GeminiLoadCodeAssistResponse {
     #[serde(rename = "cloudaicompanionProject")]
     cloudaicompanion_project: Option<serde_json::Value>,
+    #[serde(rename = "currentTier")]
+    current_tier: Option<serde_json::Value>,
 }
 
 /// 配额 bucket
@@ -1430,15 +1532,26 @@ async fn query_gemini_quota(access_token: &str) -> SubscriptionQuota {
         .as_ref()
         .and_then(extract_project_id);
 
+    let plan_label = load_body
+        .current_tier
+        .as_ref()
+        .and_then(|t| t.get("name"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
     // ── Step 2: retrieveUserQuota 获取配额 ──
-    retrieve_user_quota(access_token, project_id.as_deref()).await
+    retrieve_user_quota(access_token, project_id.as_deref(), plan_label).await
 }
 
 /// 调用 retrieveUserQuota 获取按模型分桶的配额数据。
 ///
 /// 被 Gemini（先 loadCodeAssist 取得 project_id）与 Antigravity（project_id 已知，
 /// 跳过 loadCodeAssist）复用，两者共享 Google Cloud AI Companion 后端。
-async fn retrieve_user_quota(access_token: &str, project_id: Option<&str>) -> SubscriptionQuota {
+async fn retrieve_user_quota(
+    access_token: &str,
+    project_id: Option<&str>,
+    plan_label: Option<String>,
+) -> SubscriptionQuota {
     let client = crate::proxy::http_client::get();
 
     let mut quota_body = serde_json::json!({});
@@ -1544,7 +1657,7 @@ async fn retrieve_user_quota(access_token: &str, project_id: Option<&str>) -> Su
     SubscriptionQuota {
         tool: "gemini".to_string(),
         credential_status: CredentialStatus::Valid,
-        credential_message: None,
+        credential_message: plan_label,
         success: true,
         tiers,
         extra_usage: None,

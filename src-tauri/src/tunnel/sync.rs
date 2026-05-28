@@ -219,15 +219,8 @@ pub async fn pull_and_apply_pending_share_edits(db: &Arc<Database>) -> Result<()
         .iter()
         .map(|share| share.id.clone())
         .collect::<Vec<_>>();
-    let owner_email = shares
-        .iter()
-        .find_map(|share| {
-            (!share.owner_email.trim().is_empty()).then_some(share.owner_email.clone())
-        })
-        .ok_or_else(|| "请先完成邮箱验证码登录".to_string())?;
     let config = load_config();
     let client = share_router_client()?;
-    crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -359,12 +352,6 @@ async fn share_edit_event_loop(db: Arc<Database>) -> Result<(), String> {
             sleep(Duration::from_secs(30)).await;
             continue;
         }
-        let owner_email = shares.iter().find_map(|share| {
-            (!share.owner_email.trim().is_empty()).then_some(share.owner_email.clone())
-        });
-        if let Some(owner_email) = owner_email {
-            crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
-        }
         let identity = identity::ensure_identity(&client, &config)
             .await
             .map_err(|e| e.to_string())?;
@@ -465,7 +452,6 @@ async fn refresh_share_runtime_after_provider_switch(
 
     let config = load_config();
     let client = share_router_client()?;
-    crate::email_auth::ensure_remote_owner_binding(&config, &share.owner_email).await?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -556,13 +542,46 @@ async fn build_all_upstream_provider_snapshots(
     support: &ShareSupport,
     share: &ShareRecord,
 ) -> ShareAppRuntimes {
+    let (kiro, cursor, antigravity, copilot) = tokio::join!(
+        build_oauth_provider_snapshot("kiro_oauth"),
+        build_oauth_provider_snapshot("cursor_oauth"),
+        build_oauth_provider_snapshot("antigravity_oauth"),
+        build_oauth_provider_snapshot("github_copilot"),
+    );
     let mut runtimes = ShareAppRuntimes {
         claude: build_upstream_provider_snapshot_for_app(db, support.claude, AppType::Claude).await,
         codex: build_upstream_provider_snapshot_for_app(db, support.codex, AppType::Codex).await,
         gemini: build_upstream_provider_snapshot_for_app(db, support.gemini, AppType::Gemini).await,
+        kiro,
+        cursor,
+        antigravity,
+        copilot,
     };
     apply_share_for_sale_pricing_override(share, &mut runtimes);
     runtimes
+}
+
+/// Build a `ShareUpstreamProvider` snapshot for a standalone OAuth provider
+/// (kiro / cursor / antigravity / copilot) by reading the cached quota.
+/// Returns `None` if no account is configured or no quota has been fetched yet.
+async fn build_oauth_provider_snapshot(auth_provider: &str) -> Option<ShareUpstreamProvider> {
+    let service = crate::services::oauth_quota::global_oauth_quota_service()?;
+    let cached = service.get_first_for_provider(auth_provider).await?;
+    // Only surface providers with a successful quota fetch.
+    if !cached.quota.success {
+        return None;
+    }
+    let quota = subscription_quota_to_upstream(cached.quota);
+    Some(ShareUpstreamProvider {
+        kind: "official_oauth".to_string(),
+        app: auth_provider.to_string(),
+        provider_name: cached.provider_name,
+        for_sale_official_price_percent: None,
+        account_email: None,
+        api_url: None,
+        quota: Some(quota),
+        models: Vec::new(),
+    })
 }
 
 fn apply_share_for_sale_pricing_override(share: &ShareRecord, runtimes: &mut ShareAppRuntimes) {
@@ -1053,7 +1072,6 @@ async fn claim_share_subdomain_inner(
     let config = load_config();
     let client = share_router_client()?;
     let metadata = share_metadata_from_record(share);
-    crate::email_auth::ensure_remote_owner_binding(&config, &metadata.owner_email).await?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -1194,9 +1212,6 @@ async fn sync_recent_share_request_logs_inner(
 
     let config = load_config();
     let client = share_router_client()?;
-    if let Some(owner_email) = crate::email_auth::current_email()? {
-        crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
-    }
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -1245,7 +1260,6 @@ async fn sync_share_metadata_now_inner(
 ) -> Result<(), String> {
     let config = load_config();
     let client = share_router_client()?;
-    crate::email_auth::ensure_remote_owner_binding(&config, &share.owner_email).await?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
@@ -1350,16 +1364,6 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
     };
 
     if !ops.is_empty() {
-        if let Some(owner_email) = ops.iter().find_map(|op| match op {
-            ShareSyncOp::Upsert(share) => Some(share.owner_email.clone()),
-            ShareSyncOp::Delete { .. } | ShareSyncOp::DeleteAll => None,
-        }) {
-            crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
-        } else if ops.iter().any(|op| matches!(op, ShareSyncOp::Upsert(_))) {
-            return Err("请先完成邮箱验证码登录".to_string());
-        } else if let Some(owner_email) = crate::email_auth::current_email()? {
-            crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
-        }
         let identity = identity::ensure_identity(&client, &config)
             .await
             .map_err(|e| e.to_string())?;
@@ -1427,11 +1431,6 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
     }
 
     if !request_logs.is_empty() {
-        if let Some(owner_email) = crate::email_auth::current_email()? {
-            crate::email_auth::ensure_remote_owner_binding(&config, &owner_email).await?;
-        } else {
-            return Err("请先完成邮箱验证码登录".to_string());
-        }
         let identity = identity::ensure_identity(&client, &config)
             .await
             .map_err(|e| e.to_string())?;

@@ -2754,8 +2754,8 @@
     "copyCurl": "Copy Curl",
     "openUrl": "Open URL",
     "ownerEmail": "Owner Email",
-    "ownerEmailCreateHint": "The share will be created with the currently verified owner email. Re-login first if the credential expired or you need another email.",
-    "ownerEmailReloginHint": "This email is not verified yet. Re-login and complete email verification before creating the share.",
+    "ownerEmailCreateHint": "This email is reported to the router as the share owner. Signing in to the router with the same email can view the API key and edit settings.",
+    "ownerEmailReloginHint": "This email is reported to the router as the share owner.",
     "createRouterHint": "Choose the router before creating. The share will be bound to this router after creation.",
     "routerLockedAfterCreate": "The router is bound to the current share.",
     "description": "Description",
@@ -2901,7 +2901,14 @@
       "sevenDays": "7 days",
       "thirtyDays": "30 days",
       "permanent": "Permanent",
-      "permanentLabel": "Permanent"
+      "permanentLabel": "Permanent",
+      "pickDate": "Pick a date"
+    },
+    "editDialog": {
+      "title": "Settings",
+      "save": "Save settings",
+      "autoStartTopLabel": "Auto-start this share on launch",
+      "forSaleDisableHint": "When For Sale is Free or No, target markets and model pricing cannot be edited."
     },
     "confirmDeleteTitle": "Delete Share",
     "confirmDeleteMessage": "Delete share \"{{name}}\"? Any running tunnel will be stopped first.",

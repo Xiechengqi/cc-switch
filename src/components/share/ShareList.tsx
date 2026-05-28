@@ -21,11 +21,7 @@ interface ShareListProps {
   providerSalePricing?: ShareProviderSalePricing[];
   marketsLoading?: boolean;
   marketsError?: string | null;
-  ownerAuthenticated?: boolean;
-  ownerLoginRequiredMap?: Record<string, boolean>;
   onRetryMarkets?: () => void;
-  onChangeOwner?: () => void;
-  onVerifyOwner?: () => void;
   onRetry: () => void;
   onCreate: () => void;
   onDelete: (share: ShareRecord) => void;
@@ -65,6 +61,10 @@ interface ShareListProps {
     share: ShareRecord,
     autoStart: boolean,
   ) => Promise<void> | void;
+  onUpdateOwnerEmail: (
+    share: ShareRecord,
+    ownerEmail: string,
+  ) => Promise<void> | void;
   onUpdateAcl: (
     share: ShareRecord,
     sharedWithEmails: string[],
@@ -84,11 +84,7 @@ export function ShareList({
   providerSalePricing,
   marketsLoading,
   marketsError,
-  ownerAuthenticated = false,
-  ownerLoginRequiredMap = {},
   onRetryMarkets,
-  onChangeOwner,
-  onVerifyOwner,
   onRetry,
   onCreate,
   onDelete,
@@ -104,6 +100,7 @@ export function ShareList({
   onUpdateShareSalePricing,
   onUpdateExpiration,
   onUpdateAutoStart,
+  onUpdateOwnerEmail,
   onUpdateAcl,
 }: ShareListProps) {
   const { t } = useTranslation();
@@ -169,11 +166,7 @@ export function ShareList({
           providerSalePricing={providerSalePricing}
           marketsLoading={marketsLoading}
           marketsError={marketsError}
-          ownerAuthenticated={ownerAuthenticated}
-          ownerLoginRequired={ownerLoginRequiredMap[share.id] ?? false}
           onRetryMarkets={onRetryMarkets}
-          onChangeOwner={onChangeOwner}
-          onVerifyOwner={onVerifyOwner}
           onDelete={onDelete}
           onEnable={onEnable}
           onDisable={onDisable}
@@ -187,6 +180,7 @@ export function ShareList({
           onUpdateShareSalePricing={onUpdateShareSalePricing}
           onUpdateExpiration={onUpdateExpiration}
           onUpdateAutoStart={onUpdateAutoStart}
+          onUpdateOwnerEmail={onUpdateOwnerEmail}
           onUpdateAcl={onUpdateAcl}
         />
       ))}

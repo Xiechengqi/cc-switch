@@ -2754,8 +2754,8 @@
     "copyCurl": "复制 Curl",
     "openUrl": "打开 URL",
     "ownerEmail": "Owner Email",
-    "ownerEmailCreateHint": "Share 会使用当前已验证的 owner 邮箱创建。若凭证过期或要换邮箱，请先重新登录。",
-    "ownerEmailReloginHint": "该邮箱尚未验证，创建前需要先重新登录并完成验证码验证。",
+    "ownerEmailCreateHint": "该邮箱会作为 share owner 上报到 router。router 页面使用相同邮箱登录后可查看 API Key 和编辑设置。",
+    "ownerEmailReloginHint": "该邮箱会作为 share owner 上报到 router。",
     "createRouterHint": "创建前选择路由节点。创建完成后当前 share 会绑定到该节点。",
     "routerLockedAfterCreate": "路由节点已绑定到当前 share。",
     "description": "文字说明",
@@ -2901,7 +2901,14 @@
       "sevenDays": "7 天",
       "thirtyDays": "30 天",
       "permanent": "永久",
-      "permanentLabel": "永久"
+      "permanentLabel": "永久",
+      "pickDate": "选择日期"
+    },
+    "editDialog": {
+      "title": "设置选项",
+      "save": "保存设置",
+      "autoStartTopLabel": "开机时自动启动此 Share",
+      "forSaleDisableHint": "选择 Free 或 No 时，目标市场和模型定价将不可编辑。"
     },
     "confirmDeleteTitle": "删除分享",
     "confirmDeleteMessage": "确认删除分享 “{{name}}” 吗？若存在运行中的隧道，会先停止再删除。",

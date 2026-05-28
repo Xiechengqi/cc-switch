@@ -244,8 +244,13 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
           </button>
         </div>
 
-        {/* 第二行：各 tier 使用百分比 */}
+        {/* 第二行：plan badge + 各 tier 使用百分比 */}
         <div className="flex items-center gap-2">
+          {quota.credentialMessage && (
+            <span className="inline-flex items-center rounded-md bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-700 whitespace-nowrap">
+              {quota.credentialMessage}
+            </span>
+          )}
           {tiers
             .filter(
               (tier) =>

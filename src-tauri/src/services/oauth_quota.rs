@@ -124,6 +124,17 @@ impl OauthQuotaService {
             .cloned()
     }
 
+    /// Return the first cached quota entry for any account of the given provider.
+    /// Used by tunnel sync to build per-OAuth-provider runtime snapshots without
+    /// needing to know the account_id upfront.
+    pub async fn get_first_for_provider(&self, auth_provider: &str) -> Option<CachedOauthQuota> {
+        let cache = self.cache.read().await;
+        cache
+            .iter()
+            .find(|(k, _)| k.auth_provider == auth_provider)
+            .map(|(_, v)| v.clone())
+    }
+
     pub async fn refresh_selected_targets(
         &self,
         app: Option<&AppHandle>,
@@ -758,6 +769,16 @@ fn timestamp_to_rfc3339(value: f64) -> Option<String> {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis).map(|dt| dt.to_rfc3339())
 }
 
+fn format_copilot_plan_label(plan: &str) -> String {
+    match plan {
+        "individual" => "Copilot Individual".to_string(),
+        "business" => "Copilot Business".to_string(),
+        "enterprise" => "Copilot Enterprise".to_string(),
+        "free" => "Copilot Free".to_string(),
+        other => format!("Copilot {}", other),
+    }
+}
+
 fn copilot_usage_to_subscription_quota(usage: CopilotUsageResponse) -> SubscriptionQuota {
     let premium = usage.quota_snapshots.premium_interactions;
     let utilization = if premium.entitlement > 0 {
@@ -768,7 +789,7 @@ fn copilot_usage_to_subscription_quota(usage: CopilotUsageResponse) -> Subscript
     SubscriptionQuota {
         tool: "github_copilot".to_string(),
         credential_status: CredentialStatus::Valid,
-        credential_message: Some(usage.copilot_plan),
+        credential_message: Some(format_copilot_plan_label(&usage.copilot_plan)),
         success: true,
         tiers: vec![QuotaTier {
             name: "premium".to_string(),

@@ -1,5 +1,4 @@
 use crate::database::ShareRecord;
-use crate::email_auth;
 use crate::error::AppError;
 use crate::proxy::ProxyConfig;
 use crate::services::share::{PrepareShareParams, ShareService};
@@ -16,6 +15,7 @@ use tokio::time::{timeout, Duration};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateShareParams {
+    pub owner_email: String,
     pub app_type: String,
     pub description: Option<String>,
     pub for_sale: String,
@@ -110,6 +110,13 @@ pub struct UpdateShareAutoStartParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateShareOwnerEmailParams {
+    pub share_id: String,
+    pub owner_email: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateShareAclParams {
     pub share_id: String,
     pub shared_with_emails: Vec<String>,
@@ -134,7 +141,7 @@ pub async fn create_share(
     state: State<'_, AppState>,
     params: CreateShareParams,
 ) -> Result<ShareRecord, String> {
-    let owner_email = require_authenticated_email(&state.db)?;
+    let owner_email = normalize_owner_email(&params.owner_email)?;
     let requested_subdomain = params.subdomain.clone();
     let mut last_claim_error = None;
     let mut share = None;
@@ -205,13 +212,10 @@ pub fn authorize_share_market(
     share_id: String,
     market_email: String,
 ) -> Result<ShareRecord, String> {
-    let owner_email = require_authenticated_email(&state.db)?;
     let share = ShareService::get_detail(&state.db, &share_id)
         .map_err(|e: AppError| e.to_string())?
         .ok_or_else(|| format!("Share not found: {share_id}"))?;
-    if share.owner_email != owner_email {
-        return Err("只有当前 share 的 owner 才能授权 market".to_string());
-    }
+    let owner_email = share.owner_email.clone();
     let mut emails = share.shared_with_emails;
     emails.push(market_email);
     ShareService::update_acl(
@@ -229,13 +233,10 @@ pub fn update_share_acl(
     state: State<'_, AppState>,
     params: UpdateShareAclParams,
 ) -> Result<ShareRecord, String> {
-    let owner_email = require_authenticated_email(&state.db)?;
     let share = ShareService::get_detail(&state.db, &params.share_id)
         .map_err(|e: AppError| e.to_string())?
         .ok_or_else(|| format!("Share not found: {}", params.share_id))?;
-    if share.owner_email != owner_email {
-        return Err("只有当前 share 的 owner 才能修改分享名单".to_string());
-    }
+    let owner_email = share.owner_email.clone();
     ShareService::update_acl(
         &state.db,
         &params.share_id,
@@ -354,6 +355,15 @@ pub fn update_share_auto_start(
     params: UpdateShareAutoStartParams,
 ) -> Result<ShareRecord, String> {
     ShareService::update_auto_start(&state.db, &params.share_id, params.auto_start)
+        .map_err(|e: AppError| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_share_owner_email(
+    state: State<'_, AppState>,
+    params: UpdateShareOwnerEmailParams,
+) -> Result<ShareRecord, String> {
+    ShareService::update_owner_email(&state.db, &params.share_id, &params.owner_email)
         .map_err(|e: AppError| e.to_string())
 }
 
@@ -647,27 +657,10 @@ pub fn get_share_connect_info(
     })
 }
 
-fn require_authenticated_email(
-    db: &std::sync::Arc<crate::database::Database>,
-) -> Result<String, String> {
-    let status = email_auth::get_status()?;
-    if !status.authenticated {
-        return Err("创建 share 前请先完成邮箱验证码登录".to_string());
-    }
-    let email = status
-        .email
-        .ok_or_else(|| "邮箱登录状态异常，请重新登录".to_string())?;
-    if let Some(existing_share) = ShareService::list(db)
-        .map_err(|e: AppError| e.to_string())?
-        .into_iter()
-        .next()
-    {
-        if existing_share.owner_email != email {
-            return Err(format!(
-                "当前设备已绑定邮箱 {}，不能切换到 {}",
-                existing_share.owner_email, email
-            ));
-        }
+fn normalize_owner_email(email: &str) -> Result<String, String> {
+    let email = email.trim().to_ascii_lowercase();
+    if email.is_empty() || !email.contains('@') || email.len() > 254 {
+        return Err("邮箱格式无效".to_string());
     }
     Ok(email)
 }

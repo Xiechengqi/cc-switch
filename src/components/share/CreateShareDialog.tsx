@@ -49,7 +49,6 @@ interface CreateShareDialogProps {
   tunnelConfigSaving: boolean;
   isSubmitting: boolean;
   submitLabel?: string;
-  onRelogin?: (email: string) => void;
   onSaveTunnelConfig: (config: TunnelConfig) => Promise<void> | void;
   onSubmit: (params: CreateShareParams) => Promise<void> | void;
 }
@@ -74,7 +73,6 @@ export function CreateShareDialog({
   tunnelConfigSaving,
   isSubmitting,
   submitLabel,
-  onRelogin,
   onSaveTunnelConfig,
   onSubmit,
 }: CreateShareDialogProps) {
@@ -131,20 +129,12 @@ export function CreateShareDialog({
     valueAsNumber: true,
   });
   const normalizedOwnerEmail = ownerEmailInput.trim().toLowerCase();
-  const normalizedAuthenticatedOwnerEmail = (ownerEmail ?? "")
-    .trim()
-    .toLowerCase();
-  const ownerEmailNeedsLogin =
-    Boolean(normalizedOwnerEmail) &&
-    normalizedOwnerEmail !== normalizedAuthenticatedOwnerEmail;
-
-  const requestOwnerRelogin = () => {
-    onRelogin?.(normalizedOwnerEmail || normalizedAuthenticatedOwnerEmail);
-  };
+  const ownerEmailInvalid =
+    !normalizedOwnerEmail ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedOwnerEmail);
 
   const submit = form.handleSubmit(async (values) => {
-    if (!normalizedOwnerEmail || ownerEmailNeedsLogin) {
-      requestOwnerRelogin();
+    if (ownerEmailInvalid) {
       return;
     }
     const nextRouterDomain = routerDomain.trim();
@@ -152,6 +142,7 @@ export function CreateShareDialog({
       await onSaveTunnelConfig({ domain: nextRouterDomain });
     }
     await onSubmit({
+      ownerEmail: normalizedOwnerEmail,
       appType: toShareAppType(defaultApp),
       description: values.description || undefined,
       forSale: values.forSale,
@@ -203,39 +194,28 @@ export function CreateShareDialog({
             <Label htmlFor="share-owner-email">
               {t("share.ownerEmail", { defaultValue: "Owner Email" })}
             </Label>
-            <div className="flex gap-2">
-              <Input
-                id="share-owner-email"
-                type="email"
-                value={ownerEmailInput}
-                onChange={(event) => setOwnerEmailInput(event.target.value)}
-                placeholder="owner@example.com"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                className="shrink-0"
-                onClick={requestOwnerRelogin}
-                disabled={
-                  !normalizedOwnerEmail && !normalizedAuthenticatedOwnerEmail
-                }
-              >
-                {t("share.ownerLogin.reloginAction", {
-                  defaultValue: "重新登录",
-                })}
-              </Button>
-            </div>
+            <Input
+              id="share-owner-email"
+              type="email"
+              value={ownerEmailInput}
+              onChange={(event) => setOwnerEmailInput(event.target.value)}
+              placeholder="owner@example.com"
+            />
             <div className="text-xs text-muted-foreground">
-              {ownerEmailNeedsLogin
-                ? t("share.ownerEmailReloginHint", {
-                    defaultValue:
-                      "该邮箱尚未验证，创建前需要先重新登录并完成验证码验证。",
-                  })
-                : t("share.ownerEmailCreateHint", {
-                    defaultValue:
-                      "Share 名称会自动使用当前登录邮箱，创建后当前设备不能切换到其他邮箱。",
-                  })}
+              {t("share.ownerEmailCreateHint", {
+                defaultValue:
+                  "该邮箱会作为 share owner 上报到 router。router 页面使用相同邮箱登录后可查看 API Key 和编辑设置。",
+              })}
             </div>
+            <FieldError
+              error={
+                ownerEmailInput.trim() && ownerEmailInvalid
+                  ? t("share.validation.invalidEmail", {
+                      defaultValue: "邮箱格式无效",
+                    })
+                  : undefined
+              }
+            />
           </div>
 
           <div className="space-y-1.5">
@@ -553,7 +533,7 @@ export function CreateShareDialog({
           </Button>
           <Button
             onClick={() => void submit()}
-            disabled={isSubmitting || tunnelConfigSaving}
+            disabled={isSubmitting || tunnelConfigSaving || ownerEmailInvalid}
           >
             {submitLabel ?? t("share.create")}
           </Button>

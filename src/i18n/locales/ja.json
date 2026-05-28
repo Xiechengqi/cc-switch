@@ -2754,8 +2754,8 @@
     "copyCurl": "Curl をコピー",
     "openUrl": "URL を開く",
     "ownerEmail": "Owner Email",
-    "ownerEmailCreateHint": "Share は現在検証済みの owner メールで作成されます。認証期限切れや別メールを使う場合は先に再ログインしてください。",
-    "ownerEmailReloginHint": "このメールはまだ検証されていません。Share 作成前に再ログインしてメール認証を完了してください。",
+    "ownerEmailCreateHint": "このメールは share owner として router に送信されます。同じメールで router にログインすると API Key の表示と設定編集ができます。",
+    "ownerEmailReloginHint": "このメールは share owner として router に送信されます。",
     "createRouterHint": "作成前にルーターを選択します。作成後、この share はそのルーターに紐づきます。",
     "routerLockedAfterCreate": "ルーターは現在の share に紐づいています。",
     "description": "説明",
@@ -2901,7 +2901,14 @@
       "sevenDays": "7日",
       "thirtyDays": "30日",
       "permanent": "無期限",
-      "permanentLabel": "無期限"
+      "permanentLabel": "無期限",
+      "pickDate": "日付を選択"
+    },
+    "editDialog": {
+      "title": "設定オプション",
+      "save": "設定を保存",
+      "autoStartTopLabel": "起動時にこの Share を自動起動",
+      "forSaleDisableHint": "For Sale が Free または No の場合、ターゲット市場とモデル価格は編集できません。"
     },
     "confirmDeleteTitle": "Share を削除",
     "confirmDeleteMessage": "「{{name}}」を削除しますか？ 実行中の tunnel があれば先に停止します。",

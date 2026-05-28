@@ -53,6 +53,7 @@ describe("CreateShareDialog", () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
+          ownerEmail: "owner@example.com",
           description: "Team-facing proxy",
           forSale: "No",
           autoStart: false,
@@ -94,9 +95,8 @@ describe("CreateShareDialog", () => {
     );
   });
 
-  it("lets owner email be edited and requests relogin before submit", async () => {
+  it("lets owner email be edited and submits it as self-reported owner", async () => {
     const user = userEvent.setup();
-    const onRelogin = vi.fn();
     const onSubmit = vi.fn();
 
     render(
@@ -109,7 +109,6 @@ describe("CreateShareDialog", () => {
         tunnelConfig={{ domain: "jptokenswitch.cc" }}
         tunnelConfigSaving={false}
         onSaveTunnelConfig={vi.fn()}
-        onRelogin={onRelogin}
         onSubmit={onSubmit}
       />,
     );
@@ -119,32 +118,13 @@ describe("CreateShareDialog", () => {
     await user.type(ownerEmailInput, "new-owner@example.com");
     await user.click(screen.getByRole("button", { name: "share.create" }));
 
-    expect(onRelogin).toHaveBeenCalledWith("new-owner@example.com");
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it("has a relogin button for expired owner credentials", async () => {
-    const user = userEvent.setup();
-    const onRelogin = vi.fn();
-
-    render(
-      <CreateShareDialog
-        open={true}
-        onOpenChange={vi.fn()}
-        defaultApp="claude"
-        ownerEmail="owner@example.com"
-        isSubmitting={false}
-        tunnelConfig={{ domain: "jptokenswitch.cc" }}
-        tunnelConfigSaving={false}
-        onSaveTunnelConfig={vi.fn()}
-        onRelogin={onRelogin}
-        onSubmit={vi.fn()}
-      />,
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ownerEmail: "new-owner@example.com",
+        }),
+      ),
     );
-
-    await user.click(screen.getByRole("button", { name: "重新登录" }));
-
-    expect(onRelogin).toHaveBeenCalledWith("owner@example.com");
   });
 
   it("locks token limit to -1 when unlimited is checked", async () => {

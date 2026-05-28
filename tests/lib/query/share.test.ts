@@ -81,6 +81,7 @@ describe("share query hooks", () => {
 
     const { result } = renderHook(() => useCreateShareMutation(), { wrapper });
     await result.current.mutateAsync({
+      ownerEmail: "owner@example.com",
       appType: "claude",
       forSale: "No",
       tokenLimit: 1000,

@@ -23,7 +23,9 @@ pub const DEFAULT_CURSOR_CLIENT_VERSION: &str = "cli-2026.01.09-231024f";
 const LOGIN_URL: &str = "https://www.cursor.com/loginDeepControl";
 const POLL_URL: &str = "https://api2.cursor.sh/auth/poll";
 const TOKEN_URL: &str = "https://api2.cursor.sh/oauth/token";
-const USER_INFO_URL: &str = "https://api.cursor.com/v0/me";
+// 浏览器站点的 /api/auth/me 是唯一稳定返回 free 账号 email 的端点。
+// api.cursor.com/v0/me 对所有 Bearer 鉴权组合都返回 401 internal，疑似已废弃。
+const USER_INFO_URL: &str = "https://cursor.com/api/auth/me";
 const TOKEN_REFRESH_BUFFER_MS: i64 = 60_000;
 const BROWSER_FLOW_TIMEOUT_SECS: i64 = 300;
 
@@ -509,19 +511,21 @@ impl CursorOAuthManager {
         account: &CursorAccountData,
         access_token: &str,
     ) -> Result<Option<String>, CursorOAuthError> {
-        let mut req = self
+        // /api/auth/me 走的是浏览器站点的 WorkOS 会话，需要和 stripe 端点一样的 cookie：
+        // WorkosCursorSessionToken=<workos_user_id>::<access_token>
+        let session_user = workos_user_id_from_token(access_token)
+            .unwrap_or_else(|| account.account_id.clone());
+        let cookie = format!(
+            "WorkosCursorSessionToken={}%3A%3A{}",
+            session_user, access_token
+        );
+        let resp = self
             .http_client
             .get(USER_INFO_URL)
-            .bearer_auth(access_token)
-            .header("Accept", "application/json")
-            .header(
-                "User-Agent",
-                format!("Cursor/{DEFAULT_CURSOR_CLIENT_VERSION} (cc-switch user info)"),
-            );
-        for (key, value) in super::cursor_protocol::cursor_identity_headers(account, access_token) {
-            req = req.header(key, value);
-        }
-        let resp = req.send().await?;
+            .header("cookie", cookie)
+            .header("accept", "application/json")
+            .send()
+            .await?;
         if !resp.status().is_success() {
             return Ok(None);
         }

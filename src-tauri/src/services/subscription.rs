@@ -566,28 +566,6 @@ fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
         None => return vec![],
     };
 
-    let limit = plan_usage
-        .get("limit")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    if limit <= 0.0 {
-        return vec![];
-    }
-
-    let used = plan_usage
-        .get("used")
-        .and_then(|v| v.as_f64())
-        .or_else(|| {
-            let remaining = plan_usage.get("remaining").and_then(|v| v.as_f64())?;
-            Some(limit - remaining)
-        })
-        .unwrap_or(0.0);
-
-    let utilization = plan_usage
-        .get("totalPercentUsed")
-        .and_then(|v| v.as_f64())
-        .unwrap_or_else(|| (used / limit) * 100.0);
-
     let resets_at = usage
         .get("billingCycleEnd")
         .and_then(|v| {
@@ -598,14 +576,54 @@ fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
         .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
         .map(|dt| dt.to_rfc3339());
 
-    vec![QuotaTier {
-        name: "cursor_credits".to_string(),
-        utilization,
-        resets_at,
-        used: Some(used / 100.0),
-        limit: Some(limit / 100.0),
-        unit: Some("USD".to_string()),
-    }]
+    let limit = plan_usage
+        .get("limit")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    // 有 $ 限额（Pro / Pro+ / Ultra）：按金额渲染
+    if limit > 0.0 {
+        let used = plan_usage
+            .get("used")
+            .and_then(|v| v.as_f64())
+            .or_else(|| {
+                let remaining = plan_usage.get("remaining").and_then(|v| v.as_f64())?;
+                Some(limit - remaining)
+            })
+            .unwrap_or(0.0);
+
+        let utilization = plan_usage
+            .get("totalPercentUsed")
+            .and_then(|v| v.as_f64())
+            .unwrap_or_else(|| (used / limit) * 100.0);
+
+        return vec![QuotaTier {
+            name: "cursor_credits".to_string(),
+            utilization,
+            resets_at,
+            used: Some(used / 100.0),
+            limit: Some(limit / 100.0),
+            unit: Some("USD".to_string()),
+        }];
+    }
+
+    // free 套餐：API 不暴露具体额度数字，只回传 totalPercentUsed。
+    // 用百分比单独渲染一个 tier，至少让卡片有用量信息可看。
+    if let Some(pct) = plan_usage
+        .get("totalPercentUsed")
+        .and_then(|v| v.as_f64())
+    {
+        return vec![QuotaTier {
+            name: "cursor_included_usage".to_string(),
+            utilization: pct,
+            resets_at,
+            used: None,
+            limit: None,
+            unit: None,
+        }];
+    }
+
+    vec![]
 }
 
 /// 查询 Claude 官方订阅额度
@@ -1730,5 +1748,27 @@ mod cursor_tests {
             "planUsage": { "limit": 0.0 }
         }))
         .is_empty());
+    }
+
+    #[test]
+    fn parse_usage_tiers_free_account_uses_percent_fallback() {
+        // free 账号实测响应：无 limit/used/remaining，只有百分比和 displayMessage
+        let usage = serde_json::json!({
+            "billingCycleEnd": "1780376587000",
+            "planUsage": {
+                "autoPercentUsed": 0,
+                "apiPercentUsed": 0,
+                "totalPercentUsed": 0
+            }
+        });
+        let tiers = parse_cursor_usage_tiers(&usage);
+        assert_eq!(tiers.len(), 1);
+        let tier = &tiers[0];
+        assert_eq!(tier.name, "cursor_included_usage");
+        assert_eq!(tier.utilization, 0.0);
+        assert!(tier.used.is_none());
+        assert!(tier.limit.is_none());
+        assert!(tier.unit.is_none());
+        assert!(tier.resets_at.is_some());
     }
 }

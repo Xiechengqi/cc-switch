@@ -48,6 +48,7 @@ export const createShareSchema = z.object({
           !["admin", "api", "www", "cdn-cgi"].includes(value)),
       "share.validation.invalidSubdomain",
     ),
+  marketAccessMode: z.enum(["selected", "all"]).default("all"),
 });
 
 export const tunnelConfigSchema = z.object({

@@ -2665,6 +2665,23 @@
     "subtitle": "ローカルプロキシサービスを安全に外部へ共有",
     "create": "Share を作成",
     "createDescription": "現在のローカルプロキシサービスを tunnel 経由で外部公開する、デバイス単位の share を作成します。",
+    "createDialog": {
+      "advancedToggle": "詳細設定",
+      "advancedHint": "展開しなければデフォルト値で作成され、「作成」時に確認が表示されます。",
+      "summaryHeading": "以下のデフォルト値で作成されます：",
+      "apiKeyAuto": "(自動生成)",
+      "subdomainAuto": "(バックエンド生成)",
+      "marketHint": "作成後、share カードで Market リストを細かく調整できます。",
+      "defaultsConfirm": {
+        "title": "デフォルト設定で作成しますか？",
+        "body": "「詳細設定」を展開していません。次のデフォルト値で作成します：",
+        "confirm": "作成を確定",
+        "cancel": "戻って変更"
+      },
+      "summary": {
+        "expiresInSecs": "{{seconds}} 秒"
+      }
+    },
     "createHelp": "作成メモ",
     "createHint": "この share はローカルプロキシサービスを直接 tunnel します。1 つの cc-switch インストールで作成できる share は 1 つだけで、外部クライアントは API Key を使う必要があります。",
     "search": "name / subdomain で検索",

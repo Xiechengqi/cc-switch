@@ -2665,6 +2665,23 @@
     "subtitle": "将本地代理服务安全分享到外部",
     "create": "创建分享",
     "createDescription": "创建一个设备级分享，将当前本地代理服务通过 tunnel 暴露给外部调用。",
+    "createDialog": {
+      "advancedToggle": "高级设置",
+      "advancedHint": "不展开则使用默认值，点击「创建」会弹出二次确认。",
+      "summaryHeading": "将以默认设置创建：",
+      "apiKeyAuto": "(自动生成)",
+      "subdomainAuto": "(由后端生成)",
+      "marketHint": "创建后可在 share 卡片中精细调整 Market 列表。",
+      "defaultsConfirm": {
+        "title": "确认使用默认设置创建？",
+        "body": "你未展开「高级设置」，将按以下默认值创建：",
+        "confirm": "确认创建",
+        "cancel": "返回修改"
+      },
+      "summary": {
+        "expiresInSecs": "{{seconds}} 秒"
+      }
+    },
     "createHelp": "创建说明",
     "createHint": "当前分享会直接穿透本地代理服务。一个 cc-switch 只能创建一个分享，外部调用通过 API Key 访问。",
     "search": "搜索 name / subdomain",

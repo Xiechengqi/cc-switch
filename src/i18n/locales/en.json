@@ -2665,6 +2665,23 @@
     "subtitle": "Securely share local proxy service to external access",
     "create": "Create Share",
     "createDescription": "Create a device-level share that exposes the current local proxy service through the tunnel.",
+    "createDialog": {
+      "advancedToggle": "Advanced settings",
+      "advancedHint": "Leave collapsed to use defaults; clicking Create will prompt to confirm.",
+      "summaryHeading": "Will be created with these defaults:",
+      "apiKeyAuto": "(auto-generated)",
+      "subdomainAuto": "(auto)",
+      "marketHint": "After creation you can fine-tune the Market list from the share card.",
+      "defaultsConfirm": {
+        "title": "Create with default settings?",
+        "body": "You did not open \"Advanced settings\". The share will be created with the following defaults:",
+        "confirm": "Confirm create",
+        "cancel": "Go back"
+      },
+      "summary": {
+        "expiresInSecs": "{{seconds}} s"
+      }
+    },
     "createHelp": "Creation Notes",
     "createHint": "This share tunnels the local proxy service directly. One cc-switch installation can only have one share, and external clients must use the API Key.",
     "search": "Search by name / subdomain",

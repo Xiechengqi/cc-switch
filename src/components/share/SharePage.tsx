@@ -165,8 +165,19 @@ export function SharePage({ defaultApp }: SharePageProps) {
 
   const handleCreate = async (
     params: Parameters<typeof createMutation.mutateAsync>[0],
+    extras: { sharedWithEmails: string[]; marketAccessMode: "selected" | "all" },
   ) => {
     const created = await createMutation.mutateAsync(params);
+    if (
+      extras.marketAccessMode === "all" ||
+      extras.sharedWithEmails.length > 0
+    ) {
+      await updateAclMutation.mutateAsync({
+        shareId: created.id,
+        sharedWithEmails: extras.sharedWithEmails,
+        marketAccessMode: extras.marketAccessMode,
+      });
+    }
     setCreateOpen(false);
     await runShareAction(created, () => enableMutation.mutateAsync(created.id));
   };

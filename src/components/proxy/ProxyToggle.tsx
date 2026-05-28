@@ -23,6 +23,7 @@ import {
   useConfigureTunnelMutation,
   useCreateShareMutation,
   useSettingsQuery,
+  useUpdateShareAclMutation,
 } from "@/lib/query";
 import { shareKeys } from "@/lib/query/share";
 import {
@@ -61,6 +62,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
   const { data: proxyStatus } = useProxyStatus();
   const { data: takeoverStatus } = useProxyTakeoverStatus();
   const createShareMutation = useCreateShareMutation();
+  const updateAclMutation = useUpdateShareAclMutation();
   const configureTunnelMutation = useConfigureTunnelMutation();
   const startProxyMutation = useStartProxyServer();
   const setTakeoverMutation = useSetProxyTakeoverForApp();
@@ -176,10 +178,23 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     }
   };
 
-  const createAndEnable = async (params: CreateShareParams) => {
+  const createAndEnable = async (
+    params: CreateShareParams,
+    extras: { sharedWithEmails: string[]; marketAccessMode: "selected" | "all" },
+  ) => {
     try {
       setStage("creating-share");
       const created = await createShareMutation.mutateAsync(params);
+      if (
+        extras.marketAccessMode === "all" ||
+        extras.sharedWithEmails.length > 0
+      ) {
+        await updateAclMutation.mutateAsync({
+          shareId: created.id,
+          sharedWithEmails: extras.sharedWithEmails,
+          marketAccessMode: extras.marketAccessMode,
+        });
+      }
       setCreateOpen(false);
       await startShareAndEnable(created);
     } finally {

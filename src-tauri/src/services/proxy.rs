@@ -322,8 +322,8 @@ impl ProxyService {
         provider: &Provider,
     ) -> Result<(), String> {
         let mut effective_settings = match self.read_codex_live() {
-            Ok(config) => config,
-            Err(_) => build_effective_settings_with_common_config(
+            Ok(config) if !config.is_null() => config,
+            _ => build_effective_settings_with_common_config(
                 self.db.as_ref(),
                 &AppType::Codex,
                 provider,
@@ -1145,6 +1145,9 @@ impl ProxyService {
 
         // Codex: 修改 config.toml 的 base_url，auth.json 的 OPENAI_API_KEY（代理会注入真实 Token）
         if let Ok(mut live_config) = self.read_codex_live() {
+            if live_config.is_null() {
+                live_config = json!({ "auth": {}, "config": "" });
+            }
             // 1. 修改 auth.json 中的 OPENAI_API_KEY（使用占位符）
             if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
                 auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
@@ -1176,6 +1179,9 @@ impl ProxyService {
 
         // Gemini: 修改 GOOGLE_GEMINI_BASE_URL，使用占位符替代真实 Token（代理会注入真实 Token）
         if let Ok(mut live_config) = self.read_gemini_live() {
+            if live_config.is_null() {
+                live_config = json!({});
+            }
             if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
                 env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
                 // 使用占位符，避免显示缺少 key 的警告
@@ -1213,6 +1219,9 @@ impl ProxyService {
             }
             AppType::Codex => {
                 let mut live_config = self.read_codex_live()?;
+                if live_config.is_null() {
+                    live_config = json!({ "auth": {}, "config": "" });
+                }
 
                 if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
                     auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
@@ -1242,6 +1251,9 @@ impl ProxyService {
             }
             AppType::Gemini => {
                 let mut live_config = self.read_gemini_live()?;
+                if live_config.is_null() {
+                    live_config = json!({});
+                }
 
                 if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
                     env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
@@ -1292,6 +1304,9 @@ impl ProxyService {
             }
             AppType::Codex => {
                 if let Ok(mut live_config) = self.read_codex_live() {
+                    if live_config.is_null() {
+                        live_config = json!({ "auth": {}, "config": "" });
+                    }
                     if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut())
                     {
                         auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
@@ -1322,6 +1337,9 @@ impl ProxyService {
             }
             AppType::Gemini => {
                 if let Ok(mut live_config) = self.read_gemini_live() {
+                    if live_config.is_null() {
+                        live_config = json!({});
+                    }
                     if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
                         env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
                         env.insert("GEMINI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
@@ -1370,7 +1388,14 @@ impl ProxyService {
                     let config: Value = serde_json::from_str(&backup.original_config)
                         .map_err(|e| format!("解析 Gemini 备份失败: {e}"))?;
                     self.write_gemini_live(&config)?;
-                    log::info!("Gemini Live 配置已恢复");
+                    log::info!(
+                        "Gemini Live 配置已恢复{}",
+                        if config.is_null() {
+                            "（原本无 .env 文件，已删除接管时新建的文件）"
+                        } else {
+                            ""
+                        }
+                    );
                 }
             }
             _ => {}
@@ -1983,7 +2008,9 @@ impl ProxyService {
     fn read_claude_live(&self) -> Result<Value, String> {
         let path = get_claude_settings_path();
         if !path.exists() {
-            return Err("Claude 配置文件不存在".to_string());
+            // Treat absent settings.json as "no live config yet" rather than a hard error.
+            // Takeover will create a fresh file; restore will delete it.
+            return Ok(Value::Null);
         }
 
         let mut value: Value =
@@ -2013,6 +2040,15 @@ impl ProxyService {
 
     fn write_claude_live(&self, config: &Value) -> Result<(), String> {
         let path = get_claude_settings_path();
+        if config.is_null() {
+            // Null marker means settings.json did not exist before takeover →
+            // remove the file we wrote so the user's environment is restored.
+            if path.exists() {
+                crate::config::delete_file(&path)
+                    .map_err(|e| format!("删除 Claude 配置文件失败: {e}"))?;
+            }
+            return Ok(());
+        }
         let settings = crate::services::provider::sanitize_claude_settings_for_live(config);
         write_json_file(&path, &settings).map_err(|e| format!("写入 Claude 配置失败: {e}"))
     }
@@ -2023,6 +2059,24 @@ impl ProxyService {
     }
 
     fn write_codex_live(&self, config: &Value) -> Result<(), String> {
+        use crate::codex_config::{get_codex_auth_path, get_codex_config_path};
+
+        if config.is_null() {
+            // Null marker means neither auth.json nor config.toml existed before
+            // takeover → remove what we wrote so the user's environment is restored.
+            let auth_path = get_codex_auth_path();
+            if auth_path.exists() {
+                crate::config::delete_file(&auth_path)
+                    .map_err(|e| format!("删除 Codex auth 失败: {e}"))?;
+            }
+            let config_path = get_codex_config_path();
+            if config_path.exists() {
+                crate::config::delete_file(&config_path)
+                    .map_err(|e| format!("删除 Codex config 失败: {e}"))?;
+            }
+            return Ok(());
+        }
+
         self.write_codex_live_verbatim(config)
     }
 
@@ -2089,7 +2143,9 @@ impl ProxyService {
 
         let env_path = get_gemini_env_path();
         if !env_path.exists() {
-            return Err("Gemini .env 文件不存在".to_string());
+            // Treat absent .env as "no live config yet" rather than a hard error.
+            // Takeover will create a fresh file; restore will delete it.
+            return Ok(Value::Null);
         }
 
         let env_map = read_gemini_env().map_err(|e| format!("读取 Gemini env 失败: {e}"))?;
@@ -2097,7 +2153,20 @@ impl ProxyService {
     }
 
     fn write_gemini_live(&self, config: &Value) -> Result<(), String> {
-        use crate::gemini_config::{json_to_env, write_gemini_env_atomic};
+        use crate::gemini_config::{
+            get_gemini_env_path, json_to_env, write_gemini_env_atomic,
+        };
+
+        if config.is_null() {
+            // Null marker means the .env did not exist before takeover → remove the file
+            // we wrote so the user's environment is restored to its pre-takeover state.
+            let path = get_gemini_env_path();
+            if path.exists() {
+                crate::config::delete_file(&path)
+                    .map_err(|e| format!("删除 Gemini .env 失败: {e}"))?;
+            }
+            return Ok(());
+        }
 
         let env_map = json_to_env(config).map_err(|e| format!("转换 Gemini 配置失败: {e}"))?;
         write_gemini_env_atomic(&env_map).map_err(|e| format!("写入 Gemini env 失败: {e}"))?;

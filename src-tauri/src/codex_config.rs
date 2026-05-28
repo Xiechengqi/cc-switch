@@ -1019,11 +1019,9 @@ pub fn read_codex_live_settings() -> Result<Value, AppError> {
     };
     let cfg_text = read_and_validate_codex_config_text()?;
     if !auth_present && cfg_text.trim().is_empty() {
-        return Err(AppError::localized(
-            "codex.live.missing",
-            "Codex 配置文件不存在",
-            "Codex configuration is missing",
-        ));
+        // Treat absent auth.json + empty config.toml as "no live config yet" rather than
+        // a hard error. Takeover will create the files; restore will delete them.
+        return Ok(Value::Null);
     }
     Ok(json!({ "auth": auth, "config": cfg_text }))
 }

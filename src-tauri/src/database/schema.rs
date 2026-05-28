@@ -197,7 +197,7 @@ impl Database {
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL,
             data_source TEXT NOT NULL DEFAULT 'proxy',
-            share_id TEXT, share_name TEXT
+            share_id TEXT, share_name TEXT, user_email TEXT
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)", [])
@@ -712,7 +712,7 @@ impl Database {
             duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL,
-            share_id TEXT, share_name TEXT
+            share_id TEXT, share_name TEXT, user_email TEXT
         )", [])?;
 
         // 为已存在的表添加新字段
@@ -757,6 +757,7 @@ impl Database {
         Self::add_column_if_missing(conn, "proxy_request_logs", "duration_ms", "INTEGER")?;
         Self::add_column_if_missing(conn, "proxy_request_logs", "share_id", "TEXT")?;
         Self::add_column_if_missing(conn, "proxy_request_logs", "share_name", "TEXT")?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "user_email", "TEXT")?;
 
         // model_pricing 表
         conn.execute(
@@ -1360,6 +1361,7 @@ impl Database {
             )?;
             Self::add_column_if_missing(conn, "proxy_request_logs", "share_id", "TEXT")?;
             Self::add_column_if_missing(conn, "proxy_request_logs", "share_name", "TEXT")?;
+            Self::add_column_if_missing(conn, "proxy_request_logs", "user_email", "TEXT")?;
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_request_logs_share ON proxy_request_logs(share_id, created_at)",
                 [],

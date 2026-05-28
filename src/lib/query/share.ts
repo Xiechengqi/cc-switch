@@ -391,20 +391,6 @@ export function useUpdateShareSubdomainMutation() {
   );
 }
 
-export function useUpdateShareApiKeyMutation() {
-  return useShareActionMutation(
-    ({ shareId, apiKey }: { shareId: string; apiKey: string }) =>
-      shareApi.updateApiKey({ shareId, apiKey }),
-    {
-      successKey: "share.toast.updateApiKeySuccess",
-      successDefault: "API Key 已更新",
-      errorKey: "share.toast.updateApiKeyError",
-      errorDefault: "更新 API Key 失败: {{error}}",
-    },
-    ({ shareId }) => shareId,
-  );
-}
-
 export function useUpdateShareDescriptionMutation() {
   return useShareActionMutation(
     ({ shareId, description }: { shareId: string; description: string }) =>

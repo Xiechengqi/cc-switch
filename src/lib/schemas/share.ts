@@ -27,15 +27,6 @@ export const createShareSchema = z.object({
       "share.validation.invalidParallelLimit",
     ),
   expiresInSecs: z.coerce.number().int().positive("share.validation.required"),
-  apiKey: z
-    .string()
-    .trim()
-    .optional()
-    .transform((value) => value ?? "")
-    .refine(
-      (value) => value.length === 0 || /^[A-Za-z0-9._-]{8,128}$/.test(value),
-      "share.validation.invalidApiKey",
-    ),
   subdomain: z
     .string()
     .trim()

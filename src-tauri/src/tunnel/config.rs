@@ -368,6 +368,8 @@ pub struct ShareTunnelRequestLog {
     pub is_streaming: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_email: Option<String>,
     pub created_at: i64,
 }
 

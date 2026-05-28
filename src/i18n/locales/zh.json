@@ -2835,6 +2835,7 @@
     "requestLogsPrev": "上一页",
     "requestLogsNext": "下一页",
     "requestTime": "时间",
+    "requestUser": "用户",
     "requestModel": "模型",
     "requestInput": "Input",
     "requestOutput": "Output",

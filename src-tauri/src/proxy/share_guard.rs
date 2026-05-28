@@ -43,6 +43,20 @@ pub fn check_share_token(db: &Arc<Database>, headers: &HeaderMap) -> ShareGuardR
     }
 }
 
+pub fn share_user_email_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("X-CC-Switch-User-Email")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 254
+                && value.contains('@')
+                && !value.chars().any(char::is_control)
+        })
+        .map(str::to_string)
+}
+
 fn share_token_from_headers(headers: &HeaderMap) -> Option<&str> {
     let explicit_share_token = headers
         .get("X-API-Key")

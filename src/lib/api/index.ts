@@ -27,7 +27,6 @@ export type {
   UpdateShareTokenLimitParams,
   UpdateShareParallelLimitParams,
   UpdateShareSubdomainParams,
-  UpdateShareApiKeyParams,
   UpdateShareExpirationParams,
   TunnelInfo,
   ShareTunnelStatus,

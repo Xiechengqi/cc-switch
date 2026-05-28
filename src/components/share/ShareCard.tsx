@@ -3,8 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   Copy,
   Edit3,
-  Eye,
-  EyeOff,
   Play,
   Power,
   RotateCcw,
@@ -37,7 +35,6 @@ import {
   isShareActionAllowed,
   isUnlimitedParallelLimit,
   isUnlimitedTokenLimit,
-  maskSensitive,
   resolveShareTunnelInfo,
 } from "@/utils/shareUtils";
 
@@ -75,7 +72,6 @@ interface ShareCardProps {
     share: ShareRecord,
     subdomain: string,
   ) => Promise<void> | void;
-  onUpdateApiKey: (share: ShareRecord, apiKey: string) => Promise<void> | void;
   onUpdateDescription: (
     share: ShareRecord,
     description: string,
@@ -128,7 +124,6 @@ export function ShareCard({
   onUpdateTokenLimit,
   onUpdateParallelLimit,
   onUpdateSubdomain,
-  onUpdateApiKey,
   onUpdateDescription,
   onUpdateForSale,
   onUpdateShareSalePricing,
@@ -138,7 +133,6 @@ export function ShareCard({
   onUpdateAcl,
 }: ShareCardProps) {
   const { t } = useTranslation();
-  const [revealKey, setRevealKey] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const ratio = getShareUsageRatio(share);
   const isBusy = pendingAction === share.id;
@@ -188,10 +182,7 @@ export function ShareCard({
     tunnelConfigured,
     tunnelStatus,
   );
-  const isFree = share.forSale === "Free";
   const canDelete = share.status === "paused";
-  const apiKeyDisplay =
-    revealKey || isFree ? share.shareToken : maskSensitive(share.shareToken);
 
   const handleCopy = async (value: string, key: string) => {
     await copyText(value);
@@ -346,30 +337,6 @@ export function ShareCard({
                 )
               }
             />
-            <ConnectInlineValue
-              label={t("share.apiKey")}
-              value={share.shareToken}
-              displayValue={apiKeyDisplay}
-              action={
-                !isFree ? (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 shrink-0"
-                    onClick={() => setRevealKey((prev) => !prev)}
-                  >
-                    {revealKey ? (
-                      <EyeOff className="h-3.5 w-3.5" />
-                    ) : (
-                      <Eye className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
-                ) : null
-              }
-              onCopy={() =>
-                void handleCopy(share.shareToken, "share.toast.copyApiKey")
-              }
-            />
           </div>
         </section>
 
@@ -462,7 +429,6 @@ export function ShareCard({
         onUpdateTokenLimit={onUpdateTokenLimit}
         onUpdateParallelLimit={onUpdateParallelLimit}
         onUpdateSubdomain={onUpdateSubdomain}
-        onUpdateApiKey={onUpdateApiKey}
         onUpdateDescription={onUpdateDescription}
         onUpdateForSale={onUpdateForSale}
         onUpdateShareSalePricing={onUpdateShareSalePricing}

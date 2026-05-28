@@ -40,7 +40,6 @@ interface ShareListProps {
     share: ShareRecord,
     subdomain: string,
   ) => Promise<void> | void;
-  onUpdateApiKey: (share: ShareRecord, apiKey: string) => Promise<void> | void;
   onUpdateDescription: (
     share: ShareRecord,
     description: string,
@@ -94,7 +93,6 @@ export function ShareList({
   onUpdateTokenLimit,
   onUpdateParallelLimit,
   onUpdateSubdomain,
-  onUpdateApiKey,
   onUpdateDescription,
   onUpdateForSale,
   onUpdateShareSalePricing,
@@ -174,7 +172,6 @@ export function ShareList({
           onUpdateTokenLimit={onUpdateTokenLimit}
           onUpdateParallelLimit={onUpdateParallelLimit}
           onUpdateSubdomain={onUpdateSubdomain}
-          onUpdateApiKey={onUpdateApiKey}
           onUpdateDescription={onUpdateDescription}
           onUpdateForSale={onUpdateForSale}
           onUpdateShareSalePricing={onUpdateShareSalePricing}

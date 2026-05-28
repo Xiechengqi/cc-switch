@@ -1,6 +1,6 @@
 import type { Settings } from "@/types";
 
-export const DEFAULT_OAUTH_QUOTA_REFRESH_INTERVAL_MINUTES = 5;
+export const DEFAULT_OAUTH_QUOTA_REFRESH_INTERVAL_MINUTES = 30;
 
 export function getOauthQuotaRefreshIntervalMinutes(
   settings: Settings | undefined,

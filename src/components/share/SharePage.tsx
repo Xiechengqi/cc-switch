@@ -22,7 +22,6 @@ import {
   useUpdateShareAclMutation,
   useUpdateShareAutoStartMutation,
   useSharesQuery,
-  useUpdateShareApiKeyMutation,
   useUpdateShareDescriptionMutation,
   useUpdateShareExpirationMutation,
   useUpdateShareForSaleMutation,
@@ -80,7 +79,6 @@ export function SharePage({ defaultApp }: SharePageProps) {
   const enableMutation = useEnableShareMutation();
   const disableMutation = useDisableShareMutation();
   const resetUsageMutation = useResetShareUsageMutation();
-  const updateApiKeyMutation = useUpdateShareApiKeyMutation();
   const updateDescriptionMutation = useUpdateShareDescriptionMutation();
   const updateForSaleMutation = useUpdateShareForSaleMutation();
   const updateSharePricingMutation =
@@ -242,11 +240,6 @@ export function SharePage({ defaultApp }: SharePageProps) {
                 shareId: share.id,
                 subdomain,
               }),
-            )
-          }
-          onUpdateApiKey={(share, apiKey) =>
-            runShareAction(share, () =>
-              updateApiKeyMutation.mutateAsync({ shareId: share.id, apiKey }),
             )
           }
           onUpdateDescription={(share, description) =>

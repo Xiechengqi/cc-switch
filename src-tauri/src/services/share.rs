@@ -61,11 +61,7 @@ impl ShareService {
             .map(|value| normalize_subdomain(&value))
             .transpose()?
             .unwrap_or_else(|| format!("share-{}", &id[..8]));
-        let share_token = params
-            .api_key
-            .map(|value| normalize_api_key(&value))
-            .transpose()?
-            .unwrap_or_else(Self::generate_token);
+        let share_token = Self::generate_token();
         let now = chrono::Utc::now();
         let expires_at = now + chrono::Duration::seconds(params.expires_in_secs);
         let description = normalize_description(params.description)?;
@@ -310,20 +306,6 @@ impl ShareService {
         Ok(updated)
     }
 
-    pub fn update_api_key(
-        db: &Arc<Database>,
-        share_id: &str,
-        api_key: &str,
-    ) -> Result<ShareRecord, AppError> {
-        let normalized = normalize_api_key(api_key)?;
-        db.update_share_api_key(share_id, &normalized)?;
-        let updated = db
-            .get_share_by_id(share_id)?
-            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
-        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
-        Ok(updated)
-    }
-
     pub fn update_description(
         db: &Arc<Database>,
         share_id: &str,
@@ -506,7 +488,6 @@ pub struct PrepareShareParams {
     pub parallel_limit: i64,
     pub expires_in_secs: i64,
     pub subdomain: Option<String>,
-    pub api_key: Option<String>,
     pub auto_start: bool,
 }
 
@@ -544,24 +525,6 @@ fn normalize_subdomain(value: &str) -> Result<String, AppError> {
         }
     }
     Ok(value)
-}
-
-fn normalize_api_key(value: &str) -> Result<String, AppError> {
-    let value = value.trim();
-    if value.len() < 8 || value.len() > 128 {
-        return Err(AppError::Message(
-            "API Key 长度必须在 8 到 128 个字符之间".to_string(),
-        ));
-    }
-    if !value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-    {
-        return Err(AppError::Message(
-            "API Key 只能包含字母、数字、-、_、.".to_string(),
-        ));
-    }
-    Ok(value.to_string())
 }
 
 fn normalize_parallel_limit(value: i64) -> Result<i64, AppError> {

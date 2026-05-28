@@ -121,6 +121,7 @@ export function ShareRequestLogTable({
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t("share.requestTime")}</TableHead>
+                    <TableHead>{t("share.requestUser")}</TableHead>
                     <TableHead>{t("share.requestModel")}</TableHead>
                     <TableHead>{t("share.requestInput")}</TableHead>
                     <TableHead>{t("share.requestOutput")}</TableHead>
@@ -135,7 +136,7 @@ export function ShareRequestLogTable({
                   {isLoading ? (
                     <TableRow>
                       <TableCell
-                        colSpan={9}
+                        colSpan={10}
                         className="h-24 text-center text-muted-foreground"
                       >
                         {t("common.loading")}
@@ -146,6 +147,9 @@ export function ShareRequestLogTable({
                       <TableRow key={log.requestId}>
                         <TableCell className="whitespace-nowrap">
                           {formatUtcDateTime(log.createdAt * 1000)}
+                        </TableCell>
+                        <TableCell className="max-w-48 truncate">
+                          {log.userEmail || "-"}
                         </TableCell>
                         <TableCell>
                           <div className="font-medium">
@@ -173,7 +177,7 @@ export function ShareRequestLogTable({
                   ) : (
                     <TableRow>
                       <TableCell
-                        colSpan={9}
+                        colSpan={10}
                         className="h-24 text-center text-muted-foreground"
                       >
                         {t("share.requestLogsEmpty")}

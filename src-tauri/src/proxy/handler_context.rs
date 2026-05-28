@@ -8,7 +8,7 @@ use crate::proxy::{
     extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
-    share_guard::{check_share_token, ShareGuardResult},
+    share_guard::{check_share_token, share_user_email_from_headers, ShareGuardResult},
     types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
     ProxyError,
 };
@@ -75,6 +75,8 @@ pub struct RequestContext {
     pub share_id: Option<String>,
     /// 共享 token 请求对应的 share 名称，用于请求明细落库
     pub share_name: Option<String>,
+    /// Router 已认证的调用用户邮箱，仅用于 share 请求日志。
+    pub share_user_email: Option<String>,
     /// 由 cc-switch-router 透传的请求 ID，用于让 live ticker 与 share request log
     /// 共享同一个 request identity。
     pub incoming_request_id: Option<String>,
@@ -194,6 +196,7 @@ impl RequestContext {
             copilot_optimizer_config,
             share_id: None,
             share_name: None,
+            share_user_email: None,
             incoming_request_id,
         };
 
@@ -221,6 +224,7 @@ impl RequestContext {
             ShareGuardResult::Valid(share) => {
                 self.share_id = Some(share.id.clone());
                 self.share_name = Some(share.name.clone());
+                self.share_user_email = share_user_email_from_headers(headers);
                 crate::proxy::share_guard::record_share_access(&state.db, &share.id);
                 log::info!(
                     "[{}] 共享请求 share_id={} app={} provider={}",

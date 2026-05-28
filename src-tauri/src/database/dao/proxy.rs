@@ -66,7 +66,7 @@ impl Database {
                     request_agent, requested_model, actual_model, actual_model_source,
                     status_code, latency_ms,
                     first_token_ms, input_tokens, output_tokens, cache_read_tokens,
-                    cache_creation_tokens, is_streaming, session_id, created_at
+                    cache_creation_tokens, is_streaming, session_id, user_email, created_at
              FROM proxy_request_logs
              WHERE share_id = ?1
              ORDER BY created_at DESC
@@ -106,7 +106,8 @@ impl Database {
                     cache_creation_tokens: row.get::<_, i64>(18)? as u32,
                     is_streaming: row.get::<_, i64>(19)? != 0,
                     session_id: row.get(20)?,
-                    created_at: row.get(21)?,
+                    user_email: row.get(21)?,
+                    created_at: row.get(22)?,
                 })
             })
             .map_err(|e| AppError::Database(e.to_string()))?;

@@ -2835,6 +2835,7 @@
     "requestLogsPrev": "Previous",
     "requestLogsNext": "Next",
     "requestTime": "Time",
+    "requestUser": "User",
     "requestModel": "Model",
     "requestInput": "Input",
     "requestOutput": "Output",

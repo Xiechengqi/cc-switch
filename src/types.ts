@@ -343,7 +343,7 @@ export interface Settings {
   autoSyncConfirmed?: boolean;
   // User has confirmed the common config first-run notice
   commonConfigConfirmed?: boolean;
-  // OAuth 额度自动刷新间隔（分钟，默认 5）
+  // OAuth 额度自动刷新间隔（分钟，默认 30）
   oauthQuotaRefreshIntervalMinutes?: number;
   // 首选语言（可选，默认中文）
   language?: "en" | "zh" | "zh-TW" | "ja";

@@ -2835,6 +2835,7 @@
     "requestLogsPrev": "前へ",
     "requestLogsNext": "次へ",
     "requestTime": "時刻",
+    "requestUser": "ユーザー",
     "requestModel": "モデル",
     "requestInput": "Input",
     "requestOutput": "Output",

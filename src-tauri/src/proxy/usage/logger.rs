@@ -35,6 +35,7 @@ pub struct RequestLog {
     pub cost_multiplier: String,
     pub share_id: Option<String>,
     pub share_name: Option<String>,
+    pub user_email: Option<String>,
 }
 
 /// 使用量记录器
@@ -80,8 +81,8 @@ impl<'a> UsageLogger<'a> {
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
                 provider_type, is_streaming, cost_multiplier, created_at,
-                share_id, share_name
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
+                share_id, share_name, user_email
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
             rusqlite::params![
                 log.request_id,
                 log.provider_id,
@@ -112,6 +113,7 @@ impl<'a> UsageLogger<'a> {
                 created_at,
                 log.share_id,
                 log.share_name,
+                log.user_email,
             ],
         )
         .map_err(|e| AppError::Database(format!("记录请求日志失败: {e}")))?;
@@ -156,6 +158,7 @@ impl<'a> UsageLogger<'a> {
             cost_multiplier: "1.0".to_string(),
             share_id: None,
             share_name: None,
+            user_email: None,
         };
 
         self.log_request(&log)
@@ -201,6 +204,7 @@ impl<'a> UsageLogger<'a> {
             cost_multiplier: "1.0".to_string(),
             share_id: None,
             share_name: None,
+            user_email: None,
         };
 
         self.log_request(&log)
@@ -325,6 +329,7 @@ impl<'a> UsageLogger<'a> {
         is_streaming: bool,
         share_id: Option<String>,
         share_name: Option<String>,
+        user_email: Option<String>,
     ) -> Result<(), AppError> {
         let pricing = self.get_model_pricing(&pricing_model)?;
 
@@ -366,6 +371,7 @@ impl<'a> UsageLogger<'a> {
             cost_multiplier: cost_multiplier.to_string(),
             share_id,
             share_name,
+            user_email,
         };
 
         self.log_request(&log)
@@ -425,6 +431,7 @@ mod tests {
             None,
             Some("claude".to_string()),
             false,
+            None,
             None,
             None,
         )?;

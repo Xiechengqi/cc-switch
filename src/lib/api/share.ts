@@ -35,7 +35,6 @@ export interface CreateShareParams {
   parallelLimit: number;
   expiresInSecs: number;
   subdomain?: string;
-  apiKey?: string;
   autoStart: boolean;
 }
 
@@ -67,11 +66,6 @@ export interface UpdateShareParallelLimitParams {
 export interface UpdateShareSubdomainParams {
   shareId: string;
   subdomain: string;
-}
-
-export interface UpdateShareApiKeyParams {
-  shareId: string;
-  apiKey: string;
 }
 
 export interface UpdateShareDescriptionParams {
@@ -123,7 +117,6 @@ export interface TunnelConfig {
 
 export interface ConnectInfo {
   tunnelUrl: string;
-  apiKey: string;
   subdomain: string;
 }
 
@@ -171,12 +164,6 @@ async function updateSubdomain(
   params: UpdateShareSubdomainParams,
 ): Promise<ShareRecord> {
   return invoke<ShareRecord>("update_share_subdomain", { params });
-}
-
-async function updateApiKey(
-  params: UpdateShareApiKeyParams,
-): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_api_key", { params });
 }
 
 async function updateDescription(
@@ -274,7 +261,6 @@ export const shareApi = {
   updateTokenLimit,
   updateParallelLimit,
   updateSubdomain,
-  updateApiKey,
   updateDescription,
   updateForSale,
   updateForSaleOfficialPricePercent,

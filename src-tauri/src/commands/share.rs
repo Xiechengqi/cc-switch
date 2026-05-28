@@ -23,7 +23,6 @@ pub struct CreateShareParams {
     pub parallel_limit: i64,
     pub expires_in_secs: i64,
     pub subdomain: Option<String>,
-    pub api_key: Option<String>,
     #[serde(default)]
     pub auto_start: bool,
 }
@@ -64,13 +63,6 @@ pub struct UpdateShareParallelLimitParams {
 pub struct UpdateShareSubdomainParams {
     pub share_id: String,
     pub subdomain: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateShareApiKeyParams {
-    pub share_id: String,
-    pub api_key: String,
 }
 
 #[derive(Deserialize)]
@@ -132,7 +124,6 @@ fn default_market_access_mode() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct ConnectInfo {
     pub tunnel_url: String,
-    pub api_key: String,
     pub subdomain: String,
 }
 
@@ -156,7 +147,6 @@ pub async fn create_share(
             parallel_limit: params.parallel_limit,
             expires_in_secs: params.expires_in_secs,
             subdomain: requested_subdomain.clone(),
-            api_key: params.api_key.clone(),
             auto_start: params.auto_start,
         })
         .map_err(|e: AppError| e.to_string())?;
@@ -297,15 +287,6 @@ pub fn update_share_parallel_limit(
     params: UpdateShareParallelLimitParams,
 ) -> Result<ShareRecord, String> {
     ShareService::update_parallel_limit(&state.db, &params.share_id, params.parallel_limit)
-        .map_err(|e: AppError| e.to_string())
-}
-
-#[tauri::command]
-pub fn update_share_api_key(
-    state: State<'_, AppState>,
-    params: UpdateShareApiKeyParams,
-) -> Result<ShareRecord, String> {
-    ShareService::update_api_key(&state.db, &params.share_id, &params.api_key)
         .map_err(|e: AppError| e.to_string())
 }
 
@@ -652,7 +633,6 @@ pub fn get_share_connect_info(
 
     Ok(ConnectInfo {
         tunnel_url,
-        api_key: share.share_token,
         subdomain,
     })
 }

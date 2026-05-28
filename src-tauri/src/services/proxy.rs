@@ -2153,9 +2153,7 @@ impl ProxyService {
     }
 
     fn write_gemini_live(&self, config: &Value) -> Result<(), String> {
-        use crate::gemini_config::{
-            get_gemini_env_path, json_to_env, write_gemini_env_atomic,
-        };
+        use crate::gemini_config::{get_gemini_env_path, json_to_env, write_gemini_env_atomic};
 
         if config.is_null() {
             // Null marker means the .env did not exist before takeover → remove the file

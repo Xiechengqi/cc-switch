@@ -108,7 +108,6 @@ function buildDefaultValues(ownerEmail: string): CreateShareFormInput {
     tokenLimit: UNLIMITED_TOKEN_LIMIT,
     parallelLimit: UNLIMITED_PARALLEL_LIMIT,
     expiresInSecs: permanentExpiresInSecs(),
-    apiKey: "",
     subdomain: deriveSubdomainFromEmail(ownerEmail),
     marketAccessMode: "all",
   };
@@ -172,7 +171,6 @@ export function CreateShareDialog({
   const parallelLimit = form.watch("parallelLimit") as number;
   const marketAccessMode = form.watch("marketAccessMode") as "selected" | "all";
   const subdomainValue = form.watch("subdomain") as string;
-  const apiKeyValue = form.watch("apiKey") as string;
   const forSaleValue = form.watch("forSale") as "Yes" | "No" | "Free";
   const autoStartValue = form.watch("autoStart") as boolean;
   const descriptionValue = form.watch("description") as string;
@@ -211,7 +209,6 @@ export function CreateShareDialog({
         tokenLimit: values.tokenLimit,
         parallelLimit: values.parallelLimit,
         expiresInSecs: values.expiresInSecs,
-        apiKey: values.apiKey || undefined,
         subdomain: values.subdomain || undefined,
         autoStart: values.autoStart,
       },
@@ -246,7 +243,6 @@ export function CreateShareDialog({
         isPermanent,
         tokenLimit,
         parallelLimit,
-        apiKey: apiKeyValue,
         subdomain: subdomainValue,
       }),
     [
@@ -258,7 +254,6 @@ export function CreateShareDialog({
       isPermanent,
       tokenLimit,
       parallelLimit,
-      apiKeyValue,
       subdomainValue,
     ],
   );
@@ -682,19 +677,6 @@ export function CreateShareDialog({
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="share-api-key">{t("share.apiKey")}</Label>
-                  <Input
-                    id="share-api-key"
-                    placeholder="custom-share-key"
-                    {...form.register("apiKey")}
-                  />
-                  <div className="text-xs text-muted-foreground">
-                    {t("share.apiKeyHint")}
-                  </div>
-                  <FieldError error={form.formState.errors.apiKey?.message} />
-                </div>
-
-                <div className="space-y-1.5">
                   <Label htmlFor="share-subdomain">
                     {t("share.subdomain")}
                   </Label>
@@ -821,7 +803,6 @@ function buildDefaultsSummary(
     isPermanent: boolean;
     tokenLimit: number;
     parallelLimit: number;
-    apiKey: string;
     subdomain: string;
   },
 ): SummaryLine[] {
@@ -869,13 +850,6 @@ function buildDefaultsSummary(
       value: isUnlimitedParallelLimit(values.parallelLimit)
         ? t("share.unlimited", { defaultValue: "无上限" })
         : String(values.parallelLimit),
-    },
-    {
-      key: "apiKey",
-      label: t("share.apiKey"),
-      value: values.apiKey.trim()
-        ? values.apiKey.trim()
-        : t("share.createDialog.apiKeyAuto", { defaultValue: "(自动生成)" }),
     },
     {
       key: "subdomain",

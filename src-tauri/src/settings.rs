@@ -353,7 +353,7 @@ fn default_minimize_to_tray_on_close() -> bool {
 }
 
 fn default_oauth_quota_refresh_interval_minutes() -> u32 {
-    5
+    30
 }
 
 fn default_enable_local_proxy() -> bool {

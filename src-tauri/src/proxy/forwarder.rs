@@ -1794,6 +1794,7 @@ impl RequestForwarder {
                 if key_str.eq_ignore_ascii_case("authorization")
                     || key_str.eq_ignore_ascii_case("x-api-key")
                     || key_str.eq_ignore_ascii_case("x-goog-api-key")
+                    || key_str.eq_ignore_ascii_case("x-cc-switch-user-email")
                 {
                     if !saw_auth {
                         saw_auth = true;

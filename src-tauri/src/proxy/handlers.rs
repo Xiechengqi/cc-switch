@@ -542,6 +542,7 @@ async fn handle_claude_transform(
             let start_time = ctx.start_time;
             let share_id = ctx.share_id.clone();
             let share_name = ctx.share_name.clone();
+            let share_user_email = ctx.share_user_email.clone();
             let session_id = ctx.session_id.clone();
             let incoming_request_id = ctx.incoming_request_id.clone();
 
@@ -569,6 +570,7 @@ async fn handle_claude_transform(
                     let model = model.clone();
                     let share_id = share_id.clone();
                     let share_name = share_name.clone();
+                    let share_user_email = share_user_email.clone();
                     let session_id = session_id.clone();
                     let incoming_request_id = incoming_request_id.clone();
 
@@ -586,6 +588,9 @@ async fn handle_claude_transform(
                             true,
                             status_code,
                             Some(session_id.clone()),
+                            share_id.clone(),
+                            share_name.clone(),
+                            share_user_email.clone(),
                         )
                         .await;
 
@@ -609,6 +614,7 @@ async fn handle_claude_transform(
                                     &usage,
                                     true,
                                     Some(session_id),
+                                    share_user_email,
                                 ),
                             );
                             crate::proxy::share_guard::record_share_request(
@@ -710,6 +716,7 @@ async fn handle_claude_transform(
         let request_model = ctx.request_model.clone();
         let share_id = ctx.share_id.clone();
         let share_name = ctx.share_name.clone();
+        let share_user_email = ctx.share_user_email.clone();
         let provider_name = ctx.provider.name.clone();
         let incoming_request_id = ctx.incoming_request_id.clone();
         tokio::spawn({
@@ -731,6 +738,9 @@ async fn handle_claude_transform(
                     false,
                     status.as_u16(),
                     Some(session_id.clone()),
+                    share_id.clone(),
+                    share_name.clone(),
+                    share_user_email.clone(),
                 )
                 .await;
 
@@ -754,6 +764,7 @@ async fn handle_claude_transform(
                             &usage,
                             false,
                             Some(session_id),
+                            share_user_email,
                         ),
                     );
                     crate::proxy::share_guard::record_share_request(&state.db, &sid, total_tokens);
@@ -1058,6 +1069,9 @@ async fn handle_codex_chat_to_responses_transform(
             let request_model = ctx.request_model.clone();
             let start_time = ctx.start_time;
             let session_id = ctx.session_id.clone();
+            let share_id = ctx.share_id.clone();
+            let share_name = ctx.share_name.clone();
+            let share_user_email = ctx.share_user_email.clone();
 
             Some(SseUsageCollector::new(
                 start_time,
@@ -1072,6 +1086,9 @@ async fn handle_codex_chat_to_responses_transform(
                     let provider_id = provider_id.clone();
                     let request_model = request_model.clone();
                     let session_id = session_id.clone();
+                    let share_id = share_id.clone();
+                    let share_name = share_name.clone();
+                    let share_user_email = share_user_email.clone();
 
                     tokio::spawn(async move {
                         log_usage(
@@ -1087,6 +1104,9 @@ async fn handle_codex_chat_to_responses_transform(
                             true,
                             status.as_u16(),
                             Some(session_id),
+                            share_id,
+                            share_name,
+                            share_user_email,
                         )
                         .await;
                     });
@@ -1153,6 +1173,9 @@ async fn handle_codex_chat_to_responses_transform(
             let provider_id = ctx.provider.id.clone();
             let model = model.to_string();
             let session_id = ctx.session_id.clone();
+            let share_id = ctx.share_id.clone();
+            let share_name = ctx.share_name.clone();
+            let share_user_email = ctx.share_user_email.clone();
             let latency_ms = ctx.latency_ms();
             async move {
                 log_usage(
@@ -1168,6 +1191,9 @@ async fn handle_codex_chat_to_responses_transform(
                     false,
                     status.as_u16(),
                     Some(session_id),
+                    share_id,
+                    share_name,
+                    share_user_email,
                 )
                 .await;
             }
@@ -1482,6 +1508,9 @@ async fn log_usage(
     is_streaming: bool,
     status_code: u16,
     session_id: Option<String>,
+    share_id: Option<String>,
+    share_name: Option<String>,
+    user_email: Option<String>,
 ) {
     use super::usage::logger::UsageLogger;
 
@@ -1516,8 +1545,9 @@ async fn log_usage(
         session_id,
         None, // provider_type
         is_streaming,
-        None, // share_id — recorded separately via record_share_request
-        None, // share_name
+        share_id,
+        share_name,
+        user_email,
     ) {
         log::warn!("[USG-001] 记录使用量失败: {e}");
     }

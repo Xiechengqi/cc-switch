@@ -536,6 +536,7 @@ fn create_usage_collector(
     let session_id = ctx.session_id.clone();
     let share_id = ctx.share_id.clone();
     let share_name = ctx.share_name.clone();
+    let share_user_email = ctx.share_user_email.clone();
     let incoming_request_id = ctx.incoming_request_id.clone();
 
     Some(SseUsageCollector::new(
@@ -552,6 +553,7 @@ fn create_usage_collector(
                 let request_model = request_model.clone();
                 let share_id = share_id.clone();
                 let share_name = share_name.clone();
+                let share_user_email = share_user_email.clone();
                 let incoming_request_id = incoming_request_id.clone();
                 let total_tokens = i64::from(usage.input_tokens)
                     + i64::from(usage.output_tokens)
@@ -566,6 +568,8 @@ fn create_usage_collector(
                 let session_id_for_sync = session_id.clone();
                 let share_name_for_log = share_name.clone();
                 let share_name_for_sync = share_name.clone();
+                let share_user_email_for_log = share_user_email.clone();
+                let share_user_email_for_sync = share_user_email.clone();
                 let provider_name_for_sync = provider_name.clone();
 
                 tokio::spawn(async move {
@@ -585,6 +589,7 @@ fn create_usage_collector(
                             Some(session_id_for_log),
                             share_id.clone(),
                             share_name_for_log,
+                            share_user_email_for_log,
                         )
                         .await;
                     }
@@ -605,6 +610,7 @@ fn create_usage_collector(
                                 &usage_for_sync,
                                 true,
                                 Some(session_id_for_sync),
+                                share_user_email_for_sync,
                             ),
                         );
                         crate::proxy::share_guard::record_share_request(
@@ -623,6 +629,7 @@ fn create_usage_collector(
                 let request_model = request_model.clone();
                 let share_id = share_id.clone();
                 let share_name = share_name.clone();
+                let share_user_email = share_user_email.clone();
                 let incoming_request_id = incoming_request_id.clone();
                 let request_id = incoming_request_id
                     .clone()
@@ -631,6 +638,8 @@ fn create_usage_collector(
                 let session_id_for_sync = session_id.clone();
                 let share_name_for_log = share_name.clone();
                 let share_name_for_sync = share_name.clone();
+                let share_user_email_for_log = share_user_email.clone();
+                let share_user_email_for_sync = share_user_email.clone();
                 let provider_name_for_sync = provider_name.clone();
 
                 tokio::spawn(async move {
@@ -650,6 +659,7 @@ fn create_usage_collector(
                             Some(session_id_for_log),
                             share_id.clone(),
                             share_name_for_log,
+                            share_user_email_for_log,
                         )
                         .await;
                     }
@@ -670,6 +680,7 @@ fn create_usage_collector(
                                 &TokenUsage::default(),
                                 true,
                                 Some(session_id_for_sync),
+                                share_user_email_for_sync,
                             ),
                         );
                         crate::proxy::share_guard::record_share_request(&state.db, &sid, 0);
@@ -707,6 +718,7 @@ fn spawn_log_usage(
     let session_id = ctx.session_id.clone();
     let share_id = ctx.share_id.clone();
     let share_name = ctx.share_name.clone();
+    let share_user_email = ctx.share_user_email.clone();
     let incoming_request_id = ctx.incoming_request_id.clone();
     let total_tokens = i64::from(usage.input_tokens)
         + i64::from(usage.output_tokens)
@@ -722,6 +734,8 @@ fn spawn_log_usage(
     let session_id_for_sync = session_id.clone();
     let share_name_for_log = share_name.clone();
     let share_name_for_sync = share_name.clone();
+    let share_user_email_for_log = share_user_email.clone();
+    let share_user_email_for_sync = share_user_email.clone();
 
     tokio::spawn(async move {
         if should_log_request {
@@ -740,6 +754,7 @@ fn spawn_log_usage(
                 Some(session_id_for_log),
                 share_id.clone(),
                 share_name_for_log,
+                share_user_email_for_log,
             )
             .await;
         }
@@ -761,6 +776,7 @@ fn spawn_log_usage(
                 &usage_for_sync,
                 is_streaming,
                 Some(session_id_for_sync),
+                share_user_email_for_sync,
             ));
             crate::proxy::share_guard::record_share_request(&state.db, &sid, total_tokens);
         }
@@ -792,6 +808,7 @@ async fn log_usage_internal(
     session_id: Option<String>,
     share_id: Option<String>,
     share_name: Option<String>,
+    user_email: Option<String>,
 ) {
     use super::usage::logger::UsageLogger;
 
@@ -836,6 +853,7 @@ async fn log_usage_internal(
         is_streaming,
         share_id,
         share_name,
+        user_email,
     ) {
         log::warn!("[USG-001] 记录使用量失败: {e}");
     }
@@ -857,6 +875,7 @@ pub(crate) fn build_share_request_log(
     usage: &TokenUsage,
     is_streaming: bool,
     session_id: Option<String>,
+    user_email: Option<String>,
 ) -> crate::tunnel::config::ShareTunnelRequestLog {
     crate::tunnel::config::ShareTunnelRequestLog {
         request_id: request_id.to_string(),
@@ -884,6 +903,7 @@ pub(crate) fn build_share_request_log(
         cache_creation_tokens: usage.cache_creation_tokens,
         is_streaming,
         session_id,
+        user_email,
         created_at: Utc::now().timestamp(),
     }
 }
@@ -1251,6 +1271,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -1311,6 +1332,7 @@ mod tests {
             None,
             false,
             200,
+            None,
             None,
             None,
             None,

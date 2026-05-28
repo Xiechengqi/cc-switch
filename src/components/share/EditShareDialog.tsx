@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Eye, EyeOff, X } from "lucide-react";
+import { X } from "lucide-react";
 import type { PublicMarket, ShareRecord } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -58,7 +58,6 @@ interface EditShareDialogProps {
     share: ShareRecord,
     subdomain: string,
   ) => Promise<void> | void;
-  onUpdateApiKey: (share: ShareRecord, apiKey: string) => Promise<void> | void;
   onUpdateDescription: (
     share: ShareRecord,
     description: string,
@@ -103,7 +102,6 @@ export function EditShareDialog({
   onUpdateTokenLimit,
   onUpdateParallelLimit,
   onUpdateSubdomain,
-  onUpdateApiKey,
   onUpdateDescription,
   onUpdateForSale,
   onUpdateShareSalePricing,
@@ -115,7 +113,6 @@ export function EditShareDialog({
   const { t } = useTranslation();
   const [saving, setSaving] = useState(false);
   const [confirmFreeOpen, setConfirmFreeOpen] = useState(false);
-  const [revealKey, setRevealKey] = useState(false);
 
   const [tokenLimitInput, setTokenLimitInput] = useState("");
   const [tokenLimitUnlimited, setTokenLimitUnlimited] = useState(false);
@@ -126,7 +123,6 @@ export function EditShareDialog({
     DEFAULT_PARALLEL_LIMIT,
   );
   const [subdomainInput, setSubdomainInput] = useState("");
-  const [apiKeyInput, setApiKeyInput] = useState("");
   const [descriptionInput, setDescriptionInput] = useState("");
   const [ownerEmailInput, setOwnerEmailInput] = useState("");
   const [shareToInput, setShareToInput] = useState("");
@@ -162,8 +158,6 @@ export function EditShareDialog({
   );
   const currentMarketAccessMode = share.marketAccessMode ?? "selected";
   const currentShareSalePricing = share.forSaleOfficialPricePercentByApp ?? {};
-  const isFree = share.forSale === "Free";
-
   const wasOpenRef = useRef(false);
   useEffect(() => {
     if (!open) {
@@ -173,7 +167,6 @@ export function EditShareDialog({
     if (wasOpenRef.current) return;
     wasOpenRef.current = true;
     setSaving(false);
-    setRevealKey(false);
     setTokenLimitInput(String(share.tokenLimit));
     setTokenLimitUnlimited(isUnlimitedTokenLimit(share.tokenLimit));
     setLastFiniteTokenLimit(
@@ -190,7 +183,6 @@ export function EditShareDialog({
         : DEFAULT_PARALLEL_LIMIT,
     );
     setSubdomainInput(share.subdomain ?? "");
-    setApiKeyInput(share.shareToken);
     setDescriptionInput(share.description ?? "");
     setOwnerEmailInput(share.ownerEmail ?? "");
     setShareToInput(currentNonMarketEmails.join(", "));
@@ -242,10 +234,6 @@ export function EditShareDialog({
     subdomainInput.trim().length < 3 ||
     !/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/.test(subdomainInput.trim()) ||
     ["admin", "api", "www", "cdn-cgi"].includes(subdomainInput.trim());
-  const apiKeyDirty = apiKeyInput.trim() !== share.shareToken;
-  const apiKeyInvalid =
-    apiKeyInput.trim().length < 8 ||
-    !/^[A-Za-z0-9._-]{8,128}$/.test(apiKeyInput.trim());
   const normalizedDescription = descriptionInput.trim();
   const descriptionDirty = normalizedDescription !== (share.description ?? "");
   const descriptionInvalid = normalizedDescription.length > 200;
@@ -351,7 +339,6 @@ export function EditShareDialog({
     ownerEmailDirty ||
     descriptionDirty ||
     expiryDirty ||
-    apiKeyDirty ||
     subdomainDirty ||
     tokenLimitDirty ||
     parallelLimitDirty;
@@ -361,7 +348,6 @@ export function EditShareDialog({
     (ownerEmailDirty && ownerEmailInvalid) ||
     (descriptionDirty && descriptionInvalid) ||
     (expiryDirty && expiryInvalid) ||
-    (apiKeyDirty && apiKeyInvalid) ||
     (subdomainDirty && subdomainInvalid) ||
     (tokenLimitDirty && tokenLimitInvalid) ||
     (parallelLimitDirty && parallelLimitInvalid);
@@ -389,7 +375,6 @@ export function EditShareDialog({
       if (descriptionDirty)
         await onUpdateDescription(share, normalizedDescription);
       if (expiryDirty) await onUpdateExpiration(share, expiryIso);
-      if (apiKeyDirty) await onUpdateApiKey(share, apiKeyInput.trim());
       if (subdomainDirty) await onUpdateSubdomain(share, subdomainInput.trim());
       if (tokenLimitDirty) await onUpdateTokenLimit(share, parsedTokenLimit);
       if (parallelLimitDirty)
@@ -880,34 +865,6 @@ export function EditShareDialog({
               </DialogSection>
             </div>
 
-            <DialogSection
-              title={t("share.apiKey", { defaultValue: "API Key" })}
-              invalid={apiKeyDirty && apiKeyInvalid}
-            >
-              <div className="flex items-center gap-2">
-                <Input
-                  type={revealKey || isFree ? "text" : "password"}
-                  value={apiKeyInput}
-                  disabled={busy}
-                  onChange={(event) => setApiKeyInput(event.target.value)}
-                />
-                {!isFree ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-9 w-9 shrink-0"
-                    onClick={() => setRevealKey((prev) => !prev)}
-                  >
-                    {revealKey ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
-                    )}
-                  </Button>
-                ) : null}
-              </div>
-            </DialogSection>
           </div>
 
           <DialogFooter>

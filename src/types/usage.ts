@@ -37,6 +37,7 @@ export interface RequestLog {
   createdAt: number;
   shareId?: string;
   shareName?: string;
+  userEmail?: string;
   dataSource?: string;
 }
 

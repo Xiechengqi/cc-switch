@@ -7,9 +7,9 @@ use crate::database::{Database, ShareRecord};
 use crate::provider::Provider;
 use crate::settings;
 use crate::tunnel::config::{
-    ShareAppRuntimes, ShareRuntimeSnapshot, ShareSupport, ShareTunnelMetadata,
-    ShareTunnelRequestLog, ShareUpstreamModel, ShareUpstreamProvider, ShareUpstreamQuota,
-    ShareUpstreamQuotaTier, TunnelConfig,
+    ShareAppProvider, ShareAppProviders, ShareAppRuntimes, ShareRuntimeSnapshot, ShareSupport,
+    ShareTunnelMetadata, ShareTunnelRequestLog, ShareUpstreamModel, ShareUpstreamProvider,
+    ShareUpstreamQuota, ShareUpstreamQuotaTier, TunnelConfig,
 };
 use crate::tunnel::identity;
 use futures::StreamExt;
@@ -523,6 +523,7 @@ pub(crate) async fn build_share_runtime_snapshot(
 ) -> ShareRuntimeSnapshot {
     let support = query_share_support(db).await;
     let app_runtimes = build_all_upstream_provider_snapshots(db, &support, share).await;
+    let app_providers = build_all_app_provider_snapshots(db, &support).await;
     let model_health = crate::tunnel::model_health::current_share_model_health_summary().await;
     ShareRuntimeSnapshot {
         share_id: share.id.clone(),
@@ -533,7 +534,97 @@ pub(crate) async fn build_share_runtime_snapshot(
         share_status: share.status.clone(),
         support,
         app_runtimes,
+        app_providers,
         model_health,
+    }
+}
+
+async fn build_all_app_provider_snapshots(
+    db: &Database,
+    support: &ShareSupport,
+) -> ShareAppProviders {
+    ShareAppProviders {
+        claude: build_app_provider_snapshots(db, AppType::Claude, support.claude).await,
+        codex: build_app_provider_snapshots(db, AppType::Codex, support.codex).await,
+        gemini: build_app_provider_snapshots(db, AppType::Gemini, support.gemini).await,
+    }
+}
+
+async fn build_app_provider_snapshots(
+    db: &Database,
+    app: AppType,
+    enabled: bool,
+) -> Vec<ShareAppProvider> {
+    let current_provider_id = crate::settings::get_effective_current_provider(db, &app)
+        .ok()
+        .flatten();
+    let providers = match db.get_all_providers(app.as_str()) {
+        Ok(providers) => providers,
+        Err(err) => {
+            log::debug!(
+                "[TunnelSync] failed to load providers for {}: {err}",
+                app.as_str()
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut snapshots = Vec::with_capacity(providers.len());
+    for (provider_id, provider) in providers {
+        snapshots.push(
+            build_app_provider_snapshot(
+                &app,
+                provider,
+                current_provider_id.as_deref() == Some(provider_id.as_str()),
+                enabled,
+            )
+            .await,
+        );
+    }
+    snapshots
+}
+
+async fn build_app_provider_snapshot(
+    app: &AppType,
+    provider: Provider,
+    is_current: bool,
+    enabled: bool,
+) -> ShareAppProvider {
+    let provider_type = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.provider_type.clone());
+    let mut kind = provider.category.clone();
+    let mut for_sale_official_price_percent = provider_sale_percent(&provider);
+    let mut account_email = None;
+    let mut api_url = custom_provider_api_url(app, &provider);
+    let mut quota = None;
+    let mut models = custom_provider_models(app, &provider);
+
+    if let Some(upstream) = build_official_oauth_snapshot(app, &provider).await {
+        kind = Some(upstream.kind);
+        if for_sale_official_price_percent.is_none() {
+            for_sale_official_price_percent = upstream.for_sale_official_price_percent;
+        }
+        account_email = upstream.account_email;
+        api_url = upstream.api_url;
+        quota = upstream.quota;
+        models = upstream.models;
+    }
+
+    ShareAppProvider {
+        id: provider.id,
+        name: provider.name,
+        app: app.as_str().to_string(),
+        kind,
+        provider_type,
+        is_current,
+        enabled,
+        for_sale_official_price_percent,
+        account_email,
+        api_url,
+        quota,
+        models,
     }
 }
 

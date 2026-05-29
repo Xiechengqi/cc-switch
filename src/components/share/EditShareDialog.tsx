@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { EmailTagsInput } from "@/components/ui/tags-input";
 import { cn } from "@/lib/utils";
 import type { ShareProviderSalePricing } from "./ShareCard";
 import {
@@ -133,7 +134,7 @@ export function EditShareDialog({
   const [subdomainInput, setSubdomainInput] = useState("");
   const [descriptionInput, setDescriptionInput] = useState("");
   const [ownerEmailInput, setOwnerEmailInput] = useState("");
-  const [shareToInput, setShareToInput] = useState("");
+  const [shareToEmails, setShareToEmails] = useState<string[]>([]);
   const [selectedMarketEmails, setSelectedMarketEmails] = useState<string[]>(
     [],
   );
@@ -193,7 +194,7 @@ export function EditShareDialog({
     setSubdomainInput(share.subdomain ?? "");
     setDescriptionInput(share.description ?? "");
     setOwnerEmailInput(share.ownerEmail ?? "");
-    setShareToInput(currentNonMarketEmails.join(", "));
+    setShareToEmails(currentNonMarketEmails);
     setSelectedMarketEmails(currentMarketEmails);
     setMarketAccessModeInput(currentMarketAccessMode);
     setForSaleInput(share.forSale);
@@ -252,8 +253,7 @@ export function EditShareDialog({
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedOwnerEmail);
   const normalizedShareTo = Array.from(
     new Set(
-      shareToInput
-        .split(/[\n,]/)
+      shareToEmails
         .map((value) => value.trim().toLowerCase())
         .filter((value) => value && !marketEmailSet.has(value)),
     ),
@@ -480,40 +480,20 @@ export function EditShareDialog({
               })}
               invalid={shareToDirty && shareToInvalid}
             >
-              <Textarea
-                value={shareToInput}
+              <EmailTagsInput
+                value={shareToEmails}
                 disabled={busy}
-                onChange={(event) => setShareToInput(event.target.value)}
+                invalid={shareToDirty && shareToInvalid}
+                onChange={setShareToEmails}
                 placeholder={t("share.sharedWithEmailsPlaceholder", {
                   defaultValue: "friend@example.com, teammate@example.com",
                 })}
+                onPromote={(email) => setTransferTargetEmail(email)}
+                promotableEmails={currentNonMarketEmails}
+                promoteLabel={t("share.transferOwner.action", {
+                  defaultValue: "设为 Owner",
+                })}
               />
-              {currentNonMarketEmails.length ? (
-                <div className="mt-3 space-y-2 rounded-lg border border-border-default/70 bg-muted/10 p-3">
-                  <div className="text-xs font-medium text-muted-foreground">
-                    {t("share.transferOwner.title", {
-                      defaultValue: "升级 shareto 为 Owner",
-                    })}
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {currentNonMarketEmails.map((email) => (
-                      <Button
-                        key={email}
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() => setTransferTargetEmail(email)}
-                      >
-                        {t("share.transferOwner.action", {
-                          defaultValue: "设为 Owner",
-                        })}{" "}
-                        <span className="font-mono">{email}</span>
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
             </DialogSection>
 
             <DialogSection

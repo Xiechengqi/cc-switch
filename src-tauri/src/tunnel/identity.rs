@@ -18,6 +18,11 @@ struct StoredIdentity {
     installation_id: String,
     private_key_base64: String,
     public_key_base64: String,
+    /// Symmetric secret issued by the router at registration. Used to verify
+    /// HMAC-signed control-plane calls the router makes back to this client's
+    /// local `/_ctl/*` API. Optional so older identity files keep loading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    control_secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,6 +38,8 @@ struct RegisterInstallationRequest<'a> {
 #[serde(rename_all = "camelCase")]
 struct RegisterInstallationResponse {
     installation_id: String,
+    #[serde(default)]
+    control_secret: Option<String>,
 }
 
 pub async fn ensure_identity(
@@ -60,6 +67,7 @@ pub async fn ensure_identity(
         installation_id: body.installation_id.clone(),
         private_key_base64,
         public_key_base64: public_key_base64.clone(),
+        control_secret: body.control_secret,
     };
     save_identity(&stored)?;
 
@@ -82,6 +90,7 @@ pub async fn refresh_installation_registration(
         installation_id: body.installation_id,
         private_key_base64: stored.private_key_base64,
         public_key_base64: stored.public_key_base64,
+        control_secret: body.control_secret.or(stored.control_secret),
     };
     save_identity(&next)?;
     load_identity()?
@@ -129,6 +138,13 @@ pub fn sign_action_payload<T: Serialize>(
 
 pub fn should_reset_identity_for_api_error(message: &str) -> bool {
     message.contains("installation not found") || message.contains("signature verification failed")
+}
+
+/// Loads the control-plane secret persisted at registration, if any. Returns
+/// `None` when the identity file is absent, unreadable, or predates the
+/// control-plane feature — callers treat that as "control API unavailable".
+pub fn load_control_secret() -> Option<String> {
+    load_stored_identity().ok().flatten()?.control_secret
 }
 
 fn load_identity() -> Result<Option<TunnelIdentity>, TunnelError> {

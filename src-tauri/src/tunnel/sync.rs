@@ -271,34 +271,63 @@ pub async fn pull_and_apply_pending_share_edits(db: &Arc<Database>) -> Result<()
     Ok(())
 }
 
-fn apply_share_settings_patch(
+pub(crate) fn apply_share_settings_patch(
     db: &Arc<Database>,
     share_id: &str,
     patch: ShareSettingsPatch,
 ) -> Result<(), crate::error::AppError> {
-    if let Some(owner_email) = patch.owner_email {
-        crate::services::share::ShareService::update_owner_email(db, share_id, &owner_email)?;
+    let current = db.get_share_by_id(share_id)?.ok_or_else(|| {
+        crate::error::AppError::Message(format!("Share not found: {share_id}"))
+    })?;
+
+    // Owner and ACL are applied together in a single write. Updating the owner
+    // on its own re-normalizes the existing shareto list against the *new*
+    // owner (dropping the new owner from it) but never adds the *old* owner —
+    // so an owner transfer that touched owner without a matching shareto write
+    // would silently strip the previous owner's access. Computing the final
+    // owner + shareto here, and demoting the old owner into shareto whenever the
+    // owner changes, keeps the transfer atomic and loss-free regardless of which
+    // patch fields the router sent.
+    if patch.owner_email.is_some()
+        || patch.shared_with_emails.is_some()
+        || patch.market_access_mode.is_some()
+    {
+        let old_owner = current.owner_email.trim().to_ascii_lowercase();
+        let next_owner = match &patch.owner_email {
+            Some(value) => value.trim().to_ascii_lowercase(),
+            None => old_owner.clone(),
+        };
+        let mut next_shared = patch
+            .shared_with_emails
+            .clone()
+            .unwrap_or_else(|| current.shared_with_emails.clone());
+        if next_owner != old_owner
+            && !old_owner.is_empty()
+            && !next_shared
+                .iter()
+                .any(|email| email.trim().eq_ignore_ascii_case(&old_owner))
+        {
+            next_shared.push(current.owner_email.clone());
+        }
+        let next_mode = patch
+            .market_access_mode
+            .as_deref()
+            .unwrap_or(&current.market_access_mode);
+        // update_acl normalizes the owner + list (lowercases, dedupes, strips the
+        // owner from shareto) and persists owner + shareto + mode in one update.
+        crate::services::share::ShareService::update_acl(
+            db,
+            share_id,
+            &next_owner,
+            next_shared,
+            next_mode,
+        )?;
     }
     if let Some(description) = patch.description {
         crate::services::share::ShareService::update_description(db, share_id, description)?;
     }
     if let Some(for_sale) = patch.for_sale {
         crate::services::share::ShareService::update_for_sale(db, share_id, &for_sale)?;
-    }
-    if patch.shared_with_emails.is_some() || patch.market_access_mode.is_some() {
-        let share = db.get_share_by_id(share_id)?.ok_or_else(|| {
-            crate::error::AppError::Message(format!("Share not found: {share_id}"))
-        })?;
-        crate::services::share::ShareService::update_acl(
-            db,
-            share_id,
-            &share.owner_email,
-            patch.shared_with_emails.unwrap_or(share.shared_with_emails),
-            patch
-                .market_access_mode
-                .as_deref()
-                .unwrap_or(&share.market_access_mode),
-        )?;
     }
     if let Some(pricing) = patch.for_sale_official_price_percent_by_app {
         crate::services::share::ShareService::update_for_sale_official_price_percent_by_app(

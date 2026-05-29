@@ -305,6 +305,11 @@ impl ProxyServer {
                 post(handlers::share_router_model_health),
             )
             .route("/status", get(handlers::get_status))
+            // Control plane: server→client RPC over the reverse tunnel.
+            .route(
+                "/_ctl/apply_share_settings",
+                post(super::control::apply_share_settings),
+            )
             // Claude API (支持带前缀和不带前缀两种格式)
             .route("/v1/messages", post(handlers::handle_messages))
             .route("/claude/v1/messages", post(handlers::handle_messages))

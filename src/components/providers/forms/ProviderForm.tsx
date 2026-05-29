@@ -2538,7 +2538,7 @@ function ProviderFormFull({
               autoSelect={endpointAutoSelect}
               onAutoSelectChange={setEndpointAutoSelect}
               showEndpointTools
-              shouldShowModelSelector={category !== "official"}
+              shouldShowModelSelector
               claudeModel={claudeModel}
               defaultHaikuModel={defaultHaikuModel}
               defaultHaikuModelName={defaultHaikuModelName}

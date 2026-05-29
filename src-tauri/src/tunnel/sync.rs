@@ -609,7 +609,9 @@ async fn build_app_provider_snapshot(
         account_email = upstream.account_email;
         api_url = upstream.api_url;
         quota = upstream.quota;
-        models = upstream.models;
+        if !upstream.models.is_empty() {
+            models = upstream.models;
+        }
     }
 
     ShareAppProvider {
@@ -737,7 +739,10 @@ async fn build_upstream_provider_snapshot_for_app(
         }
     };
 
-    if let Some(snapshot) = build_official_oauth_snapshot(&app, &provider).await {
+    if let Some(mut snapshot) = build_official_oauth_snapshot(&app, &provider).await {
+        if snapshot.models.is_empty() {
+            snapshot.models = custom_provider_models(&app, &provider);
+        }
         return Some(snapshot);
     }
 

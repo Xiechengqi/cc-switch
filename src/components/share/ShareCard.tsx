@@ -96,6 +96,10 @@ interface ShareCardProps {
     share: ShareRecord,
     ownerEmail: string,
   ) => Promise<void> | void;
+  onTransferOwner: (
+    share: ShareRecord,
+    targetEmail: string,
+  ) => Promise<void> | void;
   onUpdateAcl: (
     share: ShareRecord,
     sharedWithEmails: string[],
@@ -130,6 +134,7 @@ export function ShareCard({
   onUpdateExpiration,
   onUpdateAutoStart,
   onUpdateOwnerEmail,
+  onTransferOwner,
   onUpdateAcl,
 }: ShareCardProps) {
   const { t } = useTranslation();
@@ -435,6 +440,7 @@ export function ShareCard({
         onUpdateExpiration={onUpdateExpiration}
         onUpdateAutoStart={onUpdateAutoStart}
         onUpdateOwnerEmail={onUpdateOwnerEmail}
+        onTransferOwner={onTransferOwner}
         onUpdateAcl={onUpdateAcl}
       />
     </Card>

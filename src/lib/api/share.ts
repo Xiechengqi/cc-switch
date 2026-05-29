@@ -98,6 +98,11 @@ export interface UpdateShareOwnerEmailParams {
   ownerEmail: string;
 }
 
+export interface TransferShareOwnerParams {
+  shareId: string;
+  targetEmail: string;
+}
+
 export interface TunnelInfo {
   tunnelUrl: string;
   subdomain: string;
@@ -204,6 +209,12 @@ async function updateOwnerEmail(
   return invoke<ShareRecord>("update_share_owner_email", { params });
 }
 
+async function transferOwner(
+  params: TransferShareOwnerParams,
+): Promise<ShareRecord> {
+  return invoke<ShareRecord>("transfer_share_owner", { params });
+}
+
 async function updateAcl(params: UpdateShareAclParams): Promise<ShareRecord> {
   return invoke<ShareRecord>("update_share_acl", { params });
 }
@@ -267,6 +278,7 @@ export const shareApi = {
   updateExpiration,
   updateAutoStart,
   updateOwnerEmail,
+  transferOwner,
   updateAcl,
   listMarkets,
   authorizeMarket,

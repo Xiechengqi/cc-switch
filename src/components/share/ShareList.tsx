@@ -64,6 +64,10 @@ interface ShareListProps {
     share: ShareRecord,
     ownerEmail: string,
   ) => Promise<void> | void;
+  onTransferOwner: (
+    share: ShareRecord,
+    targetEmail: string,
+  ) => Promise<void> | void;
   onUpdateAcl: (
     share: ShareRecord,
     sharedWithEmails: string[],
@@ -99,6 +103,7 @@ export function ShareList({
   onUpdateExpiration,
   onUpdateAutoStart,
   onUpdateOwnerEmail,
+  onTransferOwner,
   onUpdateAcl,
 }: ShareListProps) {
   const { t } = useTranslation();
@@ -178,6 +183,7 @@ export function ShareList({
           onUpdateExpiration={onUpdateExpiration}
           onUpdateAutoStart={onUpdateAutoStart}
           onUpdateOwnerEmail={onUpdateOwnerEmail}
+          onTransferOwner={onTransferOwner}
           onUpdateAcl={onUpdateAcl}
         />
       ))}

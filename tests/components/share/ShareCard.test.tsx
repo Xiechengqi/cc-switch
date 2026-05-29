@@ -95,6 +95,7 @@ describe("ShareCard", () => {
     onUpdateExpiration: vi.fn(),
     onUpdateAutoStart: vi.fn(),
     onUpdateOwnerEmail: vi.fn(),
+    onTransferOwner: vi.fn(),
     onUpdateAcl: vi.fn(),
   });
 

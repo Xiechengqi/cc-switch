@@ -30,6 +30,7 @@ import {
   useUpdateShareParallelLimitMutation,
   useUpdateShareSubdomainMutation,
   useUpdateShareTokenLimitMutation,
+  useTransferShareOwnerMutation,
 } from "@/lib/query";
 import { shareKeys } from "@/lib/query/share";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -86,6 +87,7 @@ export function SharePage({ defaultApp }: SharePageProps) {
   const updateExpirationMutation = useUpdateShareExpirationMutation();
   const updateAutoStartMutation = useUpdateShareAutoStartMutation();
   const updateOwnerEmailMutation = useUpdateShareOwnerEmailMutation();
+  const transferOwnerMutation = useTransferShareOwnerMutation();
   const updateAclMutation = useUpdateShareAclMutation();
   const updateParallelLimitMutation = useUpdateShareParallelLimitMutation();
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
@@ -287,6 +289,14 @@ export function SharePage({ defaultApp }: SharePageProps) {
               updateOwnerEmailMutation.mutateAsync({
                 shareId: share.id,
                 ownerEmail,
+              }),
+            )
+          }
+          onTransferOwner={(share, targetEmail) =>
+            runShareAction(share, () =>
+              transferOwnerMutation.mutateAsync({
+                shareId: share.id,
+                targetEmail,
               }),
             )
           }

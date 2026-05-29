@@ -25,6 +25,8 @@ const SHARE_ROUTER_REQUEST_TIMEOUT_SECS: u64 = 20;
 #[serde(rename_all = "camelCase")]
 pub struct ShareSettingsPatch {
     #[serde(default)]
+    pub owner_email: Option<String>,
+    #[serde(default)]
     pub description: Option<Option<String>>,
     #[serde(default)]
     pub for_sale: Option<String>,
@@ -274,6 +276,9 @@ fn apply_share_settings_patch(
     share_id: &str,
     patch: ShareSettingsPatch,
 ) -> Result<(), crate::error::AppError> {
+    if let Some(owner_email) = patch.owner_email {
+        crate::services::share::ShareService::update_owner_email(db, share_id, &owner_email)?;
+    }
     if let Some(description) = patch.description {
         crate::services::share::ShareService::update_description(db, share_id, description)?;
     }
@@ -614,6 +619,20 @@ async fn build_app_provider_snapshot(
         }
     }
 
+    if let Some(auth_provider) = managed_oauth_provider_for_app(app, &provider) {
+        let (managed_account_email, managed_quota) =
+            managed_oauth_account_summary(auth_provider, &provider).await;
+        if kind.is_none() {
+            kind = Some("official_oauth".to_string());
+        }
+        if account_email.is_none() {
+            account_email = managed_account_email;
+        }
+        if quota.is_none() {
+            quota = managed_quota;
+        }
+    }
+
     ShareAppProvider {
         id: provider.id,
         name: provider.name,
@@ -664,13 +683,16 @@ async fn build_oauth_provider_snapshot(auth_provider: &str) -> Option<ShareUpstr
     if !cached.quota.success {
         return None;
     }
+    let account_email = oauth_account_label(auth_provider, &cached.account_id)
+        .await
+        .or(Some(cached.account_id));
     let quota = subscription_quota_to_upstream(cached.quota);
     Some(ShareUpstreamProvider {
         kind: "official_oauth".to_string(),
         app: auth_provider.to_string(),
         provider_name: cached.provider_name,
         for_sale_official_price_percent: None,
-        account_email: None,
+        account_email,
         api_url: None,
         quota: Some(quota),
         models: Vec::new(),
@@ -746,7 +768,7 @@ async fn build_upstream_provider_snapshot_for_app(
         return Some(snapshot);
     }
 
-    Some(ShareUpstreamProvider {
+    let mut snapshot = ShareUpstreamProvider {
         kind: "custom_provider".to_string(),
         app: app.as_str().to_string(),
         provider_name: Some(provider.name.clone()),
@@ -755,7 +777,16 @@ async fn build_upstream_provider_snapshot_for_app(
         api_url: custom_provider_api_url(&app, &provider),
         quota: None,
         models: custom_provider_models(&app, &provider),
-    })
+    };
+
+    if let Some(auth_provider) = managed_oauth_provider_for_app(&app, &provider) {
+        let (account_email, quota) = managed_oauth_account_summary(auth_provider, &provider).await;
+        snapshot.kind = "official_oauth".to_string();
+        snapshot.account_email = account_email;
+        snapshot.quota = quota;
+    }
+
+    Some(snapshot)
 }
 
 fn unknown_upstream_provider(app: &str) -> ShareUpstreamProvider {
@@ -776,6 +807,106 @@ fn provider_sale_percent(provider: &Provider) -> Option<u16> {
         .meta
         .as_ref()
         .and_then(|meta| meta.for_sale_official_price_percent)
+}
+
+fn managed_oauth_provider_for_app(app: &AppType, provider: &Provider) -> Option<&'static str> {
+    match app {
+        AppType::Claude if provider.is_kiro_oauth_provider() => Some("kiro_oauth"),
+        AppType::Claude | AppType::Codex if provider.is_cursor_oauth_provider() => {
+            Some("cursor_oauth")
+        }
+        AppType::Claude | AppType::Gemini if provider.is_antigravity_oauth_provider() => {
+            Some("antigravity_oauth")
+        }
+        _ => None,
+    }
+}
+
+async fn managed_oauth_account_summary(
+    auth_provider: &str,
+    provider: &Provider,
+) -> (Option<String>, Option<ShareUpstreamQuota>) {
+    let account_id = match provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for(auth_provider))
+        .filter(|id| !id.trim().is_empty())
+    {
+        Some(id) => Some(id),
+        None => default_oauth_account_id(auth_provider).await,
+    };
+
+    let Some(account_id) = account_id else {
+        return (None, None);
+    };
+
+    let account_email = oauth_account_label(auth_provider, &account_id)
+        .await
+        .or(Some(account_id.clone()));
+    let quota = cached_upstream_quota(auth_provider, &account_id).await;
+    (account_email, quota)
+}
+
+async fn default_oauth_account_id(auth_provider: &str) -> Option<String> {
+    let data_dir = crate::config::get_app_config_dir();
+    match auth_provider {
+        "kiro_oauth" => {
+            crate::proxy::providers::kiro_oauth_auth::KiroOAuthManager::new(data_dir)
+                .default_account_id()
+                .await
+        }
+        "cursor_oauth" => {
+            crate::proxy::providers::cursor_oauth_auth::CursorOAuthManager::new(data_dir)
+                .default_account_id()
+                .await
+        }
+        "antigravity_oauth" => {
+            crate::proxy::providers::antigravity_oauth_auth::AntigravityOAuthManager::new(data_dir)
+                .default_account_id()
+                .await
+        }
+        _ => None,
+    }
+}
+
+async fn oauth_account_label(auth_provider: &str, account_id: &str) -> Option<String> {
+    let data_dir = crate::config::get_app_config_dir();
+    match auth_provider {
+        "kiro_oauth" => {
+            let manager = crate::proxy::providers::kiro_oauth_auth::KiroOAuthManager::new(data_dir);
+            manager.get_account(account_id).await.and_then(|account| {
+                public_account_label(account.email.as_deref(), None, &account.account_id)
+            })
+        }
+        "cursor_oauth" => {
+            let manager =
+                crate::proxy::providers::cursor_oauth_auth::CursorOAuthManager::new(data_dir);
+            manager.get_account(account_id).await.and_then(|account| {
+                public_account_label(account.email.as_deref(), None, &account.account_id)
+            })
+        }
+        "antigravity_oauth" => {
+            let manager =
+                crate::proxy::providers::antigravity_oauth_auth::AntigravityOAuthManager::new(
+                    data_dir,
+                );
+            account_label(&manager.list_accounts().await, account_id)
+        }
+        _ => None,
+    }
+}
+
+fn public_account_label(
+    email: Option<&str>,
+    login: Option<&str>,
+    account_id: &str,
+) -> Option<String> {
+    email
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| login.map(str::trim).filter(|value| !value.is_empty()))
+        .map(str::to_string)
+        .or_else(|| Some(account_id.to_string()))
 }
 
 fn custom_provider_api_url(app: &AppType, provider: &Provider) -> Option<String> {
@@ -1103,10 +1234,19 @@ fn account_login(
     accounts: &[crate::proxy::providers::copilot_auth::GitHubAccount],
     account_id: &str,
 ) -> Option<String> {
-    accounts
-        .iter()
-        .find(|account| account.id == account_id)
-        .map(|account| account.login.clone())
+    account_label(accounts, account_id)
+}
+
+fn account_label(
+    accounts: &[crate::proxy::providers::copilot_auth::GitHubAccount],
+    account_id: &str,
+) -> Option<String> {
+    let account = accounts.iter().find(|account| account.id == account_id)?;
+    public_account_label(
+        account.email.as_deref(),
+        Some(account.login.as_str()),
+        &account.id,
+    )
 }
 
 async fn cached_upstream_quota(

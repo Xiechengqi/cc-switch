@@ -415,6 +415,55 @@ impl ShareService {
         Ok(updated)
     }
 
+    pub fn transfer_owner_email(
+        db: &Arc<Database>,
+        share_id: &str,
+        target_email: &str,
+    ) -> Result<ShareRecord, AppError> {
+        let share = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        let old_owner_email = normalize_email(&share.owner_email)?;
+        let target_email = normalize_email(target_email)?;
+        if old_owner_email == target_email {
+            return Err(AppError::Message(
+                "新 owner 邮箱必须不同于当前 owner 邮箱".to_string(),
+            ));
+        }
+        let current_shared_with = normalize_email_list(share.shared_with_emails, &old_owner_email)?;
+        if !current_shared_with
+            .iter()
+            .any(|email| email == &target_email)
+        {
+            return Err(AppError::Message(
+                "只能将已有 shareto email 升级为 owner".to_string(),
+            ));
+        }
+        let mut next_shared_with = current_shared_with
+            .into_iter()
+            .filter(|email| email != &target_email)
+            .collect::<Vec<_>>();
+        if !next_shared_with
+            .iter()
+            .any(|email| email == &old_owner_email)
+        {
+            next_shared_with.push(old_owner_email);
+        }
+        let next_shared_with = normalize_email_list(next_shared_with, &target_email)?;
+        let market_access_mode = normalize_market_access_mode(&share.market_access_mode)?;
+        db.update_share_acl(
+            share_id,
+            &target_email,
+            &next_shared_with,
+            &market_access_mode,
+        )?;
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
     pub fn update_acl(
         db: &Arc<Database>,
         share_id: &str,

@@ -109,6 +109,13 @@ pub struct UpdateShareOwnerEmailParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TransferShareOwnerParams {
+    pub share_id: String,
+    pub target_email: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateShareAclParams {
     pub share_id: String,
     pub shared_with_emails: Vec<String>,
@@ -345,6 +352,15 @@ pub fn update_share_owner_email(
     params: UpdateShareOwnerEmailParams,
 ) -> Result<ShareRecord, String> {
     ShareService::update_owner_email(&state.db, &params.share_id, &params.owner_email)
+        .map_err(|e: AppError| e.to_string())
+}
+
+#[tauri::command]
+pub fn transfer_share_owner(
+    state: State<'_, AppState>,
+    params: TransferShareOwnerParams,
+) -> Result<ShareRecord, String> {
+    ShareService::transfer_owner_email(&state.db, &params.share_id, &params.target_email)
         .map_err(|e: AppError| e.to_string())
 }
 

@@ -485,6 +485,20 @@ export function useUpdateShareOwnerEmailMutation() {
   );
 }
 
+export function useTransferShareOwnerMutation() {
+  return useShareActionMutation(
+    ({ shareId, targetEmail }: { shareId: string; targetEmail: string }) =>
+      shareApi.transferOwner({ shareId, targetEmail }),
+    {
+      successKey: "share.toast.transferOwnerSuccess",
+      successDefault: "Owner 已转移",
+      errorKey: "share.toast.transferOwnerError",
+      errorDefault: "转移 Owner 失败: {{error}}",
+    },
+    ({ shareId }) => shareId,
+  );
+}
+
 export function useUpdateShareAclMutation() {
   return useShareActionMutation(
     ({

@@ -82,6 +82,10 @@ interface EditShareDialogProps {
     share: ShareRecord,
     ownerEmail: string,
   ) => Promise<void> | void;
+  onTransferOwner: (
+    share: ShareRecord,
+    targetEmail: string,
+  ) => Promise<void> | void;
   onUpdateAcl: (
     share: ShareRecord,
     sharedWithEmails: string[],
@@ -108,11 +112,15 @@ export function EditShareDialog({
   onUpdateExpiration,
   onUpdateAutoStart,
   onUpdateOwnerEmail,
+  onTransferOwner,
   onUpdateAcl,
 }: EditShareDialogProps) {
   const { t } = useTranslation();
   const [saving, setSaving] = useState(false);
   const [confirmFreeOpen, setConfirmFreeOpen] = useState(false);
+  const [transferTargetEmail, setTransferTargetEmail] = useState<string | null>(
+    null,
+  );
 
   const [tokenLimitInput, setTokenLimitInput] = useState("");
   const [tokenLimitUnlimited, setTokenLimitUnlimited] = useState(false);
@@ -385,6 +393,18 @@ export function EditShareDialog({
     }
   };
 
+  const handleTransferOwner = async () => {
+    if (!transferTargetEmail || busy) return;
+    setSaving(true);
+    try {
+      await onTransferOwner(share, transferTargetEmail);
+      setTransferTargetEmail(null);
+      onOpenChange(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <>
       <Dialog
@@ -468,6 +488,32 @@ export function EditShareDialog({
                   defaultValue: "friend@example.com, teammate@example.com",
                 })}
               />
+              {currentNonMarketEmails.length ? (
+                <div className="mt-3 space-y-2 rounded-lg border border-border-default/70 bg-muted/10 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">
+                    {t("share.transferOwner.title", {
+                      defaultValue: "升级 shareto 为 Owner",
+                    })}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {currentNonMarketEmails.map((email) => (
+                      <Button
+                        key={email}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => setTransferTargetEmail(email)}
+                      >
+                        {t("share.transferOwner.action", {
+                          defaultValue: "设为 Owner",
+                        })}{" "}
+                        <span className="font-mono">{email}</span>
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </DialogSection>
 
             <DialogSection
@@ -895,6 +941,20 @@ export function EditShareDialog({
           setConfirmFreeOpen(false);
         }}
         onCancel={() => setConfirmFreeOpen(false)}
+      />
+      <ConfirmDialog
+        isOpen={Boolean(transferTargetEmail)}
+        title={t("share.transferOwner.confirmTitle", {
+          defaultValue: "转移 Owner?",
+        })}
+        message={t("share.transferOwner.confirmMessage", {
+          defaultValue:
+            "将 {{target}} 升级为 owner，并把当前 owner {{owner}} 降级为 shareto。此操作会同步到 router。",
+          target: transferTargetEmail ?? "",
+          owner: share.ownerEmail,
+        })}
+        onConfirm={handleTransferOwner}
+        onCancel={() => setTransferTargetEmail(null)}
       />
     </>
   );

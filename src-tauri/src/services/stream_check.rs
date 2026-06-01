@@ -29,7 +29,7 @@ const GEMINI_CODE_ASSIST_TEST_FALLBACK_MODELS: &[&str] = &[
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 ];
-const GEMINI_DEFAULT_TEST_MODEL: &str = "gemini-2.5-flash";
+const GEMINI_DEFAULT_TEST_MODEL: &str = "gemini-3.5-flash";
 
 /// 健康状态枚举
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -69,7 +69,7 @@ impl Default for StreamCheckConfig {
             max_retries: 2,
             degraded_threshold_ms: 6000,
             claude_model: "claude-haiku-4-5-20251001".to_string(),
-            codex_model: "gpt-5.4@low".to_string(),
+            codex_model: "gpt-5.5@low".to_string(),
             gemini_model: GEMINI_DEFAULT_TEST_MODEL.to_string(),
             test_prompt: default_test_prompt(),
         }
@@ -2501,7 +2501,7 @@ mod tests {
             AuthStrategy::Bearer,
             "openai_chat",
             true,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://relay.example/v1/chat/completions");
@@ -2514,7 +2514,7 @@ mod tests {
             AuthStrategy::GitHubCopilot,
             "openai_chat",
             false,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://api.githubcopilot.com/chat/completions");
@@ -2527,7 +2527,7 @@ mod tests {
             AuthStrategy::GitHubCopilot,
             "openai_responses",
             false,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://api.githubcopilot.com/v1/responses");
@@ -2540,7 +2540,7 @@ mod tests {
             AuthStrategy::Bearer,
             "openai_chat",
             false,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://example.com/v1/chat/completions");
@@ -2553,7 +2553,7 @@ mod tests {
             AuthStrategy::Bearer,
             "openai_responses",
             false,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://example.com/v1/responses");
@@ -2620,7 +2620,7 @@ mod tests {
     #[test]
     fn test_resolve_claude_stream_url_for_gemini_native_cloudflare_vertex_full_url() {
         let url = StreamCheckService::resolve_claude_stream_url(
-            "https://gateway.ai.cloudflare.com/v1/account/gateway/google-vertex-ai/v1/projects/project/locations/us-central1/publishers/google/models/gemini-3.1-pro-preview:streamGenerateContent",
+            "https://gateway.ai.cloudflare.com/v1/account/gateway/google-vertex-ai/v1/projects/project/locations/us-central1/publishers/google/models/gemini-3.5-flash:streamGenerateContent",
             AuthStrategy::Google,
             "gemini_native",
             true,
@@ -2629,7 +2629,7 @@ mod tests {
 
         assert_eq!(
             url,
-            "https://gateway.ai.cloudflare.com/v1/account/gateway/google-vertex-ai/v1/projects/project/locations/us-central1/publishers/google/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse"
+            "https://gateway.ai.cloudflare.com/v1/account/gateway/google-vertex-ai/v1/projects/project/locations/us-central1/publishers/google/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
         );
     }
 

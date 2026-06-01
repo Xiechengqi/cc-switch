@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-05-29
+
+- **上游分支：** `main`
+- **上游 HEAD：** `8bf16602`
+- **共同祖先：** `3c3d4174`
+- **合并提交数：** 37
+- **主要变更：**
+  - feat(codex): Codex auth preservation 设置（preserve_codex_official_auth_on_switch，默认关闭）+ 切换后 OAuth 不被清除 + restart hint
+  - refactor(codex): 自定义 model_provider 路由统一 "custom"；停止强写用户的 model_provider；live-write 重构；模型 catalog JSON 强制刷新
+  - feat(codex): remote compaction toggle、多平台 CLI 发现 + gpt-5.5 静态模板兜底、proxy 错误响应富化
+  - feat(usage): 实时统计刷新；按 app 解析 native balance/coding-plan 凭证；fix codex sync 非 ASCII 模型 panic
+  - fix(proxy): DeepSeek/kimi/moonshot Anthropic tool thinking history 归一化；Claude Desktop 三档 role tier 对齐
+  - chore: 升级默认模型/价格、Claude Opus 4.8、Shengsuanyun 前缀模型 ID 修复
+  - 上游新增多个合作伙伴 presets（SudoCode/AtlasCloud/APINebula/APIKEY.FUN 等）
+- **冲突解决：**
+  - `src/lib/schemas/settings.ts`、`src-tauri/src/settings.rs`：并存本仓 `oauthQuotaRefreshIntervalMinutes`/`enable_failover_toggle` 默认开启，并入上游新增 `preserveCodexOfficialAuthOnSwitch`/`preserve_codex_official_auth_on_switch`
+  - `src-tauri/src/services/stream_check.rs` + `src/components/usage/ModelTestConfigPanel.tsx`：采纳上游默认测试模型升级（`gpt-5.4@low` → `gpt-5.5@low`、`gemini-2.5-flash` → `gemini-3.5-flash`），同步 `GEMINI_DEFAULT_TEST_MODEL` 常量
+  - `src/hooks/useProviderActions.ts`：本仓已主动移除 proxy-required 警告 UI（commits 98f78830/b1810aba），故不引入上游 `if (!proxyRequiredReason)` 包裹；采纳上游新增的 codex restart hint 与 opencode/openclaw 分支
+  - `src/i18n/locales/{en,zh,ja}.json`：采纳上游 Claude Desktop 三档 role tier 对齐后的 `modelMappingOffHint`/`modelMappingOnHint` 详细说明
+  - **`src/config/{claude,codex,gemini}ProviderPresets.ts`、`tests/config/codexChatProviderPresets.test.ts`：按用户指令"禁止新添加 API Key 类供应商"，所有 preset 冲突一律采纳 HEAD，丢弃上游新增的 Shengsuanyun/BytePlus/Zhipu GLM/Baidu Qianfan/Bailian/Kimi/Nvidia/LemonData/E-FlowCode/TheRouter/Doubao Seed/SudoCode/AtlasCloud/APINebula/APIKEY.FUN/MoonShot 等 preset 与对应模型/前缀更新**
+  - `tests/config/therouterProviderPresets.test.ts`：modify/delete 冲突，保留本仓删除（therouter preset 已移除）
+- **验证：** `cargo check` exit 0（仅 3 条遗留 dead-code warning）、`tsc --noEmit` 通过
+
+---
+
 ## 2026-05-27
 
 - **上游分支：** `main`

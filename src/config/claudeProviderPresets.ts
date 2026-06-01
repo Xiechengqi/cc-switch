@@ -251,11 +251,11 @@ export const providerPresets: ProviderPreset[] = [
         AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}",
         AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}",
         AWS_REGION: "${AWS_REGION}",
-        ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-7",
+        ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-8",
         ANTHROPIC_DEFAULT_HAIKU_MODEL:
           "global.anthropic.claude-haiku-4-5-20251001-v1:0",
         ANTHROPIC_DEFAULT_SONNET_MODEL: "global.anthropic.claude-sonnet-4-6",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "global.anthropic.claude-opus-4-7",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "global.anthropic.claude-opus-4-8",
         CLAUDE_CODE_USE_BEDROCK: "1",
       },
     },
@@ -289,11 +289,11 @@ export const providerPresets: ProviderPreset[] = [
         ANTHROPIC_BASE_URL:
           "https://bedrock-runtime.${AWS_REGION}.amazonaws.com",
         AWS_REGION: "${AWS_REGION}",
-        ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-7",
+        ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-8",
         ANTHROPIC_DEFAULT_HAIKU_MODEL:
           "global.anthropic.claude-haiku-4-5-20251001-v1:0",
         ANTHROPIC_DEFAULT_SONNET_MODEL: "global.anthropic.claude-sonnet-4-6",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "global.anthropic.claude-opus-4-7",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "global.anthropic.claude-opus-4-8",
         CLAUDE_CODE_USE_BEDROCK: "1",
       },
     },

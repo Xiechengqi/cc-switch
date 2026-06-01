@@ -90,11 +90,11 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     settingsConfig: {
       env: {
         GOOGLE_GEMINI_BASE_URL: "https://openrouter.ai/api",
-        GEMINI_MODEL: "gemini-3.1-pro",
+        GEMINI_MODEL: "gemini-3.5-flash",
       },
     },
     baseURL: "https://openrouter.ai/api",
-    model: "gemini-3.1-pro",
+    model: "gemini-3.5-flash",
     description: "OpenRouter",
     category: "aggregator",
     icon: "openrouter",

@@ -55,7 +55,7 @@ export function generateThirdPartyAuth(apiKey: string): Record<string, any> {
 export function generateThirdPartyConfig(
   providerName: string,
   baseUrl: string,
-  modelName = "gpt-5.4",
+  modelName = "gpt-5.5",
 ): string {
   const tomlString = (value: string) => JSON.stringify(value);
 

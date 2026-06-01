@@ -276,9 +276,9 @@ pub(crate) fn apply_share_settings_patch(
     share_id: &str,
     patch: ShareSettingsPatch,
 ) -> Result<(), crate::error::AppError> {
-    let current = db.get_share_by_id(share_id)?.ok_or_else(|| {
-        crate::error::AppError::Message(format!("Share not found: {share_id}"))
-    })?;
+    let current = db
+        .get_share_by_id(share_id)?
+        .ok_or_else(|| crate::error::AppError::Message(format!("Share not found: {share_id}")))?;
 
     // Owner and ACL are applied together in a single write. Updating the owner
     // on its own re-normalizes the existing shareto list against the *new*
@@ -472,63 +472,98 @@ async fn refresh_share_runtime_after_provider_switch(
     app: &AppType,
     allow_identity_reset_retry: bool,
 ) -> Result<(), String> {
-    let Some(share) = db
+    // 多 share 模式：app 的 current provider 切换会影响所有该 app_type 下的
+    // active share；逐个推送 runtime 给 router 同步。
+    //
+    // share 与 provider 1:1，一次 current provider 切换其实只对"未绑定该 provider"
+    // 的 share 没意义，但 share 自己对外的运行时（quota / model health 等）就在
+    // share-runtime 快照里——刷新成本低，简单刷全部即可。
+    let app_str = app.as_str();
+    let shares: Vec<_> = db
         .list_shares()
         .map_err(|e| e.to_string())?
         .into_iter()
-        .find(|share| share.status == "active" && share.subdomain.is_some())
-    else {
+        .filter(|share| {
+            share.status == "active" && share.subdomain.is_some() && share.app_type == app_str
+        })
+        .collect();
+
+    if shares.is_empty() {
         return Ok(());
-    };
-    let Some(subdomain) = share.subdomain.clone() else {
-        return Ok(());
-    };
+    }
 
     let config = load_config();
     let client = share_router_client()?;
     let identity = identity::ensure_identity(&client, &config)
         .await
         .map_err(|e| e.to_string())?;
-    let payload = ShareRuntimeRefreshPayload {
-        share_id: share.id.clone(),
-        subdomain,
-    };
-    let url = format!("{}/v1/shares/runtime-refresh", config.get_server_addr());
-    let request_payload =
-        build_signed_request_payload(&identity, "share_runtime_refresh", "refresh", &payload)?;
-    let resp = send_share_router_request(
-        client.post(&url).json(&request_payload),
-        "refresh share runtime",
-        &url,
-    )
-    .await?;
 
-    if resp.status().is_success() {
-        log::debug!(
-            "[TunnelSync] refreshed share runtime after {} provider switch for share {}",
-            app.as_str(),
-            share.id
-        );
-        return Ok(());
-    }
+    let mut last_err: Option<String> = None;
+    for share in shares {
+        let Some(subdomain) = share.subdomain.clone() else {
+            continue;
+        };
+        let payload = ShareRuntimeRefreshPayload {
+            share_id: share.id.clone(),
+            subdomain,
+        };
+        let url = format!("{}/v1/shares/runtime-refresh", config.get_server_addr());
+        let request_payload =
+            build_signed_request_payload(&identity, "share_runtime_refresh", "refresh", &payload)?;
+        let resp = match send_share_router_request(
+            client.post(&url).json(&request_payload),
+            "refresh share runtime",
+            &url,
+        )
+        .await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                log::warn!(
+                    "[TunnelSync] refresh share runtime request failed for share {}: {err}",
+                    share.id
+                );
+                last_err = Some(err);
+                continue;
+            }
+        };
 
-    let message = read_error_message(resp).await;
-    if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
+        if resp.status().is_success() {
+            log::debug!(
+                "[TunnelSync] refreshed share runtime after {} provider switch for share {}",
+                app_str,
+                share.id
+            );
+            continue;
+        }
+
+        let message = read_error_message(resp).await;
+        if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
+            log::warn!(
+                "[TunnelSync] share runtime refresh rejected for installation {}, refreshing identity and retrying once: {}",
+                identity.installation_id,
+                message
+            );
+            identity::refresh_installation_registration(&client, &config)
+                .await
+                .map_err(|e| e.to_string())?;
+            // 重试整批，避免身份刷新后 partial 状态。
+            return Box::pin(refresh_share_runtime_after_provider_switch(db, app, false)).await;
+        }
+
         log::warn!(
-            "[TunnelSync] share runtime refresh rejected for installation {}, refreshing identity and retrying once: {}",
+            "[TunnelSync] share runtime refresh request for installation {} share {} failed: {}",
             identity.installation_id,
+            share.id,
             message
         );
-        identity::refresh_installation_registration(&client, &config)
-            .await
-            .map_err(|e| e.to_string())?;
-        return Box::pin(refresh_share_runtime_after_provider_switch(db, app, false)).await;
+        last_err = Some(message);
     }
 
-    Err(format!(
-        "share runtime refresh request for installation {} failed: {}",
-        identity.installation_id, message
-    ))
+    match last_err {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 pub(crate) async fn query_share_support(db: &Database) -> ShareSupport {
@@ -1425,23 +1460,32 @@ pub fn schedule_delete_share(share_id: String) {
 
 pub fn reconcile_share_router_state(db: Arc<Database>) {
     tauri::async_runtime::spawn(async move {
-        let op = match db.list_shares() {
-            Ok(mut shares) => {
-                shares.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-                match shares.into_iter().next() {
-                    Some(share) => {
-                        ShareSyncOp::Upsert(Box::new(share_metadata_from_record(&share)))
-                    }
-                    None => ShareSyncOp::DeleteAll,
-                }
-            }
+        let shares = match db.list_shares() {
+            Ok(shares) => shares,
             Err(err) => {
                 log::warn!("[TunnelSync] share router reconcile skipped: {err}");
                 return;
             }
         };
-        if let Err(err) = enqueue_op(op).await {
-            log::warn!("[TunnelSync] enqueue share router reconcile failed: {err}");
+
+        if shares.is_empty() {
+            // 没 share：让 router 把所有遗留快照清掉。
+            if let Err(err) = enqueue_op(ShareSyncOp::DeleteAll).await {
+                log::warn!("[TunnelSync] enqueue share router reconcile delete-all failed: {err}");
+            }
+            return;
+        }
+
+        // 多 share 模式：逐个 Upsert，把 router 端状态对齐成本机当前列表。
+        // router 侧靠 share_id 区分，不会因为顺序混乱出错。
+        for share in shares {
+            let op = ShareSyncOp::Upsert(Box::new(share_metadata_from_record(&share)));
+            if let Err(err) = enqueue_op(op).await {
+                log::warn!(
+                    "[TunnelSync] enqueue share router reconcile upsert for share {} failed: {err}",
+                    share.id
+                );
+            }
         }
     });
 }

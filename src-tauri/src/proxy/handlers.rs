@@ -263,30 +263,70 @@ pub async fn share_router_recent_request_logs(
 }
 
 /// Internal runtime-snapshot endpoint used by cc-switch-router to refresh support and quota cache.
+///
+/// 多 share 模式下，router 必须显式传 `?shareId=...` 来定位 cc-switch 上的具体
+/// share。老路径 (`shareId` 缺失) 仍接受，但只在 cc-switch 上恰好只有一个 share
+/// 时返回；多 share 时拒绝并提示升级 router。
 pub async fn share_router_runtime(
     State(state): State<ProxyState>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let is_probe = has_share_router_probe_header(&headers);
     if !is_probe {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })));
     }
 
-    let share = match crate::services::share::ShareService::list(&state.db) {
-        Ok(mut shares) => match shares.pop() {
-            Some(share) => share,
-            None => {
+    // 优先按 ?shareId=... 精确定位
+    let requested_share_id = query
+        .get("shareId")
+        .or_else(|| query.get("share_id"))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let share = if let Some(share_id) = requested_share_id {
+        match crate::services::share::ShareService::get_detail(&state.db, share_id) {
+            Ok(Some(share)) => share,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": format!("share not found: {share_id}") })),
+                );
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("load share failed: {err}") })),
+                );
+            }
+        }
+    } else {
+        // 老 router 没传 shareId：只在恰好一个 share 时回退到老语义；
+        // 多 share 时拒绝，避免随机返回某一个 share 的快照导致 router 端
+        // 数据错位。
+        match crate::services::share::ShareService::list(&state.db) {
+            Ok(shares) if shares.len() == 1 => shares.into_iter().next().unwrap(),
+            Ok(shares) if shares.is_empty() => {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(json!({ "error": "share not found" })),
                 );
             }
-        },
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("load share failed: {err}") })),
-            );
+            Ok(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "multiple shares present; router must specify ?shareId="
+                    })),
+                );
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("load share failed: {err}") })),
+                );
+            }
         }
     };
 

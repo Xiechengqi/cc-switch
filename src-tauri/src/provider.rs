@@ -1590,8 +1590,6 @@ mod tests {
 
     // ── resolve_usage_credentials (per-app credential extraction) ──
 
-    use crate::app_config::AppType;
-
     fn provider_with(settings_config: serde_json::Value) -> Provider {
         Provider::with_id("p".to_string(), "P".to_string(), settings_config, None)
     }

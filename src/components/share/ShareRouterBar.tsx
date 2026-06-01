@@ -6,6 +6,7 @@ interface ShareRouterBarProps {
   proxyAddress?: string | null;
   proxyPort?: number | null;
   hasShare: boolean;
+  readOnly?: boolean;
   onCreate: () => void;
 }
 
@@ -14,11 +15,12 @@ export function ShareRouterBar({
   proxyAddress,
   proxyPort,
   hasShare,
+  readOnly = false,
   onCreate,
 }: ShareRouterBarProps) {
   const { t } = useTranslation();
 
-  if (hasShare && proxyRunning) {
+  if (readOnly || (hasShare && proxyRunning)) {
     return null;
   }
 
@@ -34,7 +36,7 @@ export function ShareRouterBar({
         </div>
 
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          {!hasShare ? (
+          {!hasShare && !readOnly ? (
             <Button onClick={onCreate} className="w-full sm:w-auto">
               {t("share.create")}
             </Button>

@@ -26,6 +26,9 @@ pub struct TrayTexts {
     pub lightweight_mode: &'static str,
     pub quit: &'static str,
     pub _auto_label: &'static str,
+    /// 当前 provider 后缀。多 share 模式下，"当前供应商"只代表本地直连流量；
+    /// share 流量走绑定的 provider，与此处显示无关。
+    pub direct_traffic_suffix: &'static str,
 }
 
 impl TrayTexts {
@@ -38,6 +41,7 @@ impl TrayTexts {
                 lightweight_mode: "Lightweight Mode",
                 quit: "Quit",
                 _auto_label: "Auto (Failover)",
+                direct_traffic_suffix: "(direct only)",
             },
             "ja" => Self {
                 show_main: "メインウィンドウを開く",
@@ -46,6 +50,7 @@ impl TrayTexts {
                 lightweight_mode: "軽量モード",
                 quit: "終了",
                 _auto_label: "自動 (フェイルオーバー)",
+                direct_traffic_suffix: "(直接通信のみ)",
             },
             "zh-TW" => Self {
                 show_main: "開啟主介面",
@@ -54,6 +59,7 @@ impl TrayTexts {
                 lightweight_mode: "輕量模式",
                 quit: "退出",
                 _auto_label: "自動 (故障轉移)",
+                direct_traffic_suffix: "(僅本地直連)",
             },
             _ => Self {
                 show_main: "打开主界面",
@@ -62,6 +68,7 @@ impl TrayTexts {
                 lightweight_mode: "轻量模式",
                 quit: "退出",
                 _auto_label: "自动 (故障转移)",
+                direct_traffic_suffix: "(仅本地直连)",
             },
         }
     }
@@ -572,7 +579,12 @@ pub fn create_tray_menu(
                 Some(p) => {
                     let suffix = format_usage_suffix(app_state, &section.app_type, p, &current_id)
                         .unwrap_or_default();
-                    format!("{} · {}{}", section.header_label, p.name, suffix)
+                    // 多 share 模式下，"当前 provider" 仅作用于本地直连流量；
+                    // share 请求走 share.provider_id，与此标签无关。
+                    format!(
+                        "{} · {}{} {}",
+                        section.header_label, p.name, suffix, tray_texts.direct_traffic_suffix
+                    )
                 }
                 None => section.header_label.to_string(),
             };

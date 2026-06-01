@@ -75,6 +75,9 @@ pub enum CodexOAuthError {
     #[error("Refresh Token 失效或已过期")]
     RefreshTokenInvalid,
 
+    #[error("账号已交接给下游消费方，已停止自动续期。如需恢复请先 restore。")]
+    AccountHandedOff,
+
     #[error("网络错误: {0}")]
     NetworkError(String),
 
@@ -189,6 +192,18 @@ struct CodexAccountData {
     pub refresh_token: String,
     /// 认证时间戳（秒）
     pub authenticated_at: i64,
+    /// True when the user has explicitly exported this session and handed
+    /// authoritative refresh ownership to a downstream consumer. While set,
+    /// `get_valid_token_for_account` returns an error rather than refreshing
+    /// (which would race with the downstream's rotation and silently poison
+    /// either side's `refresh_token`). Default false; back-compat aware via
+    /// `serde(default)` so existing on-disk files load unchanged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub handed_off: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// 公开的账号信息（返回给前端，复用 GitHubAccount 结构）
@@ -532,10 +547,17 @@ impl CodexOAuthManager {
 
         let refresh_token = {
             let accounts = self.accounts.read().await;
-            accounts
+            let account = accounts
                 .get(account_id)
-                .map(|a| a.refresh_token.clone())
-                .ok_or_else(|| CodexOAuthError::AccountNotFound(account_id.to_string()))?
+                .ok_or_else(|| CodexOAuthError::AccountNotFound(account_id.to_string()))?;
+            // Handed-off accounts must not refresh — another consumer owns the
+            // refresh_token now, and concurrent rotation would silently break
+            // both sides. The user gets a clear error to resume management
+            // explicitly when they want this account back.
+            if account.handed_off {
+                return Err(CodexOAuthError::AccountHandedOff);
+            }
+            account.refresh_token.clone()
         };
 
         let new_tokens = self.refresh_with_token(&refresh_token).await?;
@@ -586,10 +608,265 @@ impl CodexOAuthManager {
 
     // ==================== 多账号管理 ====================
 
+    /// Export a managed account back to the canonical session shape, with the
+    /// freshest access_token cc-switch can produce.
+    ///
+    /// When `refresh_first=true`, calls `get_valid_token_for_account` which
+    /// refreshes if the cached token is expiring soon (the manager's normal
+    /// 60-second buffer applies) and records any rotated refresh_token to
+    /// disk before returning. When `false`, uses the cached token as-is —
+    /// useful for "give me whatever you have, even if stale" debug exports.
+    ///
+    /// The returned canonical carries `account_id`, `refresh_token`, `email`,
+    /// `exp` (parsed from the fresh access_token's JWT payload), and `source =
+    /// CcSwitch` so re-imports round-trip cleanly.
+    pub async fn export_account(
+        &self,
+        account_id: &str,
+        refresh_first: bool,
+    ) -> Result<crate::proxy::providers::codex_oauth_session::CanonicalCodexSession, CodexOAuthError>
+    {
+        use crate::proxy::providers::codex_oauth_session::{
+            decode_jwt_exp, CanonicalCodexSession, CodexSessionSource,
+        };
+
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return Err(CodexOAuthError::AccountNotFound("empty".to_string()));
+        }
+
+        // Snapshot the persisted account fields up-front. `get_valid_token_for_account`
+        // may rotate refresh_token under us, so we re-read after the refresh
+        // returns to capture the rotated value.
+        let (mut refresh_token, email) = {
+            let accounts = self.accounts.read().await;
+            let account = accounts
+                .get(account_id)
+                .ok_or_else(|| CodexOAuthError::AccountNotFound(account_id.to_string()))?;
+            (account.refresh_token.clone(), account.email.clone())
+        };
+
+        let access_token = if refresh_first {
+            self.get_valid_token_for_account(account_id).await?
+        } else {
+            let cached = self.access_tokens.read().await;
+            cached
+                .get(account_id)
+                .map(|c| c.token.clone())
+                .ok_or_else(|| {
+                    CodexOAuthError::TokenFetchFailed(
+                        "no cached access_token; call with refresh_first=true".to_string(),
+                    )
+                })?
+        };
+
+        // Re-snapshot refresh_token after a possible refresh-time rotation so
+        // the exported file ships the value the next consumer should use.
+        if refresh_first {
+            let accounts = self.accounts.read().await;
+            if let Some(account) = accounts.get(account_id) {
+                refresh_token = account.refresh_token.clone();
+            }
+        }
+
+        let exp = decode_jwt_exp(&access_token);
+
+        Ok(CanonicalCodexSession {
+            access_token,
+            refresh_token: Some(refresh_token),
+            id_token: None,
+            account_id: Some(account_id.to_string()),
+            user_id: None,
+            email,
+            plan_type: None,
+            organization_id: None,
+            exp,
+            last_refresh: Some(chrono::Utc::now().timestamp()),
+            source: CodexSessionSource::CcSwitch,
+            extras: Default::default(),
+        })
+    }
+
     pub async fn list_accounts(&self) -> Vec<GitHubAccount> {
         let accounts = self.accounts.read().await.clone();
         let default_id = self.resolve_default_account_id().await;
         Self::sorted_accounts(&accounts, default_id.as_deref())
+    }
+
+    /// Import a canonical Codex session (parsed from any of the supported
+    /// external formats) into the managed account pool.
+    ///
+    /// The session is added (or, when `update_existing` is true, updated)
+    /// keyed by `chatgpt_account_id`. The provided `access_token` is also
+    /// seeded into the in-memory cache with the parsed `exp` so callers that
+    /// hit `get_valid_token_for_account` immediately after importing can skip
+    /// the first refresh round-trip.
+    ///
+    /// **Contract**: the canonical session must carry a `refresh_token` and
+    /// an `account_id`. Imports without a refresh_token cannot participate in
+    /// auto-refresh (cc-switch's deployment runs no Codex CLI), so we reject
+    /// them at this layer; the command layer maps that to a per-row warning.
+    /// Imports without an `account_id` are rejected for the same reason — the
+    /// account_id is the primary identity key.
+    pub async fn import_canonical_session(
+        &self,
+        session: &crate::proxy::providers::codex_oauth_session::CanonicalCodexSession,
+        update_existing: bool,
+    ) -> Result<CodexImportOutcome, CodexOAuthError> {
+        let outcome = self.import_one_no_save(session, update_existing).await?;
+        // Only the create/update branches mutate persisted state; a Skipped
+        // outcome touched nothing on disk so we can avoid the write.
+        if !matches!(outcome.action, CodexImportAction::Skipped) {
+            self.save_to_disk().await?;
+        }
+        Ok(outcome)
+    }
+
+    /// Per-row variant of `import_canonical_session` that DOES NOT persist
+    /// to disk. Use when running a batch import where the caller wants to
+    /// fsync once at the end via `persist_imports`, turning the previous
+    /// O(N) atomic-write cost into O(1).
+    ///
+    /// In-memory state is updated immediately; if the process crashes before
+    /// `persist_imports` runs the batch is lost — same durability semantics
+    /// as the rest of the manager between writes.
+    pub async fn import_canonical_session_without_persist(
+        &self,
+        session: &crate::proxy::providers::codex_oauth_session::CanonicalCodexSession,
+        update_existing: bool,
+    ) -> Result<CodexImportOutcome, CodexOAuthError> {
+        self.import_one_no_save(session, update_existing).await
+    }
+
+    /// Persist the in-memory store to disk. Pair with
+    /// `import_canonical_session_without_persist` at the end of a batch.
+    pub async fn persist_imports(&self) -> Result<(), CodexOAuthError> {
+        self.save_to_disk().await
+    }
+
+    /// Batched analogue of `import_canonical_session`. Runs the per-row logic
+    /// over the slice, collecting per-row `Result`s, and persists ONCE at the
+    /// end — turning the previous O(N) `save_to_disk` calls (each a full
+    /// atomic JSON write) into O(1). Callers get the same outcomes they would
+    /// have gotten from sequential single-item imports.
+    ///
+    /// Save is skipped when no row produced a Created or Updated outcome —
+    /// useful when a paste was 100% duplicates or 100% structurally invalid.
+    pub async fn import_canonical_sessions(
+        &self,
+        sessions: &[(
+            crate::proxy::providers::codex_oauth_session::CanonicalCodexSession,
+            bool,
+        )],
+    ) -> Vec<Result<CodexImportOutcome, CodexOAuthError>> {
+        let mut outcomes = Vec::with_capacity(sessions.len());
+        let mut dirty = false;
+        for (session, update_existing) in sessions {
+            let outcome = self.import_one_no_save(session, *update_existing).await;
+            if let Ok(o) = &outcome {
+                if !matches!(o.action, CodexImportAction::Skipped) {
+                    dirty = true;
+                }
+            }
+            outcomes.push(outcome);
+        }
+        if dirty {
+            // Single fsync for the whole batch. If this fails we still report
+            // the per-row outcomes — the user can retry, the in-memory state
+            // is already authoritative until next process restart.
+            if let Err(err) = self.save_to_disk().await {
+                outcomes.push(Err(err));
+            }
+        }
+        outcomes
+    }
+
+    async fn import_one_no_save(
+        &self,
+        session: &crate::proxy::providers::codex_oauth_session::CanonicalCodexSession,
+        update_existing: bool,
+    ) -> Result<CodexImportOutcome, CodexOAuthError> {
+        let refresh_token = session
+            .refresh_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CodexOAuthError::TokenFetchFailed(
+                    "缺少 refresh_token，无法纳入自动续期".to_string(),
+                )
+            })?
+            .to_string();
+        let account_id = session
+            .account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CodexOAuthError::ParseError("无法从 token 中提取 chatgpt_account_id".to_string())
+            })?
+            .to_string();
+
+        // Determine whether this is a fresh insert or an existing-account update.
+        let already_existed = self.accounts.read().await.contains_key(&account_id);
+        if already_existed && !update_existing {
+            let accounts = self.accounts.read().await;
+            let account = accounts
+                .get(&account_id)
+                .map(GitHubAccount::from)
+                .expect("contains_key just returned true");
+            return Ok(CodexImportOutcome {
+                account,
+                action: CodexImportAction::Skipped,
+            });
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let data = CodexAccountData {
+            account_id: account_id.clone(),
+            email: session.email.clone(),
+            refresh_token,
+            authenticated_at: now,
+            handed_off: false,
+        };
+        let account = GitHubAccount::from(&data);
+
+        {
+            let mut accounts = self.accounts.write().await;
+            accounts.insert(account_id.clone(), data);
+        }
+        {
+            let mut default = self.default_account_id.write().await;
+            if default.is_none() {
+                *default = Some(account_id.clone());
+            }
+        }
+
+        let access_token = session.access_token.trim();
+        if !access_token.is_empty() {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let expires_at_ms = session
+                .exp
+                .map(|secs| secs * 1000)
+                .unwrap_or(now_ms + 60_000);
+            if expires_at_ms > now_ms {
+                let mut tokens = self.access_tokens.write().await;
+                tokens.insert(
+                    account_id.clone(),
+                    CachedAccessToken {
+                        token: access_token.to_string(),
+                        expires_at_ms,
+                    },
+                );
+            }
+        }
+
+        let action = if already_existed {
+            CodexImportAction::Updated
+        } else {
+            CodexImportAction::Created
+        };
+        Ok(CodexImportOutcome { account, action })
     }
 
     /// 作废指定账号的 access_token 缓存。
@@ -649,6 +926,64 @@ impl CodexOAuthManager {
 
         self.save_to_disk().await?;
         Ok(())
+    }
+
+    /// Mark an account as "handed off": after this call `get_valid_token_for_account`
+    /// returns `AccountHandedOff` instead of refreshing. Use after exporting a
+    /// session to a downstream that will own refresh from now on, to prevent
+    /// concurrent rotation from invalidating both sides' refresh_token.
+    pub async fn mark_account_handoff(&self, account_id: &str) -> Result<(), CodexOAuthError> {
+        let account_id = account_id.trim();
+        let mut accounts = self.accounts.write().await;
+        let account = accounts
+            .get_mut(account_id)
+            .ok_or_else(|| CodexOAuthError::AccountNotFound(account_id.to_string()))?;
+        if account.handed_off {
+            return Ok(());
+        }
+        account.handed_off = true;
+        drop(accounts);
+
+        // Drop the now-stale cached access_token so reads see the handoff
+        // immediately rather than serving stale cache until natural expiry.
+        let mut tokens = self.access_tokens.write().await;
+        tokens.remove(account_id);
+        drop(tokens);
+
+        self.save_to_disk().await
+    }
+
+    /// Reverse `mark_account_handoff`. Subsequent `get_valid_token_for_account`
+    /// will refresh again. Note this does NOT verify the refresh_token is still
+    /// valid; if the downstream consumer rotated it, the next refresh will fail
+    /// with `RefreshTokenInvalid` and the user will have to re-import.
+    pub async fn restore_account_management(
+        &self,
+        account_id: &str,
+    ) -> Result<(), CodexOAuthError> {
+        let account_id = account_id.trim();
+        let mut accounts = self.accounts.write().await;
+        let account = accounts
+            .get_mut(account_id)
+            .ok_or_else(|| CodexOAuthError::AccountNotFound(account_id.to_string()))?;
+        if !account.handed_off {
+            return Ok(());
+        }
+        account.handed_off = false;
+        drop(accounts);
+        self.save_to_disk().await
+    }
+
+    /// Whether the given account is currently in the handed-off state. Used by
+    /// command-layer code to surface badge state to the UI without round-tripping
+    /// through `get_valid_token_for_account`.
+    pub async fn is_handed_off(&self, account_id: &str) -> bool {
+        self.accounts
+            .read()
+            .await
+            .get(account_id.trim())
+            .map(|a| a.handed_off)
+            .unwrap_or(false)
     }
 
     pub async fn clear_auth(&self) -> Result<(), CodexOAuthError> {
@@ -722,6 +1057,7 @@ impl CodexOAuthManager {
             email,
             refresh_token,
             authenticated_at: now,
+            handed_off: false,
         };
 
         let account = GitHubAccount::from(&data);
@@ -909,6 +1245,23 @@ pub struct CodexOAuthStatus {
     pub default_account_id: Option<String>,
     pub authenticated: bool,
     pub username: Option<String>,
+}
+
+/// Result of importing one canonical session via `import_canonical_session`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexImportOutcome {
+    pub account: GitHubAccount,
+    pub action: CodexImportAction,
+}
+
+/// Whether the import created a new account, updated an existing one, or was
+/// skipped because the account already existed and `update_existing=false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexImportAction {
+    Created,
+    Updated,
+    Skipped,
 }
 
 // ==================== 工具函数 ====================
@@ -1141,5 +1494,313 @@ mod tests {
         let accounts = manager.list_accounts().await;
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, "acc-456");
+    }
+
+    #[tokio::test]
+    async fn import_canonical_session_creates_then_dedups() {
+        use crate::proxy::providers::codex_oauth_session::{
+            CanonicalCodexSession, CodexSessionSource,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+
+        let session = CanonicalCodexSession {
+            access_token: "at-1".to_string(),
+            refresh_token: Some("rt-1".to_string()),
+            account_id: Some("acct-imp".to_string()),
+            email: Some("imp@example.com".to_string()),
+            exp: Some(chrono::Utc::now().timestamp() + 3_600),
+            source: CodexSessionSource::CodexCli,
+            ..Default::default()
+        };
+
+        // First insert: Created.
+        let outcome = manager
+            .import_canonical_session(&session, true)
+            .await
+            .unwrap();
+        assert_eq!(outcome.action, CodexImportAction::Created);
+        assert_eq!(outcome.account.id, "acct-imp");
+
+        // access_token must be pre-seeded so we don't refresh on first read.
+        let cached = manager.access_tokens.read().await;
+        assert_eq!(
+            cached.get("acct-imp").map(|c| c.token.as_str()),
+            Some("at-1")
+        );
+        drop(cached);
+
+        // Re-import without update_existing → Skipped, refresh_token unchanged.
+        let mut session2 = session.clone();
+        session2.refresh_token = Some("rt-NEW".to_string());
+        let outcome = manager
+            .import_canonical_session(&session2, false)
+            .await
+            .unwrap();
+        assert_eq!(outcome.action, CodexImportAction::Skipped);
+        let accounts = manager.accounts.read().await;
+        assert_eq!(accounts.get("acct-imp").unwrap().refresh_token, "rt-1");
+        drop(accounts);
+
+        // Re-import with update_existing → Updated, refresh_token rotates.
+        let outcome = manager
+            .import_canonical_session(&session2, true)
+            .await
+            .unwrap();
+        assert_eq!(outcome.action, CodexImportAction::Updated);
+        let accounts = manager.accounts.read().await;
+        assert_eq!(accounts.get("acct-imp").unwrap().refresh_token, "rt-NEW");
+    }
+
+    #[tokio::test]
+    async fn import_canonical_session_rejects_missing_refresh_or_account() {
+        use crate::proxy::providers::codex_oauth_session::CanonicalCodexSession;
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+
+        let no_refresh = CanonicalCodexSession {
+            access_token: "at".to_string(),
+            account_id: Some("acct".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            manager.import_canonical_session(&no_refresh, true).await,
+            Err(CodexOAuthError::TokenFetchFailed(_))
+        ));
+
+        let no_account = CanonicalCodexSession {
+            access_token: "at".to_string(),
+            refresh_token: Some("rt".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            manager.import_canonical_session(&no_account, true).await,
+            Err(CodexOAuthError::ParseError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn import_canonical_session_skips_cache_seed_for_expired_access_token() {
+        use crate::proxy::providers::codex_oauth_session::CanonicalCodexSession;
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+
+        let session = CanonicalCodexSession {
+            access_token: "at-expired".to_string(),
+            refresh_token: Some("rt".to_string()),
+            account_id: Some("acct".to_string()),
+            // Past exp by an hour
+            exp: Some(chrono::Utc::now().timestamp() - 3_600),
+            ..Default::default()
+        };
+        manager
+            .import_canonical_session(&session, true)
+            .await
+            .unwrap();
+
+        let cached = manager.access_tokens.read().await;
+        assert!(
+            cached.get("acct").is_none(),
+            "expired access_token must not be cached — next request must refresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn export_account_returns_canonical_with_cached_token() {
+        use crate::proxy::providers::codex_oauth_session::{
+            CanonicalCodexSession, CodexSessionSource,
+        };
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+
+        let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"none\"}");
+        let future_exp = chrono::Utc::now().timestamp() + 7_200;
+        let payload = URL_SAFE_NO_PAD.encode(format!("{{\"exp\":{future_exp}}}").as_bytes());
+        let jwt = format!("{header}.{payload}.");
+
+        let imported = CanonicalCodexSession {
+            access_token: jwt.clone(),
+            refresh_token: Some("rt-export".to_string()),
+            account_id: Some("acct-exp".to_string()),
+            email: Some("u@example.com".to_string()),
+            exp: Some(future_exp),
+            source: CodexSessionSource::CodexCli,
+            ..Default::default()
+        };
+        manager
+            .import_canonical_session(&imported, true)
+            .await
+            .unwrap();
+
+        // refresh_first=false avoids the HTTP path and just returns cache.
+        let exported = manager
+            .export_account("acct-exp", false)
+            .await
+            .expect("cached token export should succeed");
+
+        assert_eq!(exported.account_id.as_deref(), Some("acct-exp"));
+        assert_eq!(exported.email.as_deref(), Some("u@example.com"));
+        assert_eq!(exported.refresh_token.as_deref(), Some("rt-export"));
+        assert_eq!(exported.access_token, jwt);
+        assert_eq!(exported.exp, Some(future_exp));
+        assert_eq!(exported.source, CodexSessionSource::CcSwitch);
+    }
+
+    #[tokio::test]
+    async fn export_account_errors_when_account_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+        assert!(matches!(
+            manager.export_account("does-not-exist", false).await,
+            Err(CodexOAuthError::AccountNotFound(_))
+        ));
+        assert!(matches!(
+            manager.export_account("   ", false).await,
+            Err(CodexOAuthError::AccountNotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn handoff_blocks_refresh_and_drops_cached_token() {
+        use crate::proxy::providers::codex_oauth_session::{
+            CanonicalCodexSession, CodexSessionSource,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+
+        let session = CanonicalCodexSession {
+            access_token: "at-handoff".to_string(),
+            refresh_token: Some("rt".to_string()),
+            account_id: Some("acct-h".to_string()),
+            exp: Some(chrono::Utc::now().timestamp() + 3_600),
+            source: CodexSessionSource::CodexCli,
+            ..Default::default()
+        };
+        manager
+            .import_canonical_session(&session, true)
+            .await
+            .unwrap();
+
+        // Pre-condition: cached token present, not handed off.
+        assert!(manager.access_tokens.read().await.contains_key("acct-h"));
+        assert!(!manager.is_handed_off("acct-h").await);
+
+        manager.mark_account_handoff("acct-h").await.unwrap();
+        assert!(manager.is_handed_off("acct-h").await);
+        // Cache cleared so reads can't serve a stale value past handoff.
+        assert!(!manager.access_tokens.read().await.contains_key("acct-h"));
+
+        // Refresh path refuses with AccountHandedOff rather than touching network.
+        let err = manager
+            .get_valid_token_for_account("acct-h")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CodexOAuthError::AccountHandedOff));
+
+        // Idempotent: a second handoff is a no-op.
+        manager.mark_account_handoff("acct-h").await.unwrap();
+
+        // Restore reverses the state; idempotent in the other direction too.
+        manager.restore_account_management("acct-h").await.unwrap();
+        assert!(!manager.is_handed_off("acct-h").await);
+        manager.restore_account_management("acct-h").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn batch_import_persists_once_at_end() {
+        use crate::proxy::providers::codex_oauth_session::{
+            CanonicalCodexSession, CodexSessionSource,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+
+        let make = |id: &str| CanonicalCodexSession {
+            access_token: format!("at-{id}"),
+            refresh_token: Some(format!("rt-{id}")),
+            account_id: Some(id.to_string()),
+            email: Some(format!("{id}@example.com")),
+            exp: Some(chrono::Utc::now().timestamp() + 3_600),
+            source: CodexSessionSource::CodexCli,
+            ..Default::default()
+        };
+
+        // Use the no-persist API for the loop, then a single persist call.
+        for id in ["a", "b", "c"] {
+            let session = make(id);
+            let outcome = manager
+                .import_canonical_session_without_persist(&session, true)
+                .await
+                .unwrap();
+            assert_eq!(outcome.action, CodexImportAction::Created);
+        }
+        // Storage file should NOT exist yet — nothing has been persisted.
+        let storage = temp.path().join("codex_oauth_auth.json");
+        assert!(
+            !storage.exists(),
+            "no-persist imports must not touch disk before persist_imports()"
+        );
+
+        manager.persist_imports().await.unwrap();
+        assert!(storage.exists());
+
+        // Reload from disk and verify all three account ids round-tripped.
+        let manager2 = CodexOAuthManager::new(temp.path().to_path_buf());
+        let listed = manager2.list_accounts().await;
+        assert_eq!(listed.len(), 3);
+        let ids: std::collections::HashSet<String> = listed.into_iter().map(|a| a.id).collect();
+        for id in ["a", "b", "c"] {
+            assert!(ids.contains(id), "{id} missing after reload");
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_slice_import_records_per_row_outcomes() {
+        use crate::proxy::providers::codex_oauth_session::{
+            CanonicalCodexSession, CodexSessionSource,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexOAuthManager::new(temp.path().to_path_buf());
+
+        let valid = CanonicalCodexSession {
+            access_token: "at-v".to_string(),
+            refresh_token: Some("rt-v".to_string()),
+            account_id: Some("acct-v".to_string()),
+            exp: Some(chrono::Utc::now().timestamp() + 3_600),
+            source: CodexSessionSource::CodexCli,
+            ..Default::default()
+        };
+        let invalid_no_account = CanonicalCodexSession {
+            access_token: "at".to_string(),
+            refresh_token: Some("rt".to_string()),
+            ..Default::default()
+        };
+        let inputs = vec![
+            (valid.clone(), true),
+            (invalid_no_account, true),
+            (valid, false), // duplicate, update_existing=false → Skipped
+        ];
+
+        let outcomes = manager.import_canonical_sessions(&inputs).await;
+        assert!(matches!(
+            outcomes[0],
+            Ok(CodexImportOutcome {
+                action: CodexImportAction::Created,
+                ..
+            })
+        ));
+        assert!(matches!(outcomes[1], Err(CodexOAuthError::ParseError(_))));
+        assert!(matches!(
+            outcomes[2],
+            Ok(CodexImportOutcome {
+                action: CodexImportAction::Skipped,
+                ..
+            })
+        ));
+
+        // File on disk reflects the single successful insert exactly once.
+        let manager2 = CodexOAuthManager::new(temp.path().to_path_buf());
+        assert_eq!(manager2.list_accounts().await.len(), 1);
     }
 }

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
-import { invoke } from "@tauri-apps/api/core";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -28,7 +27,6 @@ import {
   Cpu,
   LayoutDashboard,
 } from "lucide-react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
 import type { EnvConflict } from "@/types/env";
 import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
@@ -47,6 +45,12 @@ import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useAutoCompact } from "@/hooks/useAutoCompact";
 import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import {
+  getWebRuntimeContext,
+  invokeCommand,
+  isTauriRuntime,
+  type WebRuntimeContext,
+} from "@/lib/runtime";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
@@ -171,9 +175,42 @@ const getInitialView = (): View => {
 };
 
 function App() {
+  const [webRuntimeContext, setWebRuntimeContext] =
+    useState<WebRuntimeContext | null>(() =>
+      isTauriRuntime() ? { mode: "local-admin" } : null,
+    );
+
+  useEffect(() => {
+    if (isTauriRuntime()) return;
+    let active = true;
+    void getWebRuntimeContext()
+      .then((context) => {
+        if (active) setWebRuntimeContext(context);
+      })
+      .catch((error) => {
+        console.error("[App] Failed to load web runtime context", error);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!isTauriRuntime() && !webRuntimeContext) {
+    return null;
+  }
+
+  if (!isTauriRuntime() && webRuntimeContext?.mode === "share") {
+    return (
+      <SharePage defaultApp={webRuntimeContext.appType as AppId} shareScoped />
+    );
+  }
+
+  return <DesktopApp />;
+}
+
+function DesktopApp() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-
   const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
   const sharedFeatureApp: AppId =
     activeApp === "claude-desktop" ? "claude" : activeApp;
@@ -432,7 +469,11 @@ function App() {
     let unlistenResize: (() => void) | undefined;
 
     const setupWindowStateSync = async () => {
+      if (!isTauriRuntime()) {
+        return;
+      }
       try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
         const currentWindow = getCurrentWindow();
         const syncWindowMaximizedState = async () => {
           const maximized = await currentWindow.isMaximized();
@@ -460,9 +501,11 @@ function App() {
   useEffect(() => {
     // settingsData 未加载时跳过，避免用 fallback false 覆盖 Rust 侧已设好的装饰状态
     if (!settingsData) return;
+    if (!isTauriRuntime()) return;
 
     const syncWindowDecorations = async () => {
       try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
         await getCurrentWindow().setDecorations(!useAppWindowControls);
       } catch (error) {
         console.error("[App] Failed to update window decorations", error);
@@ -498,8 +541,9 @@ function App() {
 
   useEffect(() => {
     const checkMigration = async () => {
+      if (!isTauriRuntime()) return;
       try {
-        const migrated = await invoke<boolean>("get_migration_result");
+        const migrated = await invokeCommand<boolean>("get_migration_result");
         if (migrated) {
           toast.success(
             t("migration.success", { defaultValue: "配置迁移成功" }),
@@ -516,10 +560,12 @@ function App() {
 
   useEffect(() => {
     const checkSkillsMigration = async () => {
+      if (!isTauriRuntime()) return;
       try {
-        const result = await invoke<{ count: number; error?: string } | null>(
-          "get_skills_migration_result",
-        );
+        const result = await invokeCommand<{
+          count: number;
+          error?: string;
+        } | null>("get_skills_migration_result");
         if (result?.error) {
           toast.error(t("migration.skillsFailed"), {
             description: t("migration.skillsFailedDescription"),
@@ -839,9 +885,15 @@ function App() {
     );
   };
 
+  const getTauriWindow = async () => {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    return getCurrentWindow();
+  };
+
   const handleWindowMinimize = async () => {
     try {
-      await getCurrentWindow().minimize();
+      const currentWindow = await getTauriWindow();
+      await currentWindow.minimize();
     } catch (error) {
       console.error("[App] Failed to minimize window", error);
       notifyWindowControlError(error);
@@ -850,7 +902,7 @@ function App() {
 
   const handleWindowToggleMaximize = async () => {
     try {
-      const currentWindow = getCurrentWindow();
+      const currentWindow = await getTauriWindow();
       await currentWindow.toggleMaximize();
       setIsWindowMaximized(await currentWindow.isMaximized());
     } catch (error) {
@@ -861,7 +913,8 @@ function App() {
 
   const handleWindowClose = async () => {
     try {
-      await getCurrentWindow().close();
+      const currentWindow = await getTauriWindow();
+      await currentWindow.close();
     } catch (error) {
       console.error("[App] Failed to close window", error);
       notifyWindowControlError(error);

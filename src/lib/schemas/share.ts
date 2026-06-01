@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 export const createShareSchema = z.object({
+  providerId: z
+    .string()
+    .trim()
+    .min(1, "share.validation.providerRequired"),
   description: z
     .string()
     .trim()

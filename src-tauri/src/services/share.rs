@@ -54,7 +54,10 @@ impl ShareService {
         parallel_limit == Self::UNLIMITED_PARALLEL_LIMIT
     }
 
-    pub fn prepare_create(params: PrepareShareParams) -> Result<ShareRecord, AppError> {
+    pub fn prepare_create(
+        db: &Arc<Database>,
+        params: PrepareShareParams,
+    ) -> Result<ShareRecord, AppError> {
         let id = uuid::Uuid::new_v4().to_string();
         let subdomain = params
             .subdomain
@@ -71,6 +74,20 @@ impl ShareService {
         let owner_email = normalize_email(&params.owner_email)?;
         let token_limit = params.token_limit;
 
+        let provider_id = normalize_provider_id(&params.provider_id)?;
+        // 校验：provider 存在 + app_type 一致。
+        // UNIQUE(provider_id) 由 schema 层兜底；这里先给出明确报错，避免 SQL 抛
+        // generic 错误。
+        let provider = db
+            .get_provider_by_id(&provider_id, &app_type)?
+            .ok_or_else(|| {
+                AppError::Message(format!(
+                    "Provider {provider_id} 在 {app_type} 应用下不存在，无法绑定 share"
+                ))
+            })?;
+        // get_provider_by_id 已按 app_type 过滤，这一行只作为不变量自检。
+        debug_assert_eq!(provider.id, provider_id);
+
         let record = ShareRecord {
             id,
             name: owner_email.clone(),
@@ -82,7 +99,7 @@ impl ShareService {
             for_sale,
             share_token,
             app_type,
-            provider_id: None,
+            provider_id: Some(provider_id),
             api_key: String::new(),
             settings_config: None,
             token_limit,
@@ -101,24 +118,18 @@ impl ShareService {
     }
 
     pub fn create(db: &Arc<Database>, record: ShareRecord) -> Result<ShareRecord, AppError> {
-        if !db.list_shares()?.is_empty() {
-            return Err(AppError::Message(
-                "当前版本的分享能力基于本地代理服务，一个 cc-switch 只能创建一个分享".to_string(),
-            ));
-        }
+        // 多 share 模式：同一 cc-switch 可挂多个 share。
+        // share ↔ provider 1:1 由 schema 的 UNIQUE(provider_id) 兜底；
+        // 这里依赖 db.create_share 把 UNIQUE 违反映射成 AppError 抛出。
         db.create_share(&record)?;
         crate::tunnel::sync::schedule_sync_share(record.clone(), db);
         Ok(record)
     }
 
     pub fn delete(db: &Arc<Database>, share_id: &str) -> Result<(), AppError> {
-        if let Some(primary) = Self::primary_share(db)? {
-            if primary.id == share_id {
-                for share in db.list_shares()? {
-                    db.delete_share(&share.id)?;
-                }
-            }
-        }
+        // 只删自己；多 share 模式下不能再级联删全部。
+        // 调用方（commands/share.rs）负责先 stop_tunnel(share_id) 释放 SSH 通道。
+        db.delete_share(share_id)?;
         Ok(())
     }
 
@@ -139,11 +150,11 @@ impl ShareService {
     }
 
     pub fn list(db: &Arc<Database>) -> Result<Vec<ShareRecord>, AppError> {
-        Ok(Self::primary_share(db)?.into_iter().collect())
+        db.list_shares()
     }
 
     pub fn get_detail(db: &Arc<Database>, share_id: &str) -> Result<Option<ShareRecord>, AppError> {
-        Ok(Self::primary_share(db)?.filter(|share| share.id == share_id))
+        db.get_share_by_id(share_id)
     }
 
     pub fn validate_token_with_reason(
@@ -160,18 +171,8 @@ impl ShareService {
             }
         };
 
-        let Some(primary_share) = Self::primary_share(db)? else {
-            return Ok(Some(ShareTokenValidation::rejected(
-                ShareTokenRejectReason::NotFound,
-                "No share exists on this cc-switch.",
-            )));
-        };
-        if share.id != primary_share.id {
-            return Ok(Some(ShareTokenValidation::rejected(
-                ShareTokenRejectReason::NotFound,
-                "Share token belongs to a non-primary share on this cc-switch.",
-            )));
-        }
+        // 多 share 模式：任何 share 的 token 都可独立使用，
+        // 不再要求是"primary"。
 
         if share.status != "active" {
             return Ok(Some(ShareTokenValidation::rejected(
@@ -299,6 +300,50 @@ impl ShareService {
     ) -> Result<ShareRecord, AppError> {
         let normalized = normalize_subdomain(subdomain)?;
         db.update_share_subdomain(share_id, &normalized)?;
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
+    /// 改绑 share 到一个新的 provider。
+    ///
+    /// 多 share 模式下，share 与 provider 是 1:1 绑定；改绑必须满足：
+    /// - share 当前 status == 'paused'（避免请求路径取到不一致的中间态）
+    /// - 新 provider 存在且 app_type 与 share 一致
+    /// - UNIQUE(provider_id) 不冲突（SQLite 层兜底）
+    pub fn update_provider_binding(
+        db: &Arc<Database>,
+        share_id: &str,
+        new_provider_id: &str,
+    ) -> Result<ShareRecord, AppError> {
+        let share = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        if share.status != "paused" {
+            return Err(AppError::Message(format!(
+                "Share 改绑 provider 前必须先暂停，当前状态: {}",
+                share.status
+            )));
+        }
+        let new_provider_id = normalize_provider_id(new_provider_id)?;
+        if share.provider_id.as_deref() == Some(new_provider_id.as_str()) {
+            return Err(AppError::Message(
+                "新 provider 与当前绑定一致，无需改绑".to_string(),
+            ));
+        }
+        let provider = db
+            .get_provider_by_id(&new_provider_id, &share.app_type)?
+            .ok_or_else(|| {
+                AppError::Message(format!(
+                    "Provider {new_provider_id} 在 {} 应用下不存在，无法绑定 share",
+                    share.app_type
+                ))
+            })?;
+        debug_assert_eq!(provider.id, new_provider_id);
+
+        db.update_share_provider_id(share_id, &new_provider_id)?;
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
@@ -511,10 +556,6 @@ impl ShareService {
         Ok(updated)
     }
 
-    fn primary_share(db: &Arc<Database>) -> Result<Option<ShareRecord>, AppError> {
-        Ok(db.list_shares()?.into_iter().next())
-    }
-
     fn generate_token() -> String {
         use rand::Rng;
         const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -531,6 +572,8 @@ impl ShareService {
 pub struct PrepareShareParams {
     pub owner_email: String,
     pub app_type: String,
+    /// 绑定的 provider id（必填）。share 请求只走该 provider，不参与 failover。
+    pub provider_id: String,
     pub description: Option<String>,
     pub for_sale: String,
     pub token_limit: i64,
@@ -548,6 +591,16 @@ fn normalize_share_app_type(value: &str) -> Result<String, AppError> {
             "Share app_type 只支持 claude、codex、gemini".to_string(),
         )),
     }
+}
+
+fn normalize_provider_id(value: &str) -> Result<String, AppError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(AppError::Message(
+            "Share provider_id 不能为空：每个 share 必须绑定一个 provider".to_string(),
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn normalize_subdomain(value: &str) -> Result<String, AppError> {
@@ -667,4 +720,155 @@ fn normalize_email_list(values: Vec<String>, owner_email: &str) -> Result<Vec<St
         result.push(email);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::{Database, ShareRecord};
+    use crate::provider::{Provider, ProviderMeta};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn make_provider(id: &str, app_type: &str) -> Provider {
+        let mut provider = Provider::with_id(
+            id.to_string(),
+            format!("Provider {id}"),
+            json!({ "env": {} }),
+            Some(String::new()),
+        );
+        provider.category = Some("custom".to_string());
+        provider.meta = Some(ProviderMeta {
+            provider_type: Some(app_type.to_string()),
+            ..Default::default()
+        });
+        provider
+    }
+
+    fn fresh_db() -> Arc<Database> {
+        Arc::new(Database::memory().expect("memory db"))
+    }
+
+    fn base_params(provider_id: &str) -> PrepareShareParams {
+        PrepareShareParams {
+            owner_email: "user@example.com".to_string(),
+            app_type: "claude".to_string(),
+            provider_id: provider_id.to_string(),
+            description: None,
+            for_sale: "No".to_string(),
+            token_limit: ShareService::UNLIMITED_TOKEN_LIMIT,
+            parallel_limit: ShareService::MIN_PARALLEL_LIMIT,
+            expires_in_secs: 3600,
+            subdomain: Some("alpha-share-01".to_string()),
+            auto_start: false,
+        }
+    }
+
+    fn raw_share(id: &str, provider_id: &str, token: &str, subdomain: &str) -> ShareRecord {
+        ShareRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            owner_email: "user@example.com".to_string(),
+            shared_with_emails: Vec::new(),
+            market_access_mode: "selected".to_string(),
+            for_sale_official_price_percent_by_app: HashMap::new(),
+            description: None,
+            for_sale: "No".to_string(),
+            share_token: token.to_string(),
+            app_type: "claude".to_string(),
+            provider_id: Some(provider_id.to_string()),
+            api_key: String::new(),
+            settings_config: None,
+            token_limit: ShareService::UNLIMITED_TOKEN_LIMIT,
+            parallel_limit: ShareService::MIN_PARALLEL_LIMIT,
+            tokens_used: 0,
+            requests_count: 0,
+            expires_at: "2100-01-01T00:00:00Z".to_string(),
+            subdomain: Some(subdomain.to_string()),
+            tunnel_url: None,
+            status: "active".to_string(),
+            auto_start: false,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            last_used_at: None,
+        }
+    }
+
+    #[test]
+    fn prepare_create_rejects_empty_provider_id() {
+        let db = fresh_db();
+        let mut params = base_params("");
+        params.provider_id = "   ".to_string();
+        let err = ShareService::prepare_create(&db, params)
+            .expect_err("empty provider_id must be rejected");
+        assert!(
+            err.to_string().contains("provider_id 不能为空"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn prepare_create_rejects_unknown_provider() {
+        let db = fresh_db();
+        let err = ShareService::prepare_create(&db, base_params("ghost"))
+            .expect_err("unknown provider must be rejected");
+        assert!(
+            err.to_string().contains("不存在"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn prepare_create_rejects_app_type_mismatch() {
+        let db = fresh_db();
+        // provider 注册在 codex 下，但 share 想绑到 claude — get_provider_by_id
+        // 按 (id, app_type) 联合查询，结果应当为 None。
+        db.save_provider("codex", &make_provider("p1", "codex"))
+            .expect("save provider");
+        let err = ShareService::prepare_create(&db, base_params("p1"))
+            .expect_err("app_type mismatch must be rejected");
+        assert!(
+            err.to_string().contains("不存在"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn prepare_create_succeeds_with_valid_binding() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .expect("save provider");
+        let record = ShareService::prepare_create(&db, base_params("p1"))
+            .expect("valid binding should succeed");
+        assert_eq!(record.provider_id.as_deref(), Some("p1"));
+        assert_eq!(record.app_type, "claude");
+        assert_eq!(record.status, "paused");
+        assert!(!record.share_token.is_empty());
+    }
+
+    #[test]
+    fn unique_provider_constraint_blocks_second_active_binding() {
+        // 直接走 DB 层验证 schema UNIQUE INDEX 生效，避免依赖 ShareService::create
+        // 触发的异步 tunnel sync。
+        let db = fresh_db();
+        db.create_share(&raw_share("s1", "p1", "tok1", "sub1"))
+            .expect("first share inserts");
+        let err = db
+            .create_share(&raw_share("s2", "p1", "tok2", "sub2"))
+            .expect_err("UNIQUE(provider_id) must reject second active binding");
+        assert!(
+            err.to_string().to_ascii_lowercase().contains("unique"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn deleted_share_releases_unique_provider_slot() {
+        let db = fresh_db();
+        db.create_share(&raw_share("s1", "p1", "tok1", "sub1"))
+            .expect("first share inserts");
+        db.update_share_status("s1", "deleted")
+            .expect("mark first deleted");
+        db.create_share(&raw_share("s2", "p1", "tok2", "sub2"))
+            .expect("partial UNIQUE INDEX excludes deleted rows");
+    }
 }

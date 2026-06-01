@@ -83,6 +83,7 @@ describe("share query hooks", () => {
     await result.current.mutateAsync({
       ownerEmail: "owner@example.com",
       appType: "claude",
+      providerId: "claude-provider-1",
       forSale: "No",
       tokenLimit: 1000,
       parallelLimit: 3,

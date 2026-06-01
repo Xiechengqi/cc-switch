@@ -311,6 +311,7 @@ mod tests {
                 .encode(signing_key.to_bytes()),
             public_key_base64: base64::engine::general_purpose::STANDARD
                 .encode(signing_key.verifying_key().to_bytes()),
+            control_secret: None,
         }
     }
 

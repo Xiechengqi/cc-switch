@@ -28,7 +28,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use super::server::ProxyState;
-use crate::tunnel::sync::{apply_share_settings_patch, share_metadata_from_record, ShareSettingsPatch};
+use crate::tunnel::sync::{
+    apply_share_settings_patch, share_metadata_from_record, ShareSettingsPatch,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -57,8 +59,8 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 fn expected_signature(secret: &str, body: &[u8], timestamp_ms: &str, nonce: &str) -> Vec<u8> {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts keys of any size");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any size");
     mac.update(b"POST\n");
     mac.update(CTL_PATH.as_bytes());
     mac.update(b"\n");
@@ -108,10 +110,9 @@ pub async fn apply_share_settings(
         return err(StatusCode::UNAUTHORIZED, "stale_timestamp");
     }
 
-    let Ok(provided_sig) = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        signature_b64,
-    ) else {
+    let Ok(provided_sig) =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, signature_b64)
+    else {
         return err(StatusCode::UNAUTHORIZED, "bad_signature");
     };
     let expected = expected_signature(&secret, &body, timestamp_raw, nonce);
@@ -162,5 +163,9 @@ pub async fn apply_share_settings(
     };
 
     let descriptor = share_metadata_from_record(&updated);
-    (StatusCode::OK, Json(json!({ "ok": true, "share": descriptor }))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({ "ok": true, "share": descriptor })),
+    )
+        .into_response()
 }

@@ -45,6 +45,8 @@ interface EditShareDialogProps {
   providerSalePricing: ShareProviderSalePricing[];
   marketsLoading: boolean;
   marketsError: string | null;
+  readOnly?: boolean;
+  subdomainReadOnly?: boolean;
   onRetryMarkets?: () => void;
   isBusy: boolean;
   onUpdateTokenLimit: (
@@ -102,6 +104,8 @@ export function EditShareDialog({
   providerSalePricing,
   marketsLoading,
   marketsError,
+  readOnly = false,
+  subdomainReadOnly = false,
   onRetryMarkets,
   isBusy,
   onUpdateTokenLimit,
@@ -360,7 +364,7 @@ export function EditShareDialog({
     (tokenLimitDirty && tokenLimitInvalid) ||
     (parallelLimitDirty && parallelLimitInvalid);
 
-  const busy = isBusy || saving;
+  const busy = isBusy || saving || readOnly;
   const marketDisabled = forSaleInput !== "Yes";
   const pricingDisabled = forSaleInput !== "Yes";
 
@@ -465,7 +469,7 @@ export function EditShareDialog({
             >
               <Input
                 value={subdomainInput}
-                disabled={busy}
+                disabled={busy || subdomainReadOnly}
                 onChange={(event) =>
                   setSubdomainInput(event.target.value.toLowerCase())
                 }
@@ -528,7 +532,9 @@ export function EditShareDialog({
                         }}
                         className="h-4 w-4 accent-primary"
                       />
-                      <span>{t(`share.forSaleOptions.${value.toLowerCase()}`)}</span>
+                      <span>
+                        {t(`share.forSaleOptions.${value.toLowerCase()}`)}
+                      </span>
                     </label>
                   );
                 })}
@@ -674,12 +680,9 @@ export function EditShareDialog({
                             ? t("share.forSaleOfficialPricePercentEmpty", {
                                 defaultValue: "未设置",
                               })
-                            : t(
-                                "share.forSaleOfficialPricePercentNoProvider",
-                                {
-                                  defaultValue: "无当前节点",
-                                },
-                              )
+                            : t("share.forSaleOfficialPricePercentNoProvider", {
+                                defaultValue: "无当前节点",
+                              })
                         }
                       />
                       <div className="truncate text-xs text-muted-foreground">
@@ -775,7 +778,9 @@ export function EditShareDialog({
                       max={23}
                       value={expiryPermanent ? "23" : expiryHourInput}
                       disabled={busy || expiryPermanent}
-                      onChange={(event) => setExpiryHourInput(event.target.value)}
+                      onChange={(event) =>
+                        setExpiryHourInput(event.target.value)
+                      }
                     />
                     <Input
                       type="number"
@@ -890,23 +895,24 @@ export function EditShareDialog({
                 </div>
               </DialogSection>
             </div>
-
           </div>
 
           <DialogFooter>
             <Button
               variant="outline"
-              disabled={busy}
+              disabled={isBusy || saving}
               onClick={() => onOpenChange(false)}
             >
               {t("common.cancel", { defaultValue: "取消" })}
             </Button>
-            <Button
-              disabled={!hasChanges || hasInvalidChanges || busy}
-              onClick={() => void handleSave()}
-            >
-              {t("share.editDialog.save", { defaultValue: "保存设置" })}
-            </Button>
+            {!readOnly ? (
+              <Button
+                disabled={!hasChanges || hasInvalidChanges || busy}
+                onClick={() => void handleSave()}
+              >
+                {t("share.editDialog.save", { defaultValue: "保存设置" })}
+              </Button>
+            ) : null}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -19,8 +19,16 @@ interface ShareListProps {
   pendingAction?: string | null;
   markets?: PublicMarket[];
   providerSalePricing?: ShareProviderSalePricing[];
+  /**
+   * 用于在 ShareCard 上展示绑定 provider 的名称。
+   * 形如 `claude:p1` → "Provider A"；找不到时 ShareCard 退化显示 provider id。
+   */
+  providerNameByKey?: Record<string, string>;
   marketsLoading?: boolean;
   marketsError?: string | null;
+  readOnly?: boolean;
+  hideRuntimeActions?: boolean;
+  subdomainReadOnly?: boolean;
   onRetryMarkets?: () => void;
   onRetry: () => void;
   onCreate: () => void;
@@ -85,8 +93,12 @@ export function ShareList({
   pendingAction,
   markets,
   providerSalePricing,
+  providerNameByKey,
   marketsLoading,
   marketsError,
+  readOnly = false,
+  hideRuntimeActions = false,
+  subdomainReadOnly = false,
   onRetryMarkets,
   onRetry,
   onCreate,
@@ -149,7 +161,9 @@ export function ShareList({
               {t("share.emptyDescription")}
             </p>
           </div>
-          <Button onClick={onCreate}>{t("share.emptyCta")}</Button>
+          {!readOnly ? (
+            <Button onClick={onCreate}>{t("share.emptyCta")}</Button>
+          ) : null}
         </CardContent>
       </Card>
     );
@@ -161,6 +175,11 @@ export function ShareList({
         <ShareCard
           key={share.id}
           share={share}
+          boundProviderName={
+            share.providerId
+              ? providerNameByKey?.[`${share.appType}:${share.providerId}`]
+              : undefined
+          }
           tunnelStatus={tunnelStatusMap[share.id]}
           tunnelConfig={tunnelConfig}
           tunnelConfigured={tunnelConfigured}
@@ -169,6 +188,9 @@ export function ShareList({
           providerSalePricing={providerSalePricing}
           marketsLoading={marketsLoading}
           marketsError={marketsError}
+          readOnly={readOnly}
+          hideRuntimeActions={hideRuntimeActions}
+          subdomainReadOnly={subdomainReadOnly}
           onRetryMarkets={onRetryMarkets}
           onDelete={onDelete}
           onEnable={onEnable}

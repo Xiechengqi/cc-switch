@@ -89,6 +89,11 @@ russh = { version = "0.46", default-features = false, features = ["flate2"] }
 russh-keys = { version = "0.46", default-features = false }
 rand = "0.8"
 twox-hash = "1.6"
+# Codex session envelope encryption (Phase 6): XChaCha20-Poly1305 AEAD with
+# Argon2id-derived key. Only pulled in for the optional password feature on
+# the cc-switch backup format; everything else uses plaintext envelopes.
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

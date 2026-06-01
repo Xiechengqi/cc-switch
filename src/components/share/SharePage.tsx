@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
+import { useTauriEvent } from "@/hooks/useTauriEvent";
 import {
   shareApi,
   type AppId,
@@ -42,6 +44,19 @@ import { CreateShareDialog } from "./CreateShareDialog";
 import { ShareList } from "./ShareList";
 import { ShareRouterBar } from "./ShareRouterBar";
 import type { Provider } from "@/types";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  clearRouterSessionTokens,
+  getRouterSessionStatus,
+  requestRouterEmailCodeWithIdentityRetry,
+  verifyRouterEmailCode,
+  type RouterSessionStatus,
+} from "@/lib/routerAuth";
+import {
+  updateRouterShareSettings,
+  type RouterShareSettingsPatch,
+} from "@/lib/routerShare";
 
 const SHARE_PROVIDER_APPS = [
   { app: "claude", label: "Claude" },
@@ -51,16 +66,54 @@ const SHARE_PROVIDER_APPS = [
 
 interface SharePageProps {
   defaultApp?: AppId;
+  shareScoped?: boolean;
+  readOnly?: boolean;
 }
 
-export function SharePage({ defaultApp }: SharePageProps) {
+export function SharePage({
+  defaultApp,
+  shareScoped = false,
+  readOnly = false,
+}: SharePageProps) {
   const { t } = useTranslation();
   const { data: shares = [], isLoading, error, refetch } = useSharesQuery();
   const { data: settings } = useSettingsQuery();
   const { data: proxyStatus } = useProxyStatus();
+  const queryClient = useQueryClient();
+  const {
+    session: routerSession,
+    loading: routerSessionLoading,
+    refresh: refreshRouterSession,
+  } = useRouterSession(shareScoped);
   const claudeProvidersQuery = useProvidersQuery("claude");
   const codexProvidersQuery = useProvidersQuery("codex");
   const geminiProvidersQuery = useProvidersQuery("gemini");
+
+  // share 路径在请求阶段发现绑定 provider 缺失 / app_type 不匹配时，后端会 emit
+  // `share-needs-rebind`。前端 toast 提示用户去改绑，并 invalidate shares 查询
+  // 让状态条立刻刷新（后端已把该 share 改成 paused）。
+  useTauriEvent<{
+    shareId: string;
+    appType: string;
+    reason: string;
+    detail?: string | null;
+  }>("share-needs-rebind", (payload) => {
+    toast.error(
+      t("share.needsRebindTitle", {
+        defaultValue: "Share 绑定的 provider 已失效",
+      }),
+      {
+        description: t("share.needsRebindBody", {
+          defaultValue:
+            "share_id={{shareId}} app={{appType}} 原因={{reason}}。请在 Share 页面改绑或删除该 share。",
+          shareId: payload.shareId,
+          appType: payload.appType,
+          reason: payload.reason,
+        }),
+      },
+    );
+    void queryClient.invalidateQueries({ queryKey: shareKeys.lists() });
+  });
   const tunnelConfigured = useMemo(
     () => isTunnelConfigured(settings),
     [settings],
@@ -162,10 +215,85 @@ export function SharePage({ defaultApp }: SharePageProps) {
   );
 
   const primaryShare = shares[0] ?? null;
+  const routerSessionEmail = routerSession?.user?.email?.trim().toLowerCase();
+  const primaryShareOwnerEmail = primaryShare?.ownerEmail?.trim().toLowerCase();
+  const canManageShareFromRouter =
+    shareScoped &&
+    Boolean(routerSession?.authenticated) &&
+    Boolean(routerSessionEmail) &&
+    routerSessionEmail === primaryShareOwnerEmail;
+  const effectiveReadOnly =
+    readOnly || (shareScoped && !canManageShareFromRouter);
+  const writeSharePatch = async (
+    share: ShareRecord,
+    patch: RouterShareSettingsPatch,
+  ) => {
+    const result = await updateRouterShareSettings(share.id, patch);
+    toast.success(
+      result.appliedSynchronously
+        ? t("share.routerEdit.applied", {
+            defaultValue: "配置已应用",
+          })
+        : t("share.routerEdit.queued", {
+            defaultValue: "配置修改已提交，等待桌面端同步",
+          }),
+    );
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: shareKeys.list() }),
+      queryClient.invalidateQueries({ queryKey: shareKeys.detail(share.id) }),
+    ]);
+    await refetch();
+  };
+
+  // 构造 CreateShareDialog 用的 provider 选项：按 defaultApp 过滤，
+  // 把"已被其他 active share 绑定"的 provider 标灰禁选。share ↔ provider
+  // 严格 1:1，需要前端在选择阶段提前阻断冲突。
+  const dialogProviderOptions = useMemo(() => {
+    if (!defaultApp) return [];
+    const queryData =
+      providerQueries[defaultApp as "claude" | "codex" | "gemini"];
+    if (!queryData) return [];
+    const takenProviderIds = new Set(
+      shares
+        .filter(
+          (share) =>
+            share.appType === defaultApp &&
+            share.status !== "deleted" &&
+            share.providerId,
+        )
+        .map((share) => share.providerId as string),
+    );
+    return Object.values(queryData.providers ?? {})
+      .filter((provider): provider is Provider => Boolean(provider))
+      .map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        disabled: takenProviderIds.has(provider.id),
+      }));
+  }, [defaultApp, providerQueries, shares]);
+
+  // ShareCard 上"绑定 provider"显示名的查找表，key = `{appType}:{providerId}`。
+  // 由 SharePage 在 provider 查询完成后统一计算，避免 Card 自己持有 query 句柄。
+  const providerNameByKey = useMemo(() => {
+    const map: Record<string, string> = {};
+    (["claude", "codex", "gemini"] as const).forEach((app) => {
+      const data = providerQueries[app];
+      if (!data) return;
+      Object.values(data.providers ?? {}).forEach((provider) => {
+        if (provider) {
+          map[`${app}:${provider.id}`] = provider.name;
+        }
+      });
+    });
+    return map;
+  }, [providerQueries]);
 
   const handleCreate = async (
     params: Parameters<typeof createMutation.mutateAsync>[0],
-    extras: { sharedWithEmails: string[]; marketAccessMode: "selected" | "all" },
+    extras: {
+      sharedWithEmails: string[];
+      marketAccessMode: "selected" | "all";
+    },
   ) => {
     const created = await createMutation.mutateAsync(params);
     if (
@@ -197,16 +325,27 @@ export function SharePage({ defaultApp }: SharePageProps) {
   return (
     <div className="px-6 py-4">
       <div className="mx-auto flex max-w-7xl flex-col gap-5 pb-10">
+        {shareScoped ? (
+          <ShareOwnerAuthBar
+            share={primaryShare}
+            session={routerSession}
+            loading={routerSessionLoading}
+            canManageShare={canManageShareFromRouter}
+            onRefresh={refreshRouterSession}
+          />
+        ) : null}
+
         <ShareRouterBar
           proxyRunning={proxyStatus?.running ?? false}
           proxyAddress={proxyStatus?.address ?? null}
           proxyPort={proxyStatus?.port ?? null}
           hasShare={shares.length > 0}
+          readOnly={effectiveReadOnly || shareScoped}
           onCreate={() => setCreateOpen(true)}
         />
 
         <ShareList
-          shares={primaryShare ? [primaryShare] : []}
+          shares={shares}
           tunnelStatusMap={tunnelStatusMap}
           tunnelConfig={tunnelConfig}
           tunnelConfigured={tunnelConfigured}
@@ -215,12 +354,18 @@ export function SharePage({ defaultApp }: SharePageProps) {
           pendingAction={pendingActionShareId}
           markets={markets}
           providerSalePricing={providerSalePricing}
+          providerNameByKey={providerNameByKey}
           marketsLoading={marketsLoading}
           marketsError={marketsError ? extractErrorMessage(marketsError) : null}
+          readOnly={effectiveReadOnly}
+          hideRuntimeActions={shareScoped}
+          subdomainReadOnly={shareScoped}
           onRetryMarkets={() => void refetchMarkets()}
           onRetry={() => void refetch()}
           onCreate={() => setCreateOpen(true)}
-          onDelete={(share) => setDeleteTarget(share)}
+          onDelete={(share) => {
+            if (!shareScoped) setDeleteTarget(share);
+          }}
           onEnable={(share) =>
             void runShareAction(share, () =>
               enableMutation.mutateAsync(share.id),
@@ -238,109 +383,142 @@ export function SharePage({ defaultApp }: SharePageProps) {
           }
           onUpdateSubdomain={(share, subdomain) =>
             runShareAction(share, () =>
-              updateSubdomainMutation.mutateAsync({
-                shareId: share.id,
-                subdomain,
-              }),
+              shareScoped
+                ? Promise.reject(
+                    new Error(
+                      t("share.routerEdit.subdomainReadOnly", {
+                        defaultValue: "Share URL 页面暂不支持修改 subdomain",
+                      }),
+                    ),
+                  )
+                : updateSubdomainMutation.mutateAsync({
+                    shareId: share.id,
+                    subdomain,
+                  }),
             )
           }
           onUpdateDescription={(share, description) =>
             runShareAction(share, () =>
-              updateDescriptionMutation.mutateAsync({
-                shareId: share.id,
-                description,
-              }),
+              shareScoped
+                ? writeSharePatch(share, { description: description || null })
+                : updateDescriptionMutation.mutateAsync({
+                    shareId: share.id,
+                    description,
+                  }),
             )
           }
           onUpdateForSale={(share, forSale) =>
             runShareAction(share, () =>
-              updateForSaleMutation.mutateAsync({
-                shareId: share.id,
-                forSale,
-              }),
+              shareScoped
+                ? writeSharePatch(share, { forSale })
+                : updateForSaleMutation.mutateAsync({
+                    shareId: share.id,
+                    forSale,
+                  }),
             )
           }
           onUpdateShareSalePricing={(share, pricing) =>
             runShareAction(share, () =>
-              updateSharePricingMutation.mutateAsync({
-                shareId: share.id,
-                pricing,
-              }),
+              shareScoped
+                ? writeSharePatch(share, {
+                    forSaleOfficialPricePercentByApp: pricing,
+                  })
+                : updateSharePricingMutation.mutateAsync({
+                    shareId: share.id,
+                    pricing,
+                  }),
             )
           }
           onUpdateExpiration={(share, expiresAt) =>
             runShareAction(share, () =>
-              updateExpirationMutation.mutateAsync({
-                shareId: share.id,
-                expiresAt,
-              }),
+              shareScoped
+                ? writeSharePatch(share, { expiresAt })
+                : updateExpirationMutation.mutateAsync({
+                    shareId: share.id,
+                    expiresAt,
+                  }),
             )
           }
           onUpdateAutoStart={(share, autoStart) =>
             runShareAction(share, () =>
-              updateAutoStartMutation.mutateAsync({
-                shareId: share.id,
-                autoStart,
-              }),
+              shareScoped
+                ? writeSharePatch(share, { autoStart })
+                : updateAutoStartMutation.mutateAsync({
+                    shareId: share.id,
+                    autoStart,
+                  }),
             )
           }
           onUpdateOwnerEmail={(share, ownerEmail) =>
             runShareAction(share, () =>
-              updateOwnerEmailMutation.mutateAsync({
-                shareId: share.id,
-                ownerEmail,
-              }),
+              shareScoped
+                ? writeSharePatch(share, { ownerEmail })
+                : updateOwnerEmailMutation.mutateAsync({
+                    shareId: share.id,
+                    ownerEmail,
+                  }),
             )
           }
           onTransferOwner={(share, targetEmail) =>
             runShareAction(share, () =>
-              transferOwnerMutation.mutateAsync({
-                shareId: share.id,
-                targetEmail,
-              }),
+              shareScoped
+                ? writeSharePatch(share, { ownerEmail: targetEmail })
+                : transferOwnerMutation.mutateAsync({
+                    shareId: share.id,
+                    targetEmail,
+                  }),
             )
           }
           onUpdateAcl={(share, sharedWithEmails, marketAccessMode) =>
             runShareAction(share, () =>
-              updateAclMutation.mutateAsync({
-                shareId: share.id,
-                sharedWithEmails,
-                marketAccessMode,
-              }),
+              shareScoped
+                ? writeSharePatch(share, { sharedWithEmails, marketAccessMode })
+                : updateAclMutation.mutateAsync({
+                    shareId: share.id,
+                    sharedWithEmails,
+                    marketAccessMode,
+                  }),
             )
           }
           onUpdateTokenLimit={(share, tokenLimit) =>
             runShareAction(share, () =>
-              updateTokenLimitMutation.mutateAsync({
-                shareId: share.id,
-                tokenLimit,
-              }),
+              shareScoped
+                ? writeSharePatch(share, { tokenLimit })
+                : updateTokenLimitMutation.mutateAsync({
+                    shareId: share.id,
+                    tokenLimit,
+                  }),
             )
           }
           onUpdateParallelLimit={(share, parallelLimit) =>
             runShareAction(share, () =>
-              updateParallelLimitMutation.mutateAsync({
-                shareId: share.id,
-                parallelLimit,
-              }),
+              shareScoped
+                ? writeSharePatch(share, { parallelLimit })
+                : updateParallelLimitMutation.mutateAsync({
+                    shareId: share.id,
+                    parallelLimit,
+                  }),
             )
           }
         />
       </div>
 
-      <CreateShareDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        defaultApp={defaultApp}
-        ownerEmail={primaryShare?.ownerEmail ?? null}
-        tunnelConfig={tunnelConfig}
-        tunnelConfigSaving={configureTunnelMutation.isPending}
-        isSubmitting={createMutation.isPending || enableMutation.isPending}
-        onSaveTunnelConfig={(config) =>
-          configureTunnelMutation.mutateAsync(config)
-        }
-        onSubmit={handleCreate}
-      />
+      {!shareScoped ? (
+        <CreateShareDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          defaultApp={defaultApp}
+          ownerEmail={primaryShare?.ownerEmail ?? null}
+          tunnelConfig={tunnelConfig}
+          tunnelConfigSaving={configureTunnelMutation.isPending}
+          isSubmitting={createMutation.isPending || enableMutation.isPending}
+          providers={dialogProviderOptions}
+          onSaveTunnelConfig={(config) =>
+            configureTunnelMutation.mutateAsync(config)
+          }
+          onSubmit={handleCreate}
+        />
+      ) : null}
 
       <ConfirmDialog
         isOpen={Boolean(deleteTarget)}
@@ -357,6 +535,245 @@ export function SharePage({ defaultApp }: SharePageProps) {
           });
         }}
       />
+    </div>
+  );
+}
+
+function useRouterSession(enabled: boolean): {
+  session: RouterSessionStatus | null;
+  loading: boolean;
+  refresh: () => Promise<void>;
+} {
+  const [session, setSession] = useState<RouterSessionStatus | null>(null);
+  const [loading, setLoading] = useState(enabled);
+
+  const refresh = useCallback(async () => {
+    if (!enabled) return;
+    setLoading(true);
+    try {
+      setSession(await getRouterSessionStatus());
+    } catch (error) {
+      console.error("[SharePage] Failed to refresh router session", error);
+      setSession({ authenticated: false });
+    } finally {
+      setLoading(false);
+    }
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    void refresh();
+    const handleAuthChanged = () => void refresh();
+    window.addEventListener("router-auth-changed", handleAuthChanged);
+    const interval = window.setInterval(() => void refresh(), 60_000);
+    return () => {
+      window.removeEventListener("router-auth-changed", handleAuthChanged);
+      window.clearInterval(interval);
+    };
+  }, [enabled, refresh]);
+
+  return { session, loading, refresh };
+}
+
+function maskEmail(email: string): string {
+  const trimmed = email.trim();
+  const at = trimmed.indexOf("@");
+  if (at <= 0) return trimmed;
+  const local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at);
+  if (local.length <= 1) return `${local}***${domain}`;
+  return `${local[0]}${"*".repeat(Math.max(3, local.length - 1))}${domain}`;
+}
+
+function ShareOwnerAuthBar({
+  share,
+  session,
+  loading,
+  canManageShare,
+  onRefresh,
+}: {
+  share: ShareRecord | null;
+  session: RouterSessionStatus | null;
+  loading: boolean;
+  canManageShare: boolean;
+  onRefresh: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [step, setStep] = useState<"email" | "code">("email");
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [maskedDestination, setMaskedDestination] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const sendCode = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result =
+        await requestRouterEmailCodeWithIdentityRetry(normalizedEmail);
+      setEmail(normalizedEmail);
+      setMaskedDestination(
+        result.maskedDestination || maskEmail(normalizedEmail),
+      );
+      setCode("");
+      setStep("code");
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyCode = async () => {
+    if (!email.trim() || code.trim().length < 6) return;
+    setBusy(true);
+    setError("");
+    try {
+      await verifyRouterEmailCode(email.trim().toLowerCase(), code.trim());
+      await onRefresh();
+      setCode("");
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const logout = async () => {
+    clearRouterSessionTokens();
+    await onRefresh();
+  };
+
+  const sessionEmail = session?.user?.email ?? null;
+
+  return (
+    <div className="rounded-md border border-border-default/70 bg-card/80 px-4 py-3">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="text-sm">
+          {loading ? (
+            <span className="text-muted-foreground">{t("common.loading")}</span>
+          ) : canManageShare ? (
+            <span className="text-emerald-700 dark:text-emerald-300">
+              {t("share.routerOwner.signedInOwner", {
+                defaultValue: "已以 owner {{email}} 登录，可编辑配置",
+                email: sessionEmail ?? "",
+              })}
+            </span>
+          ) : session?.authenticated ? (
+            <span className="text-amber-700 dark:text-amber-300">
+              {t("share.routerOwner.signedInReadOnly", {
+                defaultValue:
+                  "当前登录 {{email}}，只有 owner {{owner}} 可以编辑配置",
+                email: sessionEmail ?? "",
+                owner: share?.ownerEmail ?? "-",
+              })}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">
+              {t("share.routerOwner.signInPrompt", {
+                defaultValue: "使用 share owner 邮箱登录后可编辑配置",
+              })}
+            </span>
+          )}
+        </div>
+
+        {session?.authenticated ? (
+          <Button variant="outline" size="sm" onClick={() => void logout()}>
+            {t("common.logout", { defaultValue: "退出登录" })}
+          </Button>
+        ) : (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            {step === "email" ? (
+              <>
+                <Input
+                  type="email"
+                  value={email}
+                  disabled={busy}
+                  placeholder={share?.ownerEmail || "owner@example.com"}
+                  className="h-8 min-w-64"
+                  onChange={(event) => setEmail(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void sendCode();
+                    }
+                  }}
+                />
+                <Button
+                  size="sm"
+                  disabled={busy || !email.trim()}
+                  onClick={() => void sendCode()}
+                >
+                  {busy
+                    ? t("common.loading")
+                    : t("share.routerOwner.sendCode", {
+                        defaultValue: "发送验证码",
+                      })}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Input
+                  value={code}
+                  disabled={busy}
+                  inputMode="numeric"
+                  maxLength={6}
+                  placeholder={t("share.routerOwner.codePlaceholder", {
+                    defaultValue: "验证码",
+                  })}
+                  className="h-8 min-w-32"
+                  onChange={(event) => setCode(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void verifyCode();
+                    }
+                  }}
+                />
+                <Button
+                  size="sm"
+                  disabled={busy || code.trim().length < 6}
+                  onClick={() => void verifyCode()}
+                >
+                  {busy
+                    ? t("common.loading")
+                    : t("share.routerOwner.verify", {
+                        defaultValue: "验证",
+                      })}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => {
+                    setStep("email");
+                    setCode("");
+                    setError("");
+                  }}
+                >
+                  {t("share.routerOwner.changeEmail", {
+                    defaultValue: "换邮箱",
+                  })}
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      {step === "code" && !session?.authenticated ? (
+        <div className="mt-2 text-xs text-muted-foreground">
+          {t("share.routerOwner.codeSent", {
+            defaultValue: "验证码已发送到 {{target}}",
+            target: maskedDestination || maskEmail(email),
+          })}
+        </div>
+      ) : null}
+      {error ? (
+        <div className="mt-2 text-xs text-destructive">{error}</div>
+      ) : null}
     </div>
   );
 }

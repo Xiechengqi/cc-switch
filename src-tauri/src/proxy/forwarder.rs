@@ -129,7 +129,20 @@ pub struct RequestForwarder {
     /// 由 `AppProxyConfig.max_retries` (UI: "请求失败时的重试次数, 0-10") 派生：
     /// `max_attempts = max_retries + 1`，所以 max_retries=0 表示仅尝试一家、
     /// max_retries=3（默认）表示最多 4 家。loop 同时受 providers.len() 自然限制。
+    ///
+    /// share 请求路径下，max_attempts 永远是 1（由 HandlerContext::create_forwarder
+    /// 在传入时强制），不论 max_retries 配置或 failover 开关如何。
     max_attempts: usize,
+    /// Share 请求绑定的 provider id。
+    ///
+    /// `Some` 时本次请求由 X-Share-Token 发起，forwarder 必须：
+    /// - max_attempts 强制为 1（由调用方在 new 时传入）
+    /// - 不写 `current_providers`（旁路托盘"当前 provider"显示）
+    /// - 不 +1 `status.failover_count`、不调 `failover_manager.try_switch`
+    ///
+    /// 这些不变量靠 `maybe_record_current_provider` / `maybe_handle_failover_switch`
+    /// 两个 helper 集中拦截，避免散在 forwarder 三处成功路径里。
+    override_provider_id: Option<String>,
 }
 
 impl RequestForwarder {
@@ -152,10 +165,18 @@ impl RequestForwarder {
         optimizer_config: OptimizerConfig,
         copilot_optimizer_config: CopilotOptimizerConfig,
         max_retries: u32,
+        override_provider_id: Option<String>,
     ) -> Self {
         // max_retries 是「失败后重试次数」语义，attempt 上限 = retries + 1。
         // saturating_add 防止 u32::MAX + 1 溢出。
-        let max_attempts = (max_retries as usize).saturating_add(1);
+        //
+        // share 请求路径下 max_attempts 永远是 1：share 与 provider 1:1 绑定，
+        // 绑定 provider 失败时直接 502/503 给上游，不漂到其他 provider。
+        let max_attempts = if override_provider_id.is_some() {
+            1
+        } else {
+            (max_retries as usize).saturating_add(1)
+        };
         Self {
             router,
             status,
@@ -175,7 +196,52 @@ impl RequestForwarder {
                 streaming_first_byte_timeout,
             ),
             max_attempts,
+            override_provider_id,
         }
+    }
+
+    /// 把"当前应用类型使用的 provider"记进全局表。
+    ///
+    /// share 请求绝不动这个状态——它会污染托盘显示与
+    /// `settings::get_current_provider`，破坏"share 与全局当前 provider 解耦"
+    /// 的契约。
+    async fn maybe_record_current_provider(&self, app_type_str: &str, provider: &Provider) {
+        if self.override_provider_id.is_some() {
+            return;
+        }
+        let mut current_providers = self.current_providers.write().await;
+        current_providers.insert(
+            app_type_str.to_string(),
+            (provider.id.clone(), provider.name.clone()),
+        );
+    }
+
+    /// 响应成功后判断是否需要触发"故障转移到 X provider"切换 + +1 failover_count。
+    ///
+    /// share 请求 max_attempts=1，理论不会进入"切换到不同 provider"分支；
+    /// 兜底加一次 guard，防止后续代码改动破坏不变量。
+    async fn maybe_handle_failover_switch(
+        &self,
+        app_type_str: &str,
+        provider: &Provider,
+        status: &mut ProxyStatus,
+    ) {
+        if self.override_provider_id.is_some() {
+            return;
+        }
+        let should_switch = self.current_provider_id_at_start.as_str() != provider.id.as_str();
+        if !should_switch {
+            return;
+        }
+        status.failover_count += 1;
+        let fm = self.failover_manager.clone();
+        let ah = self.app_handle.clone();
+        let pid = provider.id.clone();
+        let pname = provider.name.clone();
+        let at = app_type_str.to_string();
+        tokio::spawn(async move {
+            let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
+        });
     }
 
     async fn record_success_result(
@@ -434,36 +500,17 @@ impl RequestForwarder {
                     self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
                         .await;
 
-                    // 更新当前应用类型使用的 provider
-                    {
-                        let mut current_providers = self.current_providers.write().await;
-                        current_providers.insert(
-                            app_type_str.to_string(),
-                            (provider.id.clone(), provider.name.clone()),
-                        );
-                    }
+                    // 更新当前应用类型使用的 provider（share 请求旁路）
+                    self.maybe_record_current_provider(app_type_str, provider)
+                        .await;
 
                     // 更新成功统计
                     {
                         let mut status = self.status.write().await;
                         status.success_requests += 1;
                         status.last_error = None;
-                        let should_switch =
-                            self.current_provider_id_at_start.as_str() != provider.id.as_str();
-                        if should_switch {
-                            status.failover_count += 1;
-
-                            // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
-                            let fm = self.failover_manager.clone();
-                            let ah = self.app_handle.clone();
-                            let pid = provider.id.clone();
-                            let pname = provider.name.clone();
-                            let at = app_type_str.to_string();
-
-                            tokio::spawn(async move {
-                                let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
-                            });
-                        }
+                        self.maybe_handle_failover_switch(app_type_str, provider, &mut status)
+                            .await;
                         // 重新计算成功率
                         if status.total_requests > 0 {
                             status.success_rate = (status.success_requests as f32
@@ -563,40 +610,21 @@ impl RequestForwarder {
                                         )
                                         .await;
 
-                                        // 更新当前应用类型使用的 provider
-                                        {
-                                            let mut current_providers =
-                                                self.current_providers.write().await;
-                                            current_providers.insert(
-                                                app_type_str.to_string(),
-                                                (provider.id.clone(), provider.name.clone()),
-                                            );
-                                        }
+                                        // 更新当前应用类型使用的 provider（share 请求旁路）
+                                        self.maybe_record_current_provider(app_type_str, provider)
+                                            .await;
 
                                         // 更新成功统计
                                         {
                                             let mut status = self.status.write().await;
                                             status.success_requests += 1;
                                             status.last_error = None;
-                                            let should_switch =
-                                                self.current_provider_id_at_start.as_str()
-                                                    != provider.id.as_str();
-                                            if should_switch {
-                                                status.failover_count += 1;
-
-                                                // 异步触发供应商切换，更新 UI/托盘
-                                                let fm = self.failover_manager.clone();
-                                                let ah = self.app_handle.clone();
-                                                let pid = provider.id.clone();
-                                                let pname = provider.name.clone();
-                                                let at = app_type_str.to_string();
-
-                                                tokio::spawn(async move {
-                                                    let _ = fm
-                                                        .try_switch(ah.as_ref(), &at, &pid, &pname)
-                                                        .await;
-                                                });
-                                            }
+                                            self.maybe_handle_failover_switch(
+                                                app_type_str,
+                                                provider,
+                                                &mut status,
+                                            )
+                                            .await;
                                             if status.total_requests > 0 {
                                                 status.success_rate = (status.success_requests
                                                     as f32
@@ -728,35 +756,19 @@ impl RequestForwarder {
                                     )
                                     .await;
 
-                                    {
-                                        let mut current_providers =
-                                            self.current_providers.write().await;
-                                        current_providers.insert(
-                                            app_type_str.to_string(),
-                                            (provider.id.clone(), provider.name.clone()),
-                                        );
-                                    }
+                                    self.maybe_record_current_provider(app_type_str, provider)
+                                        .await;
 
                                     {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let should_switch =
-                                            self.current_provider_id_at_start.as_str()
-                                                != provider.id.as_str();
-                                        if should_switch {
-                                            status.failover_count += 1;
-                                            let fm = self.failover_manager.clone();
-                                            let ah = self.app_handle.clone();
-                                            let pid = provider.id.clone();
-                                            let pname = provider.name.clone();
-                                            let at = app_type_str.to_string();
-                                            tokio::spawn(async move {
-                                                let _ = fm
-                                                    .try_switch(ah.as_ref(), &at, &pid, &pname)
-                                                    .await;
-                                            });
-                                        }
+                                        self.maybe_handle_failover_switch(
+                                            app_type_str,
+                                            provider,
+                                            &mut status,
+                                        )
+                                        .await;
                                         if status.total_requests > 0 {
                                             status.success_rate = (status.success_requests as f32
                                                 / status.total_requests as f32)
@@ -3382,7 +3394,104 @@ mod tests {
             non_streaming_timeout,
             streaming_first_byte_timeout,
             max_attempts: 1,
+            override_provider_id: None,
         }
+    }
+
+    #[test]
+    fn new_with_override_forces_single_attempt_regardless_of_max_retries() {
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let forwarder = RequestForwarder::new(
+            Arc::new(ProviderRouter::new(db.clone())),
+            0,
+            Arc::new(RwLock::new(ProxyStatus::default())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(GeminiShadowStore::new()),
+            Arc::new(CodexChatHistoryStore::default()),
+            Arc::new(FailoverSwitchManager::new(db)),
+            None,
+            String::new(),
+            String::new(),
+            false,
+            0,
+            0,
+            RectifierConfig::default(),
+            OptimizerConfig::default(),
+            CopilotOptimizerConfig::default(),
+            5, // 试图请求 6 次
+            Some("share-bound-provider".to_string()),
+        );
+
+        // share 路径下，max_retries 配多大都被压回 1：share 与 provider 是 1:1，
+        // 失败时直接 5xx，绝不漂到其他 provider。
+        assert_eq!(forwarder.max_attempts, 1);
+        assert_eq!(
+            forwarder.override_provider_id.as_deref(),
+            Some("share-bound-provider")
+        );
+    }
+
+    #[test]
+    fn new_without_override_honors_max_retries() {
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let forwarder = RequestForwarder::new(
+            Arc::new(ProviderRouter::new(db.clone())),
+            0,
+            Arc::new(RwLock::new(ProxyStatus::default())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(GeminiShadowStore::new()),
+            Arc::new(CodexChatHistoryStore::default()),
+            Arc::new(FailoverSwitchManager::new(db)),
+            None,
+            String::new(),
+            String::new(),
+            false,
+            0,
+            0,
+            RectifierConfig::default(),
+            OptimizerConfig::default(),
+            CopilotOptimizerConfig::default(),
+            3,
+            None,
+        );
+
+        assert_eq!(forwarder.max_attempts, 4);
+        assert!(forwarder.override_provider_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn maybe_record_current_provider_skips_when_override() {
+        let forwarder = test_forwarder(Duration::from_secs(0), Duration::from_secs(0));
+        let mut share_forwarder = forwarder;
+        share_forwarder.override_provider_id = Some("bound".to_string());
+
+        let provider = test_provider_with_type(None);
+        share_forwarder
+            .maybe_record_current_provider("claude", &provider)
+            .await;
+
+        let map = share_forwarder.current_providers.read().await;
+        assert!(
+            map.is_empty(),
+            "share 请求绝不写 current_providers；实际 = {map:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_record_current_provider_writes_when_no_override() {
+        let forwarder = test_forwarder(Duration::from_secs(0), Duration::from_secs(0));
+        assert!(forwarder.override_provider_id.is_none());
+
+        let provider = test_provider_with_type(None);
+        forwarder
+            .maybe_record_current_provider("claude", &provider)
+            .await;
+
+        let map = forwarder.current_providers.read().await;
+        assert_eq!(
+            map.get("claude"),
+            Some(&("provider-1".to_string(), "Provider 1".to_string()))
+        );
     }
 
     #[test]

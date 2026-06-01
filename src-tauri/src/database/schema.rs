@@ -377,7 +377,7 @@ impl Database {
                 for_sale TEXT NOT NULL DEFAULT 'No',
                 share_token TEXT NOT NULL UNIQUE,
                 app_type TEXT NOT NULL,
-                provider_id TEXT,
+                provider_id TEXT NOT NULL,
                 api_key TEXT NOT NULL,
                 settings_config TEXT,
                 token_limit INTEGER NOT NULL,
@@ -398,6 +398,18 @@ impl Database {
 
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_shares_token ON shares(share_token)",
+            [],
+        );
+
+        // share ↔ provider 1:1：同一 provider 同时只能被一个非 deleted share 绑定。
+        let _ = conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_shares_provider_unique
+             ON shares(provider_id) WHERE status != 'deleted'",
+            [],
+        );
+
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shares_app_status ON shares(app_type, status)",
             [],
         );
 

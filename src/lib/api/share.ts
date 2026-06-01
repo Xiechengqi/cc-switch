@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "@/lib/runtime";
 export interface ShareRecord {
   id: string;
   name: string;
@@ -29,6 +29,11 @@ export interface ShareRecord {
 export interface CreateShareParams {
   ownerEmail: string;
   appType: "claude" | "codex" | "gemini";
+  /**
+   * 绑定的 provider id（必填）。share 请求只走该 provider，
+   * 不参与 failover，且不会被其他 share 同时绑定。
+   */
+  providerId: string;
   description?: string;
   forSale: "Yes" | "No" | "Free";
   tokenLimit: number;
@@ -36,6 +41,11 @@ export interface CreateShareParams {
   expiresInSecs: number;
   subdomain?: string;
   autoStart: boolean;
+}
+
+export interface UpdateShareProviderBindingParams {
+  shareId: string;
+  providerId: string;
 }
 
 export interface PublicMarket {
@@ -126,67 +136,67 @@ export interface ConnectInfo {
 }
 
 async function create(params: CreateShareParams): Promise<ShareRecord> {
-  return invoke<ShareRecord>("create_share", { params });
+  return invokeCommand<ShareRecord>("create_share", { params });
 }
 
 async function remove(shareId: string): Promise<void> {
-  return invoke("delete_share", { shareId });
+  return invokeCommand("delete_share", { shareId });
 }
 
 async function pause(shareId: string): Promise<void> {
-  return invoke("pause_share", { shareId });
+  return invokeCommand("pause_share", { shareId });
 }
 
 async function resume(shareId: string): Promise<void> {
-  return invoke("resume_share", { shareId });
+  return invokeCommand("resume_share", { shareId });
 }
 
 async function enable(shareId: string): Promise<TunnelInfo> {
-  return invoke<TunnelInfo>("enable_share", { shareId });
+  return invokeCommand<TunnelInfo>("enable_share", { shareId });
 }
 
 async function disable(shareId: string): Promise<void> {
-  return invoke("disable_share", { shareId });
+  return invokeCommand("disable_share", { shareId });
 }
 
 async function resetUsage(shareId: string): Promise<ShareRecord> {
-  return invoke<ShareRecord>("reset_share_usage", { shareId });
+  return invokeCommand<ShareRecord>("reset_share_usage", { shareId });
 }
 
 async function updateTokenLimit(
   params: UpdateShareTokenLimitParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_token_limit", { params });
+  return invokeCommand<ShareRecord>("update_share_token_limit", { params });
 }
 
 async function updateParallelLimit(
   params: UpdateShareParallelLimitParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_parallel_limit", { params });
+  return invokeCommand<ShareRecord>("update_share_parallel_limit", { params });
 }
 
 async function updateSubdomain(
   params: UpdateShareSubdomainParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_subdomain", { params });
+  return invokeCommand<ShareRecord>("update_share_subdomain", { params });
 }
 
 async function updateDescription(
   params: UpdateShareDescriptionParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_description", { params });
+  return invokeCommand<ShareRecord>("update_share_description", { params });
 }
 
 async function updateForSale(
   params: UpdateShareForSaleParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_for_sale", { params });
+  return invokeCommand<ShareRecord>("update_share_for_sale", { params });
 }
 
 async function updateForSaleOfficialPricePercent(
   params: UpdateShareForSaleOfficialPricePercentParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_for_sale_official_price_percent", {
+  return invokeCommand<ShareRecord>("update_share_for_sale_official_price_percent", {
     params,
   });
 }
@@ -194,71 +204,77 @@ async function updateForSaleOfficialPricePercent(
 async function updateExpiration(
   params: UpdateShareExpirationParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_expiration", { params });
+  return invokeCommand<ShareRecord>("update_share_expiration", { params });
 }
 
 async function updateAutoStart(
   params: UpdateShareAutoStartParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_auto_start", { params });
+  return invokeCommand<ShareRecord>("update_share_auto_start", { params });
 }
 
 async function updateOwnerEmail(
   params: UpdateShareOwnerEmailParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_owner_email", { params });
+  return invokeCommand<ShareRecord>("update_share_owner_email", { params });
 }
 
 async function transferOwner(
   params: TransferShareOwnerParams,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("transfer_share_owner", { params });
+  return invokeCommand<ShareRecord>("transfer_share_owner", { params });
 }
 
 async function updateAcl(params: UpdateShareAclParams): Promise<ShareRecord> {
-  return invoke<ShareRecord>("update_share_acl", { params });
+  return invokeCommand<ShareRecord>("update_share_acl", { params });
+}
+
+async function updateProviderBinding(
+  params: UpdateShareProviderBindingParams,
+): Promise<ShareRecord> {
+  return invokeCommand<ShareRecord>("update_share_provider_binding", { params });
 }
 
 async function listMarkets(): Promise<PublicMarket[]> {
-  return invoke<PublicMarket[]>("list_share_markets");
+  return invokeCommand<PublicMarket[]>("list_share_markets");
 }
 
 async function authorizeMarket(
   shareId: string,
   marketEmail: string,
 ): Promise<ShareRecord> {
-  return invoke<ShareRecord>("authorize_share_market", {
+  return invokeCommand<ShareRecord>("authorize_share_market", {
     shareId,
     marketEmail,
   });
 }
 
 async function list(): Promise<ShareRecord[]> {
-  return invoke<ShareRecord[]>("list_shares");
+  return invokeCommand<ShareRecord[]>("list_shares");
 }
 
 async function getDetail(shareId: string): Promise<ShareRecord | null> {
-  return invoke<ShareRecord | null>("get_share_detail", { shareId });
+  return invokeCommand<ShareRecord | null>("get_share_detail", { shareId });
 }
 
 async function startTunnel(shareId: string): Promise<TunnelInfo> {
-  return invoke<TunnelInfo>("start_share_tunnel", { shareId });
+  return invokeCommand<TunnelInfo>("start_share_tunnel", { shareId });
 }
 
 async function stopTunnel(shareId: string): Promise<void> {
-  return invoke("stop_share_tunnel", { shareId });
+  return invokeCommand("stop_share_tunnel", { shareId });
 }
 
 async function getTunnelStatus(shareId: string): Promise<ShareTunnelStatus> {
-  return invoke<ShareTunnelStatus>("get_tunnel_status", { shareId });
+  return invokeCommand<ShareTunnelStatus>("get_tunnel_status", { shareId });
 }
 
 async function getConnectInfo(shareId: string): Promise<ConnectInfo> {
-  return invoke<ConnectInfo>("get_share_connect_info", { shareId });
+  return invokeCommand<ConnectInfo>("get_share_connect_info", { shareId });
 }
 
 async function configureTunnel(config: TunnelConfig): Promise<void> {
-  return invoke("configure_tunnel", { config });
+  return invokeCommand("configure_tunnel", { config });
 }
 
 export const shareApi = {
@@ -280,6 +296,7 @@ export const shareApi = {
   updateOwnerEmail,
   transferOwner,
   updateAcl,
+  updateProviderBinding,
   listMarkets,
   authorizeMarket,
   list,

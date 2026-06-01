@@ -17,6 +17,9 @@ use tokio::time::{timeout, Duration};
 pub struct CreateShareParams {
     pub owner_email: String,
     pub app_type: String,
+    /// 绑定的 provider id（必填）。share 请求只走该 provider，
+    /// 不参与 failover，且不会被其他 share 同时绑定。
+    pub provider_id: String,
     pub description: Option<String>,
     pub for_sale: String,
     pub token_limit: i64,
@@ -145,17 +148,21 @@ pub async fn create_share(
     let mut share = None;
 
     for _ in 0..5 {
-        let candidate = ShareService::prepare_create(PrepareShareParams {
-            owner_email: owner_email.clone(),
-            app_type: params.app_type.clone(),
-            description: params.description.clone(),
-            for_sale: params.for_sale.clone(),
-            token_limit: params.token_limit,
-            parallel_limit: params.parallel_limit,
-            expires_in_secs: params.expires_in_secs,
-            subdomain: requested_subdomain.clone(),
-            auto_start: params.auto_start,
-        })
+        let candidate = ShareService::prepare_create(
+            &state.db,
+            PrepareShareParams {
+                owner_email: owner_email.clone(),
+                app_type: params.app_type.clone(),
+                provider_id: params.provider_id.clone(),
+                description: params.description.clone(),
+                for_sale: params.for_sale.clone(),
+                token_limit: params.token_limit,
+                parallel_limit: params.parallel_limit,
+                expires_in_secs: params.expires_in_secs,
+                subdomain: requested_subdomain.clone(),
+                auto_start: params.auto_start,
+            },
+        )
         .map_err(|e: AppError| e.to_string())?;
 
         match crate::tunnel::sync::claim_share_subdomain(&candidate, &state.db).await {
@@ -361,6 +368,28 @@ pub fn transfer_share_owner(
     params: TransferShareOwnerParams,
 ) -> Result<ShareRecord, String> {
     ShareService::transfer_owner_email(&state.db, &params.share_id, &params.target_email)
+        .map_err(|e: AppError| e.to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateShareProviderBindingParams {
+    pub share_id: String,
+    pub provider_id: String,
+}
+
+/// 改绑 share 到一个新的 provider。
+///
+/// 多 share 模式下，share 与 provider 1:1 绑定。改绑要求 share 当前为 paused：
+/// 这样请求路径上不会取到不一致的中间态（schema 的 UNIQUE 索引和 ShareService
+/// 内的状态/app_type 校验是补充防御）。改绑成功后 schedule_sync_share 会把
+/// 新绑定推送到 router。
+#[tauri::command]
+pub async fn update_share_provider_binding(
+    state: State<'_, AppState>,
+    params: UpdateShareProviderBindingParams,
+) -> Result<ShareRecord, String> {
+    ShareService::update_provider_binding(&state.db, &params.share_id, &params.provider_id)
         .map_err(|e: AppError| e.to_string())
 }
 
@@ -585,6 +614,10 @@ async fn start_share_tunnel_inner(
     }
 
     Ok(info)
+}
+
+pub(crate) fn requires_owner_login_for_web(message: &str) -> bool {
+    requires_owner_login_for_error(message)
 }
 
 fn requires_owner_login_for_error(message: &str) -> bool {

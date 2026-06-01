@@ -80,6 +80,14 @@ pub struct RequestContext {
     /// 由 cc-switch-router 透传的请求 ID，用于让 live ticker 与 share request log
     /// 共享同一个 request identity。
     pub incoming_request_id: Option<String>,
+    /// Share 请求绑定的 provider id。
+    ///
+    /// `Some(id)` 表示本次请求由 X-Share-Token 发起，且 share 已与该 provider
+    /// 1:1 绑定；此时 forwarder 走 single-provider 路径——绝不 failover、绝不
+    /// 写 `current_providers`、绝不触发 `failover_manager.try_switch`。
+    /// `None` 表示非 share 请求（本地直连），维持原有"当前 provider + 故障转移
+    /// 链"语义。
+    pub override_provider_id: Option<String>,
 }
 
 impl RequestContext {
@@ -143,33 +151,57 @@ impl RequestContext {
             session_result.client_provided
         );
 
-        // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
-        // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
-        let providers = state
-            .provider_router
-            .select_providers(app_type_str)
-            .await
-            .map_err(|e| match e {
-                crate::error::AppError::AllProvidersCircuitOpen => {
-                    ProxyError::AllProvidersCircuitOpen
-                }
-                crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
-                _ => ProxyError::DatabaseError(e.to_string()),
-            })?;
+        // 先解析 X-Share-Token，决定本次请求走哪条选路路径。share 解析必须在
+        // select_providers 之前完成：否则非 share 路径上的 ProviderRouter 会先
+        // 消耗一次 failover 链的 HalfOpen 名额，share 请求再走 override 时又
+        // 占一次，浪费熔断器统计且容易踩到 HalfOpen 限流。
+        let share_outcome = resolve_share_outcome(state, headers, tag, app_type_str)?;
+        let override_provider_id = match &share_outcome {
+            ShareOutcome::Share { provider_id, .. } => Some(provider_id.clone()),
+            ShareOutcome::NotShare => None,
+        };
+
+        // 选 Provider：share 请求走 override（单元素链，不 failover），
+        // 非 share 请求维持原有"当前 provider + 可选 failover 链"逻辑。
+        let providers = match &override_provider_id {
+            Some(provider_id) => state
+                .provider_router
+                .select_providers_override(app_type_str, provider_id)
+                .await
+                .map_err(map_select_err)?,
+            None => state
+                .provider_router
+                .select_providers(app_type_str)
+                .await
+                .map_err(map_select_err)?,
+        };
 
         let provider = providers
             .first()
             .cloned()
             .ok_or(ProxyError::NoAvailableProvider)?;
 
-        log::debug!(
-            "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
-            tag,
-            provider.name,
-            request_model,
-            providers.len(),
-            session_id
-        );
+        if let ShareOutcome::Share { id, .. } = &share_outcome {
+            // 计数 + 日志放在选 provider 之后，便于日志里直接打出实际命中的
+            // provider 名（即便 share 绑定的 provider id 已经在 schema 层保证）。
+            crate::proxy::share_guard::record_share_access(&state.db, id);
+            log::info!(
+                "[{}] 共享请求 share_id={} app={} provider={} (override)",
+                tag,
+                id,
+                app_type_str,
+                provider.name
+            );
+        } else {
+            log::debug!(
+                "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
+                tag,
+                provider.name,
+                request_model,
+                providers.len(),
+                session_id
+            );
+        }
 
         let incoming_request_id = headers
             .get("x-cc-switch-request-id")
@@ -178,7 +210,17 @@ impl RequestContext {
             .filter(|value| !value.is_empty())
             .map(str::to_string);
 
-        let mut this = Self {
+        let (share_id, share_name, share_user_email) = match share_outcome {
+            ShareOutcome::Share {
+                id,
+                name,
+                user_email,
+                ..
+            } => (Some(id), Some(name), user_email),
+            ShareOutcome::NotShare => (None, None, None),
+        };
+
+        Ok(Self {
             start_time,
             app_config,
             provider,
@@ -194,48 +236,12 @@ impl RequestContext {
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,
-            share_id: None,
-            share_name: None,
-            share_user_email: None,
+            share_id,
+            share_name,
+            share_user_email,
             incoming_request_id,
-        };
-
-        // 共享 Token 拦截：若请求带 X-Share-Token，则校验设备级分享并记录 share_id
-        this.try_apply_share(state, headers)?;
-
-        Ok(this)
-    }
-
-    /// 验证 X-Share-Token 并记录 share_id。
-    ///
-    /// - 无 header：保持原始的 provider 路由（正常本地代理）。
-    /// - header 存在且有效：
-    ///   * 这是设备级分享，直接沿用本地代理当前的 app/provider 路由。
-    ///   * 仅记录 share_id，用于额度统计和审计。
-    /// - header 存在但无效/过期/耗尽：返回 `ProxyError::AuthError`。
-    fn try_apply_share(
-        &mut self,
-        state: &ProxyState,
-        headers: &HeaderMap,
-    ) -> Result<(), ProxyError> {
-        match check_share_token(&state.db, headers) {
-            ShareGuardResult::NotShareRequest => Ok(()),
-            ShareGuardResult::Rejected(_code, msg) => Err(ProxyError::AuthError(msg)),
-            ShareGuardResult::Valid(share) => {
-                self.share_id = Some(share.id.clone());
-                self.share_name = Some(share.name.clone());
-                self.share_user_email = share_user_email_from_headers(headers);
-                crate::proxy::share_guard::record_share_access(&state.db, &share.id);
-                log::info!(
-                    "[{}] 共享请求 share_id={} app={} provider={}",
-                    self.tag,
-                    share.id,
-                    self.app_type_str,
-                    self.provider.name
-                );
-                Ok(())
-            }
-        }
+            override_provider_id,
+        })
     }
 
     /// 从 URI 提取模型名称（Gemini 专用）
@@ -258,28 +264,34 @@ impl RequestContext {
     /// 使用共享的 ProviderRouter，确保熔断器状态跨请求保持
     ///
     /// 配置生效规则：
-    /// - 故障转移开启：超时配置正常生效（0 表示禁用超时）
-    /// - 故障转移关闭：超时配置不生效（全部传入 0）
+    /// - 故障转移开启 且非 share 请求：超时配置正常生效（0 表示禁用超时）
+    /// - 故障转移关闭 或 share 请求：超时配置不生效（全部传入 0）
+    ///
+    /// share 请求路径无视 `auto_failover_enabled` 与 `max_retries`：单 provider
+    /// 直连，超时 + retry 都按"关"处理，由 forwarder 的 max_attempts=1 收尾。
     pub fn create_forwarder(&self, state: &ProxyState) -> RequestForwarder {
-        let (non_streaming_timeout, first_byte_timeout, idle_timeout) =
-            if self.app_config.auto_failover_enabled {
-                // 故障转移开启：使用配置的值（0 = 禁用超时）
-                (
-                    self.app_config.non_streaming_timeout as u64,
-                    self.app_config.streaming_first_byte_timeout as u64,
-                    self.app_config.streaming_idle_timeout as u64,
-                )
-            } else {
-                // 故障转移关闭：不启用超时配置
+        let share_mode = self.override_provider_id.is_some();
+        let failover_effective = self.app_config.auto_failover_enabled && !share_mode;
+
+        let (non_streaming_timeout, first_byte_timeout, idle_timeout) = if failover_effective {
+            (
+                self.app_config.non_streaming_timeout as u64,
+                self.app_config.streaming_first_byte_timeout as u64,
+                self.app_config.streaming_idle_timeout as u64,
+            )
+        } else {
+            if !share_mode {
                 log::debug!(
                     "[{}] Failover disabled, timeout configs are bypassed",
                     self.tag
                 );
-                (0, 0, 0)
-            };
+            }
+            (0, 0, 0)
+        };
 
-        // 故障转移关闭时强制 max_retries=0（仅尝试 1 个 provider），与「不超时 + 不切换」语义一致。
-        let max_retries = if self.app_config.auto_failover_enabled {
+        // failover 关 或 share 请求：强制 max_retries=0（仅尝试 1 个 provider），
+        // 与「不超时 + 不切换」语义一致。
+        let max_retries = if failover_effective {
             self.app_config.max_retries
         } else {
             0
@@ -303,6 +315,7 @@ impl RequestContext {
             self.optimizer_config.clone(),
             self.copilot_optimizer_config.clone(),
             max_retries,
+            self.override_provider_id.clone(),
         )
     }
 
@@ -339,6 +352,92 @@ impl RequestContext {
                 idle_timeout: 0,
             }
         }
+    }
+}
+
+/// X-Share-Token 解析结果。
+///
+/// 抽出 helper enum 以便 RequestContext::new 在 select_providers 之前就能
+/// 同时拿到 share 元数据 + 强制 override 的 provider_id，避免老路径"先选
+/// 默认 provider，再事后覆写"造成的 HalfOpen 名额浪费。
+enum ShareOutcome {
+    NotShare,
+    Share {
+        id: String,
+        name: String,
+        provider_id: String,
+        user_email: Option<String>,
+    },
+}
+
+fn resolve_share_outcome(
+    state: &ProxyState,
+    headers: &HeaderMap,
+    tag: &'static str,
+    app_type_str: &'static str,
+) -> Result<ShareOutcome, ProxyError> {
+    match check_share_token(&state.db, headers) {
+        ShareGuardResult::NotShareRequest => Ok(ShareOutcome::NotShare),
+        ShareGuardResult::Rejected(_code, msg) => Err(ProxyError::AuthError(msg)),
+        ShareGuardResult::Valid(share) => {
+            // schema 层 provider_id 已是 NOT NULL，旧路径或迁移异常可能让运行时
+            // 看到 None；按 AuthError 拒绝并发 share-needs-rebind 事件，让 UI 提
+            // 示用户补绑。
+            let provider_id = match share.provider_id.clone() {
+                Some(id) if !id.trim().is_empty() => id,
+                _ => {
+                    log::error!(
+                        "[{tag}] share {} 缺 provider_id（migration missed?），按 AuthError 拒绝",
+                        share.id
+                    );
+                    crate::share_events::notify_share_needs_rebind(
+                        share.id.clone(),
+                        app_type_str.to_string(),
+                        crate::share_events::ShareRebindReason::ProviderMissing,
+                        Some("share.provider_id is empty".to_string()),
+                    );
+                    return Err(ProxyError::AuthError(
+                        "share is missing provider binding".to_string(),
+                    ));
+                }
+            };
+
+            if share.app_type != app_type_str {
+                log::error!(
+                    "[{tag}] share {} app_type={} 与请求 app_type={app_type_str} 不一致",
+                    share.id,
+                    share.app_type
+                );
+                crate::share_events::notify_share_needs_rebind(
+                    share.id.clone(),
+                    app_type_str.to_string(),
+                    crate::share_events::ShareRebindReason::AppTypeMismatch,
+                    Some(format!(
+                        "share.app_type={} request.app_type={app_type_str}",
+                        share.app_type
+                    )),
+                );
+                return Err(ProxyError::AuthError(format!(
+                    "share app_type={} mismatches request app={app_type_str}",
+                    share.app_type
+                )));
+            }
+
+            Ok(ShareOutcome::Share {
+                id: share.id,
+                name: share.name,
+                provider_id,
+                user_email: share_user_email_from_headers(headers),
+            })
+        }
+    }
+}
+
+fn map_select_err(err: crate::error::AppError) -> ProxyError {
+    match err {
+        crate::error::AppError::AllProvidersCircuitOpen => ProxyError::AllProvidersCircuitOpen,
+        crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
+        _ => ProxyError::DatabaseError(err.to_string()),
     }
 }
 

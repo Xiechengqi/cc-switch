@@ -53,6 +53,19 @@ export interface CreateShareExtras {
   marketAccessMode: "selected" | "all";
 }
 
+/**
+ * 表单里 Provider 选择器展示的最小 provider 形态。调用方按 `appType` 过滤后传入。
+ *
+ * Why: share ↔ provider 严格 1:1。一个 provider 同时只能被一个非 deleted share
+ * 绑定，所以选择器要把已被其他 share 绑定的 provider 标灰禁选。
+ */
+export interface ProviderOption {
+  id: string;
+  name: string;
+  /** true 表示该 provider 已被其他 active share 绑定，本表单要禁选 */
+  disabled: boolean;
+}
+
 interface CreateShareDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -63,6 +76,8 @@ interface CreateShareDialogProps {
   isSubmitting: boolean;
   submitLabel?: string;
   markets?: PublicMarket[];
+  /** 当前 defaultApp 下可绑定的 provider 列表（来自 useProvidersQuery + 已用列表）*/
+  providers: ProviderOption[];
   onSaveTunnelConfig: (config: TunnelConfig) => Promise<void> | void;
   onSubmit: (
     params: CreateShareParams,
@@ -102,6 +117,7 @@ export function deriveSubdomainFromEmail(email: string | null | undefined): stri
 
 function buildDefaultValues(ownerEmail: string): CreateShareFormInput {
   return {
+    providerId: "",
     description: "",
     forSale: "Yes",
     autoStart: true,
@@ -123,6 +139,7 @@ export function CreateShareDialog({
   isSubmitting,
   submitLabel,
   markets = EMPTY_MARKETS,
+  providers,
   onSaveTunnelConfig,
   onSubmit,
 }: CreateShareDialogProps) {
@@ -204,6 +221,7 @@ export function CreateShareDialog({
       {
         ownerEmail: normalizedOwnerEmail,
         appType: toShareAppType(defaultApp),
+        providerId: values.providerId,
         description: values.description || undefined,
         forSale: values.forSale,
         tokenLimit: values.tokenLimit,
@@ -291,6 +309,64 @@ export function CreateShareDialog({
                   "创建前选择路由节点。创建完成后当前 share 会绑定到该节点。",
               })}
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="share-create-provider">
+              {t("share.providerBinding", { defaultValue: "Provider 绑定" })}
+            </Label>
+            <Select
+              value={form.watch("providerId") as string}
+              onValueChange={(value) =>
+                form.setValue("providerId", value, { shouldValidate: true })
+              }
+            >
+              <SelectTrigger id="share-create-provider">
+                <SelectValue
+                  placeholder={t("share.providerBindingPlaceholder", {
+                    defaultValue: "选择本 share 绑定的 provider",
+                  })}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {providers.length === 0 ? (
+                  <SelectItem value="__empty__" disabled>
+                    {t("share.providerBindingEmpty", {
+                      defaultValue:
+                        "当前应用下没有可绑定的 provider。请先到 Provider 页创建。",
+                    })}
+                  </SelectItem>
+                ) : (
+                  providers.map((provider) => (
+                    <SelectItem
+                      key={provider.id}
+                      value={provider.id}
+                      disabled={provider.disabled}
+                    >
+                      {provider.name}
+                      {provider.disabled
+                        ? ` · ${t("share.providerBindingTaken", {
+                            defaultValue: "已被其他 share 绑定",
+                          })}`
+                        : ""}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+            <div className="text-xs text-muted-foreground">
+              {t("share.providerBindingHint", {
+                defaultValue:
+                  "share 请求强制走绑定的 provider，不参与故障转移；同一 provider 同时只能被一个 share 绑定。",
+              })}
+            </div>
+            {form.formState.errors.providerId ? (
+              <div className="text-xs text-destructive">
+                {t(form.formState.errors.providerId.message ?? "", {
+                  defaultValue: "请选择一个 provider",
+                })}
+              </div>
+            ) : null}
           </div>
 
           <div className="space-y-1.5">

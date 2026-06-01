@@ -1434,6 +1434,31 @@ impl ProviderService {
     /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
     /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
+        // 多 share 模式：share ↔ provider 1:1 绑定，绑定的 provider 被删后
+        // share 请求会拿到 NoAvailableProvider 5xx。先阻断删除并提示用户先
+        // 暂停 / 改绑 / 删除对应 share。
+        let bound_shares = state
+            .db
+            .list_active_shares_bound_to_provider(id, app_type.as_str())?;
+        if !bound_shares.is_empty() {
+            let names = bound_shares
+                .iter()
+                .map(|share| {
+                    if share.name.is_empty() {
+                        share.id.clone()
+                    } else {
+                        format!("{} ({})", share.name, share.id)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("、");
+            return Err(AppError::Message(format!(
+                "无法删除 provider：已被 {} 个 share 绑定（{}）。请先在 Share 页面暂停或删除对应 share，或改绑到其他 provider。",
+                bound_shares.len(),
+                names
+            )));
+        }
+
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
             // Single DB read shared across all additive-mode sub-paths below.

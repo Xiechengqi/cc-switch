@@ -1,13 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Copy,
-  Edit3,
-  Play,
-  Power,
-  RotateCcw,
-  Trash2,
-} from "lucide-react";
+import { Copy, Edit3, Play, Power, RotateCcw, Trash2 } from "lucide-react";
 import type {
   PublicMarket,
   ShareRecord,
@@ -47,6 +40,11 @@ export interface ShareProviderSalePricing {
 
 interface ShareCardProps {
   share: ShareRecord;
+  /**
+   * 该 share 绑定的 provider 显示名，由 ShareList 从 providerNameByKey 解析后传入。
+   * 找不到时 undefined，Card 上展示 share.providerId 作为后备。
+   */
+  boundProviderName?: string;
   tunnelStatus?: TunnelInfo | null;
   tunnelConfig: TunnelConfig;
   tunnelConfigured: boolean;
@@ -55,6 +53,9 @@ interface ShareCardProps {
   providerSalePricing?: ShareProviderSalePricing[];
   marketsLoading?: boolean;
   marketsError?: string | null;
+  readOnly?: boolean;
+  hideRuntimeActions?: boolean;
+  subdomainReadOnly?: boolean;
   onRetryMarkets?: () => void;
   onDelete: (share: ShareRecord) => void;
   onEnable: (share: ShareRecord) => void;
@@ -112,6 +113,7 @@ const EMPTY_PROVIDER_SALE_PRICING: ShareProviderSalePricing[] = [];
 
 export function ShareCard({
   share,
+  boundProviderName,
   tunnelStatus,
   tunnelConfig,
   tunnelConfigured,
@@ -120,6 +122,9 @@ export function ShareCard({
   providerSalePricing = EMPTY_PROVIDER_SALE_PRICING,
   marketsLoading = false,
   marketsError = null,
+  readOnly = false,
+  hideRuntimeActions = false,
+  subdomainReadOnly = false,
   onRetryMarkets,
   onDelete,
   onEnable,
@@ -202,6 +207,22 @@ export function ShareCard({
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-lg font-semibold">{share.name}</h3>
               <ShareDisplayStatusBadge status={displayStatus} />
+              {share.providerId ? (
+                <Badge
+                  variant="outline"
+                  className="rounded-full px-2.5 py-1 text-[11px] font-medium border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                  title={t("share.boundProviderHint", {
+                    defaultValue:
+                      "本 share 请求强制走该 provider，不参与故障转移",
+                  })}
+                >
+                  {t("share.boundProviderLabel", {
+                    defaultValue: "Provider",
+                  })}
+                  {": "}
+                  {boundProviderName ?? share.providerId}
+                </Badge>
+              ) : null}
               {(["claude", "codex", "gemini"] as const).map((app) => {
                 const active = takeoverStatus?.[app] ?? false;
                 return (
@@ -264,7 +285,7 @@ export function ShareCard({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {canDisable ? (
+            {!readOnly && !hideRuntimeActions && canDisable ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -274,7 +295,7 @@ export function ShareCard({
                 <Power className="h-4 w-4" />
                 {t("share.disable")}
               </Button>
-            ) : (
+            ) : !readOnly && !hideRuntimeActions ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -284,21 +305,23 @@ export function ShareCard({
                 <Play className="h-4 w-4" />
                 {t("share.enable")}
               </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isBusy}
-              onClick={() => {
-                if (!window.confirm(t("share.confirmResetUsageMessage"))) {
-                  return;
-                }
-                void onResetUsage(share);
-              }}
-            >
-              <RotateCcw className="h-4 w-4" />
-              {t("share.resetUsage")}
-            </Button>
+            ) : null}
+            {!readOnly && !hideRuntimeActions ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isBusy}
+                onClick={() => {
+                  if (!window.confirm(t("share.confirmResetUsageMessage"))) {
+                    return;
+                  }
+                  void onResetUsage(share);
+                }}
+              >
+                <RotateCcw className="h-4 w-4" />
+                {t("share.resetUsage")}
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               size="sm"
@@ -308,16 +331,18 @@ export function ShareCard({
               <Edit3 className="h-4 w-4" />
               {t("share.edit")}
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isBusy || !canDelete}
-              className="text-destructive hover:text-destructive"
-              onClick={() => onDelete(share)}
-            >
-              <Trash2 className="h-4 w-4" />
-              {t("share.delete")}
-            </Button>
+            {!readOnly && !hideRuntimeActions ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isBusy || !canDelete}
+                className="text-destructive hover:text-destructive"
+                onClick={() => onDelete(share)}
+              >
+                <Trash2 className="h-4 w-4" />
+                {t("share.delete")}
+              </Button>
+            ) : null}
           </div>
         </div>
 
@@ -418,7 +443,9 @@ export function ShareCard({
           </div>
         </section>
 
-        <ShareRequestLogTable shareId={share.id} />
+        {!readOnly && !hideRuntimeActions ? (
+          <ShareRequestLogTable shareId={share.id} />
+        ) : null}
       </CardContent>
 
       <EditShareDialog
@@ -429,6 +456,8 @@ export function ShareCard({
         providerSalePricing={providerSalePricing}
         marketsLoading={marketsLoading}
         marketsError={marketsError}
+        readOnly={readOnly}
+        subdomainReadOnly={subdomainReadOnly}
         onRetryMarkets={onRetryMarkets}
         isBusy={isBusy}
         onUpdateTokenLimit={onUpdateTokenLimit}

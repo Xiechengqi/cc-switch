@@ -288,6 +288,14 @@ impl ProxyServer {
         Router::new()
             // 健康检查
             .route("/health", get(handlers::health_check))
+            .route("/", get(crate::web::handlers::serve_index))
+            .route("/favicon.ico", get(crate::web::handlers::serve_favicon))
+            .route("/assets/*path", get(crate::web::handlers::serve_asset))
+            .route("/web-api/context", get(crate::web::handlers::context))
+            .route(
+                "/web-api/invoke/:command",
+                post(crate::web::handlers::invoke),
+            )
             .route(
                 "/_share-router/health",
                 get(handlers::share_router_health_probe),

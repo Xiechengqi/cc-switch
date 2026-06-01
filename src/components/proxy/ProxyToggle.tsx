@@ -22,9 +22,11 @@ import {
 import {
   useConfigureTunnelMutation,
   useCreateShareMutation,
+  useProvidersQuery,
   useSettingsQuery,
   useUpdateShareAclMutation,
 } from "@/lib/query";
+import type { Provider } from "@/types";
 import { shareKeys } from "@/lib/query/share";
 import {
   useProxyStatus,
@@ -79,6 +81,22 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
   );
   const takeoverEnabled = Boolean(takeoverStatus?.[activeApp]);
   const appLabel = getAppLabel(activeApp);
+  const providersQuery = useProvidersQuery(activeApp);
+
+  // ProxyToggle 一次只面向 activeApp，create dialog 的 provider 列表
+  // 等价于"该 app 当前的全部 provider"。这里不查 shares 列表，因为
+  // ProxyToggle 路径下用户只能创建当前 share；UNIQUE 冲突由后端兜底。
+  const dialogProviderOptions = useMemo(() => {
+    const data = providersQuery.data;
+    if (!data) return [];
+    return Object.values(data.providers ?? {})
+      .filter((provider): provider is Provider => Boolean(provider))
+      .map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        disabled: false,
+      }));
+  }, [providersQuery.data]);
   const pending =
     stage !== "idle" ||
     createShareMutation.isPending ||
@@ -325,6 +343,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         }}
         ownerEmail={null}
         defaultApp={activeApp}
+        providers={dialogProviderOptions}
         isSubmitting={
           createShareMutation.isPending || stage === "creating-share"
         }

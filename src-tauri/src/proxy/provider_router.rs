@@ -148,6 +148,50 @@ impl ProviderRouter {
         breaker.allow_request().await
     }
 
+    /// Share 请求专用选路：仅返回 share 绑定的那家 provider，不进入 failover 候选池。
+    ///
+    /// 返回单元素 `Vec<Provider>`，让上层 forwarder 仍走"按 provider 链尝试"的
+    /// 通用代码路径——只是这条链长度永远是 1。当 provider 不存在 / 指向本机
+    /// 代理自身 / 已熔断时直接返回错误，调用方负责映射成 5xx 给上游（share
+    /// 请求绝不漂到其他 provider）。
+    ///
+    /// 熔断器 key 仍是 `{app_type}:{provider_id}`，与非 share 请求共享统计——
+    /// 这正是我们想要的：上游不健康的事实与流量来源无关。
+    pub async fn select_providers_override(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+    ) -> Result<Vec<Provider>, AppError> {
+        let all_providers = self.db.get_all_providers(app_type)?;
+        let Some(provider) = all_providers.get(provider_id).cloned() else {
+            log::warn!(
+                "[{app_type}] [SHARE-001] override provider 不存在: provider_id={provider_id}"
+            );
+            return Err(AppError::NoProvidersConfigured);
+        };
+
+        let proxy_config = self.db.get_proxy_config().await.ok();
+        if is_self_proxy_provider(&provider, proxy_config.as_ref()) {
+            log::warn!(
+                "[{app_type}] [SHARE-002] override provider 指向本机代理自身: provider_id={}",
+                provider.id
+            );
+            return Err(AppError::NoProvidersConfigured);
+        }
+
+        let circuit_key = format!("{app_type}:{}", provider.id);
+        let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+        if !breaker.is_available().await {
+            log::warn!(
+                "[{app_type}] [SHARE-003] override provider 已熔断: provider_id={}",
+                provider.id
+            );
+            return Err(AppError::AllProvidersCircuitOpen);
+        }
+
+        Ok(vec![provider])
+    }
+
     /// 记录供应商请求结果
     pub async fn record_result(
         &self,
@@ -739,5 +783,77 @@ mod tests {
         let third = router.allow_provider_request("a", "claude").await;
         assert!(third.allowed);
         assert!(third.used_half_open_permit);
+    }
+
+    // ──────────────── Share override 路径单测 ────────────────
+
+    #[tokio::test]
+    #[serial]
+    async fn override_returns_only_bound_provider_ignoring_current() {
+        // share 请求绑定 provider A，但当前 provider 是 B，且 failover 开了把 B 排进队列。
+        // override 路径必须只返回 A，且不受 current_provider / failover queue 影响。
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.set_current_provider("claude", "b").unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_providers_override("claude", "a")
+            .await
+            .unwrap();
+
+        assert_eq!(providers.len(), 1, "override 必须返回单元素链");
+        assert_eq!(providers[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn override_rejects_unknown_provider() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let router = ProviderRouter::new(db);
+
+        match router.select_providers_override("claude", "ghost").await {
+            Err(AppError::NoProvidersConfigured) => {}
+            other => panic!("expected NoProvidersConfigured, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn override_does_not_promote_other_providers_when_bound_is_circuit_open() {
+        // override provider 熔断时返回 AllProvidersCircuitOpen；
+        // 即便其他 provider 可用也不漂过去——这是 share 故障域隔离的关键不变量。
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        // 把 A 的熔断器打到 Open
+        let breaker = router.get_or_create_circuit_breaker("claude:a").await;
+        for _ in 0..50 {
+            breaker.record_failure(false).await;
+        }
+        assert!(!breaker.is_available().await, "breaker must be open");
+
+        match router.select_providers_override("claude", "a").await {
+            Err(AppError::AllProvidersCircuitOpen) => {}
+            other => panic!("expected AllProvidersCircuitOpen, got {other:?}"),
+        }
     }
 }

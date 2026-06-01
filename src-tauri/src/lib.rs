@@ -32,12 +32,14 @@ mod proxy;
 mod services;
 mod session_manager;
 mod settings;
+mod share_events;
 mod store;
 mod tunnel;
 
 mod tray;
 mod usage_events;
 mod usage_script;
+mod web;
 
 pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
 pub use codex_config::{get_codex_auth_path, get_codex_config_path, write_codex_live_atomic};
@@ -344,6 +346,8 @@ pub fn run() {
             // 也能向前端推送 `usage-log-recorded`。
             // 放在日志系统初始化之后，确保 init 的日志能正常输出。
             usage_events::init(app.handle().clone());
+            // 同上：share-needs-rebind 在请求路径上触发，调用方不持有 AppHandle。
+            share_events::init(app.handle().clone());
 
             // 初始化数据库
             let app_config_dir = crate::config::get_app_config_dir();
@@ -1416,6 +1420,13 @@ pub fn run() {
             commands::get_cached_oauth_quota,
             commands::refresh_oauth_quota,
             commands::get_codex_oauth_models,
+            commands::preview_codex_session_parse,
+            commands::import_codex_sessions,
+            commands::export_codex_sessions,
+            commands::mark_codex_account_handoff,
+            commands::restore_codex_account_management,
+            commands::save_codex_session_export,
+            commands::get_codex_session_machine_id,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // DeepSeek account management
@@ -1684,6 +1695,7 @@ pub fn run() {
             commands::update_share_auto_start,
             commands::update_share_owner_email,
             commands::transfer_share_owner,
+            commands::update_share_provider_binding,
             commands::update_share_subdomain,
             commands::enable_share,
             commands::disable_share,

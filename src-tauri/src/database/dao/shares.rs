@@ -128,6 +128,33 @@ impl Database {
         Ok(result)
     }
 
+    /// 列出绑定到指定 provider 的活跃 share（status != 'deleted'）。
+    ///
+    /// 多 share 模式下，删除 provider 之前必须确认没有 share 还绑着它，否则
+    /// share 的请求路径会拿到 NoAvailableProvider 5xx。调用方据此阻断 provider
+    /// 删除或发 share-needs-rebind 事件。
+    pub fn list_active_shares_bound_to_provider(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Result<Vec<ShareRecord>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {} FROM shares WHERE provider_id = ?1 AND app_type = ?2 AND status != 'deleted' ORDER BY created_at DESC",
+                Self::SHARE_SELECT_COLUMNS
+            ))
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![provider_id, app_type])
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+            result.push(Self::row_to_share(row)?);
+        }
+        Ok(result)
+    }
+
     pub fn update_share_status(&self, id: &str, status: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
@@ -344,6 +371,25 @@ impl Database {
         conn.execute(
             "UPDATE shares SET auto_start = ?2 WHERE id = ?1",
             params![id, auto_start],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 改绑 share 到新的 provider。
+    ///
+    /// Why: 多 share 模式下，单 share 上下线/换供应商需要独立切换 provider 而
+    /// 不动其他 share。schema 的 `UNIQUE(provider_id) WHERE status != 'deleted'`
+    /// 在改绑时仍生效，所以新 provider 已被其他活跃 share 占用时会被 SQLite
+    /// 直接 reject，调用方层会捕获并提示。
+    ///
+    /// 调用方负责：确保 share 在改绑前处于 paused（避免请求路径取到中间态），
+    /// 以及绑定一致性校验（provider 存在 + app_type 匹配）。
+    pub fn update_share_provider_id(&self, id: &str, provider_id: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE shares SET provider_id = ?2 WHERE id = ?1",
+            params![id, provider_id],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())

@@ -2774,6 +2774,7 @@
     "empty": "No shares yet",
     "emptyDescription": "Configure the tunnel, then create the device-level share. After that you can tunnel the local proxy service externally.",
     "emptyCta": "Create your first share",
+    "listCount": "{{count}} share(s)",
     "filter": {
       "status": "Filter by status",
       "all": "All"
@@ -2860,7 +2861,7 @@
     "ownerEmailCreateHint": "This email is reported to the router as the share owner. Signing in to the router with the same email can view the API key and edit settings.",
     "ownerEmailReloginHint": "This email is reported to the router as the share owner.",
     "createRouterHint": "Choose the router before creating. The share will be bound to this router after creation.",
-    "routerLockedAfterCreate": "The router is bound to the current share.",
+    "routerLockedAfterCreate": "Router node is configured.",
     "description": "Description",
     "descriptionHint": "Optional. Shown in the cc-switch-router sidebar. Maximum 200 characters.",
     "descriptionPlaceholder": "Describe what this share is for, who should use it, or any usage notes.",

@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { Plus } from "lucide-react";
 import type {
   PublicMarket,
   ShareRecord,
@@ -171,6 +172,23 @@ export function ShareList({
 
   return (
     <div className="grid gap-4">
+      {!readOnly ? (
+        // 多 share 模式：列表头部常驻"新建"入口。原 ShareRouterBar 上的 Create
+        // 按钮在 hasShare && proxyRunning 时会整体隐藏，导致用户创建第一个
+        // share 后没法再加；toolbar 把入口提上来保证一直可见。
+        <div className="flex items-center justify-between rounded-xl border border-border-default/70 bg-card/40 px-4 py-2.5">
+          <div className="text-sm text-muted-foreground">
+            {t("share.listCount", {
+              defaultValue: "{{count}} 个 share",
+              count: shares.length,
+            })}
+          </div>
+          <Button onClick={onCreate} size="sm">
+            <Plus className="mr-1 h-4 w-4" />
+            {t("share.create")}
+          </Button>
+        </div>
+      ) : null}
       {shares.map((share) => (
         <ShareCard
           key={share.id}

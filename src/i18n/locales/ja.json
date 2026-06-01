@@ -2775,6 +2775,7 @@
     "empty": "Share がまだありません",
     "emptyDescription": "まず tunnel を設定し、その後デバイス単位の share を作成してください。作成後はローカルプロキシサービスを外部に tunnel できます。",
     "emptyCta": "最初の Share を作成",
+    "listCount": "{{count}} 件の share",
     "filter": {
       "status": "状態で絞り込み",
       "all": "すべて"
@@ -2861,7 +2862,7 @@
     "ownerEmailCreateHint": "このメールは share owner として router に送信されます。同じメールで router にログインすると API Key の表示と設定編集ができます。",
     "ownerEmailReloginHint": "このメールは share owner として router に送信されます。",
     "createRouterHint": "作成前にルーターを選択します。作成後、この share はそのルーターに紐づきます。",
-    "routerLockedAfterCreate": "ルーターは現在の share に紐づいています。",
+    "routerLockedAfterCreate": "ルーターノードは設定済みです。",
     "description": "説明",
     "descriptionHint": "任意。cc-switch-router のサイドバーに表示されます。最大 200 文字。",
     "descriptionPlaceholder": "この share の用途、対象ユーザー、利用上の注意などを入力します。",

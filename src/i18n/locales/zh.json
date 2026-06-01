@@ -2774,6 +2774,7 @@
     "empty": "还没有任何分享",
     "emptyDescription": "先配置 tunnel，再创建设备级 share。创建后即可把本地代理服务端口穿透出去。",
     "emptyCta": "创建第一个分享",
+    "listCount": "{{count}} 个 share",
     "filter": {
       "status": "按状态筛选",
       "all": "全部"
@@ -2860,7 +2861,7 @@
     "ownerEmailCreateHint": "该邮箱会作为 share owner 上报到 router。router 页面使用相同邮箱登录后可查看 API Key 和编辑设置。",
     "ownerEmailReloginHint": "该邮箱会作为 share owner 上报到 router。",
     "createRouterHint": "创建前选择路由节点。创建完成后当前 share 会绑定到该节点。",
-    "routerLockedAfterCreate": "路由节点已绑定到当前 share。",
+    "routerLockedAfterCreate": "路由节点已绑定。",
     "description": "文字说明",
     "descriptionHint": "可选，会显示在 cc-switch-router 侧边栏，最多 200 个字符。",
     "descriptionPlaceholder": "说明这个 share 的用途、适用对象或使用提示。",

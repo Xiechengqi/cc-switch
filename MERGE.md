@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-05-30
+
+- **上游分支：** `main`
+- **上游 HEAD：** `c67494ba`
+- **共同祖先：** `8bf16602`
+- **合并提交数：** 12
+- **主要变更：**
+  - fix(codex): 模型 catalog 在 live-config backfill 与 takeover-off restore 时不再被擦除
+  - fix(codex): proxy takeover 期间 edit dialog 不再遮蔽 live OAuth；OAuth 在 mis-categorized 时不被清除；序列化 switch/takeover 流程
+  - feat(codex): proxy takeover 热切换时刷新供应商标签；自定义工具走原生 input events 流式输出；Chat Completions 第三方反代恢复 Codex tool plugins
+  - chore(release): 升级 v3.16.1；新增 Codex 官方 auth preservation 使用文档
+- **冲突解决：**
+  - `src-tauri/src/services/proxy.rs`（`sync_codex_live_from_provider_while_proxy_active`）：采纳上游"始终重建 effective settings 再合并保留用户 MCP servers"流程（`preserve_codex_mcp_servers_from_existing_config`），替代本仓"先读 live、为空才重建"的简化分支——上游版本是本轮 catalog/OAuth 修复链的基础
+- **验证：** `cargo check` exit 0（5 条遗留 dead-code warning）、`tsc --noEmit` 通过
+
+---
+
 ## 2026-05-29
 
 - **上游分支：** `main`

@@ -15,6 +15,8 @@ function renderDialog(overrides: Partial<Record<string, unknown>> = {}) {
     isSubmitting: false,
     tunnelConfig: { domain: "jptokenswitch.cc" },
     tunnelConfigSaving: false,
+    // P5.1 引入 `providers` 为必填。测试默认给空列表，需要时调用方覆盖。
+    providers: [],
     onSaveTunnelConfig: vi.fn(),
     onSubmit: vi.fn(),
   };
@@ -129,29 +131,40 @@ describe("CreateShareDialog", () => {
 });
 
 describe("deriveSubdomainFromEmail", () => {
-  it("returns first 6 lowercase letters of the local part", () => {
-    expect(deriveSubdomainFromEmail("johndoe@example.com")).toBe("johndo");
+  // 形态：`{email-prefix}-{base36-timestamp-suffix}`。
+  // 多 share 模式下时间戳后缀保证同 owner 连续创建不撞。
+  const SUFFIX_RE = /-[0-9a-z]{5}$/;
+  const FULL_RE = /^[a-z][a-z]{0,4}-[0-9a-z]{5}$/;
+
+  it("takes the first 5 lowercase letters of the local part as prefix", () => {
+    const subdomain = deriveSubdomainFromEmail("johndoe@example.com");
+    expect(subdomain.startsWith("johnd-")).toBe(true);
+    expect(subdomain).toMatch(SUFFIX_RE);
   });
 
-  it("filters non-[a-z] characters and keeps the rest", () => {
-    expect(deriveSubdomainFromEmail("alice42@example.com")).toBe("alice");
+  it("filters non-[a-z] characters before truncating the prefix", () => {
+    const subdomain = deriveSubdomainFromEmail("alice42@example.com");
+    expect(subdomain.startsWith("alice-")).toBe(true);
+    expect(subdomain).toMatch(SUFFIX_RE);
   });
 
-  it("does not pad when result has 3-5 letters", () => {
-    expect(deriveSubdomainFromEmail("ali@x.com")).toBe("ali");
-    expect(deriveSubdomainFromEmail("alice@x.com")).toBe("alice");
+  it("keeps short prefixes as-is and still appends a timestamp suffix", () => {
+    expect(deriveSubdomainFromEmail("ali@x.com")).toMatch(/^ali-[0-9a-z]{5}$/);
+    expect(deriveSubdomainFromEmail("ab@x.com")).toMatch(/^ab-[0-9a-z]{5}$/);
   });
 
-  it("pads with random [a-z] when result is shorter than 3", () => {
-    const padded = deriveSubdomainFromEmail("ab@x.com");
-    expect(padded).toHaveLength(6);
-    expect(padded.startsWith("ab")).toBe(true);
-    expect(padded.slice(2)).toMatch(/^[a-z]{4}$/);
+  it("falls back to `s` prefix when local part has no [a-z] letters", () => {
+    const subdomain = deriveSubdomainFromEmail("123@x.com");
+    expect(subdomain).toMatch(/^s-[0-9a-z]{5}$/);
   });
 
-  it("pads from empty when local part has no letters", () => {
-    const padded = deriveSubdomainFromEmail("123@x.com");
-    expect(padded).toHaveLength(6);
-    expect(padded).toMatch(/^[a-z]{6}$/);
+  it("produces a different result on a later call (timestamp tiebreaker)", async () => {
+    const first = deriveSubdomainFromEmail("alice@x.com");
+    // 等待一毫秒确保 Date.now() 进位（base36 末 5 位粒度极高，足以变化）。
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const second = deriveSubdomainFromEmail("alice@x.com");
+    expect(first).not.toBe(second);
+    expect(first).toMatch(FULL_RE);
+    expect(second).toMatch(FULL_RE);
   });
 });

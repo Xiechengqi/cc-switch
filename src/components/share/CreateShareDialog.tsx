@@ -95,24 +95,28 @@ const EXPIRY_PRESETS = [
 
 const TOKEN_PRESETS = [10000, 50000, 100000, 500000];
 const DEFAULT_TOKEN_LIMIT_FALLBACK = 100000;
-const SUBDOMAIN_TARGET_LENGTH = 6;
-const SUBDOMAIN_MIN_LENGTH = 3;
+const SUBDOMAIN_PREFIX_LENGTH = 5;
+const SUBDOMAIN_TIMESTAMP_LENGTH = 5;
 const EMPTY_MARKETS: PublicMarket[] = [];
 
+/**
+ * 由 owner email 派生默认 subdomain。
+ *
+ * 形态：`{email-prefix}-{base36-timestamp-suffix}` 例如 `alice-2lr8q`。
+ *
+ * 单 share 模式时这个函数只取邮箱前缀（同一 owner 创建多个 share 时会撞），
+ * 多 share 改造后追加毫秒时间戳的 base36 末 5 位作为去重后缀：
+ *  - 同设备连续创建：Date.now() 必然递增，不会撞。
+ *  - 跨设备同毫秒并发：前缀通常不同（不同 owner email）。
+ *  - email 完全没有可用字母时（如 `123@x.com`）回退到 `s` 占位前缀。
+ */
 export function deriveSubdomainFromEmail(email: string | null | undefined): string {
   const local = (email ?? "").split("@")[0] ?? "";
   const filtered = local.toLowerCase().replace(/[^a-z]/g, "");
-  if (filtered.length >= SUBDOMAIN_TARGET_LENGTH) {
-    return filtered.slice(0, SUBDOMAIN_TARGET_LENGTH);
-  }
-  if (filtered.length >= SUBDOMAIN_MIN_LENGTH) {
-    return filtered;
-  }
-  let padded = filtered;
-  while (padded.length < SUBDOMAIN_TARGET_LENGTH) {
-    padded += String.fromCharCode(97 + Math.floor(Math.random() * 26));
-  }
-  return padded;
+  const prefix =
+    filtered.length === 0 ? "s" : filtered.slice(0, SUBDOMAIN_PREFIX_LENGTH);
+  const suffix = Date.now().toString(36).slice(-SUBDOMAIN_TIMESTAMP_LENGTH);
+  return `${prefix}-${suffix}`;
 }
 
 function buildDefaultValues(ownerEmail: string): CreateShareFormInput {

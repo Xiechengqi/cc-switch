@@ -313,6 +313,8 @@ impl ShareService {
     /// - share 当前 status == 'paused'（避免请求路径取到不一致的中间态）
     /// - 新 provider 存在且 app_type 与 share 一致
     /// - UNIQUE(provider_id) 不冲突（SQLite 层兜底）
+    /// - 乐观锁：share.provider_id 自调用方读取后未被其他操作改动（B-1）
+    /// 成功后会向 share_binding_history 写一行审计（C-3）。
     pub fn update_provider_binding(
         db: &Arc<Database>,
         share_id: &str,
@@ -322,8 +324,10 @@ impl ShareService {
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
         if share.status != "paused" {
+            // B-2: 错误信息前缀标记 [paused-required]，让前端能识别并显示
+            // "先暂停"的快捷操作；user-facing 信息在前缀之后保持自然语言。
             return Err(AppError::Message(format!(
-                "Share 改绑 provider 前必须先暂停，当前状态: {}",
+                "[paused-required] Share 改绑 provider 前必须先暂停，当前状态: {}",
                 share.status
             )));
         }
@@ -343,12 +347,44 @@ impl ShareService {
             })?;
         debug_assert_eq!(provider.id, new_provider_id);
 
-        db.update_share_provider_id(share_id, &new_provider_id)?;
+        db.update_share_provider_id_with_history(
+            share_id,
+            share.provider_id.as_deref(),
+            &new_provider_id,
+            &share.app_type,
+        )?;
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
         crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
         Ok(updated)
+    }
+
+    /// 轮换 share_token。
+    /// share 不需要 paused —— 老 token 立即失效，新 token 立即可用。
+    pub fn rotate_token(
+        db: &Arc<Database>,
+        share_id: &str,
+    ) -> Result<ShareRecord, AppError> {
+        // 确认存在并取一个新 token。
+        db.get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        let new_token = Self::generate_token();
+        db.rotate_share_token(share_id, &new_token)?;
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
+    /// 取 share 改绑历史。
+    pub fn list_binding_history(
+        db: &Arc<Database>,
+        share_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::database::ShareBindingHistoryEntry>, AppError> {
+        db.list_share_binding_history(share_id, limit.min(100))
     }
 
     pub fn update_description(
@@ -870,5 +906,80 @@ mod tests {
             .expect("mark first deleted");
         db.create_share(&raw_share("s2", "p1", "tok2", "sub2"))
             .expect("partial UNIQUE INDEX excludes deleted rows");
+    }
+
+    // ──────────────── P6: 新增覆盖 ────────────────
+
+    /// E-1：rebind 成功路径 + 写审计 + 乐观锁。
+    #[test]
+    fn update_provider_binding_writes_history_and_locks_optimistically() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .unwrap();
+        db.save_provider("claude", &make_provider("p2", "claude"))
+            .unwrap();
+        let mut share = raw_share("s1", "p1", "tok", "sub1");
+        share.status = "paused".to_string();
+        db.create_share(&share).unwrap();
+
+        let updated = ShareService::update_provider_binding(&db, "s1", "p2")
+            .expect("rebind succeeds");
+        assert_eq!(updated.provider_id.as_deref(), Some("p2"));
+
+        let history = db.list_share_binding_history("s1", 10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].old_provider_id.as_deref(), Some("p1"));
+        assert_eq!(history[0].new_provider_id, "p2");
+
+        // 乐观锁：手动把 provider_id 改回 p1，再用"以为还是 p2"的快照改绑应失败。
+        db.update_share_provider_id("s1", "p1").unwrap();
+        let err = db
+            .update_share_provider_id_with_history("s1", Some("p2"), "p1", "claude")
+            .expect_err("stale snapshot rejected");
+        assert!(err.to_string().contains("已被其他操作改动"));
+    }
+
+    /// E-1（cont）：rebind 必须先 paused。
+    #[test]
+    fn update_provider_binding_requires_paused_with_marker() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .unwrap();
+        db.save_provider("claude", &make_provider("p2", "claude"))
+            .unwrap();
+        let mut share = raw_share("s1", "p1", "tok", "sub1");
+        share.status = "active".to_string();
+        db.create_share(&share).unwrap();
+
+        let err = ShareService::update_provider_binding(&db, "s1", "p2")
+            .expect_err("active share rebind blocked");
+        // B-2：UI 根据 [paused-required] 前缀识别这条错误
+        assert!(
+            err.to_string().contains("[paused-required]"),
+            "missing marker: {err}"
+        );
+    }
+
+    /// A-1：token 轮换不要求 paused，老 token 立即换。
+    #[test]
+    fn rotate_token_replaces_share_token() {
+        let db = fresh_db();
+        db.create_share(&raw_share("s1", "p1", "old-token", "sub1"))
+            .unwrap();
+        let updated = ShareService::rotate_token(&db, "s1").expect("rotate ok");
+        assert_ne!(updated.share_token, "old-token");
+        assert!(!updated.share_token.is_empty());
+    }
+
+    /// E-4：api_key 字段是历史遗留死字段，prepare_create 永远写空串。
+    /// 显式 assertion 防止未来意外把它当成上游 API key 复用。
+    #[test]
+    fn prepare_create_leaves_api_key_empty_by_design() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .unwrap();
+        let record =
+            ShareService::prepare_create(&db, base_params("p1")).expect("prepare ok");
+        assert_eq!(record.api_key, "");
     }
 }

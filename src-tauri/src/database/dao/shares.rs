@@ -18,6 +18,9 @@ pub struct ShareRecord {
     pub share_token: String,
     pub app_type: String,
     pub provider_id: Option<String>,
+    /// 历史遗留字段，保留为空字符串。请求路径不读取此字段——上游 API key 始终
+    /// 在请求时从绑定的 provider 实时读取。schema NOT NULL 约束要求非空，所以
+    /// 用 `""` 占位。可视为已废弃，未来 schema 重整可移除。
     pub api_key: String,
     pub settings_config: Option<String>,
     pub token_limit: i64,
@@ -31,6 +34,17 @@ pub struct ShareRecord {
     pub auto_start: bool,
     pub created_at: String,
     pub last_used_at: Option<String>,
+}
+
+/// Share 绑定 provider 的审计历史条目。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareBindingHistoryEntry {
+    pub id: i64,
+    pub old_provider_id: Option<String>,
+    pub new_provider_id: String,
+    pub app_type: String,
+    pub changed_at: String,
 }
 
 impl Database {
@@ -393,6 +407,106 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// 改绑 + 乐观锁 + 写审计，单事务原子完成。
+    ///
+    /// `expected_old_provider_id` 是调用方读到的"老 provider id"快照；写入时
+    /// SQLite 用 `WHERE provider_id = ?` 做 CAS，如果中间被别处改了就拒绝。
+    /// 防御场景：两个窗口同时改绑同一个 share。
+    ///
+    /// 成功后写一行 share_binding_history。
+    pub fn update_share_provider_id_with_history(
+        &self,
+        share_id: &str,
+        expected_old_provider_id: Option<&str>,
+        new_provider_id: &str,
+        app_type: &str,
+    ) -> Result<(), AppError> {
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let affected = match expected_old_provider_id {
+            Some(old) => tx
+                .execute(
+                    "UPDATE shares SET provider_id = ?2 WHERE id = ?1 AND provider_id = ?3",
+                    params![share_id, new_provider_id, old],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?,
+            None => tx
+                .execute(
+                    "UPDATE shares SET provider_id = ?2 WHERE id = ?1 AND provider_id IS NULL",
+                    params![share_id, new_provider_id],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?,
+        };
+        if affected == 0 {
+            return Err(AppError::Message(
+                "改绑失败：share 已被其他操作改动，请刷新后重试".to_string(),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO share_binding_history (share_id, old_provider_id, new_provider_id, app_type)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![share_id, expected_old_provider_id, new_provider_id, app_type],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 轮换 share_token 到一个新值。
+    pub fn rotate_share_token(
+        &self,
+        share_id: &str,
+        new_token: &str,
+    ) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        let affected = conn
+            .execute(
+                "UPDATE shares SET share_token = ?2 WHERE id = ?1",
+                params![share_id, new_token],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        if affected == 0 {
+            return Err(AppError::Message(format!(
+                "rotate token failed: share {share_id} not found"
+            )));
+        }
+        Ok(())
+    }
+
+    /// 读 share 最近 N 条 binding 历史，按时间倒序。
+    pub fn list_share_binding_history(
+        &self,
+        share_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ShareBindingHistoryEntry>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, old_provider_id, new_provider_id, app_type, changed_at
+                 FROM share_binding_history WHERE share_id = ?1
+                 ORDER BY changed_at DESC LIMIT ?2",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![share_id, limit as i64], |row| {
+                Ok(ShareBindingHistoryEntry {
+                    id: row.get(0)?,
+                    old_provider_id: row.get(1)?,
+                    new_provider_id: row.get(2)?,
+                    app_type: row.get(3)?,
+                    changed_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| AppError::Database(e.to_string()))?);
+        }
+        Ok(out)
     }
 
     pub fn delete_share(&self, id: &str) -> Result<(), AppError> {

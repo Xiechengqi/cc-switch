@@ -32,6 +32,7 @@ import {
   useUpdateShareParallelLimitMutation,
   useUpdateShareSubdomainMutation,
   useUpdateShareProviderBindingMutation,
+  useRotateShareTokenMutation,
   useUpdateShareTokenLimitMutation,
   useTransferShareOwnerMutation,
 } from "@/lib/query";
@@ -90,6 +91,12 @@ export function SharePage({
   const codexProvidersQuery = useProvidersQuery("codex");
   const geminiProvidersQuery = useProvidersQuery("gemini");
 
+  // C-1：保留近期 share-needs-rebind 事件以便在页面顶部常驻红条提示。
+  // toast 弹一下就消失，对于"已经发生且未解决"的状态需要更显著的存在感。
+  const [needsRebindMap, setNeedsRebindMap] = useState<
+    Record<string, { reason: string; at: number }>
+  >({});
+
   // share 路径在请求阶段发现绑定 provider 缺失 / app_type 不匹配时，后端会 emit
   // `share-needs-rebind`。前端 toast 提示用户去改绑，并 invalidate shares 查询
   // 让状态条立刻刷新（后端已把该 share 改成 paused）。
@@ -99,6 +106,10 @@ export function SharePage({
     reason: string;
     detail?: string | null;
   }>("share-needs-rebind", (payload) => {
+    setNeedsRebindMap((prev) => ({
+      ...prev,
+      [payload.shareId]: { reason: payload.reason, at: Date.now() },
+    }));
     toast.error(
       t("share.needsRebindTitle", {
         defaultValue: "Share 绑定的 provider 已失效",
@@ -147,6 +158,7 @@ export function SharePage({
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
   const updateProviderBindingMutation =
     useUpdateShareProviderBindingMutation();
+  const rotateTokenMutation = useRotateShareTokenMutation();
   const updateTokenLimitMutation = useUpdateShareTokenLimitMutation();
   const configureTunnelMutation = useConfigureTunnelMutation();
   const {
@@ -372,6 +384,48 @@ export function SharePage({
           />
         ) : null}
 
+        {/* C-1：share-needs-rebind 常驻横幅。任意 share 进入 needs-rebind 状态都
+            列在这里，点击可定位到该 share 的卡片。 */}
+        {Object.keys(needsRebindMap).length > 0 ? (
+          <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3">
+            <div className="text-sm font-medium text-destructive">
+              {t("share.needsRebindBannerTitle", {
+                defaultValue: "以下 share 的绑定 provider 已失效，请改绑或删除：",
+              })}
+            </div>
+            <ul className="mt-2 space-y-1 text-xs">
+              {Object.entries(needsRebindMap).map(([id, info]) => {
+                const share = shares.find((s) => s.id === id);
+                return (
+                  <li key={id} className="flex items-center justify-between">
+                    <span>
+                      <span className="font-mono">{share?.name ?? id}</span>
+                      <span className="ml-2 text-muted-foreground">
+                        {info.reason}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      className="text-xs underline"
+                      onClick={() =>
+                        setNeedsRebindMap((prev) => {
+                          const next = { ...prev };
+                          delete next[id];
+                          return next;
+                        })
+                      }
+                    >
+                      {t("share.needsRebindDismiss", {
+                        defaultValue: "忽略",
+                      })}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
+
         <ShareRouterBar
           proxyRunning={proxyStatus?.running ?? false}
           proxyAddress={proxyStatus?.address ?? null}
@@ -527,6 +581,27 @@ export function SharePage({
                     providerId,
                   }),
             )
+          }
+          onRotateToken={(share) =>
+            runShareAction(share, () =>
+              shareScoped
+                ? Promise.resolve()
+                : rotateTokenMutation.mutateAsync({ shareId: share.id }),
+            )
+          }
+          onRebindAtomic={(share, providerId) =>
+            runShareAction(share, async () => {
+              if (shareScoped) return;
+              // A-3：active share 上一键改绑 = disable tunnel → update binding → enable tunnel。
+              // 中间任一步失败会留下 share 在 paused/active 中间态——错误会
+              // 通过 mutation toast 暴露，用户可在 UI 手动恢复。
+              await disableMutation.mutateAsync(share.id);
+              await updateProviderBindingMutation.mutateAsync({
+                shareId: share.id,
+                providerId,
+              });
+              await enableMutation.mutateAsync(share.id);
+            })
           }
           onUpdateTokenLimit={(share, tokenLimit) =>
             runShareAction(share, () =>

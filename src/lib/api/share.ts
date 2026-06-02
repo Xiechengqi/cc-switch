@@ -48,6 +48,14 @@ export interface UpdateShareProviderBindingParams {
   providerId: string;
 }
 
+export interface ShareBindingHistoryEntry {
+  id: number;
+  oldProviderId: string | null;
+  newProviderId: string;
+  appType: string;
+  changedAt: string;
+}
+
 export interface PublicMarket {
   id: string;
   displayName: string;
@@ -235,6 +243,38 @@ async function updateProviderBinding(
   return invokeCommand<ShareRecord>("update_share_provider_binding", { params });
 }
 
+/**
+ * 轮换 share_token。返回带新 token 的 ShareRecord。老 token 立刻失效，
+ * 新 token 立刻可用，无需 share 处于 paused。
+ */
+async function rotateToken(shareId: string): Promise<ShareRecord> {
+  return invokeCommand<ShareRecord>("rotate_share_token", { shareId });
+}
+
+async function listBindingHistory(
+  shareId: string,
+  limit?: number,
+): Promise<ShareBindingHistoryEntry[]> {
+  return invokeCommand<ShareBindingHistoryEntry[]>("list_share_binding_history", {
+    shareId,
+    limit,
+  });
+}
+
+export interface ImportSharesResult {
+  imported: number;
+  skippedExisting: string[];
+  skippedProviderMissing: string[];
+}
+
+async function exportAll(): Promise<ShareRecord[]> {
+  return invokeCommand<ShareRecord[]>("export_all_shares");
+}
+
+async function importMany(shares: ShareRecord[]): Promise<ImportSharesResult> {
+  return invokeCommand<ImportSharesResult>("import_shares", { shares });
+}
+
 async function listMarkets(): Promise<PublicMarket[]> {
   return invokeCommand<PublicMarket[]>("list_share_markets");
 }
@@ -297,6 +337,10 @@ export const shareApi = {
   transferOwner,
   updateAcl,
   updateProviderBinding,
+  rotateToken,
+  listBindingHistory,
+  exportAll,
+  importMany,
   listMarkets,
   authorizeMarket,
   list,

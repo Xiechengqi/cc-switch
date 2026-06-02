@@ -393,6 +393,89 @@ pub async fn update_share_provider_binding(
         .map_err(|e: AppError| e.to_string())
 }
 
+/// 轮换 share_token。返回带新 token 的 ShareRecord。
+#[tauri::command]
+pub async fn rotate_share_token(
+    state: State<'_, AppState>,
+    share_id: String,
+) -> Result<ShareRecord, String> {
+    ShareService::rotate_token(&state.db, &share_id).map_err(|e: AppError| e.to_string())
+}
+
+/// 取 share 改绑历史（最近 N 条）。
+#[tauri::command]
+pub async fn list_share_binding_history(
+    state: State<'_, AppState>,
+    share_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<crate::database::ShareBindingHistoryEntry>, String> {
+    ShareService::list_binding_history(&state.db, &share_id, limit.unwrap_or(20))
+        .map_err(|e: AppError| e.to_string())
+}
+
+/// A-4：导出当前所有 share 配置（JSON）。
+/// 不包含 share_token / api_key 以外的敏感字段；token 仍然要包含因为换设备后
+/// 用户希望接入方零改造。
+#[tauri::command]
+pub async fn export_all_shares(
+    state: State<'_, AppState>,
+) -> Result<Vec<ShareRecord>, String> {
+    ShareService::list(&state.db).map_err(|e: AppError| e.to_string())
+}
+
+/// A-4：批量导入 share 配置。当本机已有同 id share 时跳过；
+/// provider_id 在新机器上可能不存在，跳过那些并把 share id 收集回报。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSharesResult {
+    pub imported: usize,
+    pub skipped_existing: Vec<String>,
+    pub skipped_provider_missing: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn import_shares(
+    state: State<'_, AppState>,
+    shares: Vec<ShareRecord>,
+) -> Result<ImportSharesResult, String> {
+    let mut imported = 0;
+    let mut skipped_existing = Vec::new();
+    let mut skipped_provider_missing = Vec::new();
+    for share in shares {
+        if state
+            .db
+            .get_share_by_id(&share.id)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            skipped_existing.push(share.id);
+            continue;
+        }
+        // provider 必须在本机存在；不存在直接 skip（用户应先导入 provider）。
+        if let Some(provider_id) = share.provider_id.as_deref() {
+            let exists = state
+                .db
+                .get_provider_by_id(provider_id, &share.app_type)
+                .map_err(|e| e.to_string())?
+                .is_some();
+            if !exists {
+                skipped_provider_missing.push(share.id);
+                continue;
+            }
+        }
+        state
+            .db
+            .create_share(&share)
+            .map_err(|e: AppError| e.to_string())?;
+        imported += 1;
+    }
+    Ok(ImportSharesResult {
+        imported,
+        skipped_existing,
+        skipped_provider_missing,
+    })
+}
+
 #[tauri::command]
 pub async fn update_share_subdomain(
     state: State<'_, AppState>,

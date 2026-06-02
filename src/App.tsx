@@ -974,8 +974,27 @@ function DesktopApp() {
           return (
             <AgentsPanel onOpenChange={() => setCurrentView("providers")} />
           );
-        case "shares":
+        case "shares": {
+          // D-1：share 仅支持 claude/codex/gemini 三个 app。其他 tab（claude-desktop
+          // /opencode/hermes/openclaw 等）打开 Share 时给一个明确的"暂不支持"提示，
+          // 避免对话框 provider 列表空 + 偷偷收敛 appType 的隐式行为。
+          if (
+            activeApp !== "claude" &&
+            activeApp !== "codex" &&
+            activeApp !== "gemini"
+          ) {
+            return (
+              <div className="px-6 pt-6 text-sm text-muted-foreground">
+                {t("share.unsupportedApp", {
+                  defaultValue:
+                    "{{app}} 暂不支持 share；请切换到 Claude / Codex / Gemini tab 后再创建 share。",
+                  app: activeApp,
+                })}
+              </div>
+            );
+          }
           return <SharePage defaultApp={activeApp} />;
+        }
         case "universal":
           return (
             <div className="px-6 pt-4">

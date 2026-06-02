@@ -750,3 +750,90 @@ fn ensure_incremental_auto_vacuum_rebuilds_existing_file_db() {
         "file db should persist INCREMENTAL auto_vacuum after VACUUM rebuild"
     );
 }
+
+/// 老库（v9→v10 迁移建表，provider_id 列可空）升级到 v21 时，
+/// 凡是 provider_id 为空 / NULL 的非 deleted share，必须被改成 paused，
+/// 已经绑定 provider 的 share 保持原状态不动。
+#[test]
+fn migrate_v20_to_v21_pauses_orphan_shares() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+
+    // 重建 v10 时代的 shares 表（provider_id TEXT 可空），加上后续迁移加的列。
+    // 这里只塞最小列集合 + 把 NOT NULL 默认值填齐，足以让 UPDATE 命中。
+    conn.execute_batch(
+        r#"
+        CREATE TABLE shares (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            owner_email TEXT NOT NULL DEFAULT '',
+            shared_with_emails_json TEXT NOT NULL DEFAULT '[]',
+            market_access_mode TEXT NOT NULL DEFAULT 'selected',
+            for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
+            description TEXT,
+            for_sale TEXT NOT NULL DEFAULT 'No',
+            share_token TEXT NOT NULL UNIQUE,
+            app_type TEXT NOT NULL,
+            provider_id TEXT,
+            api_key TEXT NOT NULL DEFAULT '',
+            settings_config TEXT,
+            token_limit INTEGER NOT NULL DEFAULT -1,
+            parallel_limit INTEGER NOT NULL DEFAULT 3,
+            tokens_used INTEGER NOT NULL DEFAULT 0,
+            requests_count INTEGER NOT NULL DEFAULT 0,
+            expires_at TEXT NOT NULL DEFAULT '',
+            subdomain TEXT,
+            tunnel_url TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            auto_start BOOLEAN NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT '',
+            last_used_at TEXT
+        );
+        "#,
+    )
+    .expect("seed legacy v10 shares table");
+
+    for (id, token, provider_id, status) in [
+        ("o-null", "t-null", None, "active"),
+        ("o-empty", "t-empty", Some(""), "active"),
+        ("o-whitespace", "t-ws", Some("   "), "active"),
+        ("bound", "t-bound", Some("p1"), "active"),
+        ("orphan-but-deleted", "t-del", None, "deleted"),
+        ("orphan-but-already-paused", "t-paused", None, "paused"),
+    ] {
+        conn.execute(
+            "INSERT INTO shares (id, share_token, app_type, provider_id, status)
+             VALUES (?1, ?2, 'claude', ?3, ?4)",
+            params![id, token, provider_id, status],
+        )
+        .expect("seed share row");
+    }
+
+    Database::set_user_version(&conn, 20).expect("set v20");
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate to current");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("post-migration version"),
+        SCHEMA_VERSION
+    );
+
+    for (id, expected_status) in [
+        ("o-null", "paused"),
+        ("o-empty", "paused"),
+        ("o-whitespace", "paused"),
+        ("bound", "active"),
+        ("orphan-but-deleted", "deleted"),
+        ("orphan-but-already-paused", "paused"),
+    ] {
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM shares WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .expect("read share status");
+        assert_eq!(
+            status, expected_status,
+            "share {id} should have status={expected_status} after v20→v21"
+        );
+    }
+}

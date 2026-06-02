@@ -109,6 +109,18 @@ interface EditShareDialogProps {
     share: ShareRecord,
     providerId: string,
   ) => Promise<void> | void;
+  /**
+   * A-1：轮换 share_token。老 token 立即失效，新 token 立即可用，无需 share paused。
+   */
+  onRotateToken?: (share: ShareRecord) => Promise<void> | void;
+  /**
+   * A-3：当 share 处于 active 状态时，点击"自动暂停并改绑"按钮触发
+   * disable → rebind → enable 的链式操作。完成后 share 仍为 active。
+   */
+  onRebindAtomic?: (
+    share: ShareRecord,
+    newProviderId: string,
+  ) => Promise<void> | void;
 }
 
 export function EditShareDialog({
@@ -136,6 +148,8 @@ export function EditShareDialog({
   onTransferOwner,
   onUpdateAcl,
   onUpdateProviderBinding,
+  onRotateToken,
+  onRebindAtomic,
 }: EditShareDialogProps) {
   const { t } = useTranslation();
   const [saving, setSaving] = useState(false);
@@ -505,6 +519,18 @@ export function EditShareDialog({
             </DialogSection>
 
             <DialogSection
+              title={t("share.appType", { defaultValue: "App 类型" })}
+              hint={t("share.appTypeReadOnly", {
+                defaultValue:
+                  "app 类型创建后不可修改。如需切换请新建一个 share。",
+              })}
+            >
+              <Badge variant="outline" className="capitalize">
+                {share.appType}
+              </Badge>
+            </DialogSection>
+
+            <DialogSection
               title={t("share.providerBinding", { defaultValue: "Provider 绑定" })}
               hint={
                 sharePaused
@@ -556,6 +582,43 @@ export function EditShareDialog({
                   )}
                 </SelectContent>
               </Select>
+              {/* A-3：share active 时点这个按钮一键完成 disable→rebind→enable，
+                  避免用户被 paused-required 错误卡住。 */}
+              {!sharePaused && providerIdDirty && providerIdInput && onRebindAtomic ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-2"
+                  disabled={busy || providerIdInvalid}
+                  onClick={() => void onRebindAtomic(share, providerIdInput)}
+                >
+                  {t("share.rebindAtomicAction", {
+                    defaultValue: "自动暂停并改绑 → 恢复",
+                  })}
+                </Button>
+              ) : null}
+            </DialogSection>
+
+            {/* A-1：轮换 token。点击触发外部 mutation；不在 form 内，立即生效。 */}
+            <DialogSection
+              title={t("share.rotateToken", { defaultValue: "Token 轮换" })}
+              hint={t("share.rotateTokenHint", {
+                defaultValue:
+                  "生成新 token，老 token 立即失效。请把新 token 重新下发给所有调用方，否则他们的请求会被拒绝。",
+              })}
+            >
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy || readOnly || !onRotateToken}
+                onClick={() => onRotateToken?.(share)}
+              >
+                {t("share.rotateTokenAction", {
+                  defaultValue: "立即轮换 Token",
+                })}
+              </Button>
             </DialogSection>
 
             <DialogSection

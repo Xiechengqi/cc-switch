@@ -86,6 +86,11 @@ interface ShareListProps {
     share: ShareRecord,
     providerId: string,
   ) => Promise<void> | void;
+  onRotateToken?: (share: ShareRecord) => Promise<void> | void;
+  onRebindAtomic?: (
+    share: ShareRecord,
+    newProviderId: string,
+  ) => Promise<void> | void;
   /**
    * 全 app 维度的"可绑定 provider 列表"映射，key = appType。
    * EditShareDialog 取本 share 的 appType 那一份，并把"share 自己当前绑定的
@@ -131,6 +136,8 @@ export function ShareList({
   onTransferOwner,
   onUpdateAcl,
   onUpdateProviderBinding,
+  onRotateToken,
+  onRebindAtomic,
   providersByApp,
 }: ShareListProps) {
   const { t } = useTranslation();
@@ -240,6 +247,8 @@ export function ShareList({
           onTransferOwner={onTransferOwner}
           onUpdateAcl={onUpdateAcl}
           onUpdateProviderBinding={onUpdateProviderBinding}
+          onRotateToken={onRotateToken}
+          onRebindAtomic={onRebindAtomic}
           providersForEdit={(() => {
             // share 自己当前绑定的 provider 不算 taken，否则保存"换回原 provider"
             // 会被禁选。其他 share 占着的仍标灰。

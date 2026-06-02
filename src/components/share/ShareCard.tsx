@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Copy, Edit3, Play, Power, RotateCcw, Trash2 } from "lucide-react";
+import { Copy, Edit3, Eye, EyeOff, Play, Power, RotateCcw, Trash2 } from "lucide-react";
 import type {
   PublicMarket,
   ShareRecord,
@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { useProviderHealth } from "@/lib/query/failover";
 import { useProxyTakeoverStatus } from "@/lib/query/proxy";
 import { copyText } from "@/lib/clipboard";
 import { toast } from "sonner";
@@ -116,6 +117,11 @@ interface ShareCardProps {
     share: ShareRecord,
     providerId: string,
   ) => Promise<void> | void;
+  onRotateToken?: (share: ShareRecord) => Promise<void> | void;
+  onRebindAtomic?: (
+    share: ShareRecord,
+    newProviderId: string,
+  ) => Promise<void> | void;
 }
 
 const EMPTY_MARKETS: PublicMarket[] = [];
@@ -153,10 +159,17 @@ export function ShareCard({
   onUpdateAcl,
   providersForEdit,
   onUpdateProviderBinding,
+  onRotateToken,
+  onRebindAtomic,
 }: ShareCardProps) {
   const { t } = useTranslation();
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const ratio = getShareUsageRatio(share);
+  // C-2：拉绑定 provider 的健康状态，决定胸标旁边的色点。
+  const { data: boundProviderHealth } = useProviderHealth(
+    share.providerId ?? "",
+    share.appType,
+  );
   const isBusy = pendingAction === share.id;
   const tunnelDisplay = resolveShareTunnelInfo(share, tunnelConfig);
   const tunnelRuntimeStatus = getShareTunnelRuntimeStatus(share, tunnelStatus);
@@ -228,6 +241,22 @@ export function ShareCard({
                       "本 share 请求强制走该 provider，不参与故障转移",
                   })}
                 >
+                  {/* C-2：绑定 provider 健康色点 */}
+                  <span
+                    className={cn(
+                      "mr-1 inline-block h-2 w-2 rounded-full",
+                      boundProviderHealth
+                        ? boundProviderHealth.is_healthy
+                          ? "bg-emerald-500"
+                          : "bg-red-500"
+                        : "bg-muted-foreground/40",
+                    )}
+                    aria-label={
+                      boundProviderHealth?.is_healthy
+                        ? "provider-healthy"
+                        : "provider-unhealthy-or-unknown"
+                    }
+                  />
                   {t("share.boundProviderLabel", {
                     defaultValue: "Provider",
                   })}
@@ -380,6 +409,20 @@ export function ShareCard({
               }
             />
           </div>
+          {/* D-3 + D-4：token 默认 mask，点眼睛切换显示；右侧"复制命令"一键拿到接入字符串 */}
+          <div className="mt-3">
+            <TokenSecretLine
+              token={share.shareToken}
+              baseUrl={tunnelDisplay.tunnelUrl}
+              appType={share.appType}
+              onCopyToken={() =>
+                void handleCopy(share.shareToken, "share.toast.copyToken")
+              }
+              onCopyCommand={(cmd) =>
+                void handleCopy(cmd, "share.toast.copyCommand")
+              }
+            />
+          </div>
         </section>
 
         <section className="space-y-4 border-t border-border-default/70 pt-4">
@@ -485,6 +528,8 @@ export function ShareCard({
         onUpdateAcl={onUpdateAcl}
         providers={providersForEdit ?? []}
         onUpdateProviderBinding={onUpdateProviderBinding}
+        onRotateToken={onRotateToken}
+        onRebindAtomic={onRebindAtomic}
       />
     </Card>
   );
@@ -587,6 +632,94 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
     <div className="min-w-0 rounded-md border border-border-default/70 bg-muted/10 px-3 py-2">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 break-all text-sm">{value}</div>
+    </div>
+  );
+}
+
+/**
+ * D-3 + D-4：token 默认 mask；展示完整接入命令（base_url + token）。
+ * 命令模板按 app_type 选不同环境变量名。
+ */
+function TokenSecretLine({
+  token,
+  baseUrl,
+  appType,
+  onCopyToken,
+  onCopyCommand,
+}: {
+  token: string;
+  baseUrl: string;
+  appType: string;
+  onCopyToken: () => void;
+  onCopyCommand: (cmd: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [visible, setVisible] = useState(false);
+  const masked = token ? `${token.slice(0, 4)}…${token.slice(-4)}` : "-";
+
+  const command = (() => {
+    switch (appType) {
+      case "claude":
+        return `export ANTHROPIC_BASE_URL=${baseUrl}\nexport ANTHROPIC_AUTH_TOKEN=${token}`;
+      case "codex":
+        return `export OPENAI_BASE_URL=${baseUrl}\nexport OPENAI_API_KEY=${token}`;
+      case "gemini":
+        return `export GEMINI_BASE_URL=${baseUrl}\nexport GOOGLE_API_KEY=${token}`;
+      default:
+        return `BASE_URL=${baseUrl}\nTOKEN=${token}`;
+    }
+  })();
+
+  return (
+    <div className="rounded-md border border-border-default/70 bg-muted/10 px-3 py-2">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">
+          {t("share.tokenLabel", { defaultValue: "Share Token" })}
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1 text-xs"
+            onClick={() => setVisible((v) => !v)}
+            aria-label={visible ? "hide-token" : "show-token"}
+          >
+            {visible ? (
+              <EyeOff className="h-3.5 w-3.5" />
+            ) : (
+              <Eye className="h-3.5 w-3.5" />
+            )}
+            {visible
+              ? t("share.tokenHide", { defaultValue: "隐藏" })
+              : t("share.tokenShow", { defaultValue: "显示" })}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1 text-xs"
+            onClick={onCopyToken}
+          >
+            <Copy className="h-3.5 w-3.5" />
+            {t("share.tokenCopy", { defaultValue: "复制 Token" })}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 text-xs"
+            onClick={() => onCopyCommand(command)}
+            title={command}
+          >
+            <Copy className="h-3.5 w-3.5" />
+            {t("share.commandCopy", { defaultValue: "复制接入命令" })}
+          </Button>
+        </div>
+      </div>
+      <div className="mt-1 break-all font-mono text-sm">
+        {visible ? token || "-" : masked}
+      </div>
     </div>
   );
 }

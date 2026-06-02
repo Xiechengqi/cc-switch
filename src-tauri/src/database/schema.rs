@@ -413,6 +413,26 @@ impl Database {
             [],
         );
 
+        // C-3 审计：每次 share 改绑 provider 写一行。UI Edit dialog 可查最近 N 条。
+        // 没有 FK，避免删 share/provider 时连环约束爆掉；保留为只追加日志。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS share_binding_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                share_id TEXT NOT NULL,
+                old_provider_id TEXT,
+                new_provider_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_share_binding_history_share
+             ON share_binding_history(share_id, changed_at DESC)",
+            [],
+        );
+
         Ok(())
     }
 
@@ -541,6 +561,13 @@ impl Database {
                         log::info!("迁移数据库从 v19 到 v20（模型测试日志 Token 使用量）");
                         Self::migrate_v19_to_v20(conn)?;
                         Self::set_user_version(conn, 20)?;
+                    }
+                    20 => {
+                        log::info!(
+                            "迁移数据库从 v20 到 v21（孤儿 share 强制 paused，避免 401 missing provider binding）"
+                        );
+                        Self::migrate_v20_to_v21(conn)?;
+                        Self::set_user_version(conn, 21)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1533,6 +1560,46 @@ impl Database {
         }
 
         log::info!("v19 -> v20 迁移完成：stream_check_logs 增加 Token 使用量字段");
+        Ok(())
+    }
+
+    /// v20 -> v21 迁移：把 provider_id IS NULL OR '' 的 share 强制改为 paused。
+    ///
+    /// 历史原因：v9→v10 建表时 `provider_id` 列为可空（schema.rs::migrate_v9_to_v10
+    /// 里的 CREATE TABLE shares 是 `provider_id TEXT`），加之早期版本允许在没有
+    /// 选中 provider 的情况下创建 share，遗留下了"share_token 有效但 provider 已
+    /// 解绑"的孤儿行。新代码（proxy/handler_context.rs::resolve_share_outcome）
+    /// 在这种行上必抛 `share is missing provider binding` 401，但只在请求路径上
+    /// 才会触发——share 还会被 tunnel 注册到 router 上对外开放，造成"看着是活
+    /// 的，但所有调用都 401"的 sticky 问题。
+    ///
+    /// 这里在迁移阶段一次性把这些 share 拉回 paused，让 UI 上明显标红、强制用户
+    /// 走 Edit Dialog 重新绑定 provider；新建路径在 services/share.rs 里已经强制
+    /// 非空，新行不再受影响。
+    fn migrate_v20_to_v21(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "shares")? {
+            return Ok(());
+        }
+        let affected = conn
+            .execute(
+                "UPDATE shares
+                 SET status = 'paused'
+                 WHERE status != 'deleted'
+                   AND status != 'paused'
+                   AND (provider_id IS NULL OR TRIM(provider_id) = '')",
+                [],
+            )
+            .map_err(|e| {
+                AppError::Database(format!(
+                    "v20→v21 标记孤儿 share 为 paused 失败: {e}"
+                ))
+            })?;
+        if affected > 0 {
+            log::warn!(
+                "v20 -> v21 迁移：发现 {affected} 个 provider_id 为空的孤儿 share，已强制 paused，请在 UI 中重新绑定 provider"
+            );
+        }
+        log::info!("v20 -> v21 迁移完成：孤儿 share 已暂停");
         Ok(())
     }
 

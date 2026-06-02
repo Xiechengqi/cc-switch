@@ -8,7 +8,7 @@
     "build": "pnpm tauri build",
     "tauri": "tauri",
     "dev:renderer": "vite",
-    "build:renderer": "vite build",
+    "build:renderer": "vite build && node scripts/compress-dist.mjs",
     "fetch:share-regions": "node scripts/fetch-regions.mjs",
     "prebuild": "node scripts/fetch-regions.mjs",
     "prebuild:renderer": "node scripts/fetch-regions.mjs",

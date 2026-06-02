@@ -69,22 +69,23 @@ pub async fn invoke(
     }
 }
 
-pub async fn serve_index(State(state): State<ProxyState>) -> Response {
-    serve_dist_file(&state, Path::new(INDEX_HTML)).await
+pub async fn serve_index(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
+    serve_dist_file(&state, &headers, Path::new(INDEX_HTML)).await
 }
 
-pub async fn serve_favicon(State(state): State<ProxyState>) -> Response {
-    serve_dist_file(&state, Path::new("favicon.ico")).await
+pub async fn serve_favicon(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
+    serve_dist_file(&state, &headers, Path::new("favicon.ico")).await
 }
 
 pub async fn serve_asset(
     State(state): State<ProxyState>,
+    headers: HeaderMap,
     AxumPath(path): AxumPath<String>,
 ) -> Response {
     let Some(path) = sanitize_asset_path(&path) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid asset path");
     };
-    serve_dist_file(&state, &path).await
+    serve_dist_file(&state, &headers, &path).await
 }
 
 #[derive(Debug)]
@@ -278,33 +279,70 @@ fn sanitize_asset_path(raw: &str) -> Option<PathBuf> {
     }
 }
 
-async fn serve_dist_file(state: &ProxyState, path: &Path) -> Response {
+async fn serve_dist_file(state: &ProxyState, headers: &HeaderMap, path: &Path) -> Response {
     let Some(root) = dist_root(state) else {
         return error_response(StatusCode::NOT_FOUND, "web dist directory not found");
     };
-    let full_path = root.join(path);
-    let read_result = match tokio::fs::read(&full_path).await {
-        Ok(bytes) => Ok((bytes, path.to_path_buf())),
+    let (disk_path, served_path, encoding) = encoded_dist_path(headers, &root, path)
+        .unwrap_or_else(|| (root.join(path), path.to_path_buf(), None));
+    let read_result = match tokio::fs::read(&disk_path).await {
+        Ok(bytes) => Ok((bytes, served_path, encoding)),
         Err(_) if path != Path::new(INDEX_HTML) => {
             let index_path = PathBuf::from(INDEX_HTML);
-            tokio::fs::read(root.join(INDEX_HTML))
+            let (fallback_disk_path, fallback_served_path, fallback_encoding) =
+                encoded_dist_path(headers, &root, &index_path)
+                    .unwrap_or_else(|| (root.join(INDEX_HTML), index_path, None));
+            tokio::fs::read(fallback_disk_path)
                 .await
-                .map(|bytes| (bytes, index_path))
+                .map(|bytes| (bytes, fallback_served_path, fallback_encoding))
         }
         Err(err) => Err(err),
     };
 
     match read_result {
-        Ok((bytes, served_path)) => {
+        Ok((bytes, served_path, response_encoding)) => {
             let content_type = content_type_for(&served_path);
             let mut response = bytes.into_response();
             response
                 .headers_mut()
                 .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+            if let Some(encoding) = response_encoding {
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_ENCODING, HeaderValue::from_static(encoding));
+            }
+            response
+                .headers_mut()
+                .insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
             response
         }
         Err(_) => error_response(StatusCode::NOT_FOUND, "web asset not found"),
     }
+}
+
+fn encoded_dist_path(
+    headers: &HeaderMap,
+    root: &Path,
+    path: &Path,
+) -> Option<(PathBuf, PathBuf, Option<&'static str>)> {
+    let accept_encoding = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    for (token, suffix) in [("br", "br"), ("gzip", "gz")] {
+        if !accept_encoding
+            .split(',')
+            .any(|part| part.trim().starts_with(token))
+        {
+            continue;
+        }
+        let encoded_path = root.join(format!("{}.{}", path.display(), suffix));
+        if encoded_path.exists() {
+            return Some((encoded_path, path.to_path_buf(), Some(token)));
+        }
+    }
+    None
 }
 
 fn dist_root(state: &ProxyState) -> Option<PathBuf> {

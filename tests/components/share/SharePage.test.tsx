@@ -73,10 +73,11 @@ describe("SharePage", () => {
 
     renderPage();
 
+    // P5.7 之后空状态用 share.emptyCta（"创建第一个分享"）作为 CTA；
+    // 老路径的 share.create 是列表头部 toolbar 按钮，仅在已有 share 时显示。
     await waitFor(() =>
-      expect(screen.getByText("share.create")).toBeInTheDocument(),
+      expect(screen.getByText("share.emptyCta")).toBeInTheDocument(),
     );
-    expect(screen.getByText("share.create")).toBeInTheDocument();
     expect(screen.queryByText("Alpha Share")).not.toBeInTheDocument();
     expect(screen.queryByText("Login Share Owner")).not.toBeInTheDocument();
   });

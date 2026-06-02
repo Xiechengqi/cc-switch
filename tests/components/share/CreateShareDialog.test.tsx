@@ -6,6 +6,10 @@ import {
   deriveSubdomainFromEmail,
 } from "@/components/share/CreateShareDialog";
 
+const TEST_PROVIDERS = [
+  { id: "test-provider-1", name: "Test Provider 1", disabled: false },
+];
+
 function renderDialog(overrides: Partial<Record<string, unknown>> = {}) {
   const base: Record<string, unknown> = {
     open: true,
@@ -15,8 +19,9 @@ function renderDialog(overrides: Partial<Record<string, unknown>> = {}) {
     isSubmitting: false,
     tunnelConfig: { domain: "jptokenswitch.cc" },
     tunnelConfigSaving: false,
-    // P5.1 引入 `providers` 为必填。测试默认给空列表，需要时调用方覆盖。
-    providers: [],
+    // P5.1 引入 `providers` 为必填。默认带一条可选 provider，需要 submit 的
+    // 用例可以走 selectProvider helper 选中它。
+    providers: TEST_PROVIDERS,
     onSaveTunnelConfig: vi.fn(),
     onSubmit: vi.fn(),
   };
@@ -24,6 +29,19 @@ function renderDialog(overrides: Partial<Record<string, unknown>> = {}) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rendered = render(<CreateShareDialog {...(props as any)} />);
   return { props, rendered };
+}
+
+// 从 Radix Select 里点选第一条可用 provider。Radix Select 在 jsdom 下需要靠
+// setupGlobals 的 pointer-capture polyfill 才点得开。
+async function selectProvider(
+  user: ReturnType<typeof userEvent.setup>,
+  providerName: string = TEST_PROVIDERS[0]!.name,
+) {
+  const trigger = document.getElementById("share-create-provider");
+  if (!trigger) throw new Error("Provider Select trigger not found");
+  await user.click(trigger);
+  const option = await screen.findByRole("option", { name: providerName });
+  await user.click(option);
 }
 
 describe("CreateShareDialog", () => {
@@ -42,6 +60,7 @@ describe("CreateShareDialog", () => {
     const onSubmit = vi.fn();
     renderDialog({ onSubmit });
 
+    await selectProvider(user);
     await user.click(screen.getByRole("button", { name: "share.create" }));
 
     // Confirm modal appears
@@ -52,6 +71,7 @@ describe("CreateShareDialog", () => {
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
           ownerEmail: "owner@example.com",
+          providerId: TEST_PROVIDERS[0]!.id,
           forSale: "Yes",
           autoStart: true,
           tokenLimit: -1,
@@ -70,6 +90,7 @@ describe("CreateShareDialog", () => {
     const onSubmit = vi.fn();
     renderDialog({ onSubmit });
 
+    await selectProvider(user);
     await user.click(
       screen.getByRole("button", { name: /高级设置|advanced/i }),
     );
@@ -82,6 +103,7 @@ describe("CreateShareDialog", () => {
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
           ownerEmail: "owner@example.com",
+          providerId: TEST_PROVIDERS[0]!.id,
           forSale: "Yes",
         }),
         expect.objectContaining({ marketAccessMode: "all" }),
@@ -112,6 +134,7 @@ describe("CreateShareDialog", () => {
     const onSubmit = vi.fn();
     renderDialog({ onSubmit });
 
+    await selectProvider(user);
     const ownerEmailInput = screen.getByLabelText("Owner Email");
     await user.clear(ownerEmailInput);
     await user.type(ownerEmailInput, "new-owner@example.com");

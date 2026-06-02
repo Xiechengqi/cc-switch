@@ -7,11 +7,11 @@ import {
 import type { Settings } from "@/types";
 
 describe("oauth quota refresh interval", () => {
-  it("defaults to 5 minutes", () => {
+  it("defaults to 30 minutes", () => {
     expect(getOauthQuotaRefreshIntervalMinutes(undefined)).toBe(
       DEFAULT_OAUTH_QUOTA_REFRESH_INTERVAL_MINUTES,
     );
-    expect(getOauthQuotaRefreshIntervalMs(undefined)).toBe(5 * 60 * 1000);
+    expect(getOauthQuotaRefreshIntervalMs(undefined)).toBe(30 * 60 * 1000);
   });
 
   it("uses configured integer minutes", () => {

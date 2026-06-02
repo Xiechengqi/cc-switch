@@ -22,6 +22,8 @@ export const shareKeys = {
   lists: () => [...shareKeys.all, "list"] as const,
   list: () => [...shareKeys.lists()] as const,
   detail: (shareId: string) => [...shareKeys.all, "detail", shareId] as const,
+  bindingHistory: (shareId: string) =>
+    [...shareKeys.all, "binding-history", shareId] as const,
   tunnelStatus: (shareId: string) =>
     [...shareKeys.all, "tunnel-status", shareId] as const,
   connectInfo: (shareId: string) =>
@@ -67,6 +69,24 @@ export function useShareDetailQuery(shareId?: string | null) {
       : [...shareKeys.all, "detail"],
     queryFn: () => shareApi.getDetail(shareId!),
     enabled: Boolean(shareId),
+  });
+}
+
+/**
+ * P9-C：拉指定 share 最近 N 条 binding 改动历史。EditDialog 展开 History section 时使用。
+ * `enabled` 让调用方按需触发——默认 false，避免每次开 Dialog 都拉。
+ */
+export function useShareBindingHistoryQuery(
+  shareId: string | null | undefined,
+  enabled: boolean,
+  limit = 20,
+) {
+  return useQuery({
+    queryKey: shareId
+      ? shareKeys.bindingHistory(shareId)
+      : [...shareKeys.all, "binding-history"],
+    queryFn: () => shareApi.listBindingHistory(shareId!, limit),
+    enabled: Boolean(shareId) && enabled,
   });
 }
 
@@ -124,6 +144,9 @@ function invalidateShareDetail(
       queryKey: shareKeys.tunnelStatus(shareId),
     }),
     queryClient.invalidateQueries({ queryKey: shareKeys.connectInfo(shareId) }),
+    queryClient.invalidateQueries({
+      queryKey: shareKeys.bindingHistory(shareId),
+    }),
   ]);
 }
 

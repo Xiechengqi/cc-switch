@@ -1825,6 +1825,8 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         share_token: share.share_token.clone(),
         app_type: primary_app,
         provider_id: primary_pid,
+        // P9：把全量 slot bindings 也送上去，router dashboard 能渲染 per-slot chip。
+        bindings: share.bindings.clone(),
         token_limit: share.token_limit,
         parallel_limit: share.parallel_limit,
         tokens_used: share.tokens_used,

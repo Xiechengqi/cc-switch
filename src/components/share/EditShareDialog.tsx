@@ -28,6 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { EmailTagsInput } from "@/components/ui/tags-input";
 import { cn } from "@/lib/utils";
 import type { ShareProviderSalePricing } from "./ShareCard";
+import { useShareBindingHistoryQuery } from "@/lib/query/share";
 import {
   DEFAULT_PARALLEL_LIMIT,
   isPermanentExpiry,
@@ -50,6 +51,11 @@ interface EditShareDialogProps {
    * active share 占用——除了本 share 自己的当前绑定（要让"保持原 provider"始终可选）。
    */
   providersByApp: Record<keyof ShareBindings, ProviderOption[]>;
+  /**
+   * P9-C：`${appType}:${providerId}` → provider 显示名。binding history 中如果命中此
+   * 映射就显示名字，否则回退显示 provider id。
+   */
+  providerNameByKey?: Record<string, string>;
   marketsLoading: boolean;
   marketsError: string | null;
   readOnly?: boolean;
@@ -133,6 +139,7 @@ export function EditShareDialog({
   markets,
   providerSalePricing,
   providersByApp,
+  providerNameByKey,
   marketsLoading,
   marketsError,
   readOnly = false,
@@ -665,6 +672,9 @@ export function EditShareDialog({
                 })}
               </div>
             </DialogSection>
+
+            {/* P9-C：binding 改动审计历史。默认折叠，展开后才拉数据，避免每次开 Dialog 都查 DB。 */}
+            <BindingHistorySection shareId={share.id} providerNameByKey={providerNameByKey} />
 
             {/* A-1：轮换 token。点击触发外部 mutation；不在 form 内，立即生效。 */}
             <DialogSection
@@ -1273,5 +1283,114 @@ function MarketTags({
         );
       })}
     </div>
+  );
+}
+
+/**
+ * P9-C：binding 改动审计历史的展示。默认折叠不拉数据，用户展开后才发起查询，避免
+ * 每次开 EditDialog 就触发 list_share_binding_history。
+ *
+ * 渲染时优先用 providerNameByKey (`${appType}:${pid}`) 显示 provider 名，命中不到
+ * 时回退到 provider id；"解绑"事件用 italic "—" 表示。
+ */
+function BindingHistorySection({
+  shareId,
+  providerNameByKey,
+}: {
+  shareId: string;
+  providerNameByKey?: Record<string, string>;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const { data, isLoading, error } = useShareBindingHistoryQuery(
+    shareId,
+    open,
+    50,
+  );
+
+  const renderProvider = (
+    appType: string,
+    providerId: string | null | undefined,
+  ): ReactNode => {
+    if (!providerId) {
+      return (
+        <span className="italic text-muted-foreground">
+          {t("share.bindingHistory.unbound", { defaultValue: "—（解绑）" })}
+        </span>
+      );
+    }
+    const name = providerNameByKey?.[`${appType}:${providerId}`];
+    return name ? (
+      <span>
+        {name}
+        <span className="ml-1 text-[10px] text-muted-foreground">({providerId})</span>
+      </span>
+    ) : (
+      <span className="font-mono">{providerId}</span>
+    );
+  };
+
+  return (
+    <DialogSection
+      title={t("share.bindingHistory.title", {
+        defaultValue: "绑定历史",
+      })}
+      hint={t("share.bindingHistory.hint", {
+        defaultValue: "最近 50 条改绑 / 解绑事件。按时间倒序。",
+      })}
+    >
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        {open
+          ? t("share.bindingHistory.hide", { defaultValue: "收起" })
+          : t("share.bindingHistory.show", { defaultValue: "查看历史" })}
+      </Button>
+      {open ? (
+        <div className="mt-2 grid gap-1 text-xs">
+          {isLoading ? (
+            <span className="text-muted-foreground">
+              {t("share.bindingHistory.loading", {
+                defaultValue: "加载中…",
+              })}
+            </span>
+          ) : error ? (
+            <span className="text-destructive">
+              {t("share.bindingHistory.error", {
+                defaultValue: "拉取历史失败",
+              })}
+            </span>
+          ) : !data || data.length === 0 ? (
+            <span className="text-muted-foreground">
+              {t("share.bindingHistory.empty", {
+                defaultValue: "暂无改绑历史。",
+              })}
+            </span>
+          ) : (
+            <ul className="grid gap-1">
+              {data.map((entry) => (
+                <li
+                  key={entry.id}
+                  className="rounded border border-default/40 p-2"
+                >
+                  <div className="flex items-center justify-between gap-2 text-[10px] uppercase text-muted-foreground">
+                    <span className="font-mono">{entry.appType}</span>
+                    <span>{entry.changedAt}</span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-1 text-foreground">
+                    {renderProvider(entry.appType, entry.oldProviderId)}
+                    <span className="text-muted-foreground">→</span>
+                    {renderProvider(entry.appType, entry.newProviderId)}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </DialogSection>
   );
 }

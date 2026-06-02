@@ -546,6 +546,7 @@ export function ShareCard({
         onTransferOwner={onTransferOwner}
         onUpdateAcl={onUpdateAcl}
         providersByApp={providersByAppForEdit ?? { claude: [], codex: [], gemini: [] }}
+        providerNameByKey={providerNameByKey}
         onUpdateProviderBinding={onUpdateProviderBinding}
         onRotateToken={onRotateToken}
         onRebindAtomic={onRebindAtomic}

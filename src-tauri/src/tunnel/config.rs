@@ -338,6 +338,10 @@ pub struct ShareTunnelMetadata {
     pub app_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
+    /// P9 多 app share：每个 app_type 当前绑定的 provider id。router 端 ShareDescriptor
+    /// 通过 #[serde(default)] 接收老 cc-switch 不带这个字段时为空 map，路由功能不受影响。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub bindings: HashMap<String, String>,
     pub token_limit: i64,
     pub parallel_limit: i64,
     pub tokens_used: i64,
@@ -462,6 +466,7 @@ mod tests {
             share_token: "token".to_string(),
             app_type: "codex".to_string(),
             provider_id: None,
+            bindings: HashMap::new(),
             token_limit: 100,
             parallel_limit: 3,
             tokens_used: 0,
@@ -522,6 +527,7 @@ mod tests {
             share_token: "token".to_string(),
             app_type: "codex".to_string(),
             provider_id: Some("provider-1".to_string()),
+            bindings: HashMap::new(),
             token_limit: -1,
             parallel_limit: -1,
             tokens_used: 10,

@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import type { PublicMarket, ShareRecord } from "@/lib/api";
+import type { ProviderOption } from "./CreateShareDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -43,6 +44,12 @@ interface EditShareDialogProps {
   share: ShareRecord;
   markets: PublicMarket[];
   providerSalePricing: ShareProviderSalePricing[];
+  /**
+   * 与 CreateShareDialog 同形：按 share.appType 过滤后传入。
+   * `disabled` 表示该 provider 已被其他 active share 占用——除了本 share 自己的
+   * 当前绑定（要让"保持原 provider"始终可选）。
+   */
+  providers: ProviderOption[];
   marketsLoading: boolean;
   marketsError: string | null;
   readOnly?: boolean;
@@ -94,6 +101,14 @@ interface EditShareDialogProps {
     sharedWithEmails: string[],
     marketAccessMode: "selected" | "all",
   ) => Promise<void> | void;
+  /**
+   * 改绑 provider。后端约束：share 必须先 paused；调用方应按需先 stop tunnel。
+   * 失败会抛错（UNIQUE 冲突 / provider 不存在 / app_type 不匹配），上层 catch 即可。
+   */
+  onUpdateProviderBinding: (
+    share: ShareRecord,
+    providerId: string,
+  ) => Promise<void> | void;
 }
 
 export function EditShareDialog({
@@ -102,6 +117,7 @@ export function EditShareDialog({
   share,
   markets,
   providerSalePricing,
+  providers,
   marketsLoading,
   marketsError,
   readOnly = false,
@@ -119,6 +135,7 @@ export function EditShareDialog({
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
+  onUpdateProviderBinding,
 }: EditShareDialogProps) {
   const { t } = useTranslation();
   const [saving, setSaving] = useState(false);
@@ -136,6 +153,7 @@ export function EditShareDialog({
     DEFAULT_PARALLEL_LIMIT,
   );
   const [subdomainInput, setSubdomainInput] = useState("");
+  const [providerIdInput, setProviderIdInput] = useState("");
   const [descriptionInput, setDescriptionInput] = useState("");
   const [ownerEmailInput, setOwnerEmailInput] = useState("");
   const [shareToEmails, setShareToEmails] = useState<string[]>([]);
@@ -196,6 +214,7 @@ export function EditShareDialog({
         : DEFAULT_PARALLEL_LIMIT,
     );
     setSubdomainInput(share.subdomain ?? "");
+    setProviderIdInput(share.providerId ?? "");
     setDescriptionInput(share.description ?? "");
     setOwnerEmailInput(share.ownerEmail ?? "");
     setShareToEmails(currentNonMarketEmails);
@@ -247,6 +266,11 @@ export function EditShareDialog({
     subdomainInput.trim().length < 3 ||
     !/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/.test(subdomainInput.trim()) ||
     ["admin", "api", "www", "cdn-cgi"].includes(subdomainInput.trim());
+  const sharePaused = share.status === "paused";
+  const providerIdDirty = providerIdInput.trim() !== (share.providerId ?? "");
+  // 后端要求 paused 才能改绑；UI 同步禁选避免误操作。
+  const providerIdReadOnly = readOnly || !sharePaused;
+  const providerIdInvalid = providerIdInput.trim().length === 0;
   const normalizedDescription = descriptionInput.trim();
   const descriptionDirty = normalizedDescription !== (share.description ?? "");
   const descriptionInvalid = normalizedDescription.length > 200;
@@ -352,6 +376,7 @@ export function EditShareDialog({
     descriptionDirty ||
     expiryDirty ||
     subdomainDirty ||
+    providerIdDirty ||
     tokenLimitDirty ||
     parallelLimitDirty;
   const hasInvalidChanges =
@@ -361,6 +386,7 @@ export function EditShareDialog({
     (descriptionDirty && descriptionInvalid) ||
     (expiryDirty && expiryInvalid) ||
     (subdomainDirty && subdomainInvalid) ||
+    (providerIdDirty && providerIdInvalid) ||
     (tokenLimitDirty && tokenLimitInvalid) ||
     (parallelLimitDirty && parallelLimitInvalid);
 
@@ -388,6 +414,8 @@ export function EditShareDialog({
         await onUpdateDescription(share, normalizedDescription);
       if (expiryDirty) await onUpdateExpiration(share, expiryIso);
       if (subdomainDirty) await onUpdateSubdomain(share, subdomainInput.trim());
+      if (providerIdDirty)
+        await onUpdateProviderBinding(share, providerIdInput.trim());
       if (tokenLimitDirty) await onUpdateTokenLimit(share, parsedTokenLimit);
       if (parallelLimitDirty)
         await onUpdateParallelLimit(share, parsedParallelLimit);
@@ -474,6 +502,60 @@ export function EditShareDialog({
                   setSubdomainInput(event.target.value.toLowerCase())
                 }
               />
+            </DialogSection>
+
+            <DialogSection
+              title={t("share.providerBinding", { defaultValue: "Provider 绑定" })}
+              hint={
+                sharePaused
+                  ? t("share.providerBindingEditHint", {
+                      defaultValue:
+                        "改绑后请求会立刻路由到新 provider；Resume 后生效。",
+                    })
+                  : t("share.providerBindingPausedRequired", {
+                      defaultValue:
+                        "改绑前必须先暂停（Pause）share，避免请求落在中间态。",
+                    })
+              }
+              invalid={providerIdDirty && providerIdInvalid}
+            >
+              <Select
+                value={providerIdInput || undefined}
+                disabled={busy || providerIdReadOnly}
+                onValueChange={setProviderIdInput}
+              >
+                <SelectTrigger>
+                  <SelectValue
+                    placeholder={t("share.providerBindingPlaceholder", {
+                      defaultValue: "选择本 share 绑定的 provider",
+                    })}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {providers.length === 0 ? (
+                    <SelectItem value="__empty__" disabled>
+                      {t("share.providerBindingEmpty", {
+                        defaultValue: "暂无可绑定 provider",
+                      })}
+                    </SelectItem>
+                  ) : (
+                    providers.map((provider) => (
+                      <SelectItem
+                        key={provider.id}
+                        value={provider.id}
+                        disabled={provider.disabled}
+                      >
+                        {provider.name}
+                        {provider.disabled
+                          ? ` · ${t("share.providerBindingTaken", {
+                              defaultValue: "已被其他 share 绑定",
+                            })}`
+                          : ""}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
             </DialogSection>
 
             <DialogSection

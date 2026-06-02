@@ -97,6 +97,7 @@ describe("ShareCard", () => {
     onUpdateOwnerEmail: vi.fn(),
     onTransferOwner: vi.fn(),
     onUpdateAcl: vi.fn(),
+    onUpdateProviderBinding: vi.fn(),
   });
 
   it("shows disable for active share even when tunnel is not configured", () => {

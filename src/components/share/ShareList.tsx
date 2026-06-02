@@ -82,6 +82,18 @@ interface ShareListProps {
     sharedWithEmails: string[],
     marketAccessMode: "selected" | "all",
   ) => Promise<void> | void;
+  onUpdateProviderBinding: (
+    share: ShareRecord,
+    providerId: string,
+  ) => Promise<void> | void;
+  /**
+   * 全 app 维度的"可绑定 provider 列表"映射，key = appType。
+   * EditShareDialog 取本 share 的 appType 那一份，并把"share 自己当前绑定的
+   * provider"从 disabled 集合里挪出来——否则用户要换回原绑定时会被禁选。
+   */
+  providersByApp?: Partial<
+    Record<"claude" | "codex" | "gemini", import("./CreateShareDialog").ProviderOption[]>
+  >;
 }
 
 export function ShareList({
@@ -118,6 +130,8 @@ export function ShareList({
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
+  onUpdateProviderBinding,
+  providersByApp,
 }: ShareListProps) {
   const { t } = useTranslation();
 
@@ -225,6 +239,16 @@ export function ShareList({
           onUpdateOwnerEmail={onUpdateOwnerEmail}
           onTransferOwner={onTransferOwner}
           onUpdateAcl={onUpdateAcl}
+          onUpdateProviderBinding={onUpdateProviderBinding}
+          providersForEdit={(() => {
+            // share 自己当前绑定的 provider 不算 taken，否则保存"换回原 provider"
+            // 会被禁选。其他 share 占着的仍标灰。
+            const appType = share.appType as "claude" | "codex" | "gemini";
+            const pool = providersByApp?.[appType] ?? [];
+            return pool.map((p) =>
+              p.id === share.providerId ? { ...p, disabled: false } : p,
+            );
+          })()}
         />
       ))}
     </div>

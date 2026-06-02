@@ -284,7 +284,17 @@ export function CreateShareDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl overflow-hidden p-0">
         <DialogHeader className="px-5 pb-2 pt-5">
-          <DialogTitle>{t("share.create")}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            {t("share.create")}
+            {/*
+              多 share 模式下：share 类型由当前 app tab 决定，但对话框本身没有
+              app 切换器，用户容易看不出"我在为哪个 app 创建"。Badge 把上下文
+              钉死在标题旁。
+            */}
+            <Badge variant="outline" className="capitalize">
+              {toShareAppType(defaultApp)}
+            </Badge>
+          </DialogTitle>
           <DialogDescription className="text-xs">
             {t("share.createDescription")}
           </DialogDescription>
@@ -337,7 +347,8 @@ export function CreateShareDialog({
                   <SelectItem value="__empty__" disabled>
                     {t("share.providerBindingEmpty", {
                       defaultValue:
-                        "当前应用下没有可绑定的 provider。请先到 Provider 页创建。",
+                        "{{app}} 下没有可绑定的 provider，或全部已被其他 share 绑定。先到 Provider 页面创建/释放。",
+                      app: toShareAppType(defaultApp),
                     })}
                   </SelectItem>
                 ) : (

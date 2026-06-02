@@ -31,6 +31,7 @@ import {
   useUpdateShareOwnerEmailMutation,
   useUpdateShareParallelLimitMutation,
   useUpdateShareSubdomainMutation,
+  useUpdateShareProviderBindingMutation,
   useUpdateShareTokenLimitMutation,
   useTransferShareOwnerMutation,
 } from "@/lib/query";
@@ -144,6 +145,8 @@ export function SharePage({
   const updateAclMutation = useUpdateShareAclMutation();
   const updateParallelLimitMutation = useUpdateShareParallelLimitMutation();
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
+  const updateProviderBindingMutation =
+    useUpdateShareProviderBindingMutation();
   const updateTokenLimitMutation = useUpdateShareTokenLimitMutation();
   const configureTunnelMutation = useConfigureTunnelMutation();
   const {
@@ -288,6 +291,40 @@ export function SharePage({
     return map;
   }, [providerQueries]);
 
+  // EditShareDialog 用的"每 app 可绑定 provider 列表"。形态与 dialogProviderOptions
+  // 一致，但跨全部三个 app 维度，让 ShareList 按每条 share 的 appType 取对应列表。
+  // share 自己当前绑定的 provider 在 ShareList 那一层会被取消 disabled。
+  const providersByApp = useMemo(() => {
+    const result: Partial<
+      Record<"claude" | "codex" | "gemini", typeof dialogProviderOptions>
+    > = {};
+    (["claude", "codex", "gemini"] as const).forEach((app) => {
+      const data = providerQueries[app];
+      if (!data) {
+        result[app] = [];
+        return;
+      }
+      const takenProviderIds = new Set(
+        shares
+          .filter(
+            (share) =>
+              share.appType === app &&
+              share.status !== "deleted" &&
+              share.providerId,
+          )
+          .map((share) => share.providerId as string),
+      );
+      result[app] = Object.values(data.providers ?? {})
+        .filter((provider): provider is Provider => Boolean(provider))
+        .map((provider) => ({
+          id: provider.id,
+          name: provider.name,
+          disabled: takenProviderIds.has(provider.id),
+        }));
+    });
+    return result;
+  }, [providerQueries, shares, dialogProviderOptions]);
+
   const handleCreate = async (
     params: Parameters<typeof createMutation.mutateAsync>[0],
     extras: {
@@ -355,6 +392,7 @@ export function SharePage({
           markets={markets}
           providerSalePricing={providerSalePricing}
           providerNameByKey={providerNameByKey}
+          providersByApp={providersByApp}
           marketsLoading={marketsLoading}
           marketsError={marketsError ? extractErrorMessage(marketsError) : null}
           readOnly={effectiveReadOnly}
@@ -477,6 +515,16 @@ export function SharePage({
                     shareId: share.id,
                     sharedWithEmails,
                     marketAccessMode,
+                  }),
+            )
+          }
+          onUpdateProviderBinding={(share, providerId) =>
+            runShareAction(share, () =>
+              shareScoped
+                ? Promise.resolve()
+                : updateProviderBindingMutation.mutateAsync({
+                    shareId: share.id,
+                    providerId,
                   }),
             )
           }

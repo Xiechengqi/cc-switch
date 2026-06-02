@@ -16,6 +16,7 @@ import { copyText } from "@/lib/clipboard";
 import { toast } from "sonner";
 import { SHARE_REGIONS } from "@/config/shareRegions";
 import { EditShareDialog } from "./EditShareDialog";
+import type { ProviderOption } from "./CreateShareDialog";
 import { ShareDisplayStatusBadge } from "./ShareDisplayStatusBadge";
 import { ShareRequestLogTable } from "./ShareRequestLogTable";
 import {
@@ -106,6 +107,15 @@ interface ShareCardProps {
     sharedWithEmails: string[],
     marketAccessMode: "selected" | "all",
   ) => Promise<void> | void;
+  /**
+   * 当前 app 下可绑定的 provider 列表（同 CreateShareDialog 的形态）。
+   * 由 ShareList 透传，传给 EditShareDialog 的 Provider Select。
+   */
+  providersForEdit?: ProviderOption[];
+  onUpdateProviderBinding: (
+    share: ShareRecord,
+    providerId: string,
+  ) => Promise<void> | void;
 }
 
 const EMPTY_MARKETS: PublicMarket[] = [];
@@ -141,6 +151,8 @@ export function ShareCard({
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
+  providersForEdit,
+  onUpdateProviderBinding,
 }: ShareCardProps) {
   const { t } = useTranslation();
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -471,6 +483,8 @@ export function ShareCard({
         onUpdateOwnerEmail={onUpdateOwnerEmail}
         onTransferOwner={onTransferOwner}
         onUpdateAcl={onUpdateAcl}
+        providers={providersForEdit ?? []}
+        onUpdateProviderBinding={onUpdateProviderBinding}
       />
     </Card>
   );

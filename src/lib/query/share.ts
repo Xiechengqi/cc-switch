@@ -391,6 +391,20 @@ export function useUpdateShareSubdomainMutation() {
   );
 }
 
+export function useUpdateShareProviderBindingMutation() {
+  return useShareActionMutation(
+    ({ shareId, providerId }: { shareId: string; providerId: string }) =>
+      shareApi.updateProviderBinding({ shareId, providerId }),
+    {
+      successKey: "share.toast.updateProviderBindingSuccess",
+      successDefault: "Provider 绑定已更新",
+      errorKey: "share.toast.updateProviderBindingError",
+      errorDefault: "更新 Provider 绑定失败: {{error}}",
+    },
+    ({ shareId }) => shareId,
+  );
+}
+
 export function useUpdateShareDescriptionMutation() {
   return useShareActionMutation(
     ({ shareId, description }: { shareId: string; description: string }) =>

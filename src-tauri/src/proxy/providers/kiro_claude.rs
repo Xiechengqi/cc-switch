@@ -9,7 +9,7 @@ use futures::{Stream, StreamExt};
 use http::StatusCode;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tauri::Manager;
 
 use super::kiro_oauth_auth::{machine_id_from_refresh_token, KiroAccountData};
@@ -19,6 +19,17 @@ const DEFAULT_SYSTEM_VERSION: &str = "macos";
 const DEFAULT_NODE_VERSION: &str = "22.22.0";
 const BUILDER_ID_PROFILE_ARN: &str =
     "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
+const TOOL_NAME_MAX_LEN: usize = 63;
+const WRITE_TOOL_DESCRIPTION_SUFFIX: &str = "- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using this tool, then use `Edit` tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. Do NOT attempt to write all content at once.";
+const EDIT_TOOL_DESCRIPTION_SUFFIX: &str = "- IMPORTANT: If the `new_string` content exceeds 50 lines, you MUST split it into multiple Edit calls, each replacing no more than 50 lines at a time. If used to append content, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder.";
+const SYSTEM_CHUNKED_POLICY: &str = "When the Write or Edit tool has content size limits, always comply silently. Never suggest bypassing these limits via alternative tools. Never ask the user whether to switch approaches. Complete all chunked operations without commentary.";
+const ACCOUNT_THROTTLE_COOLDOWN_SECS: i64 = 30 * 60;
+const QUOTA_EXHAUSTED_COOLDOWN_SECS: i64 = 24 * 60 * 60;
+
+struct KiroRequestBuild {
+    body: Value,
+    tool_name_map: HashMap<String, String>,
+}
 
 pub async fn forward_kiro_claude(
     app_handle: Option<&tauri::AppHandle>,
@@ -32,45 +43,79 @@ pub async fn forward_kiro_claude(
     };
 
     let state = app_handle.state::<KiroOAuthState>();
-    let manager = state.0.read().await;
-    let account_id = provider
+    let manager = { state.0.read().await.clone() };
+    let bound_account_id = provider
         .meta
         .as_ref()
         .and_then(|m| m.managed_account_id_for("kiro_oauth"));
+    let allow_account_failover = bound_account_id.is_none();
+    let mut attempted_account_ids = HashSet::new();
 
-    let resolved_account = match account_id.as_deref() {
-        Some(id) => manager.get_account(id).await,
-        None => manager.get_default_account().await,
-    }
-    .ok_or_else(|| ProxyError::AuthError("未找到可用 Kiro OAuth 账号".to_string()))?;
+    let (response, request) = loop {
+        let resolved_account = match bound_account_id.as_deref() {
+            Some(id) => manager.get_account(id).await,
+            None => {
+                manager
+                    .get_available_account_excluding(&attempted_account_ids)
+                    .await
+            }
+        }
+        .ok_or_else(|| ProxyError::AuthError("未找到可用 Kiro OAuth 账号".to_string()))?;
+        attempted_account_ids.insert(resolved_account.account_id.clone());
 
-    let token = match account_id.as_deref() {
-        Some(id) => manager.get_valid_token_for_account(id).await,
-        None => manager.get_valid_token().await,
-    }
-    .map_err(|e| ProxyError::AuthError(format!("Kiro OAuth 认证失败: {e}")))?;
-
-    let request_body = anthropic_to_kiro_request(body, &resolved_account)?;
-    let response = send_kiro_request(&resolved_account, &token, request_body.clone()).await?;
-
-    let response = if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        manager
-            .invalidate_cached_token(&resolved_account.account_id)
-            .await;
         let token = manager
             .get_valid_token_for_account(&resolved_account.account_id)
             .await
             .map_err(|e| ProxyError::AuthError(format!("Kiro OAuth 认证失败: {e}")))?;
-        send_kiro_request(&resolved_account, &token, request_body).await?
-    } else {
-        response
-    };
 
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response.text().await.ok();
-        return Err(ProxyError::UpstreamError { status, body });
-    }
+        let request = anthropic_to_kiro_request(body, &resolved_account)?;
+        let response = send_kiro_request(&resolved_account, &token, request.body.clone()).await?;
+
+        let response = if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            manager
+                .invalidate_cached_token(&resolved_account.account_id)
+                .await;
+            let token = manager
+                .get_valid_token_for_account(&resolved_account.account_id)
+                .await
+                .map_err(|e| ProxyError::AuthError(format!("Kiro OAuth 认证失败: {e}")))?;
+            send_kiro_request(&resolved_account, &token, request.body.clone()).await?
+        } else {
+            response
+        };
+
+        if response.status().is_success() {
+            break (response, request);
+        }
+
+        let status = response.status();
+        let status_code = status.as_u16();
+        let response_body = response.text().await.ok();
+        let response_text = response_body.as_deref().unwrap_or("");
+        if is_quota_exhausted(response_text) || is_account_throttled(status, response_text) {
+            let cooldown_secs = if is_quota_exhausted(response_text) {
+                QUOTA_EXHAUSTED_COOLDOWN_SECS
+            } else {
+                ACCOUNT_THROTTLE_COOLDOWN_SECS
+            };
+            manager
+                .mark_account_temporarily_unavailable(&resolved_account.account_id, cooldown_secs)
+                .await;
+            if allow_account_failover
+                && manager
+                    .get_available_account_excluding(&attempted_account_ids)
+                    .await
+                    .is_some()
+            {
+                continue;
+            }
+        }
+
+        return Err(ProxyError::UpstreamError {
+            status: status_code,
+            body: response_body,
+        });
+    };
 
     let model = body
         .get("model")
@@ -82,14 +127,18 @@ pub async fn forward_kiro_claude(
         .unwrap_or(false);
 
     if is_stream {
-        let stream = kiro_event_stream_to_anthropic_sse(response.bytes_stream(), model.to_string());
+        let stream = kiro_event_stream_to_anthropic_sse(
+            response.bytes_stream(),
+            model.to_string(),
+            request.tool_name_map,
+        );
         Ok(ProxyResponse::local_sse(Box::pin(stream)))
     } else {
         let bytes = response
             .bytes()
             .await
             .map_err(|e| ProxyError::ForwardFailed(format!("读取 Kiro 响应失败: {e}")))?;
-        let message = kiro_event_bytes_to_anthropic_json(&bytes, model);
+        let message = kiro_event_bytes_to_anthropic_json(&bytes, model, &request.tool_name_map);
         Ok(ProxyResponse::local_json(
             StatusCode::OK,
             Bytes::from(serde_json::to_vec(&message).unwrap_or_default()),
@@ -136,34 +185,45 @@ async fn send_kiro_request(
         .map_err(|e| ProxyError::ForwardFailed(format!("Kiro 请求失败: {e}")))
 }
 
-fn anthropic_to_kiro_request(body: &Value, account: &KiroAccountData) -> Result<Value, ProxyError> {
+fn anthropic_to_kiro_request(
+    body: &Value,
+    account: &KiroAccountData,
+) -> Result<KiroRequestBuild, ProxyError> {
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ProxyError::InvalidRequest("missing model".to_string()))?;
     let model_id = map_model(model)
         .ok_or_else(|| ProxyError::InvalidRequest(format!("Kiro OAuth 不支持该模型: {model}")))?;
-    let messages = body
+    let raw_messages = body
         .get("messages")
         .and_then(|v| v.as_array())
         .ok_or_else(|| ProxyError::InvalidRequest("missing messages".to_string()))?;
-    if messages.is_empty() {
+    if raw_messages.is_empty() {
         return Err(ProxyError::InvalidRequest("messages is empty".to_string()));
     }
 
-    let last_user_idx = messages
+    let last_user_idx = raw_messages
         .iter()
         .rposition(|m| m.get("role").and_then(|v| v.as_str()) == Some("user"))
         .ok_or_else(|| ProxyError::InvalidRequest("missing user message".to_string()))?;
+    let messages = &raw_messages[..=last_user_idx];
 
-    let tools = convert_tools(body.get("tools"));
+    let mut tool_name_map = HashMap::new();
+    let mut tools = convert_tools(body.get("tools"), &mut tool_name_map);
     let (content, images, tool_results) =
         parse_user_content(messages[last_user_idx].get("content"));
+    let mut history = build_history(body, messages, model_id, &mut tool_name_map);
+    let (validated_tool_results, orphaned_tool_use_ids) =
+        validate_tool_pairing(&history, &tool_results);
+    remove_orphaned_tool_uses(&mut history, &orphaned_tool_use_ids);
+    add_missing_history_tools(&mut tools, &history);
+
     let current_message = json!({
         "userInputMessage": {
             "userInputMessageContext": {
                 "envState": env_state(),
-                "toolResults": tool_results,
+                "toolResults": validated_tool_results,
                 "tools": tools
             },
             "content": content,
@@ -173,58 +233,32 @@ fn anthropic_to_kiro_request(body: &Value, account: &KiroAccountData) -> Result<
         }
     });
 
-    let mut history = Vec::new();
-    for msg in &messages[..last_user_idx] {
-        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        match role {
-            "user" => {
-                let (content, images, tool_results) = parse_user_content(msg.get("content"));
-                history.push(json!({
-                    "userInputMessage": {
-                        "content": content,
-                        "modelId": model_id,
-                        "origin": "AI_EDITOR",
-                        "images": images,
-                        "userInputMessageContext": {
-                            "envState": env_state(),
-                            "toolResults": tool_results
-                        }
-                    }
-                }));
-            }
-            "assistant" => {
-                let (content, tool_uses) = parse_assistant_content(msg.get("content"));
-                history.push(json!({
-                    "assistantResponseMessage": {
-                        "content": content,
-                        "toolUses": tool_uses
-                    }
-                }));
-            }
-            _ => {}
-        }
-    }
-
     let profile_arn = account
         .profile_arn
         .clone()
         .unwrap_or_else(|| BUILDER_ID_PROFILE_ARN.to_string());
-    Ok(json!({
+    Ok(KiroRequestBuild {
+        body: json!({
         "conversationState": {
             "agentTaskType": "vibe",
             "chatTriggerType": "MANUAL",
             "currentMessage": current_message,
             "conversationId": conversation_id(body),
+            "agentContinuationId": uuid::Uuid::new_v4().to_string(),
             "history": history
         },
         "profileArn": profile_arn
-    }))
+        }),
+        tool_name_map,
+    })
 }
 
 fn map_model(model: &str) -> Option<&'static str> {
     let m = model.to_ascii_lowercase();
     if m.contains("sonnet") {
-        if m.contains("4-6") || m.contains("4.6") {
+        if m.contains("4-8") || m.contains("4.8") {
+            Some("claude-sonnet-4.8")
+        } else if m.contains("4-6") || m.contains("4.6") {
             Some("claude-sonnet-4.6")
         } else if m.contains("4-5") || m.contains("4.5") {
             Some("claude-sonnet-4.5")
@@ -232,7 +266,9 @@ fn map_model(model: &str) -> Option<&'static str> {
             Some("claude-sonnet-4.5")
         }
     } else if m.contains("opus") {
-        if m.contains("4-7") || m.contains("4.7") {
+        if m.contains("4-8") || m.contains("4.8") {
+            Some("claude-opus-4.8")
+        } else if m.contains("4-7") || m.contains("4.7") {
             Some("claude-opus-4.7")
         } else if m.contains("4-6") || m.contains("4.6") {
             Some("claude-opus-4.6")
@@ -289,26 +325,42 @@ fn stable_uuid_like(input: &str) -> String {
     uuid::Uuid::from_bytes(bytes).to_string()
 }
 
-fn convert_tools(tools: Option<&Value>) -> Vec<Value> {
+fn convert_tools(tools: Option<&Value>, tool_name_map: &mut HashMap<String, String>) -> Vec<Value> {
     tools
         .and_then(|v| v.as_array())
         .map(|items| {
             items
                 .iter()
                 .filter_map(|tool| {
-                    let name = tool.get("name")?.as_str()?.to_string();
-                    let description = tool
+                    let name = tool.get("name")?.as_str()?;
+                    let mapped_name = map_tool_name(name, tool_name_map);
+                    let mut description = tool
                         .get("description")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
+                    match name {
+                        "Write" => {
+                            description.push('\n');
+                            description.push_str(WRITE_TOOL_DESCRIPTION_SUFFIX);
+                        }
+                        "Edit" => {
+                            description.push('\n');
+                            description.push_str(EDIT_TOOL_DESCRIPTION_SUFFIX);
+                        }
+                        _ => {}
+                    }
+                    if description.trim().is_empty() {
+                        description = name.to_string();
+                    }
+                    description = truncate_chars(description, 10_000);
                     let schema = tool
                         .get("input_schema")
                         .cloned()
                         .unwrap_or_else(|| json!({"type":"object","properties":{}}));
                     Some(json!({
                         "toolSpecification": {
-                            "name": name,
+                            "name": mapped_name,
                             "description": description,
                             "inputSchema": { "json": normalize_schema(schema) }
                         }
@@ -319,16 +371,451 @@ fn convert_tools(tools: Option<&Value>) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-fn normalize_schema(mut schema: Value) -> Value {
-    if let Some(obj) = schema.as_object_mut() {
-        obj.remove("$schema");
-        obj.entry("type").or_insert_with(|| json!("object"));
-        obj.entry("properties").or_insert_with(|| json!({}));
-        obj.entry("required").or_insert_with(|| json!([]));
-        obj.entry("additionalProperties")
-            .or_insert_with(|| json!(true));
+fn normalize_schema(schema: Value) -> Value {
+    let Value::Object(mut obj) = schema else {
+        return json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": true
+        });
+    };
+
+    obj.remove("$schema");
+    if !obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        obj.insert("type".to_string(), json!("object"));
     }
-    schema
+
+    let properties = match obj.remove("properties") {
+        Some(Value::Object(props)) => Value::Object(
+            props
+                .into_iter()
+                .map(|(k, v)| (k, normalize_property_schema(v)))
+                .collect(),
+        ),
+        _ => json!({}),
+    };
+    obj.insert("properties".to_string(), properties);
+
+    let required = match obj.remove("required") {
+        Some(Value::Array(arr)) => Value::Array(
+            arr.into_iter()
+                .filter_map(|v| v.as_str().map(|s| Value::String(s.to_string())))
+                .collect(),
+        ),
+        _ => json!([]),
+    };
+    obj.insert("required".to_string(), required);
+
+    if !matches!(
+        obj.get("additionalProperties"),
+        Some(Value::Bool(_)) | Some(Value::Object(_))
+    ) {
+        obj.insert("additionalProperties".to_string(), json!(true));
+    }
+
+    Value::Object(obj)
+}
+
+fn normalize_property_schema(schema: Value) -> Value {
+    let Value::Object(mut obj) = schema else {
+        return schema;
+    };
+
+    obj.remove("$schema");
+    if obj
+        .get("exclusiveMinimum")
+        .and_then(|v| v.as_f64())
+        .is_some()
+    {
+        obj.remove("exclusiveMinimum");
+    }
+    if obj
+        .get("exclusiveMaximum")
+        .and_then(|v| v.as_f64())
+        .is_some()
+    {
+        obj.remove("exclusiveMaximum");
+    }
+    for key in ["maximum", "minimum"] {
+        if let Some(v) = obj.get(key).and_then(|v| v.as_f64()) {
+            if !(-2_147_483_648.0..=2_147_483_647.0).contains(&v) {
+                obj.remove(key);
+            }
+        }
+    }
+    if let Some(Value::Object(props)) = obj.remove("properties") {
+        obj.insert(
+            "properties".to_string(),
+            Value::Object(
+                props
+                    .into_iter()
+                    .map(|(k, v)| (k, normalize_property_schema(v)))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(items) = obj.remove("items") {
+        obj.insert("items".to_string(), normalize_property_schema(items));
+    }
+    Value::Object(obj)
+}
+
+fn truncate_chars(value: String, max_chars: usize) -> String {
+    match value.char_indices().nth(max_chars) {
+        Some((idx, _)) => value[..idx].to_string(),
+        None => value,
+    }
+}
+
+fn shorten_tool_name(name: &str) -> String {
+    let digest = Sha256::digest(name.as_bytes());
+    let hash_hex = format!("{digest:x}");
+    let hash_suffix = &hash_hex[..8];
+    let prefix_max = TOOL_NAME_MAX_LEN - 1 - 8;
+    let prefix = match name.char_indices().nth(prefix_max) {
+        Some((idx, _)) => &name[..idx],
+        None => name,
+    };
+    format!("{prefix}_{hash_suffix}")
+}
+
+fn map_tool_name(name: &str, tool_name_map: &mut HashMap<String, String>) -> String {
+    if name.chars().count() <= TOOL_NAME_MAX_LEN {
+        return name.to_string();
+    }
+    let short = shorten_tool_name(name);
+    tool_name_map.insert(short.clone(), name.to_string());
+    short
+}
+
+fn original_tool_name(name: &str, tool_name_map: &HashMap<String, String>) -> String {
+    tool_name_map
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| name.to_string())
+}
+
+fn build_history(
+    body: &Value,
+    messages: &[Value],
+    model_id: &str,
+    tool_name_map: &mut HashMap<String, String>,
+) -> Vec<Value> {
+    let mut history = Vec::new();
+    let prefix = thinking_prefix(body);
+
+    if let Some(system) = system_text(body).filter(|s| !s.is_empty()) {
+        let system = format!("{system}\n{SYSTEM_CHUNKED_POLICY}");
+        let final_system = match prefix.as_deref() {
+            Some(prefix) if !has_thinking_tags(&system) => format!("{prefix}\n{system}"),
+            _ => system,
+        };
+        history.push(history_user_message(
+            final_system,
+            model_id,
+            Vec::new(),
+            Vec::new(),
+        ));
+        history.push(history_assistant_message(
+            "I will follow these instructions.".to_string(),
+            Vec::new(),
+        ));
+    } else if let Some(prefix) = prefix {
+        history.push(history_user_message(
+            prefix,
+            model_id,
+            Vec::new(),
+            Vec::new(),
+        ));
+        history.push(history_assistant_message(
+            "I will follow these instructions.".to_string(),
+            Vec::new(),
+        ));
+    }
+
+    let history_end = messages.len().saturating_sub(1);
+    let mut user_buffer: Vec<&Value> = Vec::new();
+    let mut assistant_buffer: Vec<&Value> = Vec::new();
+
+    for msg in &messages[..history_end] {
+        match msg.get("role").and_then(|v| v.as_str()) {
+            Some("user") => {
+                if !assistant_buffer.is_empty() {
+                    history.push(merge_assistant_messages(&assistant_buffer, tool_name_map));
+                    assistant_buffer.clear();
+                }
+                user_buffer.push(msg);
+            }
+            Some("assistant") => {
+                if !user_buffer.is_empty() {
+                    history.push(merge_user_messages(&user_buffer, model_id));
+                    user_buffer.clear();
+                }
+                assistant_buffer.push(msg);
+            }
+            _ => {}
+        }
+    }
+
+    if !assistant_buffer.is_empty() {
+        history.push(merge_assistant_messages(&assistant_buffer, tool_name_map));
+    }
+    if !user_buffer.is_empty() {
+        history.push(merge_user_messages(&user_buffer, model_id));
+        history.push(history_assistant_message("OK".to_string(), Vec::new()));
+    }
+
+    history
+}
+
+fn system_text(body: &Value) -> Option<String> {
+    match body.get("system") {
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(Value::Array(items)) => {
+            let parts = items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::String(text) => Some(text.clone()),
+                    Value::Object(_)
+                        if item.get("type").and_then(|v| v.as_str()) == Some("text") =>
+                    {
+                        item.get("text")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            Some(parts.join("\n"))
+        }
+        _ => None,
+    }
+}
+
+fn thinking_prefix(body: &Value) -> Option<String> {
+    let thinking = body.get("thinking")?;
+    let thinking_type = thinking
+        .get("type")
+        .or_else(|| thinking.get("thinking_type"))
+        .and_then(|v| v.as_str())?;
+    match thinking_type {
+        "enabled" => {
+            let budget = thinking
+                .get("budget_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            Some(format!(
+                "<thinking_mode>enabled</thinking_mode><max_thinking_length>{budget}</max_thinking_length>"
+            ))
+        }
+        "adaptive" => {
+            let effort = body
+                .get("output_config")
+                .and_then(|v| v.get("effort"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("high");
+            Some(format!(
+                "<thinking_mode>adaptive</thinking_mode><thinking_effort>{effort}</thinking_effort>"
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn has_thinking_tags(content: &str) -> bool {
+    content.contains("<thinking_mode>") || content.contains("<max_thinking_length>")
+}
+
+fn merge_user_messages(messages: &[&Value], model_id: &str) -> Value {
+    let mut content_parts = Vec::new();
+    let mut images = Vec::new();
+    let mut tool_results = Vec::new();
+    for msg in messages {
+        let (content, msg_images, msg_tool_results) = parse_user_content(msg.get("content"));
+        if !content.is_empty() {
+            content_parts.push(content);
+        }
+        images.extend(msg_images);
+        tool_results.extend(msg_tool_results);
+    }
+    history_user_message(content_parts.join("\n"), model_id, images, tool_results)
+}
+
+fn merge_assistant_messages(
+    messages: &[&Value],
+    tool_name_map: &mut HashMap<String, String>,
+) -> Value {
+    let mut content_parts = Vec::new();
+    let mut tool_uses = Vec::new();
+    for msg in messages {
+        let (content, msg_tool_uses) = parse_assistant_content(msg.get("content"), tool_name_map);
+        if !content.trim().is_empty() {
+            content_parts.push(content);
+        }
+        tool_uses.extend(msg_tool_uses);
+    }
+    let content = if content_parts.is_empty() && !tool_uses.is_empty() {
+        " ".to_string()
+    } else {
+        content_parts.join("\n\n")
+    };
+    history_assistant_message(content, tool_uses)
+}
+
+fn history_user_message(
+    content: String,
+    model_id: &str,
+    images: Vec<Value>,
+    tool_results: Vec<Value>,
+) -> Value {
+    json!({
+        "userInputMessage": {
+            "userInputMessageContext": {
+                "envState": env_state(),
+                "toolResults": tool_results
+            },
+            "content": content,
+            "modelId": model_id,
+            "images": images,
+            "origin": "AI_EDITOR"
+        }
+    })
+}
+
+fn history_assistant_message(content: String, tool_uses: Vec<Value>) -> Value {
+    let mut message = json!({
+        "assistantResponseMessage": {
+            "content": content
+        }
+    });
+    if !tool_uses.is_empty() {
+        message["assistantResponseMessage"]["toolUses"] = Value::Array(tool_uses);
+    }
+    message
+}
+
+fn validate_tool_pairing(
+    history: &[Value],
+    tool_results: &[Value],
+) -> (Vec<Value>, HashSet<String>) {
+    let mut all_tool_use_ids = HashSet::new();
+    let mut history_tool_result_ids = HashSet::new();
+
+    for msg in history {
+        if let Some(tool_uses) = msg
+            .pointer("/assistantResponseMessage/toolUses")
+            .and_then(Value::as_array)
+        {
+            for tool_use in tool_uses {
+                if let Some(id) = tool_use.get("toolUseId").and_then(Value::as_str) {
+                    all_tool_use_ids.insert(id.to_string());
+                }
+            }
+        }
+        if let Some(results) = msg
+            .pointer("/userInputMessage/userInputMessageContext/toolResults")
+            .and_then(Value::as_array)
+        {
+            for result in results {
+                if let Some(id) = result.get("toolUseId").and_then(Value::as_str) {
+                    history_tool_result_ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+
+    let mut unpaired: HashSet<String> = all_tool_use_ids
+        .difference(&history_tool_result_ids)
+        .cloned()
+        .collect();
+    let mut filtered = Vec::new();
+    for result in tool_results {
+        let Some(id) = result.get("toolUseId").and_then(Value::as_str) else {
+            continue;
+        };
+        if unpaired.remove(id) {
+            filtered.push(result.clone());
+        }
+    }
+    (filtered, unpaired)
+}
+
+fn remove_orphaned_tool_uses(history: &mut [Value], orphaned_ids: &HashSet<String>) {
+    if orphaned_ids.is_empty() {
+        return;
+    }
+    for msg in history {
+        let Some(tool_uses) = msg
+            .pointer_mut("/assistantResponseMessage/toolUses")
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        tool_uses.retain(|tool_use| {
+            tool_use
+                .get("toolUseId")
+                .and_then(Value::as_str)
+                .map(|id| !orphaned_ids.contains(id))
+                .unwrap_or(true)
+        });
+        if tool_uses.is_empty() {
+            if let Some(obj) = msg
+                .get_mut("assistantResponseMessage")
+                .and_then(Value::as_object_mut)
+            {
+                obj.remove("toolUses");
+            }
+        }
+    }
+}
+
+fn add_missing_history_tools(tools: &mut Vec<Value>, history: &[Value]) {
+    let mut existing_names: HashSet<String> = tools
+        .iter()
+        .filter_map(|tool| {
+            tool.pointer("/toolSpecification/name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let mut missing = Vec::new();
+
+    for msg in history {
+        let Some(tool_uses) = msg
+            .pointer("/assistantResponseMessage/toolUses")
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for tool_use in tool_uses {
+            let Some(name) = tool_use.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if existing_names.insert(name.to_string()) {
+                missing.push(json!({
+                    "toolSpecification": {
+                        "name": name,
+                        "description": name,
+                        "inputSchema": {
+                            "json": {
+                                "type": "object",
+                                "properties": {},
+                                "required": [],
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }));
+            }
+        }
+    }
+
+    tools.extend(missing);
 }
 
 fn parse_user_content(content: Option<&Value>) -> (String, Vec<Value>, Vec<Value>) {
@@ -383,8 +870,12 @@ fn parse_user_content(content: Option<&Value>) -> (String, Vec<Value>, Vec<Value
     (text, images, tool_results)
 }
 
-fn parse_assistant_content(content: Option<&Value>) -> (String, Vec<Value>) {
+fn parse_assistant_content(
+    content: Option<&Value>,
+    tool_name_map: &mut HashMap<String, String>,
+) -> (String, Vec<Value>) {
     let mut text = String::new();
+    let mut thinking = String::new();
     let mut tool_uses = Vec::new();
     match content {
         Some(Value::String(s)) => text.push_str(s),
@@ -398,20 +889,35 @@ fn parse_assistant_content(content: Option<&Value>) -> (String, Vec<Value>) {
                         text.push_str(item.get("text").and_then(|v| v.as_str()).unwrap_or(""));
                     }
                     Some("tool_use") => {
+                        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let mapped_name = map_tool_name(name, tool_name_map);
                         tool_uses.push(json!({
                             "toolUseId": item.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                            "name": item.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                            "name": mapped_name,
                             "input": item.get("input").cloned().unwrap_or_else(|| json!({}))
                         }));
                     }
-                    Some("thinking") => {}
+                    Some("thinking") => {
+                        if let Some(value) = item.get("thinking").and_then(|v| v.as_str()) {
+                            thinking.push_str(value);
+                        }
+                    }
                     _ => {}
                 }
             }
         }
         _ => {}
     }
-    (text, tool_uses)
+    let content = if !thinking.is_empty() && !text.is_empty() {
+        format!("<thinking>{thinking}</thinking>\n\n{text}")
+    } else if !thinking.is_empty() {
+        format!("<thinking>{thinking}</thinking>")
+    } else if text.is_empty() && !tool_uses.is_empty() {
+        " ".to_string()
+    } else {
+        text
+    };
+    (content, tool_uses)
 }
 
 fn flatten_content_to_text(content: Option<&Value>) -> String {
@@ -525,6 +1031,7 @@ fn frame_message_type(frame: &KiroFrame) -> Option<&str> {
 struct SseBuilder {
     message_id: String,
     model: String,
+    tool_name_map: HashMap<String, String>,
     text_started: bool,
     text_stopped: bool,
     next_index: i32,
@@ -533,10 +1040,11 @@ struct SseBuilder {
 }
 
 impl SseBuilder {
-    fn new(model: String) -> Self {
+    fn new(model: String, tool_name_map: HashMap<String, String>) -> Self {
         Self {
             message_id: format!("msg_{}", uuid::Uuid::new_v4().to_string().replace('-', "")),
             model,
+            tool_name_map,
             ..Default::default()
         }
     }
@@ -590,6 +1098,7 @@ impl SseBuilder {
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("tool");
+        let name = original_tool_name(name, &self.tool_name_map);
         let input = payload.get("input").and_then(|v| v.as_str()).unwrap_or("");
         let stop = payload
             .get("stop")
@@ -659,10 +1168,11 @@ impl SseBuilder {
 fn kiro_event_stream_to_anthropic_sse(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     model: String,
+    tool_name_map: HashMap<String, String>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let mut buffer = BytesMut::new();
-        let mut builder = SseBuilder::new(model);
+        let mut builder = SseBuilder::new(model, tool_name_map);
         yield Ok(builder.initial());
         tokio::pin!(stream);
         while let Some(chunk) = stream.next().await {
@@ -704,7 +1214,11 @@ fn process_frame_to_sse(builder: &mut SseBuilder, frame: &KiroFrame) -> Vec<Byte
     }
 }
 
-fn kiro_event_bytes_to_anthropic_json(bytes: &[u8], model: &str) -> Value {
+fn kiro_event_bytes_to_anthropic_json(
+    bytes: &[u8],
+    model: &str,
+    tool_name_map: &HashMap<String, String>,
+) -> Value {
     let mut buffer = BytesMut::from(bytes);
     let mut text = String::new();
     let mut tools: HashMap<String, (String, String)> = HashMap::new();
@@ -728,6 +1242,7 @@ fn kiro_event_bytes_to_anthropic_json(bytes: &[u8], model: &str) -> Value {
                     .and_then(|v| v.as_str())
                     .unwrap_or("tool")
                     .to_string();
+                let name = original_tool_name(&name, tool_name_map);
                 let input = payload
                     .get("input")
                     .and_then(|v| v.as_str())
@@ -779,7 +1294,178 @@ fn estimate_tokens(text: &str) -> i32 {
     ((text.chars().count() as f64) / 4.0).ceil() as i32
 }
 
+fn is_quota_exhausted(body: &str) -> bool {
+    const REASONS: &[&str] = &["MONTHLY_REQUEST_COUNT", "OVERAGE_REQUEST_LIMIT_EXCEEDED"];
+    if !REASONS.iter().any(|reason| body.contains(reason)) {
+        return false;
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        let top = value.get("reason").and_then(Value::as_str);
+        let nested = value.pointer("/error/reason").and_then(Value::as_str);
+        return [top, nested]
+            .into_iter()
+            .flatten()
+            .any(|reason| REASONS.contains(&reason));
+    }
+    true
+}
+
+fn is_account_throttled(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        && body.contains("suspicious activity")
+        && body.contains("temporary limits")
+}
+
 #[allow(dead_code)]
 fn default_profile_arn_for_builder_id() -> &'static str {
     BUILDER_ID_PROFILE_ARN
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_account() -> KiroAccountData {
+        KiroAccountData {
+            account_id: "kiro_test".to_string(),
+            email: None,
+            refresh_token: "refresh".to_string(),
+            profile_arn: None,
+            auth_region: "us-east-1".to_string(),
+            api_region: "us-east-1".to_string(),
+            machine_id: None,
+            client_id: Some("client".to_string()),
+            client_secret: Some("secret".to_string()),
+            client_secret_expires_at: None,
+            start_url: None,
+            auth_method: Some("builder-id".to_string()),
+            authenticated_at: 1,
+        }
+    }
+
+    #[test]
+    fn map_model_supports_4_8_aliases() {
+        assert_eq!(map_model("claude-sonnet-4-8"), Some("claude-sonnet-4.8"));
+        assert_eq!(map_model("claude-opus-4.8"), Some("claude-opus-4.8"));
+        assert_eq!(map_model("claude-haiku-4-5"), Some("claude-haiku-4.5"));
+    }
+
+    #[test]
+    fn conversion_drops_trailing_prefill_and_normalizes_tool_schema() {
+        let long_tool_name = format!("tool_{}", "x".repeat(80));
+        let body = json!({
+            "model": "claude-sonnet-4-8",
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "answer"},
+                {"role": "user", "content": "second"},
+                {"role": "assistant", "content": "prefill"}
+            ],
+            "tools": [{
+                "name": long_tool_name,
+                "description": "",
+                "input_schema": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "properties": {
+                        "count": {
+                            "type": "number",
+                            "exclusiveMinimum": 1,
+                            "maximum": 9999999999999.0
+                        }
+                    }
+                }
+            }]
+        });
+
+        let request = anthropic_to_kiro_request(&body, &test_account()).unwrap();
+        let state = request.body.get("conversationState").unwrap();
+        assert_eq!(
+            state.pointer("/currentMessage/userInputMessage/content"),
+            Some(&json!("second"))
+        );
+        assert_eq!(
+            state.pointer("/currentMessage/userInputMessage/modelId"),
+            Some(&json!("claude-sonnet-4.8"))
+        );
+
+        let tool = state
+            .pointer("/currentMessage/userInputMessage/userInputMessageContext/tools/0/toolSpecification")
+            .unwrap();
+        let mapped_name = tool.get("name").and_then(Value::as_str).unwrap();
+        assert!(mapped_name.chars().count() <= TOOL_NAME_MAX_LEN);
+        assert_eq!(
+            request.tool_name_map.get(mapped_name),
+            Some(&long_tool_name)
+        );
+        assert_eq!(tool.get("description"), Some(&json!(long_tool_name)));
+        let property = tool.pointer("/inputSchema/json/properties/count").unwrap();
+        assert!(property.get("exclusiveMinimum").is_none());
+        assert!(property.get("maximum").is_none());
+    }
+
+    #[test]
+    fn conversion_removes_orphaned_history_tool_use() {
+        let body = json!({
+            "model": "claude-sonnet-4-8",
+            "messages": [
+                {"role": "user", "content": "run tool"},
+                {"role": "assistant", "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "Read",
+                    "input": {"file_path": "Cargo.toml"}
+                }]},
+                {"role": "user", "content": "continue"}
+            ],
+            "tools": [{
+                "name": "Read",
+                "description": "read file",
+                "input_schema": {"type": "object", "properties": {}}
+            }]
+        });
+
+        let request = anthropic_to_kiro_request(&body, &test_account()).unwrap();
+        let history = request
+            .body
+            .pointer("/conversationState/history")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert!(history
+            .iter()
+            .all(|msg| msg.pointer("/assistantResponseMessage/toolUses").is_none()));
+    }
+
+    #[test]
+    fn sse_builder_restores_original_tool_name() {
+        let mut tool_name_map = HashMap::new();
+        tool_name_map.insert(
+            "short_name".to_string(),
+            "very_long_original_name".to_string(),
+        );
+        let mut builder = SseBuilder::new("claude-sonnet-4-8".to_string(), tool_name_map);
+        let bytes = builder
+            .tool_delta(&json!({
+                "toolUseId": "toolu_1",
+                "name": "short_name",
+                "input": "{\"x\":",
+                "stop": false
+            }))
+            .into_iter()
+            .map(|b| String::from_utf8(b.to_vec()).unwrap())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(bytes.contains("very_long_original_name"));
+    }
+
+    #[test]
+    fn detects_kiro_quota_and_account_throttle_errors() {
+        assert!(is_quota_exhausted(
+            r#"{"error":{"reason":"OVERAGE_REQUEST_LIMIT_EXCEEDED"}}"#
+        ));
+        assert!(is_account_throttled(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "Due to suspicious activity, we are imposing temporary limits"
+        ));
+    }
 }

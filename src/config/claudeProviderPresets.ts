@@ -136,12 +136,12 @@ export const providerPresets: ProviderPreset[] = [
     settingsConfig: {
       env: {
         ANTHROPIC_BASE_URL: "https://q.us-east-1.amazonaws.com",
-        ANTHROPIC_MODEL: "claude-sonnet-4-5",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-sonnet-4-5",
-        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "claude-sonnet-4-6",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5",
-        ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "claude-opus-4-7",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-sonnet-4-5",
+        ANTHROPIC_MODEL: "claude-sonnet-4-8",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5",
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "claude-sonnet-4-8",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-8",
+        ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "claude-opus-4-8",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-8",
       },
     },
     isOfficial: true,

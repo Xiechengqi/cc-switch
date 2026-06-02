@@ -9,7 +9,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -452,6 +452,7 @@ pub struct KiroOAuthManager {
     accounts: Arc<RwLock<HashMap<String, KiroAccountData>>>,
     default_account_id: Arc<RwLock<Option<String>>>,
     access_tokens: Arc<RwLock<HashMap<String, CachedAccessToken>>>,
+    temporarily_unavailable_until: Arc<RwLock<HashMap<String, i64>>>,
     refresh_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
     pending_device_flows: Arc<RwLock<HashMap<String, PendingDeviceFlow>>>,
     http_client: Client,
@@ -465,6 +466,7 @@ impl KiroOAuthManager {
             accounts: Arc::new(RwLock::new(HashMap::new())),
             default_account_id: Arc::new(RwLock::new(None)),
             access_tokens: Arc::new(RwLock::new(HashMap::new())),
+            temporarily_unavailable_until: Arc::new(RwLock::new(HashMap::new())),
             refresh_locks: Arc::new(RwLock::new(HashMap::new())),
             pending_device_flows: Arc::new(RwLock::new(HashMap::new())),
             http_client: Client::new(),
@@ -951,6 +953,54 @@ impl KiroOAuthManager {
         self.get_account(&id).await
     }
 
+    pub async fn get_available_account_excluding(
+        &self,
+        excluded_account_ids: &HashSet<String>,
+    ) -> Option<KiroAccountData> {
+        self.prune_temporarily_unavailable_accounts().await;
+        let default_account_id = self.resolve_default_account_id().await;
+        let unavailable = self.temporarily_unavailable_until.read().await.clone();
+        let now = chrono::Utc::now().timestamp();
+        let accounts = self.accounts.read().await;
+        let mut candidates: Vec<_> = accounts
+            .values()
+            .filter(|account| account.is_builder_id())
+            .filter(|account| !excluded_account_ids.contains(&account.account_id))
+            .filter(|account| {
+                unavailable
+                    .get(&account.account_id)
+                    .map(|until| *until <= now)
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        candidates.sort_by(|a, b| {
+            let a_default = default_account_id.as_deref() == Some(a.account_id.as_str());
+            let b_default = default_account_id.as_deref() == Some(b.account_id.as_str());
+            b_default
+                .cmp(&a_default)
+                .then_with(|| a.email.cmp(&b.email))
+                .then_with(|| a.account_id.cmp(&b.account_id))
+        });
+        candidates.into_iter().next()
+    }
+
+    pub async fn mark_account_temporarily_unavailable(&self, account_id: &str, cooldown_secs: i64) {
+        let until = chrono::Utc::now().timestamp() + cooldown_secs.max(1);
+        self.temporarily_unavailable_until
+            .write()
+            .await
+            .insert(account_id.to_string(), until);
+    }
+
+    async fn prune_temporarily_unavailable_accounts(&self) {
+        let now = chrono::Utc::now().timestamp();
+        self.temporarily_unavailable_until
+            .write()
+            .await
+            .retain(|_, until| *until > now);
+    }
+
     pub async fn invalidate_cached_token(&self, account_id: &str) {
         self.access_tokens.write().await.remove(account_id);
     }
@@ -1093,6 +1143,10 @@ impl KiroOAuthManager {
             }
         }
         self.access_tokens.write().await.remove(account_id);
+        self.temporarily_unavailable_until
+            .write()
+            .await
+            .remove(account_id);
         {
             let accounts = self.accounts.read().await;
             let mut default = self.default_account_id.write().await;
@@ -1121,6 +1175,7 @@ impl KiroOAuthManager {
     pub async fn logout(&self) -> Result<(), KiroOAuthError> {
         self.accounts.write().await.clear();
         self.access_tokens.write().await.clear();
+        self.temporarily_unavailable_until.write().await.clear();
         self.pending_device_flows.write().await.clear();
         *self.default_account_id.write().await = None;
         self.save_to_disk().await

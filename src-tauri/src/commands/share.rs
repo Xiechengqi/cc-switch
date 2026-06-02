@@ -16,10 +16,10 @@ use tokio::time::{timeout, Duration};
 #[serde(rename_all = "camelCase")]
 pub struct CreateShareParams {
     pub owner_email: String,
-    pub app_type: String,
-    /// 绑定的 provider id（必填）。share 请求只走该 provider，
-    /// 不参与 failover，且不会被其他 share 同时绑定。
-    pub provider_id: String,
+    /// P8 多 app share：创建时一次性指定 0..3 个 binding（键为 app_type）。
+    /// 全空也允许，用户可后续在 UI 里逐个挂 provider。
+    #[serde(default)]
+    pub bindings: std::collections::HashMap<String, String>,
     pub description: Option<String>,
     pub for_sale: String,
     pub token_limit: i64,
@@ -152,8 +152,7 @@ pub async fn create_share(
             &state.db,
             PrepareShareParams {
                 owner_email: owner_email.clone(),
-                app_type: params.app_type.clone(),
-                provider_id: params.provider_id.clone(),
+                bindings: params.bindings.clone(),
                 description: params.description.clone(),
                 for_sale: params.for_sale.clone(),
                 token_limit: params.token_limit,
@@ -375,22 +374,30 @@ pub fn transfer_share_owner(
 #[serde(rename_all = "camelCase")]
 pub struct UpdateShareProviderBindingParams {
     pub share_id: String,
-    pub provider_id: String,
+    /// 目标 slot 的 app_type（claude / codex / gemini）。
+    pub app_type: String,
+    /// 新 provider id。`None`（或省略）表示清空该 slot（解绑）。
+    #[serde(default)]
+    pub provider_id: Option<String>,
 }
 
-/// 改绑 share 到一个新的 provider。
+/// P8 多 app share：改绑 / 新增 / 清空 share 在某个 app_type slot 上的 provider 绑定。
 ///
-/// 多 share 模式下，share 与 provider 1:1 绑定。改绑要求 share 当前为 paused：
-/// 这样请求路径上不会取到不一致的中间态（schema 的 UNIQUE 索引和 ShareService
-/// 内的状态/app_type 校验是补充防御）。改绑成功后 schedule_sync_share 会把
-/// 新绑定推送到 router。
+/// 要求 share 当前 status == paused，避免请求路径取到不一致的中间态（schema 的
+/// UNIQUE(provider_id) 索引和 ShareService 内的乐观锁 CAS 是补充防御）。成功后
+/// schedule_sync_share 会把新 bindings 推送到 router。
 #[tauri::command]
 pub async fn update_share_provider_binding(
     state: State<'_, AppState>,
     params: UpdateShareProviderBindingParams,
 ) -> Result<ShareRecord, String> {
-    ShareService::update_provider_binding(&state.db, &params.share_id, &params.provider_id)
-        .map_err(|e: AppError| e.to_string())
+    ShareService::update_provider_binding(
+        &state.db,
+        &params.share_id,
+        &params.app_type,
+        params.provider_id.as_deref(),
+    )
+    .map_err(|e: AppError| e.to_string())
 }
 
 /// 轮换 share_token。返回带新 token 的 ShareRecord。
@@ -451,17 +458,23 @@ pub async fn import_shares(
             skipped_existing.push(share.id);
             continue;
         }
-        // provider 必须在本机存在；不存在直接 skip（用户应先导入 provider）。
-        if let Some(provider_id) = share.provider_id.as_deref() {
+        // P8 多 app share：share 携带 0..3 个 binding；每个 binding 的 provider
+        // 必须在本机存在且 app_type 匹配。任一缺失就 skip 这条 share。
+        let mut all_providers_present = true;
+        for (app_type, provider_id) in &share.bindings {
             let exists = state
                 .db
-                .get_provider_by_id(provider_id, &share.app_type)
+                .get_provider_by_id(provider_id, app_type)
                 .map_err(|e| e.to_string())?
                 .is_some();
             if !exists {
-                skipped_provider_missing.push(share.id);
-                continue;
+                all_providers_present = false;
+                break;
             }
+        }
+        if !all_providers_present {
+            skipped_provider_missing.push(share.id);
+            continue;
         }
         state
             .db

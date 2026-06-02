@@ -58,8 +58,7 @@ describe("share query hooks", () => {
       sharedWithEmails: [],
       forSale: "No",
       shareToken: "token",
-      appType: "proxy",
-      providerId: null,
+      bindings: {},
       apiKey: "",
       settingsConfig: null,
       tokenLimit: 1000,
@@ -82,8 +81,7 @@ describe("share query hooks", () => {
     const { result } = renderHook(() => useCreateShareMutation(), { wrapper });
     await result.current.mutateAsync({
       ownerEmail: "owner@example.com",
-      appType: "claude",
-      providerId: "claude-provider-1",
+      bindings: { claude: "claude-provider-1" },
       forSale: "No",
       tokenLimit: 1000,
       parallelLimit: 3,

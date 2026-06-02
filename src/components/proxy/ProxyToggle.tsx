@@ -83,20 +83,30 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
   const appLabel = getAppLabel(activeApp);
   const providersQuery = useProvidersQuery(activeApp);
 
-  // ProxyToggle 一次只面向 activeApp，create dialog 的 provider 列表
-  // 等价于"该 app 当前的全部 provider"。这里不查 shares 列表，因为
-  // ProxyToggle 路径下用户只能创建当前 share；UNIQUE 冲突由后端兜底。
-  const dialogProviderOptions = useMemo(() => {
+  // P8 多 app share：ProxyToggle 进入 Create 对话框时仍把 activeApp 当成"默认聚焦的 slot"。
+  // 这里只有 activeApp 对应的 providers 数据，其它 slot 给空数组——CreateShareDialog 会
+  // 显示三个 slot，用户在 ProxyToggle 流程里通常只挂当前 app，其它 slot 留空。
+  const providersByApp = useMemo(() => {
     const data = providersQuery.data;
-    if (!data) return [];
-    return Object.values(data.providers ?? {})
-      .filter((provider): provider is Provider => Boolean(provider))
-      .map((provider) => ({
-        id: provider.id,
-        name: provider.name,
-        disabled: false,
-      }));
-  }, [providersQuery.data]);
+    const options =
+      data
+        ? Object.values(data.providers ?? {})
+            .filter((provider): provider is Provider => Boolean(provider))
+            .map((provider) => ({
+              id: provider.id,
+              name: provider.name,
+              disabled: false,
+            }))
+        : [];
+    const result: Record<"claude" | "codex" | "gemini", typeof options> = {
+      claude: [],
+      codex: [],
+      gemini: [],
+    };
+    const app = (activeApp as "claude" | "codex" | "gemini") ?? "claude";
+    result[app] = options;
+    return result;
+  }, [activeApp, providersQuery.data]);
   const pending =
     stage !== "idle" ||
     createShareMutation.isPending ||
@@ -343,7 +353,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         }}
         ownerEmail={null}
         defaultApp={activeApp}
-        providers={dialogProviderOptions}
+        providersByApp={providersByApp}
         isSubmitting={
           createShareMutation.isPending || stage === "creating-share"
         }
@@ -398,12 +408,16 @@ function isShareRunning(share: ShareRecord) {
 }
 
 function selectBestShare(shares: ShareRecord[], activeApp: AppId) {
+  // P8 多 app share：share 现在可以同时支持多个 app；
+  // "当前 app 的 share" = share 在该 app 上有 binding。
+  const hasBinding = (share: ShareRecord) =>
+    Boolean(
+      share.bindings?.[activeApp as "claude" | "codex" | "gemini"],
+    );
   return (
-    shares.find(
-      (share) => share.appType === activeApp && isShareRunning(share),
-    ) ??
+    shares.find((share) => hasBinding(share) && isShareRunning(share)) ??
     shares.find((share) => isShareRunning(share)) ??
-    shares.find((share) => share.appType === activeApp) ??
+    shares.find(hasBinding) ??
     shares[0] ??
     null
   );

@@ -262,22 +262,21 @@ export function SharePage({
 
   // 构造 CreateShareDialog 用的 provider 选项：按 defaultApp 过滤，
   // 把"已被其他 active share 绑定"的 provider 标灰禁选。share ↔ provider
+  // P8 多 app share：dialogProviderOptions 现在只用于 CreateShareDialog 默认聚焦的 slot
+  // 兼容路径，真正的"哪些 provider 可选"由下面 providersByApp 全量提供。这里保留是为了
+  // 给老的、按"当前 app 单 slot"语义渲染的入口（例如 ProxyToggle）继续提供候选。
   // 严格 1:1，需要前端在选择阶段提前阻断冲突。
   const dialogProviderOptions = useMemo(() => {
     if (!defaultApp) return [];
     const queryData =
       providerQueries[defaultApp as "claude" | "codex" | "gemini"];
     if (!queryData) return [];
-    const takenProviderIds = new Set(
-      shares
-        .filter(
-          (share) =>
-            share.appType === defaultApp &&
-            share.status !== "deleted" &&
-            share.providerId,
-        )
-        .map((share) => share.providerId as string),
-    );
+    const takenProviderIds = new Set<string>();
+    shares.forEach((share) => {
+      if (share.status === "deleted") return;
+      const pid = share.bindings?.[defaultApp as keyof typeof share.bindings];
+      if (pid) takenProviderIds.add(pid);
+    });
     return Object.values(queryData.providers ?? {})
       .filter((provider): provider is Provider => Boolean(provider))
       .map((provider) => ({
@@ -303,9 +302,9 @@ export function SharePage({
     return map;
   }, [providerQueries]);
 
-  // EditShareDialog 用的"每 app 可绑定 provider 列表"。形态与 dialogProviderOptions
-  // 一致，但跨全部三个 app 维度，让 ShareList 按每条 share 的 appType 取对应列表。
-  // share 自己当前绑定的 provider 在 ShareList 那一层会被取消 disabled。
+  // P8 多 app share：每个 app slot 的可绑定 provider 列表。CreateShareDialog 和
+  // EditShareDialog 都按 `providersByApp[app]` 取候选，ShareList 那一层再为每条 share
+  // 已绑定的 provider 取消 disabled（让"保持原 provider"始终可选）。
   const providersByApp = useMemo(() => {
     const result: Partial<
       Record<"claude" | "codex" | "gemini", typeof dialogProviderOptions>
@@ -316,16 +315,12 @@ export function SharePage({
         result[app] = [];
         return;
       }
-      const takenProviderIds = new Set(
-        shares
-          .filter(
-            (share) =>
-              share.appType === app &&
-              share.status !== "deleted" &&
-              share.providerId,
-          )
-          .map((share) => share.providerId as string),
-      );
+      const takenProviderIds = new Set<string>();
+      shares.forEach((share) => {
+        if (share.status === "deleted") return;
+        const pid = share.bindings?.[app];
+        if (pid) takenProviderIds.add(pid);
+      });
       result[app] = Object.values(data.providers ?? {})
         .filter((provider): provider is Provider => Boolean(provider))
         .map((provider) => ({
@@ -572,12 +567,13 @@ export function SharePage({
                   }),
             )
           }
-          onUpdateProviderBinding={(share, providerId) =>
+          onUpdateProviderBinding={(share, appType, providerId) =>
             runShareAction(share, () =>
               shareScoped
                 ? Promise.resolve()
                 : updateProviderBindingMutation.mutateAsync({
                     shareId: share.id,
+                    appType,
                     providerId,
                   }),
             )
@@ -589,7 +585,7 @@ export function SharePage({
                 : rotateTokenMutation.mutateAsync({ shareId: share.id }),
             )
           }
-          onRebindAtomic={(share, providerId) =>
+          onRebindAtomic={(share, appType, providerId) =>
             runShareAction(share, async () => {
               if (shareScoped) return;
               // A-3：active share 上一键改绑 = disable tunnel → update binding → enable tunnel。
@@ -598,6 +594,7 @@ export function SharePage({
               await disableMutation.mutateAsync(share.id);
               await updateProviderBindingMutation.mutateAsync({
                 shareId: share.id,
+                appType,
                 providerId,
               });
               await enableMutation.mutateAsync(share.id);
@@ -635,7 +632,7 @@ export function SharePage({
           tunnelConfig={tunnelConfig}
           tunnelConfigSaving={configureTunnelMutation.isPending}
           isSubmitting={createMutation.isPending || enableMutation.isPending}
-          providers={dialogProviderOptions}
+          providersByApp={providersByApp as Record<"claude" | "codex" | "gemini", typeof dialogProviderOptions>}
           onSaveTunnelConfig={(config) =>
             configureTunnelMutation.mutateAsync(config)
           }

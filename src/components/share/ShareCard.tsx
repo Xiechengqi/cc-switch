@@ -7,6 +7,11 @@ import type {
   TunnelConfig,
   TunnelInfo,
 } from "@/lib/api";
+import {
+  sharePrimaryApp,
+  sharePrimaryProviderId,
+  shareSupportedApps,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -43,10 +48,10 @@ export interface ShareProviderSalePricing {
 interface ShareCardProps {
   share: ShareRecord;
   /**
-   * 该 share 绑定的 provider 显示名，由 ShareList 从 providerNameByKey 解析后传入。
-   * 找不到时 undefined，Card 上展示 share.providerId 作为后备。
+   * P8：`${appType}:${providerId}` → provider 显示名，跨所有 app 维度。ShareCard
+   * 在卡片摘要里渲染每个已绑 slot 的 provider 名；找不到时回退显示 provider id。
    */
-  boundProviderName?: string;
+  providerNameByKey?: Record<string, string>;
   tunnelStatus?: TunnelInfo | null;
   tunnelConfig: TunnelConfig;
   tunnelConfigured: boolean;
@@ -112,15 +117,17 @@ interface ShareCardProps {
    * 当前 app 下可绑定的 provider 列表（同 CreateShareDialog 的形态）。
    * 由 ShareList 透传，传给 EditShareDialog 的 Provider Select。
    */
-  providersForEdit?: ProviderOption[];
+  providersByAppForEdit?: Record<"claude" | "codex" | "gemini", ProviderOption[]>;
   onUpdateProviderBinding: (
     share: ShareRecord,
-    providerId: string,
+    appType: "claude" | "codex" | "gemini",
+    providerId: string | null,
   ) => Promise<void> | void;
   onRotateToken?: (share: ShareRecord) => Promise<void> | void;
   onRebindAtomic?: (
     share: ShareRecord,
-    newProviderId: string,
+    appType: "claude" | "codex" | "gemini",
+    newProviderId: string | null,
   ) => Promise<void> | void;
 }
 
@@ -129,7 +136,7 @@ const EMPTY_PROVIDER_SALE_PRICING: ShareProviderSalePricing[] = [];
 
 export function ShareCard({
   share,
-  boundProviderName,
+  providerNameByKey,
   tunnelStatus,
   tunnelConfig,
   tunnelConfigured,
@@ -157,7 +164,7 @@ export function ShareCard({
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
-  providersForEdit,
+  providersByAppForEdit,
   onUpdateProviderBinding,
   onRotateToken,
   onRebindAtomic,
@@ -165,10 +172,15 @@ export function ShareCard({
   const { t } = useTranslation();
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const ratio = getShareUsageRatio(share);
-  // C-2：拉绑定 provider 的健康状态，决定胸标旁边的色点。
+  // P8：多 app share。胸标里渲染每个已绑定 slot 的 chip + 健康色点。
+  // primaryApp/primaryProvider 用于摘要标题、健康轮询等仍按"单值"逻辑的入口。
+  const primaryAppType = sharePrimaryApp(share);
+  const primaryProviderIdValue = sharePrimaryProviderId(share);
+  // C-2：拉主 binding 的健康状态作为卡片首要状态指示。其它 slot 的健康由
+  // EditDialog 内展开时再单独拉。
   const { data: boundProviderHealth } = useProviderHealth(
-    share.providerId ?? "",
-    share.appType,
+    primaryProviderIdValue ?? "",
+    primaryAppType ?? "claude",
   );
   const isBusy = pendingAction === share.id;
   const tunnelDisplay = resolveShareTunnelInfo(share, tunnelConfig);
@@ -232,38 +244,45 @@ export function ShareCard({
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-lg font-semibold">{share.name}</h3>
               <ShareDisplayStatusBadge status={displayStatus} />
-              {share.providerId ? (
-                <Badge
-                  variant="outline"
-                  className="rounded-full px-2.5 py-1 text-[11px] font-medium border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
-                  title={t("share.boundProviderHint", {
-                    defaultValue:
-                      "本 share 请求强制走该 provider，不参与故障转移",
-                  })}
-                >
-                  {/* C-2：绑定 provider 健康色点 */}
-                  <span
-                    className={cn(
-                      "mr-1 inline-block h-2 w-2 rounded-full",
-                      boundProviderHealth
-                        ? boundProviderHealth.is_healthy
-                          ? "bg-emerald-500"
-                          : "bg-red-500"
-                        : "bg-muted-foreground/40",
-                    )}
-                    aria-label={
-                      boundProviderHealth?.is_healthy
-                        ? "provider-healthy"
-                        : "provider-unhealthy-or-unknown"
-                    }
-                  />
-                  {t("share.boundProviderLabel", {
-                    defaultValue: "Provider",
-                  })}
-                  {": "}
-                  {boundProviderName ?? share.providerId}
-                </Badge>
-              ) : null}
+              {/* P8：每个已绑定 slot 渲染一个 Provider chip。主 slot 显示健康色点（C-2）；
+                  其它 slot 只显示绑定名（健康在 EditDialog 内查看）。 */}
+              {shareSupportedApps(share).map((app) => {
+                const pid = share.bindings[app];
+                if (!pid) return null;
+                const name = providerNameByKey?.[`${app}:${pid}`] ?? pid;
+                const isPrimary = app === primaryAppType;
+                return (
+                  <Badge
+                    key={app}
+                    variant="outline"
+                    className="rounded-full px-2.5 py-1 text-[11px] font-medium border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                    title={t("share.boundProviderHint", {
+                      defaultValue:
+                        "本 share 在该 app 上的请求强制走此 provider，不参与故障转移",
+                    })}
+                  >
+                    {isPrimary ? (
+                      <span
+                        className={cn(
+                          "mr-1 inline-block h-2 w-2 rounded-full",
+                          boundProviderHealth
+                            ? boundProviderHealth.is_healthy
+                              ? "bg-emerald-500"
+                              : "bg-red-500"
+                            : "bg-muted-foreground/40",
+                        )}
+                        aria-label={
+                          boundProviderHealth?.is_healthy
+                            ? "provider-healthy"
+                            : "provider-unhealthy-or-unknown"
+                        }
+                      />
+                    ) : null}
+                    <span className="uppercase mr-1">{app}</span>
+                    {name}
+                  </Badge>
+                );
+              })}
               {(["claude", "codex", "gemini"] as const).map((app) => {
                 const active = takeoverStatus?.[app] ?? false;
                 return (
@@ -409,12 +428,12 @@ export function ShareCard({
               }
             />
           </div>
-          {/* D-3 + D-4：token 默认 mask，点眼睛切换显示；右侧"复制命令"一键拿到接入字符串 */}
+          {/* D-3 + D-4：token 默认 mask，点眼睛切换显示；右侧"复制命令"按主 app 生成接入示例。 */}
           <div className="mt-3">
             <TokenSecretLine
               token={share.shareToken}
               baseUrl={tunnelDisplay.tunnelUrl}
-              appType={share.appType}
+              appType={primaryAppType ?? "claude"}
               onCopyToken={() =>
                 void handleCopy(share.shareToken, "share.toast.copyToken")
               }
@@ -526,7 +545,7 @@ export function ShareCard({
         onUpdateOwnerEmail={onUpdateOwnerEmail}
         onTransferOwner={onTransferOwner}
         onUpdateAcl={onUpdateAcl}
-        providers={providersForEdit ?? []}
+        providersByApp={providersByAppForEdit ?? { claude: [], codex: [], gemini: [] }}
         onUpdateProviderBinding={onUpdateProviderBinding}
         onRotateToken={onRotateToken}
         onRebindAtomic={onRebindAtomic}

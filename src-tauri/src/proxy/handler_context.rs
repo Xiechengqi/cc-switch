@@ -380,48 +380,29 @@ fn resolve_share_outcome(
         ShareGuardResult::NotShareRequest => Ok(ShareOutcome::NotShare),
         ShareGuardResult::Rejected(_code, msg) => Err(ProxyError::AuthError(msg)),
         ShareGuardResult::Valid(share) => {
-            // schema 层 provider_id 已是 NOT NULL，旧路径或迁移异常可能让运行时
-            // 看到 None；按 AuthError 拒绝并发 share-needs-rebind 事件，让 UI 提
-            // 示用户补绑。
-            let provider_id = match share.provider_id.clone() {
-                Some(id) if !id.trim().is_empty() => id,
+            // P8 多 app share：按 request app_type 查 share 对应的 slot。
+            // slot 不存在 → share 在本 app 上未绑定 → 401 + share-needs-rebind。
+            let provider_id = match share.bindings.get(app_type_str) {
+                Some(pid) if !pid.trim().is_empty() => pid.clone(),
                 _ => {
                     log::error!(
-                        "[{tag}] share {} 缺 provider_id（migration missed?），按 AuthError 拒绝",
+                        "[{tag}] share {} 没有为 app={app_type_str} 绑定 provider，拒绝",
                         share.id
                     );
                     crate::share_events::notify_share_needs_rebind(
                         share.id.clone(),
                         app_type_str.to_string(),
                         crate::share_events::ShareRebindReason::ProviderMissing,
-                        Some("share.provider_id is empty".to_string()),
+                        Some(format!(
+                            "share has no binding for app={app_type_str} (supported={:?})",
+                            share.supported_apps()
+                        )),
                     );
-                    return Err(ProxyError::AuthError(
-                        "share is missing provider binding".to_string(),
-                    ));
+                    return Err(ProxyError::AuthError(format!(
+                        "share has no provider bound for app={app_type_str}"
+                    )));
                 }
             };
-
-            if share.app_type != app_type_str {
-                log::error!(
-                    "[{tag}] share {} app_type={} 与请求 app_type={app_type_str} 不一致",
-                    share.id,
-                    share.app_type
-                );
-                crate::share_events::notify_share_needs_rebind(
-                    share.id.clone(),
-                    app_type_str.to_string(),
-                    crate::share_events::ShareRebindReason::AppTypeMismatch,
-                    Some(format!(
-                        "share.app_type={} request.app_type={app_type_str}",
-                        share.app_type
-                    )),
-                );
-                return Err(ProxyError::AuthError(format!(
-                    "share app_type={} mismatches request app={app_type_str}",
-                    share.app_type
-                )));
-            }
 
             Ok(ShareOutcome::Share {
                 id: share.id,

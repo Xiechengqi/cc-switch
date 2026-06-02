@@ -21,6 +21,7 @@ export type { ProviderSwitchEvent } from "./providers";
 export type { Prompt } from "./prompts";
 export type {
   ShareRecord,
+  ShareBindings,
   PublicMarket,
   CreateShareParams,
   UpdateShareAclParams,
@@ -28,10 +29,18 @@ export type {
   UpdateShareParallelLimitParams,
   UpdateShareSubdomainParams,
   UpdateShareExpirationParams,
+  UpdateShareProviderBindingParams,
+  ShareBindingHistoryEntry,
   TunnelInfo,
   ShareTunnelStatus,
   TunnelConfig,
   ConnectInfo,
+} from "./share";
+export {
+  SHARE_APP_TYPES,
+  shareSupportedApps,
+  sharePrimaryApp,
+  sharePrimaryProviderId,
 } from "./share";
 export type {
   EmailAuthStatus,

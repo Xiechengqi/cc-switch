@@ -16,8 +16,14 @@ pub struct ShareRecord {
     pub description: Option<String>,
     pub for_sale: String,
     pub share_token: String,
-    pub app_type: String,
-    pub provider_id: Option<String>,
+    /// P8: 多 app share。一个 share 可同时给 claude / codex / gemini 分别绑定 0/1 个
+    /// provider。键为 app_type，值为该 slot 当前绑定的 provider id。slot 为空 = 该
+    /// app 不可用，请求路径会拒绝并 emit share-needs-rebind。
+    ///
+    /// 数据源：`share_provider_bindings` 侧表。`shares` 表本身不再持有 app_type /
+    /// provider_id 字段。DAO 在每次 SELECT 后用 `load_share_bindings` 填充本字段。
+    #[serde(default)]
+    pub bindings: HashMap<String, String>,
     /// 历史遗留字段，保留为空字符串。请求路径不读取此字段——上游 API key 始终
     /// 在请求时从绑定的 provider 实时读取。schema NOT NULL 约束要求非空，所以
     /// 用 `""` 占位。可视为已废弃，未来 schema 重整可移除。
@@ -36,27 +42,59 @@ pub struct ShareRecord {
     pub last_used_at: Option<String>,
 }
 
+impl ShareRecord {
+    /// 该 share 支持的 app_type 列表（按字母序，方便日志/测试断言）。
+    pub fn supported_apps(&self) -> Vec<String> {
+        let mut apps: Vec<String> = self.bindings.keys().cloned().collect();
+        apps.sort();
+        apps
+    }
+
+    /// 主 app：用于 router back-compat 字段（`ShareTunnelMetadata.app_type` 等）。
+    /// 优先级 claude > codex > gemini > 其它字母序；无绑定时返回 `None`。
+    pub fn primary_app(&self) -> Option<String> {
+        const PRIORITY: &[&str] = &["claude", "codex", "gemini"];
+        for app in PRIORITY {
+            if self.bindings.contains_key(*app) {
+                return Some((*app).to_string());
+            }
+        }
+        self.supported_apps().into_iter().next()
+    }
+
+    /// 主 provider：对应 `primary_app()` 的 provider id。供 router back-compat 使用。
+    pub fn primary_provider_id(&self) -> Option<String> {
+        self.primary_app()
+            .and_then(|app| self.bindings.get(&app).cloned())
+    }
+}
+
 /// Share 绑定 provider 的审计历史条目。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareBindingHistoryEntry {
     pub id: i64,
+    /// `None` 表示该 slot 此前为空（首次绑定）。
     pub old_provider_id: Option<String>,
-    pub new_provider_id: String,
+    /// `None` 表示这是一次 "清空 slot" 事件（解绑）。
+    pub new_provider_id: Option<String>,
     pub app_type: String,
     pub changed_at: String,
 }
 
 impl Database {
-    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, share_token, app_type, provider_id, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
+    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, share_token, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
 
     pub fn create_share(&self, share: &ShareRecord) -> Result<(), AppError> {
-        let conn = lock_conn!(self.conn);
-        conn.execute(
-            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, share_token, app_type, provider_id, api_key,
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute(
+            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, share_token, api_key,
              settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at,
              subdomain, tunnel_url, status, auto_start, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 share.id,
                 share.name,
@@ -69,8 +107,6 @@ impl Database {
                 share.description,
                 share.for_sale,
                 share.share_token,
-                share.app_type,
-                share.provider_id,
                 share.api_key,
                 share.settings_config,
                 share.token_limit,
@@ -87,6 +123,16 @@ impl Database {
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        // 同事务写入所有 bindings，确保 share 行和 binding 行原子可见。
+        for (app_type, provider_id) in &share.bindings {
+            tx.execute(
+                "INSERT INTO share_provider_bindings (share_id, app_type, provider_id)
+                 VALUES (?1, ?2, ?3)",
+                params![share.id, app_type, provider_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -102,7 +148,11 @@ impl Database {
             .query(params![id])
             .map_err(|e| AppError::Database(e.to_string()))?;
         match rows.next().map_err(|e| AppError::Database(e.to_string()))? {
-            Some(row) => Ok(Some(Self::row_to_share(row)?)),
+            Some(row) => {
+                let mut share = Self::row_to_share(row)?;
+                share.bindings = Self::load_share_bindings_on_conn(&conn, &share.id)?;
+                Ok(Some(share))
+            }
             None => Ok(None),
         }
     }
@@ -119,7 +169,11 @@ impl Database {
             .query(params![token])
             .map_err(|e| AppError::Database(e.to_string()))?;
         match rows.next().map_err(|e| AppError::Database(e.to_string()))? {
-            Some(row) => Ok(Some(Self::row_to_share(row)?)),
+            Some(row) => {
+                let mut share = Self::row_to_share(row)?;
+                share.bindings = Self::load_share_bindings_on_conn(&conn, &share.id)?;
+                Ok(Some(share))
+            }
             None => Ok(None),
         }
     }
@@ -137,34 +191,50 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut result = Vec::new();
         while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
-            result.push(Self::row_to_share(row)?);
+            let mut share = Self::row_to_share(row)?;
+            share.bindings = Self::load_share_bindings_on_conn(&conn, &share.id)?;
+            result.push(share);
         }
         Ok(result)
     }
 
-    /// 列出绑定到指定 provider 的活跃 share（status != 'deleted'）。
+    /// 列出绑定到指定 provider 的活跃 share，并附带命中的 app_type slot。
     ///
-    /// 多 share 模式下，删除 provider 之前必须确认没有 share 还绑着它，否则
-    /// share 的请求路径会拿到 NoAvailableProvider 5xx。调用方据此阻断 provider
-    /// 删除或发 share-needs-rebind 事件。
+    /// 多 app share 模式下，删除 provider 时必须确认没有 share 还在绑它（任一 slot），
+    /// 否则那条 slot 上的请求路径会拿到 NoAvailableProvider。每个返回项含：
+    /// - share record（已 hydrate bindings）
+    /// - 该 provider 命中的 app_type slot
     pub fn list_active_shares_bound_to_provider(
         &self,
         provider_id: &str,
-        app_type: &str,
-    ) -> Result<Vec<ShareRecord>, AppError> {
+    ) -> Result<Vec<(ShareRecord, String)>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {} FROM shares WHERE provider_id = ?1 AND app_type = ?2 AND status != 'deleted' ORDER BY created_at DESC",
+                "SELECT {}, spb.app_type
+                 FROM shares
+                 JOIN share_provider_bindings spb ON spb.share_id = shares.id
+                 WHERE spb.provider_id = ?1 AND shares.status != 'deleted'
+                 ORDER BY shares.created_at DESC",
                 Self::SHARE_SELECT_COLUMNS
+                    .split(", ")
+                    .map(|c| format!("shares.{c}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ))
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut rows = stmt
-            .query(params![provider_id, app_type])
+            .query(params![provider_id])
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut result = Vec::new();
         while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
-            result.push(Self::row_to_share(row)?);
+            let mut share = Self::row_to_share(row)?;
+            // 最后一列是 JOIN 出来的 app_type。row_to_share 只读前 N 列。
+            let app_type: String = row
+                .get::<_, String>(Self::share_column_count())
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            share.bindings = Self::load_share_bindings_on_conn(&conn, &share.id)?;
+            result.push((share, app_type));
         }
         Ok(result)
     }
@@ -392,64 +462,101 @@ impl Database {
 
     /// 改绑 share 到新的 provider。
     ///
-    /// Why: 多 share 模式下，单 share 上下线/换供应商需要独立切换 provider 而
-    /// 不动其他 share。schema 的 `UNIQUE(provider_id) WHERE status != 'deleted'`
-    /// 在改绑时仍生效，所以新 provider 已被其他活跃 share 占用时会被 SQLite
-    /// 直接 reject，调用方层会捕获并提示。
-    ///
-    /// 调用方负责：确保 share 在改绑前处于 paused（避免请求路径取到中间态），
-    /// 以及绑定一致性校验（provider 存在 + app_type 匹配）。
-    pub fn update_share_provider_id(&self, id: &str, provider_id: &str) -> Result<(), AppError> {
-        let conn = lock_conn!(self.conn);
-        conn.execute(
-            "UPDATE shares SET provider_id = ?2 WHERE id = ?1",
-            params![id, provider_id],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    /// 改绑 + 乐观锁 + 写审计，单事务原子完成。
-    ///
-    /// `expected_old_provider_id` 是调用方读到的"老 provider id"快照；写入时
-    /// SQLite 用 `WHERE provider_id = ?` 做 CAS，如果中间被别处改了就拒绝。
-    /// 防御场景：两个窗口同时改绑同一个 share。
-    ///
-    /// 成功后写一行 share_binding_history。
-    pub fn update_share_provider_id_with_history(
+    /// P8：读单 slot 的当前绑定 provider id（不存在返回 None）。
+    pub fn get_share_binding(
         &self,
         share_id: &str,
-        expected_old_provider_id: Option<&str>,
-        new_provider_id: &str,
         app_type: &str,
+    ) -> Result<Option<String>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn
+            .prepare(
+                "SELECT provider_id FROM share_provider_bindings
+                 WHERE share_id = ?1 AND app_type = ?2",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![share_id, app_type])
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        match rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+            Some(row) => Ok(Some(
+                row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// P8：写单 slot 绑定 + 乐观锁 + 写审计，单事务原子完成。
+    ///
+    /// 三个语义合并在一个 API 里以便事务原子：
+    ///   - 老 slot 为空 + 新 provider 非空 → INSERT（首次绑定）
+    ///   - 老 slot 非空 + 新 provider 非空 → UPDATE（改绑）
+    ///   - 老 slot 非空 + 新 provider 为空 → DELETE（清空 slot）
+    ///   - 老 slot 为空 + 新 provider 为空 → no-op（直接返回 Err，避免误触发）
+    ///
+    /// `expected_old_provider_id` 是调用方读到的"老 provider id"快照；写入时做 CAS，
+    /// 中间被别处改了就拒绝（B-1 乐观锁）。
+    ///
+    /// 任一成功路径都写一行 share_binding_history，便于事后追溯。
+    pub fn upsert_share_binding_with_history(
+        &self,
+        share_id: &str,
+        app_type: &str,
+        expected_old_provider_id: Option<&str>,
+        new_provider_id: Option<&str>,
     ) -> Result<(), AppError> {
+        if expected_old_provider_id.is_none() && new_provider_id.is_none() {
+            return Err(AppError::Message(
+                "改绑失败：当前 slot 已经为空，无需操作".to_string(),
+            ));
+        }
         let mut conn = lock_conn!(self.conn);
         let tx = conn
             .transaction()
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let affected = match expected_old_provider_id {
-            Some(old) => tx
+
+        let affected = match (expected_old_provider_id, new_provider_id) {
+            // INSERT
+            (None, Some(new_pid)) => tx
                 .execute(
-                    "UPDATE shares SET provider_id = ?2 WHERE id = ?1 AND provider_id = ?3",
-                    params![share_id, new_provider_id, old],
+                    "INSERT INTO share_provider_bindings (share_id, app_type, provider_id)
+                     SELECT ?1, ?2, ?3
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM share_provider_bindings
+                         WHERE share_id = ?1 AND app_type = ?2
+                     )",
+                    params![share_id, app_type, new_pid],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?,
-            None => tx
+            // UPDATE
+            (Some(old_pid), Some(new_pid)) => tx
                 .execute(
-                    "UPDATE shares SET provider_id = ?2 WHERE id = ?1 AND provider_id IS NULL",
-                    params![share_id, new_provider_id],
+                    "UPDATE share_provider_bindings SET provider_id = ?3
+                     WHERE share_id = ?1 AND app_type = ?2 AND provider_id = ?4",
+                    params![share_id, app_type, new_pid, old_pid],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?,
+            // DELETE
+            (Some(old_pid), None) => tx
+                .execute(
+                    "DELETE FROM share_provider_bindings
+                     WHERE share_id = ?1 AND app_type = ?2 AND provider_id = ?3",
+                    params![share_id, app_type, old_pid],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?,
+            (None, None) => unreachable!(),
         };
         if affected == 0 {
             return Err(AppError::Message(
-                "改绑失败：share 已被其他操作改动，请刷新后重试".to_string(),
+                "改绑失败：share slot 已被其他操作改动，请刷新后重试".to_string(),
             ));
         }
+        // history.new_provider_id 是 NOT NULL TEXT，"解绑"事件用 "" 表示，读层译回 None。
+        let history_new = new_provider_id.unwrap_or("");
         tx.execute(
             "INSERT INTO share_binding_history (share_id, old_provider_id, new_provider_id, app_type)
              VALUES (?1, ?2, ?3, ?4)",
-            params![share_id, expected_old_provider_id, new_provider_id, app_type],
+            params![share_id, expected_old_provider_id, history_new, app_type],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
@@ -493,10 +600,12 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![share_id, limit as i64], |row| {
+                let raw_new: String = row.get(2)?;
                 Ok(ShareBindingHistoryEntry {
                     id: row.get(0)?,
                     old_provider_id: row.get(1)?,
-                    new_provider_id: row.get(2)?,
+                    // "" 是"清空 slot"事件的 sentinel —— 见 upsert_share_binding_with_history。
+                    new_provider_id: if raw_new.is_empty() { None } else { Some(raw_new) },
                     app_type: row.get(3)?,
                     changed_at: row.get(4)?,
                 })
@@ -530,6 +639,9 @@ impl Database {
     }
 
     fn row_to_share(row: &rusqlite::Row) -> Result<ShareRecord, AppError> {
+        // P8 后字段顺序：见 SHARE_SELECT_COLUMNS。app_type / provider_id 已被剥离到
+        // share_provider_bindings 侧表。bindings 字段由调用方在 row_to_share 之后
+        // 通过 load_share_bindings_on_conn 填充。
         Ok(ShareRecord {
             id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
             name: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
@@ -548,21 +660,47 @@ impl Database {
             description: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
             for_sale: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
             share_token: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
-            app_type: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
-            provider_id: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
-            api_key: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
-            settings_config: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
-            token_limit: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
-            parallel_limit: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
-            tokens_used: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
-            requests_count: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
-            expires_at: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
-            subdomain: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
-            tunnel_url: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
-            status: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
-            auto_start: row.get(21).map_err(|e| AppError::Database(e.to_string()))?,
-            created_at: row.get(22).map_err(|e| AppError::Database(e.to_string()))?,
-            last_used_at: row.get(23).map_err(|e| AppError::Database(e.to_string()))?,
+            bindings: HashMap::new(),
+            api_key: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
+            settings_config: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
+            token_limit: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
+            parallel_limit: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
+            tokens_used: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
+            requests_count: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
+            expires_at: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
+            subdomain: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
+            tunnel_url: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
+            status: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
+            auto_start: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
+            created_at: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
+            last_used_at: row.get(21).map_err(|e| AppError::Database(e.to_string()))?,
         })
+    }
+
+    /// SHARE_SELECT_COLUMNS 的列数（用于 JOIN 查询定位附加列下标）。
+    const fn share_column_count() -> usize {
+        22
+    }
+
+    /// 读侧表中 share_id 对应的所有 binding（app_type → provider_id）。
+    fn load_share_bindings_on_conn(
+        conn: &rusqlite::Connection,
+        share_id: &str,
+    ) -> Result<HashMap<String, String>, AppError> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT app_type, provider_id FROM share_provider_bindings WHERE share_id = ?1",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![share_id])
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut bindings = HashMap::new();
+        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+            let app: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
+            let pid: String = row.get(1).map_err(|e| AppError::Database(e.to_string()))?;
+            bindings.insert(app, pid);
+        }
+        Ok(bindings)
     }
 }

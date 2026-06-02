@@ -6,6 +6,7 @@ import type {
   TunnelConfig,
   TunnelInfo,
 } from "@/lib/api";
+import type { ProviderOption } from "./CreateShareDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ShareCard, type ShareProviderSalePricing } from "./ShareCard";
@@ -84,12 +85,14 @@ interface ShareListProps {
   ) => Promise<void> | void;
   onUpdateProviderBinding: (
     share: ShareRecord,
-    providerId: string,
+    appType: "claude" | "codex" | "gemini",
+    providerId: string | null,
   ) => Promise<void> | void;
   onRotateToken?: (share: ShareRecord) => Promise<void> | void;
   onRebindAtomic?: (
     share: ShareRecord,
-    newProviderId: string,
+    appType: "claude" | "codex" | "gemini",
+    newProviderId: string | null,
   ) => Promise<void> | void;
   /**
    * 全 app 维度的"可绑定 provider 列表"映射，key = appType。
@@ -214,11 +217,8 @@ export function ShareList({
         <ShareCard
           key={share.id}
           share={share}
-          boundProviderName={
-            share.providerId
-              ? providerNameByKey?.[`${share.appType}:${share.providerId}`]
-              : undefined
-          }
+          // P8：多 app share，传 bindings 全集；ShareCard 自己渲染 0..3 个 provider chip。
+          providerNameByKey={providerNameByKey}
           tunnelStatus={tunnelStatusMap[share.id]}
           tunnelConfig={tunnelConfig}
           tunnelConfigured={tunnelConfigured}
@@ -249,14 +249,21 @@ export function ShareList({
           onUpdateProviderBinding={onUpdateProviderBinding}
           onRotateToken={onRotateToken}
           onRebindAtomic={onRebindAtomic}
-          providersForEdit={(() => {
-            // share 自己当前绑定的 provider 不算 taken，否则保存"换回原 provider"
-            // 会被禁选。其他 share 占着的仍标灰。
-            const appType = share.appType as "claude" | "codex" | "gemini";
-            const pool = providersByApp?.[appType] ?? [];
-            return pool.map((p) =>
-              p.id === share.providerId ? { ...p, disabled: false } : p,
-            );
+          providersByAppForEdit={(() => {
+            // share 自己已绑定的 provider 在对应 slot 内不算 taken（让"换回原 provider"
+            // 始终可选）；其他 share 占着的仍标灰。
+            const result: Record<
+              "claude" | "codex" | "gemini",
+              ProviderOption[]
+            > = { claude: [], codex: [], gemini: [] };
+            (["claude", "codex", "gemini"] as const).forEach((app) => {
+              const pool = providersByApp?.[app] ?? [];
+              const myPid = share.bindings?.[app];
+              result[app] = pool.map((p) =>
+                myPid && p.id === myPid ? { ...p, disabled: false } : p,
+              );
+            });
+            return result;
           })()}
         />
       ))}

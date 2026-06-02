@@ -393,8 +393,15 @@ export function useUpdateShareSubdomainMutation() {
 
 export function useUpdateShareProviderBindingMutation() {
   return useShareActionMutation(
-    ({ shareId, providerId }: { shareId: string; providerId: string }) =>
-      shareApi.updateProviderBinding({ shareId, providerId }),
+    ({
+      shareId,
+      appType,
+      providerId,
+    }: {
+      shareId: string;
+      appType: "claude" | "codex" | "gemini";
+      providerId: string | null;
+    }) => shareApi.updateProviderBinding({ shareId, appType, providerId }),
     {
       successKey: "share.toast.updateProviderBindingSuccess",
       successDefault: "Provider 绑定已更新",

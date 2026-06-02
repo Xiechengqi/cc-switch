@@ -2,13 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, X } from "lucide-react";
 import type {
   AppId,
   CreateShareParams,
   PublicMarket,
+  ShareBindings,
   TunnelConfig,
 } from "@/lib/api";
+import { SHARE_APP_TYPES } from "@/lib/api";
 import {
   createShareSchema,
   type CreateShareFormInput,
@@ -69,6 +71,7 @@ export interface ProviderOption {
 interface CreateShareDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 触发对话框时所在的 app tab。用于预填该 app slot 的默认 provider 选择。 */
   defaultApp?: AppId;
   ownerEmail?: string | null;
   tunnelConfig: TunnelConfig;
@@ -76,8 +79,8 @@ interface CreateShareDialogProps {
   isSubmitting: boolean;
   submitLabel?: string;
   markets?: PublicMarket[];
-  /** 当前 defaultApp 下可绑定的 provider 列表（来自 useProvidersQuery + 已用列表）*/
-  providers: ProviderOption[];
+  /** P8 多 app share：每个 app_type 各自一组候选（已过滤掉被别的 share 绑定的）。 */
+  providersByApp: Record<keyof ShareBindings, ProviderOption[]>;
   onSaveTunnelConfig: (config: TunnelConfig) => Promise<void> | void;
   onSubmit: (
     params: CreateShareParams,
@@ -119,9 +122,25 @@ export function deriveSubdomainFromEmail(email: string | null | undefined): stri
   return `${prefix}-${suffix}`;
 }
 
-function buildDefaultValues(ownerEmail: string): CreateShareFormInput {
+function buildDefaultValues(
+  ownerEmail: string,
+  defaultApp: AppId | undefined,
+  providersByApp: Record<keyof ShareBindings, ProviderOption[]> | undefined,
+): CreateShareFormInput {
+  // 当前 app tab 决定默认聚焦的 slot；同时预填一个未被占用的 provider，
+  // 减少新用户必填两步的摩擦。其它 slot 默认为空。providersByApp 在测试桩里
+  // 可能未传，要 defensive 处理。
+  const initialBindings: { claude: string; codex: string; gemini: string } = {
+    claude: "",
+    codex: "",
+    gemini: "",
+  };
+  const focusApp = toShareAppType(defaultApp);
+  const focusCandidates = providersByApp?.[focusApp] ?? [];
+  const focusDefault = focusCandidates.find((p) => !p.disabled)?.id ?? "";
+  initialBindings[focusApp] = focusDefault;
   return {
-    providerId: "",
+    bindings: initialBindings,
     description: "",
     forSale: "Yes",
     autoStart: true,
@@ -143,7 +162,7 @@ export function CreateShareDialog({
   isSubmitting,
   submitLabel,
   markets = EMPTY_MARKETS,
-  providers,
+  providersByApp,
   onSaveTunnelConfig,
   onSubmit,
 }: CreateShareDialogProps) {
@@ -165,14 +184,14 @@ export function CreateShareDialog({
 
   const form = useForm<CreateShareFormInput, unknown, CreateShareFormValues>({
     resolver: zodResolver(createShareSchema),
-    defaultValues: buildDefaultValues(ownerEmail ?? ""),
+    defaultValues: buildDefaultValues(ownerEmail ?? "", defaultApp, providersByApp),
   });
 
   useEffect(() => {
     if (!open) return;
     setOwnerEmailInput(ownerEmail ?? "");
     setRouterDomain(tunnelConfig.domain);
-    form.reset(buildDefaultValues(ownerEmail ?? ""));
+    form.reset(buildDefaultValues(ownerEmail ?? "", defaultApp, providersByApp));
     setIsPermanent(true);
     setLastFiniteTokenLimit(DEFAULT_TOKEN_LIMIT_FALLBACK);
     setLastFiniteParallelLimit(DEFAULT_PARALLEL_LIMIT);
@@ -180,7 +199,8 @@ export function CreateShareDialog({
     setAdvancedOpened(false);
     setDefaultsConfirmOpen(false);
     subdomainManualRef.current = false;
-  }, [form, open, ownerEmail, tunnelConfig.domain]);
+    // providersByApp 引用变化（fetch 完成）时也重置一次，确保默认 slot 能选上 provider。
+  }, [form, open, ownerEmail, tunnelConfig.domain, defaultApp, providersByApp]);
 
   useEffect(() => {
     if (!open || subdomainManualRef.current) return;
@@ -224,8 +244,12 @@ export function CreateShareDialog({
     await onSubmit(
       {
         ownerEmail: normalizedOwnerEmail,
-        appType: toShareAppType(defaultApp),
-        providerId: values.providerId,
+        // P8：把空字符串过滤掉，只发用户真的选了的 slot。
+        bindings: Object.fromEntries(
+          (Object.entries(values.bindings ?? {}) as Array<
+            [keyof ShareBindings, string]
+          >).filter(([, pid]) => pid && pid.length > 0),
+        ),
         description: values.description || undefined,
         forSale: values.forSale,
         tokenLimit: values.tokenLimit,
@@ -287,9 +311,8 @@ export function CreateShareDialog({
           <DialogTitle className="flex items-center gap-2">
             {t("share.create")}
             {/*
-              多 share 模式下：share 类型由当前 app tab 决定，但对话框本身没有
-              app 切换器，用户容易看不出"我在为哪个 app 创建"。Badge 把上下文
-              钉死在标题旁。
+              多 app share 模式：badge 显示当前进入的 app tab 作为"默认聚焦的 slot"，
+              用户可在表单里继续勾选其它 slot。
             */}
             <Badge variant="outline" className="capitalize">
               {toShareAppType(defaultApp)}
@@ -326,60 +349,116 @@ export function CreateShareDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="share-create-provider">
-              {t("share.providerBinding", { defaultValue: "Provider 绑定" })}
+            <Label>
+              {t("share.providerBindings", { defaultValue: "Provider 绑定" })}
             </Label>
-            <Select
-              value={form.watch("providerId") as string}
-              onValueChange={(value) =>
-                form.setValue("providerId", value, { shouldValidate: true })
-              }
-            >
-              <SelectTrigger id="share-create-provider">
-                <SelectValue
-                  placeholder={t("share.providerBindingPlaceholder", {
-                    defaultValue: "选择本 share 绑定的 provider",
-                  })}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {providers.length === 0 ? (
-                  <SelectItem value="__empty__" disabled>
-                    {t("share.providerBindingEmpty", {
-                      defaultValue:
-                        "{{app}} 下没有可绑定的 provider，或全部已被其他 share 绑定。先到 Provider 页面创建/释放。",
-                      app: toShareAppType(defaultApp),
-                    })}
-                  </SelectItem>
-                ) : (
-                  providers.map((provider) => (
-                    <SelectItem
-                      key={provider.id}
-                      value={provider.id}
-                      disabled={provider.disabled}
-                    >
-                      {provider.name}
-                      {provider.disabled
-                        ? ` · ${t("share.providerBindingTaken", {
-                            defaultValue: "已被其他 share 绑定",
-                          })}`
-                        : ""}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
             <div className="text-xs text-muted-foreground">
-              {t("share.providerBindingHint", {
+              {t("share.providerBindingsHint", {
                 defaultValue:
-                  "share 请求强制走绑定的 provider，不参与故障转移；同一 provider 同时只能被一个 share 绑定。",
+                  "为每个 app 独立挑一个 provider，留空 = 该 app 在本 share 上不可用。至少绑一个，否则 share 没意义。",
               })}
             </div>
-            {form.formState.errors.providerId ? (
+            <div className="grid gap-2">
+              {SHARE_APP_TYPES.map((app) => {
+                const candidates = providersByApp?.[app] ?? [];
+                const fieldKey = `bindings.${app}` as const;
+                const value = (form.watch(fieldKey) as string | undefined) ?? "";
+                return (
+                  <div
+                    key={app}
+                    className="grid gap-1 rounded-md border border-default/50 p-2"
+                  >
+                    <div className="flex items-center justify-between text-xs font-medium uppercase text-muted-foreground">
+                      <span>{app}</span>
+                      {value ? (
+                        <Badge variant="outline" className="text-[10px]">
+                          {t("share.bound", { defaultValue: "已绑定" })}
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] text-muted-foreground"
+                        >
+                          {t("share.unbound", { defaultValue: "未绑定" })}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={value || undefined}
+                        onValueChange={(next) =>
+                          form.setValue(fieldKey, next, {
+                            shouldValidate: true,
+                            shouldDirty: true,
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          id={`share-create-provider-${app}`}
+                          className="flex-1"
+                        >
+                          <SelectValue
+                            placeholder={t("share.providerBindingPlaceholder", {
+                              defaultValue: `为 ${app} 选一个 provider`,
+                            })}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {candidates.length === 0 ? (
+                            <SelectItem value="__empty__" disabled>
+                              {t("share.providerBindingEmpty", {
+                                defaultValue: `{{app}} 下没有可绑定的 provider`,
+                                app,
+                              })}
+                            </SelectItem>
+                          ) : (
+                            candidates.map((provider) => (
+                              <SelectItem
+                                key={provider.id}
+                                value={provider.id}
+                                disabled={provider.disabled}
+                              >
+                                {provider.name}
+                                {provider.disabled
+                                  ? ` · ${t("share.providerBindingTaken", {
+                                      defaultValue: "已被其他 share 绑定",
+                                    })}`
+                                  : ""}
+                              </SelectItem>
+                            ))
+                          )}
+                        </SelectContent>
+                      </Select>
+                      {value ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            form.setValue(fieldKey, "", {
+                              shouldValidate: true,
+                              shouldDirty: true,
+                            })
+                          }
+                          title={t("share.providerBindingClear", {
+                            defaultValue: "清空（解绑）",
+                          })}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {form.formState.errors.bindings ? (
               <div className="text-xs text-destructive">
-                {t(form.formState.errors.providerId.message ?? "", {
-                  defaultValue: "请选择一个 provider",
-                })}
+                {t(
+                  (form.formState.errors.bindings as { message?: string })
+                    ?.message ?? "share.validation.providerRequired",
+                  { defaultValue: "至少为一个 app 选择 provider" },
+                )}
               </div>
             ) : null}
           </div>

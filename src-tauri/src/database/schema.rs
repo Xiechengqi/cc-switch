@@ -376,8 +376,6 @@ impl Database {
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
                 share_token TEXT NOT NULL UNIQUE,
-                app_type TEXT NOT NULL,
-                provider_id TEXT NOT NULL,
                 api_key TEXT NOT NULL,
                 settings_config TEXT,
                 token_limit INTEGER NOT NULL,
@@ -401,26 +399,44 @@ impl Database {
             [],
         );
 
-        // share ↔ provider 1:1：同一 provider 同时只能被一个非 deleted share 绑定。
+        // P8 多 app share：share ↔ provider 改成 1 share 可对每个 app_type 独立绑定 0/1 个
+        // provider。侧表把 (share_id, app_type) → provider_id 拆出来；shares 表本身不再
+        // 持有 app_type / provider_id 字段（v21→v22 迁移会把老库的两列 DROP 掉）。
+        //   - PK(share_id, app_type) 保证一个 share 内每个 app 至多一个 slot
+        //   - UNIQUE(provider_id) 保证一个 provider 全局只能被一个活跃 slot 占用
+        //   - ON DELETE CASCADE：删 share 自动清掉所有 binding
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS share_provider_bindings (
+                share_id    TEXT NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+                app_type    TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (share_id, app_type)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
         let _ = conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_shares_provider_unique
-             ON shares(provider_id) WHERE status != 'deleted'",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_share_bindings_provider_unique
+             ON share_provider_bindings(provider_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_share_bindings_share
+             ON share_provider_bindings(share_id)",
             [],
         );
 
-        let _ = conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_shares_app_status ON shares(app_type, status)",
-            [],
-        );
-
-        // C-3 审计：每次 share 改绑 provider 写一行。UI Edit dialog 可查最近 N 条。
-        // 没有 FK，避免删 share/provider 时连环约束爆掉；保留为只追加日志。
+        // C-3 审计：每次 share 改绑 provider 写一行（含 app_type，多 app share 下区分 slot）。
+        // new_provider_id 仍是 NOT NULL — "清空 slot"（解绑）事件用空字符串 "" 表示，
+        // 在 DAO 读层把 "" 译回 `Option::None`。这样保留与历史 schema 的兼容，避免
+        // 多一次 ALTER COLUMN（SQLite 不直接支持）。
         conn.execute(
             "CREATE TABLE IF NOT EXISTS share_binding_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 share_id TEXT NOT NULL,
                 old_provider_id TEXT,
-                new_provider_id TEXT NOT NULL,
+                new_provider_id TEXT NOT NULL DEFAULT '',
                 app_type TEXT NOT NULL,
                 changed_at TEXT NOT NULL DEFAULT (datetime('now'))
             )",
@@ -1578,6 +1594,15 @@ impl Database {
     /// 非空，新行不再受影响。
     fn migrate_v20_to_v21(conn: &Connection) -> Result<(), AppError> {
         if !Self::table_exists(conn, "shares")? {
+            return Ok(());
+        }
+        // P8 之后 shares 表不再有 `provider_id` 列（迁移到侧表 share_provider_bindings）。
+        // 对全新部署的 DB，shares 从一开始就是 P8 schema；v20→v21 的"孤儿 share 暂停"
+        // 逻辑对它没有意义，直接跳过。
+        if !Self::has_column(conn, "shares", "provider_id")? {
+            log::info!(
+                "v20 -> v21 跳过：shares.provider_id 已不存在（P8 schema 下绑定走侧表）"
+            );
             return Ok(());
         }
         let affected = conn

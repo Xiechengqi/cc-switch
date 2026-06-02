@@ -10,6 +10,14 @@ const TEST_PROVIDERS = [
   { id: "test-provider-1", name: "Test Provider 1", disabled: false },
 ];
 
+// P8 多 app share：CreateShareDialog 现在按 app slot 分组渲染候选。Claude 是测试
+// defaultApp，给一条可用 provider；其它 slot 留空让用户保持解绑。
+const TEST_PROVIDERS_BY_APP = {
+  claude: TEST_PROVIDERS,
+  codex: [],
+  gemini: [],
+};
+
 function renderDialog(overrides: Partial<Record<string, unknown>> = {}) {
   const base: Record<string, unknown> = {
     open: true,
@@ -19,9 +27,7 @@ function renderDialog(overrides: Partial<Record<string, unknown>> = {}) {
     isSubmitting: false,
     tunnelConfig: { domain: "jptokenswitch.cc" },
     tunnelConfigSaving: false,
-    // P5.1 引入 `providers` 为必填。默认带一条可选 provider，需要 submit 的
-    // 用例可以走 selectProvider helper 选中它。
-    providers: TEST_PROVIDERS,
+    providersByApp: TEST_PROVIDERS_BY_APP,
     onSaveTunnelConfig: vi.fn(),
     onSubmit: vi.fn(),
   };
@@ -31,13 +37,13 @@ function renderDialog(overrides: Partial<Record<string, unknown>> = {}) {
   return { props, rendered };
 }
 
-// 从 Radix Select 里点选第一条可用 provider。Radix Select 在 jsdom 下需要靠
-// setupGlobals 的 pointer-capture polyfill 才点得开。
+// P8：默认 slot 的 Select trigger id 是 `share-create-provider-${app}`。defaultApp
+// = claude 时该 slot 已被预填，但测试也确认显式点选不报错。
 async function selectProvider(
   user: ReturnType<typeof userEvent.setup>,
   providerName: string = TEST_PROVIDERS[0]!.name,
 ) {
-  const trigger = document.getElementById("share-create-provider");
+  const trigger = document.getElementById("share-create-provider-claude");
   if (!trigger) throw new Error("Provider Select trigger not found");
   await user.click(trigger);
   const option = await screen.findByRole("option", { name: providerName });
@@ -71,7 +77,9 @@ describe("CreateShareDialog", () => {
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
           ownerEmail: "owner@example.com",
-          providerId: TEST_PROVIDERS[0]!.id,
+          // P8：bindings 替换 appType/providerId。defaultApp = claude，预填值会
+          // 走 buildDefaultValues 命中第一条可用 provider。
+          bindings: { claude: TEST_PROVIDERS[0]!.id },
           forSale: "Yes",
           autoStart: true,
           tokenLimit: -1,
@@ -103,7 +111,7 @@ describe("CreateShareDialog", () => {
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
           ownerEmail: "owner@example.com",
-          providerId: TEST_PROVIDERS[0]!.id,
+          bindings: { claude: TEST_PROVIDERS[0]!.id },
           forSale: "Yes",
         }),
         expect.objectContaining({ marketAccessMode: "all" }),

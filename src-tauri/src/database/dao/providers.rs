@@ -410,15 +410,19 @@ impl Database {
                     .map_err(|e| AppError::Database(e.to_string()))?;
 
                 for deleted_id in &ids_to_delete {
+                    // P8 多 app share：bindings 移到了侧表，按 (app_type, provider_id) 改/删
+                    // 对应 slot；fallback 有就 repoint 到 fallback，没有就 DELETE 那条 slot。
                     if let Some(fallback_id) = fallback_before_delete.as_deref() {
                         tx.execute(
-                            "UPDATE shares SET provider_id = ?1 WHERE app_type = ?2 AND provider_id = ?3",
+                            "UPDATE share_provider_bindings SET provider_id = ?1
+                             WHERE app_type = ?2 AND provider_id = ?3",
                             params![fallback_id, app_type, deleted_id],
                         )
                         .map_err(|e| AppError::Database(e.to_string()))?;
                     } else {
                         tx.execute(
-                            "UPDATE shares SET provider_id = NULL WHERE app_type = ?1 AND provider_id = ?2",
+                            "DELETE FROM share_provider_bindings
+                             WHERE app_type = ?1 AND provider_id = ?2",
                             params![app_type, deleted_id],
                         )
                         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -969,6 +973,8 @@ mod provider_catalog_prune_tests {
     }
 
     fn share(provider_id: &str) -> ShareRecord {
+        let mut bindings = HashMap::new();
+        bindings.insert("claude".to_string(), provider_id.to_string());
         ShareRecord {
             id: "share-1".to_string(),
             name: "share".to_string(),
@@ -979,8 +985,7 @@ mod provider_catalog_prune_tests {
             description: None,
             for_sale: "No".to_string(),
             share_token: "token".to_string(),
-            app_type: "claude".to_string(),
-            provider_id: Some(provider_id.to_string()),
+            bindings,
             api_key: "key".to_string(),
             settings_config: None,
             token_limit: -1,
@@ -1056,8 +1061,9 @@ mod provider_catalog_prune_tests {
             db.get_share_by_id("share-1")
                 .expect("share query")
                 .expect("share exists")
-                .provider_id
-                .as_deref(),
+                .bindings
+                .get("claude")
+                .map(String::as_str),
             Some("claude-official-new")
         );
     }

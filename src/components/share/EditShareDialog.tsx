@@ -1,7 +1,8 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
-import type { PublicMarket, ShareRecord } from "@/lib/api";
+import type { PublicMarket, ShareBindings, ShareRecord } from "@/lib/api";
+import { SHARE_APP_TYPES } from "@/lib/api";
 import type { ProviderOption } from "./CreateShareDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -45,11 +46,10 @@ interface EditShareDialogProps {
   markets: PublicMarket[];
   providerSalePricing: ShareProviderSalePricing[];
   /**
-   * 与 CreateShareDialog 同形：按 share.appType 过滤后传入。
-   * `disabled` 表示该 provider 已被其他 active share 占用——除了本 share 自己的
-   * 当前绑定（要让"保持原 provider"始终可选）。
+   * P8 多 app share：每个 app_type 各自一组候选。`disabled` 表示该 provider 已被其他
+   * active share 占用——除了本 share 自己的当前绑定（要让"保持原 provider"始终可选）。
    */
-  providers: ProviderOption[];
+  providersByApp: Record<keyof ShareBindings, ProviderOption[]>;
   marketsLoading: boolean;
   marketsError: string | null;
   readOnly?: boolean;
@@ -102,12 +102,13 @@ interface EditShareDialogProps {
     marketAccessMode: "selected" | "all",
   ) => Promise<void> | void;
   /**
-   * 改绑 provider。后端约束：share 必须先 paused；调用方应按需先 stop tunnel。
-   * 失败会抛错（UNIQUE 冲突 / provider 不存在 / app_type 不匹配），上层 catch 即可。
+   * P8：改绑 / 解绑 share 的某个 app_type slot 的 provider。
+   * `providerId = null` 表示清空该 slot（解绑）。后端约束：share 必须先 paused。
    */
   onUpdateProviderBinding: (
     share: ShareRecord,
-    providerId: string,
+    appType: keyof ShareBindings,
+    providerId: string | null,
   ) => Promise<void> | void;
   /**
    * A-1：轮换 share_token。老 token 立即失效，新 token 立即可用，无需 share paused。
@@ -116,10 +117,12 @@ interface EditShareDialogProps {
   /**
    * A-3：当 share 处于 active 状态时，点击"自动暂停并改绑"按钮触发
    * disable → rebind → enable 的链式操作。完成后 share 仍为 active。
+   * `providerId = null` 表示在该 slot 上做"自动暂停并解绑"。
    */
   onRebindAtomic?: (
     share: ShareRecord,
-    newProviderId: string,
+    appType: keyof ShareBindings,
+    newProviderId: string | null,
   ) => Promise<void> | void;
 }
 
@@ -129,7 +132,7 @@ export function EditShareDialog({
   share,
   markets,
   providerSalePricing,
-  providers,
+  providersByApp,
   marketsLoading,
   marketsError,
   readOnly = false,
@@ -167,7 +170,7 @@ export function EditShareDialog({
     DEFAULT_PARALLEL_LIMIT,
   );
   const [subdomainInput, setSubdomainInput] = useState("");
-  const [providerIdInput, setProviderIdInput] = useState("");
+  const [providerIdInputs, setProviderIdInputs] = useState<Record<string, string>>({});
   const [descriptionInput, setDescriptionInput] = useState("");
   const [ownerEmailInput, setOwnerEmailInput] = useState("");
   const [shareToEmails, setShareToEmails] = useState<string[]>([]);
@@ -228,7 +231,12 @@ export function EditShareDialog({
         : DEFAULT_PARALLEL_LIMIT,
     );
     setSubdomainInput(share.subdomain ?? "");
-    setProviderIdInput(share.providerId ?? "");
+    // P8：每个 app_type slot 独立。"" 表示该 slot 未绑定。
+    setProviderIdInputs({
+      claude: share.bindings.claude ?? "",
+      codex: share.bindings.codex ?? "",
+      gemini: share.bindings.gemini ?? "",
+    });
     setDescriptionInput(share.description ?? "");
     setOwnerEmailInput(share.ownerEmail ?? "");
     setShareToEmails(currentNonMarketEmails);
@@ -281,10 +289,17 @@ export function EditShareDialog({
     !/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/.test(subdomainInput.trim()) ||
     ["admin", "api", "www", "cdn-cgi"].includes(subdomainInput.trim());
   const sharePaused = share.status === "paused";
-  const providerIdDirty = providerIdInput.trim() !== (share.providerId ?? "");
-  // 后端要求 paused 才能改绑；UI 同步禁选避免误操作。
-  const providerIdReadOnly = readOnly || !sharePaused;
-  const providerIdInvalid = providerIdInput.trim().length === 0;
+  // P8：每个 slot 独立 dirty 检查。"" 视为 "未绑定"，与 share.bindings 缺键等价。
+  const bindingChanges = useMemo(() => {
+    return SHARE_APP_TYPES.map((app: keyof ShareBindings) => {
+      const original = share.bindings[app] ?? "";
+      const input = (providerIdInputs[app] ?? "").trim();
+      return { app, original, input, dirty: input !== original };
+    });
+  }, [providerIdInputs, share.bindings]);
+  const bindingsDirty = bindingChanges.some((entry) => entry.dirty);
+  // 后端要求 paused 才能改 binding；UI 同步禁选避免误操作。
+  const bindingsReadOnly = readOnly || !sharePaused;
   const normalizedDescription = descriptionInput.trim();
   const descriptionDirty = normalizedDescription !== (share.description ?? "");
   const descriptionInvalid = normalizedDescription.length > 200;
@@ -390,7 +405,7 @@ export function EditShareDialog({
     descriptionDirty ||
     expiryDirty ||
     subdomainDirty ||
-    providerIdDirty ||
+    bindingsDirty ||
     tokenLimitDirty ||
     parallelLimitDirty;
   const hasInvalidChanges =
@@ -400,7 +415,6 @@ export function EditShareDialog({
     (descriptionDirty && descriptionInvalid) ||
     (expiryDirty && expiryInvalid) ||
     (subdomainDirty && subdomainInvalid) ||
-    (providerIdDirty && providerIdInvalid) ||
     (tokenLimitDirty && tokenLimitInvalid) ||
     (parallelLimitDirty && parallelLimitInvalid);
 
@@ -428,8 +442,15 @@ export function EditShareDialog({
         await onUpdateDescription(share, normalizedDescription);
       if (expiryDirty) await onUpdateExpiration(share, expiryIso);
       if (subdomainDirty) await onUpdateSubdomain(share, subdomainInput.trim());
-      if (providerIdDirty)
-        await onUpdateProviderBinding(share, providerIdInput.trim());
+      // P8：逐 slot 写改动。`input === ""` 表示解绑（传 null 给后端）。
+      for (const entry of bindingChanges) {
+        if (!entry.dirty) continue;
+        await onUpdateProviderBinding(
+          share,
+          entry.app,
+          entry.input.length > 0 ? entry.input : null,
+        );
+      }
       if (tokenLimitDirty) await onUpdateTokenLimit(share, parsedTokenLimit);
       if (parallelLimitDirty)
         await onUpdateParallelLimit(share, parsedParallelLimit);
@@ -519,85 +540,130 @@ export function EditShareDialog({
             </DialogSection>
 
             <DialogSection
-              title={t("share.appType", { defaultValue: "App 类型" })}
-              hint={t("share.appTypeReadOnly", {
-                defaultValue:
-                  "app 类型创建后不可修改。如需切换请新建一个 share。",
+              title={t("share.providerBindings", {
+                defaultValue: "Provider 绑定",
               })}
-            >
-              <Badge variant="outline" className="capitalize">
-                {share.appType}
-              </Badge>
-            </DialogSection>
-
-            <DialogSection
-              title={t("share.providerBinding", { defaultValue: "Provider 绑定" })}
               hint={
                 sharePaused
-                  ? t("share.providerBindingEditHint", {
+                  ? t("share.providerBindingsEditHint", {
                       defaultValue:
-                        "改绑后请求会立刻路由到新 provider；Resume 后生效。",
+                        "为每个 app 独立挑一个 provider，留空 = 该 app 在本 share 上不可用。",
                     })
                   : t("share.providerBindingPausedRequired", {
                       defaultValue:
                         "改绑前必须先暂停（Pause）share，避免请求落在中间态。",
                     })
               }
-              invalid={providerIdDirty && providerIdInvalid}
             >
-              <Select
-                value={providerIdInput || undefined}
-                disabled={busy || providerIdReadOnly}
-                onValueChange={setProviderIdInput}
-              >
-                <SelectTrigger>
-                  <SelectValue
-                    placeholder={t("share.providerBindingPlaceholder", {
-                      defaultValue: "选择本 share 绑定的 provider",
-                    })}
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {providers.length === 0 ? (
-                    <SelectItem value="__empty__" disabled>
-                      {t("share.providerBindingEmpty", {
-                        defaultValue: "暂无可绑定 provider",
-                      })}
-                    </SelectItem>
-                  ) : (
-                    providers.map((provider) => (
-                      <SelectItem
-                        key={provider.id}
-                        value={provider.id}
-                        disabled={provider.disabled}
-                      >
-                        {provider.name}
-                        {provider.disabled
-                          ? ` · ${t("share.providerBindingTaken", {
-                              defaultValue: "已被其他 share 绑定",
-                            })}`
-                          : ""}
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-              {/* A-3：share active 时点这个按钮一键完成 disable→rebind→enable，
-                  避免用户被 paused-required 错误卡住。 */}
-              {!sharePaused && providerIdDirty && providerIdInput && onRebindAtomic ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="mt-2"
-                  disabled={busy || providerIdInvalid}
-                  onClick={() => void onRebindAtomic(share, providerIdInput)}
-                >
-                  {t("share.rebindAtomicAction", {
-                    defaultValue: "自动暂停并改绑 → 恢复",
-                  })}
-                </Button>
-              ) : null}
+              <div className="grid gap-3">
+                {SHARE_APP_TYPES.map((app) => {
+                  const candidates = providersByApp[app] ?? [];
+                  const value = providerIdInputs[app] ?? "";
+                  const entry = bindingChanges.find((c) => c.app === app);
+                  const dirty = entry?.dirty ?? false;
+                  return (
+                    <div
+                      key={app}
+                      className="grid gap-1 rounded-md border border-default/50 p-2"
+                    >
+                      <div className="flex items-center justify-between text-xs font-medium uppercase text-muted-foreground">
+                        <span>{app}</span>
+                        {value ? (
+                          <Badge variant="outline" className="text-[10px]">
+                            {t("share.bound", { defaultValue: "已绑定" })}
+                          </Badge>
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] text-muted-foreground"
+                          >
+                            {t("share.unbound", { defaultValue: "未绑定" })}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Select
+                          value={value || undefined}
+                          disabled={busy || bindingsReadOnly}
+                          onValueChange={(next) =>
+                            setProviderIdInputs((prev) => ({
+                              ...prev,
+                              [app]: next,
+                            }))
+                          }
+                        >
+                          <SelectTrigger className="flex-1">
+                            <SelectValue
+                              placeholder={t("share.providerBindingPlaceholder", {
+                                defaultValue: `为 ${app} 选一个 provider`,
+                              })}
+                            />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {candidates.length === 0 ? (
+                              <SelectItem value="__empty__" disabled>
+                                {t("share.providerBindingEmpty", {
+                                  defaultValue: "暂无可绑定 provider",
+                                })}
+                              </SelectItem>
+                            ) : (
+                              candidates.map((provider) => (
+                                <SelectItem
+                                  key={provider.id}
+                                  value={provider.id}
+                                  disabled={provider.disabled}
+                                >
+                                  {provider.name}
+                                  {provider.disabled
+                                    ? ` · ${t("share.providerBindingTaken", {
+                                        defaultValue: "已被其他 share 绑定",
+                                      })}`
+                                    : ""}
+                                </SelectItem>
+                              ))
+                            )}
+                          </SelectContent>
+                        </Select>
+                        {value ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={busy || bindingsReadOnly}
+                            onClick={() =>
+                              setProviderIdInputs((prev) => ({
+                                ...prev,
+                                [app]: "",
+                              }))
+                            }
+                            title={t("share.providerBindingClear", {
+                              defaultValue: "清空（解绑）",
+                            })}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        ) : null}
+                      </div>
+                      {/* A-3：share active 时一键 disable→rebind→enable，避免用户被 paused-required 卡住。 */}
+                      {!sharePaused && dirty && onRebindAtomic ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() =>
+                            void onRebindAtomic(share, app, value || null)
+                          }
+                        >
+                          {t("share.rebindAtomicAction", {
+                            defaultValue: "自动暂停并改绑 → 恢复",
+                          })}
+                        </Button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
             </DialogSection>
 
             {/* A-1：轮换 token。点击触发外部 mutation；不在 form 内，立即生效。 */}

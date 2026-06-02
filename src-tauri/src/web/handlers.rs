@@ -27,7 +27,9 @@ pub async fn context(State(state): State<ProxyState>, headers: HeaderMap) -> Res
             "shareId": scope.share.id,
             "shareName": scope.share.name,
             "subdomain": scope.share.subdomain,
-            "appType": scope.share.app_type,
+            // P8: share 不再有单一 app_type；返回所有已绑定 slot 的列表。
+            "supportedApps": scope.share.supported_apps(),
+            "bindings": scope.share.bindings,
             "status": scope.share.status,
             "permissions": [
                 "read_share"
@@ -183,7 +185,8 @@ async fn invoke_share_scoped(
             "hermes": false,
         })),
         "get_providers" => Ok(json!({})),
-        "get_current_provider" => Ok(json!(scope.share.provider_id.clone().unwrap_or_default())),
+        // P8: share 端 web admin 不再展示单一 current_provider；返回所有 slot bindings。
+        "get_current_provider" => Ok(json!(scope.share.bindings.clone())),
         "list_shares" => Ok(json!([sanitize_share_for_web(scope.share.clone())])),
         "get_share_detail" => Ok(json!(Some(sanitize_share_for_web(scope.share.clone())))),
         "get_tunnel_status" => Ok(json!(share_tunnel_status(state, share_id).await?)),

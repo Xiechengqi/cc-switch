@@ -69,24 +69,26 @@ impl ShareService {
         let expires_at = now + chrono::Duration::seconds(params.expires_in_secs);
         let description = normalize_description(params.description)?;
         let for_sale = normalize_for_sale(&params.for_sale)?;
-        let app_type = normalize_share_app_type(&params.app_type)?;
         let parallel_limit = normalize_parallel_limit(params.parallel_limit)?;
         let owner_email = normalize_email(&params.owner_email)?;
         let token_limit = params.token_limit;
 
-        let provider_id = normalize_provider_id(&params.provider_id)?;
-        // 校验：provider 存在 + app_type 一致。
-        // UNIQUE(provider_id) 由 schema 层兜底；这里先给出明确报错，避免 SQL 抛
-        // generic 错误。
-        let provider = db
-            .get_provider_by_id(&provider_id, &app_type)?
-            .ok_or_else(|| {
-                AppError::Message(format!(
-                    "Provider {provider_id} 在 {app_type} 应用下不存在，无法绑定 share"
-                ))
-            })?;
-        // get_provider_by_id 已按 app_type 过滤，这一行只作为不变量自检。
-        debug_assert_eq!(provider.id, provider_id);
+        // P8 校验每个 binding 的 (app_type 合法 + provider 存在且 app_type 一致)。
+        // 0 binding 也允许，创建后再在 UI 逐个挂 provider。
+        let mut bindings = HashMap::new();
+        for (raw_app, raw_pid) in &params.bindings {
+            let app_type = normalize_share_app_type(raw_app)?;
+            let provider_id = normalize_provider_id(raw_pid)?;
+            let provider = db
+                .get_provider_by_id(&provider_id, &app_type)?
+                .ok_or_else(|| {
+                    AppError::Message(format!(
+                        "Provider {provider_id} 在 {app_type} 应用下不存在，无法绑定 share"
+                    ))
+                })?;
+            debug_assert_eq!(provider.id, provider_id);
+            bindings.insert(app_type, provider_id);
+        }
 
         let record = ShareRecord {
             id,
@@ -98,8 +100,7 @@ impl ShareService {
             description,
             for_sale,
             share_token,
-            app_type,
-            provider_id: Some(provider_id),
+            bindings,
             api_key: String::new(),
             settings_config: None,
             token_limit,
@@ -307,51 +308,66 @@ impl ShareService {
         Ok(updated)
     }
 
-    /// 改绑 share 到一个新的 provider。
+    /// 改绑 / 新增 / 清空 share 的某个 app slot 的 provider 绑定。
     ///
-    /// 多 share 模式下，share 与 provider 是 1:1 绑定；改绑必须满足：
-    /// - share 当前 status == 'paused'（避免请求路径取到不一致的中间态）
-    /// - 新 provider 存在且 app_type 与 share 一致
-    /// - UNIQUE(provider_id) 不冲突（SQLite 层兜底）
-    /// - 乐观锁：share.provider_id 自调用方读取后未被其他操作改动（B-1）
-    /// 成功后会向 share_binding_history 写一行审计（C-3）。
+    /// P8 多 app share：share 对每个 app_type 各自维护一个 slot。本函数处理 (share_id,
+    /// app_type) 这一对。
+    ///   - `new_provider_id = Some(...)` → 新建或改绑该 slot
+    ///   - `new_provider_id = None`     → 清空该 slot（解绑）
+    ///
+    /// 校验链：
+    /// - share 当前 status == 'paused'（避免请求路径取到不一致中间态）
+    /// - new_provider_id 非 None 时：provider 存在 + app_type 与目标 slot 一致
+    /// - UNIQUE(provider_id) 由 schema 兜底（一个 provider 不能同时占多 slot）
+    /// - 乐观锁 CAS：读到的老 slot 自调用方读取后未被其他操作改动（B-1）
+    /// - 与现有值相同时返回错误，避免误触发审计
+    ///
+    /// 成功后向 share_binding_history 写一行审计（C-3）。
     pub fn update_provider_binding(
         db: &Arc<Database>,
         share_id: &str,
-        new_provider_id: &str,
+        app_type: &str,
+        new_provider_id: Option<&str>,
     ) -> Result<ShareRecord, AppError> {
         let share = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
         if share.status != "paused" {
-            // B-2: 错误信息前缀标记 [paused-required]，让前端能识别并显示
-            // "先暂停"的快捷操作；user-facing 信息在前缀之后保持自然语言。
             return Err(AppError::Message(format!(
                 "[paused-required] Share 改绑 provider 前必须先暂停，当前状态: {}",
                 share.status
             )));
         }
-        let new_provider_id = normalize_provider_id(new_provider_id)?;
-        if share.provider_id.as_deref() == Some(new_provider_id.as_str()) {
-            return Err(AppError::Message(
-                "新 provider 与当前绑定一致，无需改绑".to_string(),
-            ));
+        let app_type = normalize_share_app_type(app_type)?;
+        let old_provider_id = share.bindings.get(&app_type).cloned();
+
+        let normalized_new = match new_provider_id {
+            Some(value) if !value.trim().is_empty() => Some(normalize_provider_id(value)?),
+            _ => None,
+        };
+
+        if normalized_new == old_provider_id {
+            return Err(AppError::Message(if normalized_new.is_none() {
+                format!("{app_type} slot 已经为空，无需操作")
+            } else {
+                format!("{app_type} 槽位的 provider 与当前绑定一致，无需改绑")
+            }));
         }
-        let provider = db
-            .get_provider_by_id(&new_provider_id, &share.app_type)?
-            .ok_or_else(|| {
+
+        if let Some(pid) = &normalized_new {
+            let provider = db.get_provider_by_id(pid, &app_type)?.ok_or_else(|| {
                 AppError::Message(format!(
-                    "Provider {new_provider_id} 在 {} 应用下不存在，无法绑定 share",
-                    share.app_type
+                    "Provider {pid} 在 {app_type} 应用下不存在，无法绑定 share"
                 ))
             })?;
-        debug_assert_eq!(provider.id, new_provider_id);
+            debug_assert_eq!(provider.id, *pid);
+        }
 
-        db.update_share_provider_id_with_history(
+        db.upsert_share_binding_with_history(
             share_id,
-            share.provider_id.as_deref(),
-            &new_provider_id,
-            &share.app_type,
+            &app_type,
+            old_provider_id.as_deref(),
+            normalized_new.as_deref(),
         )?;
         let updated = db
             .get_share_by_id(share_id)?
@@ -607,9 +623,9 @@ impl ShareService {
 
 pub struct PrepareShareParams {
     pub owner_email: String,
-    pub app_type: String,
-    /// 绑定的 provider id（必填）。share 请求只走该 provider，不参与 failover。
-    pub provider_id: String,
+    /// P8 多 app share：创建时一次性提交 0..3 个 binding（键 = app_type）。
+    /// 全空允许（创建后再在 UI 里逐个挂 provider）。
+    pub bindings: HashMap<String, String>,
     pub description: Option<String>,
     pub for_sale: String,
     pub token_limit: i64,
@@ -619,7 +635,8 @@ pub struct PrepareShareParams {
     pub auto_start: bool,
 }
 
-fn normalize_share_app_type(value: &str) -> Result<String, AppError> {
+/// 校验 app_type 是否在多 app share 支持的集合内。
+pub(crate) fn normalize_share_app_type(value: &str) -> Result<String, AppError> {
     let value = value.trim().to_ascii_lowercase();
     match value.as_str() {
         "claude" | "codex" | "gemini" => Ok(value),
@@ -633,7 +650,7 @@ fn normalize_provider_id(value: &str) -> Result<String, AppError> {
     let value = value.trim();
     if value.is_empty() {
         return Err(AppError::Message(
-            "Share provider_id 不能为空：每个 share 必须绑定一个 provider".to_string(),
+            "Share provider_id 不能为空".to_string(),
         ));
     }
     Ok(value.to_string())
@@ -786,10 +803,12 @@ mod tests {
     }
 
     fn base_params(provider_id: &str) -> PrepareShareParams {
+        // 默认绑 claude slot；测试需要其它 slot 时直接改 bindings。
+        let mut bindings = HashMap::new();
+        bindings.insert("claude".to_string(), provider_id.to_string());
         PrepareShareParams {
             owner_email: "user@example.com".to_string(),
-            app_type: "claude".to_string(),
-            provider_id: provider_id.to_string(),
+            bindings,
             description: None,
             for_sale: "No".to_string(),
             token_limit: ShareService::UNLIMITED_TOKEN_LIMIT,
@@ -801,6 +820,8 @@ mod tests {
     }
 
     fn raw_share(id: &str, provider_id: &str, token: &str, subdomain: &str) -> ShareRecord {
+        let mut bindings = HashMap::new();
+        bindings.insert("claude".to_string(), provider_id.to_string());
         ShareRecord {
             id: id.to_string(),
             name: id.to_string(),
@@ -811,8 +832,7 @@ mod tests {
             description: None,
             for_sale: "No".to_string(),
             share_token: token.to_string(),
-            app_type: "claude".to_string(),
-            provider_id: Some(provider_id.to_string()),
+            bindings,
             api_key: String::new(),
             settings_config: None,
             token_limit: ShareService::UNLIMITED_TOKEN_LIMIT,
@@ -833,7 +853,8 @@ mod tests {
     fn prepare_create_rejects_empty_provider_id() {
         let db = fresh_db();
         let mut params = base_params("");
-        params.provider_id = "   ".to_string();
+        // 显式塞一个空 provider_id 进 binding，触发 normalize_provider_id 拒绝。
+        params.bindings.insert("claude".to_string(), "   ".to_string());
         let err = ShareService::prepare_create(&db, params)
             .expect_err("empty provider_id must be rejected");
         assert!(
@@ -856,7 +877,7 @@ mod tests {
     #[test]
     fn prepare_create_rejects_app_type_mismatch() {
         let db = fresh_db();
-        // provider 注册在 codex 下，但 share 想绑到 claude — get_provider_by_id
+        // provider 注册在 codex 下，但 binding 写 ("claude", p1) — get_provider_by_id
         // 按 (id, app_type) 联合查询，结果应当为 None。
         db.save_provider("codex", &make_provider("p1", "codex"))
             .expect("save provider");
@@ -875,16 +896,46 @@ mod tests {
             .expect("save provider");
         let record = ShareService::prepare_create(&db, base_params("p1"))
             .expect("valid binding should succeed");
-        assert_eq!(record.provider_id.as_deref(), Some("p1"));
-        assert_eq!(record.app_type, "claude");
+        assert_eq!(record.bindings.get("claude").map(String::as_str), Some("p1"));
+        assert_eq!(record.primary_app().as_deref(), Some("claude"));
         assert_eq!(record.status, "paused");
         assert!(!record.share_token.is_empty());
     }
 
+    /// P8 新增：可以一次创建多 app share，bindings 全部落库。
+    #[test]
+    fn prepare_create_accepts_multi_app_bindings() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p-claude", "claude"))
+            .unwrap();
+        db.save_provider("codex", &make_provider("p-codex", "codex"))
+            .unwrap();
+        let mut params = base_params("p-claude");
+        params.bindings.insert("codex".to_string(), "p-codex".to_string());
+        let record = ShareService::prepare_create(&db, params).expect("multi-app prepare ok");
+        ShareService::create(&db, record.clone()).expect("create ok");
+
+        let stored = db.get_share_by_id(&record.id).unwrap().unwrap();
+        assert_eq!(stored.supported_apps(), vec!["claude", "codex"]);
+        assert_eq!(stored.bindings.get("claude").map(String::as_str), Some("p-claude"));
+        assert_eq!(stored.bindings.get("codex").map(String::as_str), Some("p-codex"));
+    }
+
+    /// P8 新增：完全不绑也允许（用户后续逐个挂）。
+    #[test]
+    fn prepare_create_accepts_empty_bindings() {
+        let db = fresh_db();
+        let mut params = base_params("ignored");
+        params.bindings.clear();
+        let record =
+            ShareService::prepare_create(&db, params).expect("empty bindings allowed");
+        assert!(record.bindings.is_empty());
+        assert!(record.primary_app().is_none());
+    }
+
     #[test]
     fn unique_provider_constraint_blocks_second_active_binding() {
-        // 直接走 DB 层验证 schema UNIQUE INDEX 生效，避免依赖 ShareService::create
-        // 触发的异步 tunnel sync。
+        // 走侧表 UNIQUE INDEX：同一 provider 全局只能挂一个 share-slot。
         let db = fresh_db();
         db.create_share(&raw_share("s1", "p1", "tok1", "sub1"))
             .expect("first share inserts");
@@ -897,18 +948,21 @@ mod tests {
         );
     }
 
+    /// P8 新增：同一个 provider 不能在两个 slot 里出现（侧表 UNIQUE 兜底）。
     #[test]
-    fn deleted_share_releases_unique_provider_slot() {
+    fn unique_provider_blocks_same_provider_in_two_slots() {
         let db = fresh_db();
-        db.create_share(&raw_share("s1", "p1", "tok1", "sub1"))
-            .expect("first share inserts");
-        db.update_share_status("s1", "deleted")
-            .expect("mark first deleted");
-        db.create_share(&raw_share("s2", "p1", "tok2", "sub2"))
-            .expect("partial UNIQUE INDEX excludes deleted rows");
+        let mut share = raw_share("s1", "p1", "tok1", "sub1");
+        // 试图把同一个 provider 同时绑到 claude 和 codex 两个 slot — 侧表 UNIQUE 兜底拒绝。
+        share.bindings.insert("codex".to_string(), "p1".to_string());
+        let err = db
+            .create_share(&share)
+            .expect_err("same provider in two slots must be rejected");
+        assert!(
+            err.to_string().to_ascii_lowercase().contains("unique"),
+            "unexpected error: {err}"
+        );
     }
-
-    // ──────────────── P6: 新增覆盖 ────────────────
 
     /// E-1：rebind 成功路径 + 写审计 + 乐观锁。
     #[test]
@@ -922,19 +976,20 @@ mod tests {
         share.status = "paused".to_string();
         db.create_share(&share).unwrap();
 
-        let updated = ShareService::update_provider_binding(&db, "s1", "p2")
+        let updated = ShareService::update_provider_binding(&db, "s1", "claude", Some("p2"))
             .expect("rebind succeeds");
-        assert_eq!(updated.provider_id.as_deref(), Some("p2"));
+        assert_eq!(updated.bindings.get("claude").map(String::as_str), Some("p2"));
 
         let history = db.list_share_binding_history("s1", 10).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].old_provider_id.as_deref(), Some("p1"));
-        assert_eq!(history[0].new_provider_id, "p2");
+        assert_eq!(history[0].new_provider_id.as_deref(), Some("p2"));
 
-        // 乐观锁：手动把 provider_id 改回 p1，再用"以为还是 p2"的快照改绑应失败。
-        db.update_share_provider_id("s1", "p1").unwrap();
+        // 乐观锁：手动把 slot 改回 p1，再用"以为还是 p2"的快照改绑应失败。
+        db.upsert_share_binding_with_history("s1", "claude", Some("p2"), Some("p1"))
+            .unwrap();
         let err = db
-            .update_share_provider_id_with_history("s1", Some("p2"), "p1", "claude")
+            .upsert_share_binding_with_history("s1", "claude", Some("p2"), Some("p1"))
             .expect_err("stale snapshot rejected");
         assert!(err.to_string().contains("已被其他操作改动"));
     }
@@ -951,13 +1006,32 @@ mod tests {
         share.status = "active".to_string();
         db.create_share(&share).unwrap();
 
-        let err = ShareService::update_provider_binding(&db, "s1", "p2")
+        let err = ShareService::update_provider_binding(&db, "s1", "claude", Some("p2"))
             .expect_err("active share rebind blocked");
-        // B-2：UI 根据 [paused-required] 前缀识别这条错误
         assert!(
             err.to_string().contains("[paused-required]"),
             "missing marker: {err}"
         );
+    }
+
+    /// P8 新增：清空 slot（解绑）也走 update_provider_binding，传 None。
+    #[test]
+    fn update_provider_binding_supports_unbind() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .unwrap();
+        let mut share = raw_share("s1", "p1", "tok", "sub1");
+        share.status = "paused".to_string();
+        db.create_share(&share).unwrap();
+
+        let updated = ShareService::update_provider_binding(&db, "s1", "claude", None)
+            .expect("unbind succeeds");
+        assert!(updated.bindings.is_empty());
+
+        let history = db.list_share_binding_history("s1", 10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].old_provider_id.as_deref(), Some("p1"));
+        assert!(history[0].new_provider_id.is_none());
     }
 
     /// A-1：token 轮换不要求 paused，老 token 立即换。
@@ -972,7 +1046,6 @@ mod tests {
     }
 
     /// E-4：api_key 字段是历史遗留死字段，prepare_create 永远写空串。
-    /// 显式 assertion 防止未来意外把它当成上游 API key 复用。
     #[test]
     fn prepare_create_leaves_api_key_empty_by_design() {
         let db = fresh_db();

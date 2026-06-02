@@ -1,4 +1,12 @@
 import { invokeCommand } from "@/lib/runtime";
+
+/**
+ * 一个 share 在每个 app_type 上各自绑定的 provider id。
+ * P8 多 app share：键固定从 "claude" | "codex" | "gemini" 三个 app 里挑，缺省 = 该 app
+ * 未绑定，对应请求会被拒绝并 emit share-needs-rebind。
+ */
+export type ShareBindings = Partial<Record<"claude" | "codex" | "gemini", string>>;
+
 export interface ShareRecord {
   id: string;
   name: string;
@@ -9,8 +17,8 @@ export interface ShareRecord {
   description?: string | null;
   forSale: "Yes" | "No" | "Free";
   shareToken: string;
-  appType: string;
-  providerId?: string | null;
+  /** P8: 每个 app_type 的 provider 绑定。三个 slot 各自独立，0..3 个 entry。 */
+  bindings: ShareBindings;
   apiKey: string;
   settingsConfig?: string | null;
   tokenLimit: number;
@@ -28,12 +36,11 @@ export interface ShareRecord {
 
 export interface CreateShareParams {
   ownerEmail: string;
-  appType: "claude" | "codex" | "gemini";
   /**
-   * 绑定的 provider id（必填）。share 请求只走该 provider，
-   * 不参与 failover，且不会被其他 share 同时绑定。
+   * P8 多 app share：创建时一次性提交 0..3 个 binding。完全为空也允许，用户可后续
+   * 在 Edit 弹窗里逐个挂 provider。
    */
-  providerId: string;
+  bindings: ShareBindings;
   description?: string;
   forSale: "Yes" | "No" | "Free";
   tokenLimit: number;
@@ -45,15 +52,58 @@ export interface CreateShareParams {
 
 export interface UpdateShareProviderBindingParams {
   shareId: string;
-  providerId: string;
+  /** 目标 slot 的 app_type（claude / codex / gemini）。 */
+  appType: "claude" | "codex" | "gemini";
+  /**
+   * 新 provider id。`null` / 省略 = 清空该 slot（解绑），share 在该 app 上将不再可用。
+   */
+  providerId?: string | null;
 }
 
 export interface ShareBindingHistoryEntry {
   id: number;
   oldProviderId: string | null;
-  newProviderId: string;
+  /** `null` 表示这是一次解绑事件（slot 被清空）。 */
+  newProviderId: string | null;
   appType: string;
   changedAt: string;
+}
+
+export const SHARE_APP_TYPES: ReadonlyArray<keyof ShareBindings> = [
+  "claude",
+  "codex",
+  "gemini",
+];
+
+/**
+ * 返回该 share 已绑定的 app_type 列表（按 claude > codex > gemini 顺序）。
+ */
+export function shareSupportedApps(
+  share: Pick<ShareRecord, "bindings"> | null | undefined,
+): Array<keyof ShareBindings> {
+  if (!share) return [];
+  return SHARE_APP_TYPES.filter((app) => {
+    const pid = share.bindings?.[app];
+    return typeof pid === "string" && pid.length > 0;
+  });
+}
+
+/**
+ * "主 app"：用于卡片摘要、列表行、表单默认聚焦等单值场景。
+ * 优先级与后端 ShareRecord::primary_app 保持一致。
+ */
+export function sharePrimaryApp(
+  share: Pick<ShareRecord, "bindings"> | null | undefined,
+): keyof ShareBindings | null {
+  return shareSupportedApps(share)[0] ?? null;
+}
+
+/** 主 app 的 provider id（与 sharePrimaryApp 对应）。 */
+export function sharePrimaryProviderId(
+  share: Pick<ShareRecord, "bindings"> | null | undefined,
+): string | null {
+  const app = sharePrimaryApp(share);
+  return app ? share?.bindings?.[app] ?? null : null;
 }
 
 export interface PublicMarket {

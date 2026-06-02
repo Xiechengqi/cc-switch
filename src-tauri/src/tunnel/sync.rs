@@ -484,7 +484,10 @@ async fn refresh_share_runtime_after_provider_switch(
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|share| {
-            share.status == "active" && share.subdomain.is_some() && share.app_type == app_str
+            // P8 多 app share：筛选所有"有 app_str 这个 slot binding"的 share。
+            share.status == "active"
+                && share.subdomain.is_some()
+                && share.bindings.contains_key(app_str)
         })
         .collect();
 
@@ -1801,6 +1804,12 @@ fn load_config() -> TunnelConfig {
 }
 
 pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMetadata {
+    // P8 多 app share：router 端 ShareTunnelMetadata.app_type / provider_id 仍是必填，
+    // 用"主 app slot"填充（claude > codex > gemini 优先）。其它 slot 的信息走 router
+    // 已有的 app_runtimes 通道。完全没有 binding 时 app_type 用空串占位 — 这种 share
+    // 不会通过 active 状态推送到 router。
+    let primary_app = share.primary_app().unwrap_or_default();
+    let primary_pid = share.primary_provider_id();
     ShareTunnelMetadata {
         share_id: share.id.clone(),
         share_name: share.name.clone(),
@@ -1814,8 +1823,8 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         for_sale: share.for_sale.clone(),
         subdomain: share.subdomain.clone().unwrap_or_default(),
         share_token: share.share_token.clone(),
-        app_type: share.app_type.clone(),
-        provider_id: share.provider_id.clone(),
+        app_type: primary_app,
+        provider_id: primary_pid,
         token_limit: share.token_limit,
         parallel_limit: share.parallel_limit,
         tokens_used: share.tokens_used,

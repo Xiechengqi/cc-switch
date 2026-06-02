@@ -69,19 +69,22 @@ pub async fn invoke(
     }
 }
 
-pub async fn serve_index() -> Response {
-    serve_dist_file(Path::new(INDEX_HTML)).await
+pub async fn serve_index(State(state): State<ProxyState>) -> Response {
+    serve_dist_file(&state, Path::new(INDEX_HTML)).await
 }
 
-pub async fn serve_favicon() -> Response {
-    serve_dist_file(Path::new("favicon.ico")).await
+pub async fn serve_favicon(State(state): State<ProxyState>) -> Response {
+    serve_dist_file(&state, Path::new("favicon.ico")).await
 }
 
-pub async fn serve_asset(AxumPath(path): AxumPath<String>) -> Response {
+pub async fn serve_asset(
+    State(state): State<ProxyState>,
+    AxumPath(path): AxumPath<String>,
+) -> Response {
     let Some(path) = sanitize_asset_path(&path) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid asset path");
     };
-    serve_dist_file(&path).await
+    serve_dist_file(&state, &path).await
 }
 
 #[derive(Debug)]
@@ -275,8 +278,8 @@ fn sanitize_asset_path(raw: &str) -> Option<PathBuf> {
     }
 }
 
-async fn serve_dist_file(path: &Path) -> Response {
-    let Some(root) = dist_root() else {
+async fn serve_dist_file(state: &ProxyState, path: &Path) -> Response {
+    let Some(root) = dist_root(state) else {
         return error_response(StatusCode::NOT_FOUND, "web dist directory not found");
     };
     let full_path = root.join(path);
@@ -304,7 +307,17 @@ async fn serve_dist_file(path: &Path) -> Response {
     }
 }
 
-fn dist_root() -> Option<PathBuf> {
+fn dist_root(state: &ProxyState) -> Option<PathBuf> {
+    if let Some(resource_dist) = state
+        .app_handle
+        .as_ref()
+        .and_then(|app| app.path().resource_dir().ok())
+        .map(|resource_dir| resource_dir.join("dist"))
+        .filter(|path| path.join(INDEX_HTML).exists())
+    {
+        return Some(resource_dist);
+    }
+
     let manifest_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist");
     if manifest_dist.join(INDEX_HTML).exists() {
         return Some(manifest_dist);

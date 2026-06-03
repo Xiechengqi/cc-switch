@@ -32,7 +32,6 @@ import {
   useUpdateShareParallelLimitMutation,
   useUpdateShareSubdomainMutation,
   useUpdateShareProviderBindingMutation,
-  useRotateShareTokenMutation,
   useUpdateShareTokenLimitMutation,
   useTransferShareOwnerMutation,
 } from "@/lib/query";
@@ -158,7 +157,6 @@ export function SharePage({
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
   const updateProviderBindingMutation =
     useUpdateShareProviderBindingMutation();
-  const rotateTokenMutation = useRotateShareTokenMutation();
   const updateTokenLimitMutation = useUpdateShareTokenLimitMutation();
   const configureTunnelMutation = useConfigureTunnelMutation();
   const {
@@ -576,13 +574,6 @@ export function SharePage({
                     appType,
                     providerId,
                   }),
-            )
-          }
-          onRotateToken={(share) =>
-            runShareAction(share, () =>
-              shareScoped
-                ? Promise.resolve()
-                : rotateTokenMutation.mutateAsync({ shareId: share.id }),
             )
           }
           onRebindAtomic={(share, appType, providerId) =>

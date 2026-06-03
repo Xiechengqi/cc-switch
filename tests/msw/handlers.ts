@@ -352,7 +352,6 @@ export const handlers = [
       sharedWithEmails: [],
       description: params.description ?? null,
       forSale: params.forSale ?? "No",
-      shareToken: `token-${now}`,
       appType: "proxy",
       providerId: null,
       apiKey: "",

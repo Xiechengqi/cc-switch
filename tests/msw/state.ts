@@ -22,7 +22,6 @@ type LiveProviderIdsByApp = Record<
 >;
 type ShareConnectInfo = {
   tunnelUrl: string;
-  shareToken: string;
   subdomain: string;
 };
 
@@ -431,7 +430,6 @@ export const getShareConnectInfo = (shareId: string): ShareConnectInfo | null =>
   if (!share) return null;
   return {
     tunnelUrl: share.tunnelUrl ?? "",
-    shareToken: share.shareToken,
     subdomain: share.subdomain ?? "",
   };
 };

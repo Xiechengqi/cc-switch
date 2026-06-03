@@ -17,7 +17,6 @@ const baseShare: ShareRecord = {
   marketAccessMode: "selected",
   forSaleOfficialPricePercentByApp: {},
   forSale: "No",
-  shareToken: "token",
   bindings: {},
   apiKey: "key",
   settingsConfig: null,

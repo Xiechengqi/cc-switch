@@ -57,7 +57,6 @@ describe("share query hooks", () => {
       ownerEmail: "owner@example.com",
       sharedWithEmails: [],
       forSale: "No",
-      shareToken: "token",
       bindings: {},
       apiKey: "",
       settingsConfig: null,

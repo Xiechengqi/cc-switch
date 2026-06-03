@@ -117,10 +117,6 @@ interface EditShareDialogProps {
     providerId: string | null,
   ) => Promise<void> | void;
   /**
-   * A-1：轮换 share_token。老 token 立即失效，新 token 立即可用，无需 share paused。
-   */
-  onRotateToken?: (share: ShareRecord) => Promise<void> | void;
-  /**
    * A-3：当 share 处于 active 状态时，点击"自动暂停并改绑"按钮触发
    * disable → rebind → enable 的链式操作。完成后 share 仍为 active。
    * `providerId = null` 表示在该 slot 上做"自动暂停并解绑"。
@@ -158,7 +154,6 @@ export function EditShareDialog({
   onTransferOwner,
   onUpdateAcl,
   onUpdateProviderBinding,
-  onRotateToken,
   onRebindAtomic,
 }: EditShareDialogProps) {
   const { t } = useTranslation();
@@ -686,27 +681,6 @@ export function EditShareDialog({
 
             {/* P9-C：binding 改动审计历史。默认折叠，展开后才拉数据，避免每次开 Dialog 都查 DB。 */}
             <BindingHistorySection shareId={share.id} providerNameByKey={providerNameByKey} />
-
-            {/* A-1：轮换 token。点击触发外部 mutation；不在 form 内，立即生效。 */}
-            <DialogSection
-              title={t("share.rotateToken", { defaultValue: "Token 轮换" })}
-              hint={t("share.rotateTokenHint", {
-                defaultValue:
-                  "生成新 token，老 token 立即失效。请把新 token 重新下发给所有调用方，否则他们的请求会被拒绝。",
-              })}
-            >
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={busy || readOnly || !onRotateToken}
-                onClick={() => onRotateToken?.(share)}
-              >
-                {t("share.rotateTokenAction", {
-                  defaultValue: "立即轮换 Token",
-                })}
-              </Button>
-            </DialogSection>
 
             <DialogSection
               title={t("share.sharedWithEmails", { defaultValue: "Share To" })}

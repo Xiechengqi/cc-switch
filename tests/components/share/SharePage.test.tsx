@@ -39,7 +39,6 @@ describe("SharePage", () => {
         marketAccessMode: "selected",
         forSaleOfficialPricePercentByApp: {},
         forSale: "No",
-        shareToken: "token-1",
         bindings: {},
         apiKey: "",
         settingsConfig: null,

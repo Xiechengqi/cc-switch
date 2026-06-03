@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Copy, Edit3, Eye, EyeOff, Play, Power, RotateCcw, Trash2 } from "lucide-react";
+import { Copy, Edit3, Play, Power, RotateCcw, Trash2 } from "lucide-react";
 import type {
   PublicMarket,
   ShareRecord,
@@ -123,7 +123,6 @@ interface ShareCardProps {
     appType: "claude" | "codex" | "gemini",
     providerId: string | null,
   ) => Promise<void> | void;
-  onRotateToken?: (share: ShareRecord) => Promise<void> | void;
   onRebindAtomic?: (
     share: ShareRecord,
     appType: "claude" | "codex" | "gemini",
@@ -166,7 +165,6 @@ export function ShareCard({
   onUpdateAcl,
   providersByAppForEdit,
   onUpdateProviderBinding,
-  onRotateToken,
   onRebindAtomic,
 }: ShareCardProps) {
   const { t } = useTranslation();
@@ -428,15 +426,12 @@ export function ShareCard({
               }
             />
           </div>
-          {/* D-3 + D-4：token 默认 mask，点眼睛切换显示；右侧"复制命令"按主 app 生成接入示例。 */}
+          {/* token 已废弃：调用方使用各自在 router 登录后拿到的 user_api_token，
+              这里只展示接入命令模板（占位符 $ROUTER_API_TOKEN 让被分享方知道要替换）。 */}
           <div className="mt-3">
-            <TokenSecretLine
-              token={share.shareToken}
+            <ConnectCommandLine
               baseUrl={tunnelDisplay.tunnelUrl}
               appType={primaryAppType ?? "claude"}
-              onCopyToken={() =>
-                void handleCopy(share.shareToken, "share.toast.copyToken")
-              }
               onCopyCommand={(cmd) =>
                 void handleCopy(cmd, "share.toast.copyCommand")
               }
@@ -548,7 +543,6 @@ export function ShareCard({
         providersByApp={providersByAppForEdit ?? { claude: [], codex: [], gemini: [] }}
         providerNameByKey={providerNameByKey}
         onUpdateProviderBinding={onUpdateProviderBinding}
-        onRotateToken={onRotateToken}
         onRebindAtomic={onRebindAtomic}
       />
     </Card>
@@ -657,36 +651,31 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
 }
 
 /**
- * D-3 + D-4：token 默认 mask；展示完整接入命令（base_url + token）。
- * 命令模板按 app_type 选不同环境变量名。
+ * 展示 share 接入命令模板。token 不再由 cc-switch 颁发——调用方各自带
+ * router 登录后的 user_api_token 调用 share URL。模板里用 $ROUTER_API_TOKEN
+ * 占位符，被分享方应替换为自己实际的值。
  */
-function TokenSecretLine({
-  token,
+function ConnectCommandLine({
   baseUrl,
   appType,
-  onCopyToken,
   onCopyCommand,
 }: {
-  token: string;
   baseUrl: string;
   appType: string;
-  onCopyToken: () => void;
   onCopyCommand: (cmd: string) => void;
 }) {
   const { t } = useTranslation();
-  const [visible, setVisible] = useState(false);
-  const masked = token ? `${token.slice(0, 4)}…${token.slice(-4)}` : "-";
 
   const command = (() => {
     switch (appType) {
       case "claude":
-        return `export ANTHROPIC_BASE_URL=${baseUrl}\nexport ANTHROPIC_AUTH_TOKEN=${token}`;
+        return `export ANTHROPIC_BASE_URL=${baseUrl}\nexport ANTHROPIC_AUTH_TOKEN=$ROUTER_API_TOKEN`;
       case "codex":
-        return `export OPENAI_BASE_URL=${baseUrl}\nexport OPENAI_API_KEY=${token}`;
+        return `export OPENAI_BASE_URL=${baseUrl}\nexport OPENAI_API_KEY=$ROUTER_API_TOKEN`;
       case "gemini":
-        return `export GEMINI_BASE_URL=${baseUrl}\nexport GOOGLE_API_KEY=${token}`;
+        return `export GEMINI_BASE_URL=${baseUrl}\nexport GOOGLE_API_KEY=$ROUTER_API_TOKEN`;
       default:
-        return `BASE_URL=${baseUrl}\nTOKEN=${token}`;
+        return `BASE_URL=${baseUrl}\nTOKEN=$ROUTER_API_TOKEN`;
     }
   })();
 
@@ -694,51 +683,28 @@ function TokenSecretLine({
     <div className="rounded-md border border-border-default/70 bg-muted/10 px-3 py-2">
       <div className="flex items-center justify-between">
         <div className="text-xs text-muted-foreground">
-          {t("share.tokenLabel", { defaultValue: "Share Token" })}
+          {t("share.connectInfoLabel", { defaultValue: "接入命令" })}
         </div>
-        <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 text-xs"
-            onClick={() => setVisible((v) => !v)}
-            aria-label={visible ? "hide-token" : "show-token"}
-          >
-            {visible ? (
-              <EyeOff className="h-3.5 w-3.5" />
-            ) : (
-              <Eye className="h-3.5 w-3.5" />
-            )}
-            {visible
-              ? t("share.tokenHide", { defaultValue: "隐藏" })
-              : t("share.tokenShow", { defaultValue: "显示" })}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 text-xs"
-            onClick={onCopyToken}
-          >
-            <Copy className="h-3.5 w-3.5" />
-            {t("share.tokenCopy", { defaultValue: "复制 Token" })}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 gap-1 text-xs"
-            onClick={() => onCopyCommand(command)}
-            title={command}
-          >
-            <Copy className="h-3.5 w-3.5" />
-            {t("share.commandCopy", { defaultValue: "复制接入命令" })}
-          </Button>
-        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1 text-xs"
+          onClick={() => onCopyCommand(command)}
+          title={command}
+        >
+          <Copy className="h-3.5 w-3.5" />
+          {t("share.commandCopy", { defaultValue: "复制接入命令" })}
+        </Button>
       </div>
-      <div className="mt-1 break-all font-mono text-sm">
-        {visible ? token || "-" : masked}
+      <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">
+        {command}
+      </pre>
+      <div className="mt-2 text-[11px] text-muted-foreground">
+        {t("share.connectInfoHint", {
+          defaultValue:
+            "$ROUTER_API_TOKEN 替换为自己在 router 登录后获得的 API token。",
+        })}
       </div>
     </div>
   );

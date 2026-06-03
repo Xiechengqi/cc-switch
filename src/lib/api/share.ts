@@ -16,7 +16,6 @@ export interface ShareRecord {
   forSaleOfficialPricePercentByApp: Record<string, number>;
   description?: string | null;
   forSale: "Yes" | "No" | "Free";
-  shareToken: string;
   /** P8: 每个 app_type 的 provider 绑定。三个 slot 各自独立，0..3 个 entry。 */
   bindings: ShareBindings;
   apiKey: string;
@@ -293,14 +292,6 @@ async function updateProviderBinding(
   return invokeCommand<ShareRecord>("update_share_provider_binding", { params });
 }
 
-/**
- * 轮换 share_token。返回带新 token 的 ShareRecord。老 token 立刻失效，
- * 新 token 立刻可用，无需 share 处于 paused。
- */
-async function rotateToken(shareId: string): Promise<ShareRecord> {
-  return invokeCommand<ShareRecord>("rotate_share_token", { shareId });
-}
-
 async function listBindingHistory(
   shareId: string,
   limit?: number,
@@ -387,7 +378,6 @@ export const shareApi = {
   transferOwner,
   updateAcl,
   updateProviderBinding,
-  rotateToken,
   listBindingHistory,
   exportAll,
   importMany,

@@ -435,19 +435,6 @@ export function useUpdateShareProviderBindingMutation() {
   );
 }
 
-export function useRotateShareTokenMutation() {
-  return useShareActionMutation(
-    ({ shareId }: { shareId: string }) => shareApi.rotateToken(shareId),
-    {
-      successKey: "share.toast.rotateTokenSuccess",
-      successDefault: "Share token 已轮换。请把新 token 重新下发给调用方。",
-      errorKey: "share.toast.rotateTokenError",
-      errorDefault: "轮换 token 失败: {{error}}",
-    },
-    ({ shareId }) => shareId,
-  );
-}
-
 export function useUpdateShareDescriptionMutation() {
   return useShareActionMutation(
     ({ shareId, description }: { shareId: string; description: string }) =>

@@ -88,7 +88,6 @@ interface ShareListProps {
     appType: "claude" | "codex" | "gemini",
     providerId: string | null,
   ) => Promise<void> | void;
-  onRotateToken?: (share: ShareRecord) => Promise<void> | void;
   onRebindAtomic?: (
     share: ShareRecord,
     appType: "claude" | "codex" | "gemini",
@@ -139,7 +138,6 @@ export function ShareList({
   onTransferOwner,
   onUpdateAcl,
   onUpdateProviderBinding,
-  onRotateToken,
   onRebindAtomic,
   providersByApp,
 }: ShareListProps) {
@@ -247,7 +245,6 @@ export function ShareList({
           onTransferOwner={onTransferOwner}
           onUpdateAcl={onUpdateAcl}
           onUpdateProviderBinding={onUpdateProviderBinding}
-          onRotateToken={onRotateToken}
           onRebindAtomic={onRebindAtomic}
           providersByAppForEdit={(() => {
             // share 自己已绑定的 provider 在对应 slot 内不算 taken（让"换回原 provider"

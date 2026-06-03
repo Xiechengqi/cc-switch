@@ -400,15 +400,6 @@ pub async fn update_share_provider_binding(
     .map_err(|e: AppError| e.to_string())
 }
 
-/// 轮换 share_token。返回带新 token 的 ShareRecord。
-#[tauri::command]
-pub async fn rotate_share_token(
-    state: State<'_, AppState>,
-    share_id: String,
-) -> Result<ShareRecord, String> {
-    ShareService::rotate_token(&state.db, &share_id).map_err(|e: AppError| e.to_string())
-}
-
 /// 取 share 改绑历史（最近 N 条）。
 #[tauri::command]
 pub async fn list_share_binding_history(
@@ -421,8 +412,8 @@ pub async fn list_share_binding_history(
 }
 
 /// A-4：导出当前所有 share 配置（JSON）。
-/// 不包含 share_token / api_key 以外的敏感字段；token 仍然要包含因为换设备后
-/// 用户希望接入方零改造。
+/// share_token 已移除（router 边界用 user_api_token 校验，client 不再持有该字段），
+/// api_key 也是历史遗留死字段；导出主要用于换机迁移 share 元数据 + bindings 关系。
 #[tauri::command]
 pub async fn export_all_shares(state: State<'_, AppState>) -> Result<Vec<ShareRecord>, String> {
     ShareService::list(&state.db).map_err(|e: AppError| e.to_string())

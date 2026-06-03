@@ -135,34 +135,24 @@ enum WebScope {
 }
 
 fn resolve_scope(state: &ProxyState, headers: &HeaderMap) -> Result<WebScope, WebError> {
-    let share_token = headers
-        .get("x-share-token")
+    let share_id = headers
+        .get("x-cc-switch-share-id")
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let Some(share_token) = share_token else {
-        return Err(WebError::unauthorized("share token missing"));
+    let Some(share_id) = share_id else {
+        return Err(WebError::unauthorized("share id missing"));
     };
 
-    let validation = ShareService::validate_token_with_reason(&state.db, share_token)?
-        .ok_or_else(|| WebError::unauthorized("share token invalid"))?;
+    let validation = ShareService::validate_share_for_invocation(&state.db, share_id)?
+        .ok_or_else(|| WebError::unauthorized("share not found"))?;
     let Some(share) = validation.share else {
         return Err(WebError::unauthorized(
             validation
                 .message
-                .unwrap_or_else(|| "share token invalid".to_string()),
+                .unwrap_or_else(|| "share is not currently routable".to_string()),
         ));
     };
-    if let Some(header_share_id) = headers
-        .get("x-cc-switch-share-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if header_share_id != share.id {
-            return Err(WebError::unauthorized("share id does not match token"));
-        }
-    }
     Ok(WebScope::Share(ShareScope { share }))
 }
 
@@ -199,7 +189,6 @@ async fn invoke_share_scoped(
 }
 
 fn sanitize_share_for_web(mut share: crate::database::ShareRecord) -> crate::database::ShareRecord {
-    share.share_token.clear();
     share.api_key.clear();
     share.settings_config = None;
     share

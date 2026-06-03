@@ -8,7 +8,7 @@ use crate::proxy::{
     extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
-    share_guard::{check_share_token, share_user_email_from_headers, ShareGuardResult},
+    share_guard::{check_share_request, share_user_email_from_headers, ShareGuardResult},
     types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
     ProxyError,
 };
@@ -376,7 +376,7 @@ fn resolve_share_outcome(
     tag: &'static str,
     app_type_str: &'static str,
 ) -> Result<ShareOutcome, ProxyError> {
-    match check_share_token(&state.db, headers) {
+    match check_share_request(&state.db, headers) {
         ShareGuardResult::NotShareRequest => Ok(ShareOutcome::NotShare),
         ShareGuardResult::Rejected(_code, msg) => Err(ProxyError::AuthError(msg)),
         ShareGuardResult::Valid(share) => {

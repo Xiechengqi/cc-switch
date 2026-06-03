@@ -232,10 +232,10 @@ pub async fn share_router_recent_request_logs(
     State(state): State<ProxyState>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    match crate::proxy::share_guard::check_share_token(&state.db, &headers) {
+    match crate::proxy::share_guard::check_share_request(&state.db, &headers) {
         crate::proxy::share_guard::ShareGuardResult::NotShareRequest => (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "share token required" })),
+            Json(json!({ "error": "share id required" })),
         ),
         crate::proxy::share_guard::ShareGuardResult::Rejected(code, message) => (
             StatusCode::from_u16(code).unwrap_or(StatusCode::FORBIDDEN),

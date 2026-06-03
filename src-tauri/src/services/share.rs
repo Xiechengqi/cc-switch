@@ -64,7 +64,6 @@ impl ShareService {
             .map(|value| normalize_subdomain(&value))
             .transpose()?
             .unwrap_or_else(|| format!("share-{}", &id[..8]));
-        let share_token = Self::generate_token();
         let now = chrono::Utc::now();
         let expires_at = now + chrono::Duration::seconds(params.expires_in_secs);
         let description = normalize_description(params.description)?;
@@ -99,7 +98,6 @@ impl ShareService {
             for_sale_official_price_percent_by_app: HashMap::new(),
             description,
             for_sale,
-            share_token,
             bindings,
             api_key: String::new(),
             settings_config: None,
@@ -158,22 +156,26 @@ impl ShareService {
         db.get_share_by_id(share_id)
     }
 
-    pub fn validate_token_with_reason(
+    /// Resolve a share by its id and decide whether it is currently routable.
+    ///
+    /// Used by the share-scoped proxy handlers and the per-share web admin
+    /// surface. Authentication of the caller (owner / sharedWithEmails / Free)
+    /// is performed by cc-switch-router before the request reaches us; this
+    /// function only enforces share-level lifecycle (active, not expired,
+    /// quota not exhausted).
+    pub fn validate_share_for_invocation(
         db: &Arc<Database>,
-        token: &str,
+        share_id: &str,
     ) -> Result<Option<ShareTokenValidation>, AppError> {
-        let share = match db.get_share_by_token(token)? {
+        let share = match db.get_share_by_id(share_id)? {
             Some(s) => s,
             None => {
                 return Ok(Some(ShareTokenValidation::rejected(
                     ShareTokenRejectReason::NotFound,
-                    "Share token not found on this cc-switch. Copy the latest API Key from Share > Connect Info.",
+                    "Share not found on this cc-switch.",
                 )));
             }
         };
-
-        // 多 share 模式：任何 share 的 token 都可独立使用，
-        // 不再要求是"primary"。
 
         if share.status != "active" {
             return Ok(Some(ShareTokenValidation::rejected(
@@ -191,7 +193,7 @@ impl ShareService {
                 let _ = db.update_share_status(&share.id, "expired");
                 return Ok(Some(ShareTokenValidation::rejected(
                     ShareTokenRejectReason::Expired,
-                    "Share token has expired. Extend the share expiration or create a new share.",
+                    "Share has expired. Extend the share expiration or create a new share.",
                 )));
             }
         }
@@ -369,21 +371,6 @@ impl ShareService {
             old_provider_id.as_deref(),
             normalized_new.as_deref(),
         )?;
-        let updated = db
-            .get_share_by_id(share_id)?
-            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
-        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
-        Ok(updated)
-    }
-
-    /// 轮换 share_token。
-    /// share 不需要 paused —— 老 token 立即失效，新 token 立即可用。
-    pub fn rotate_token(db: &Arc<Database>, share_id: &str) -> Result<ShareRecord, AppError> {
-        // 确认存在并取一个新 token。
-        db.get_share_by_id(share_id)?
-            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
-        let new_token = Self::generate_token();
-        db.rotate_share_token(share_id, &new_token)?;
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
@@ -604,18 +591,6 @@ impl ShareService {
         }
         Ok(updated)
     }
-
-    fn generate_token() -> String {
-        use rand::Rng;
-        const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let mut rng = rand::thread_rng();
-        (0..32)
-            .map(|_| {
-                let idx = rng.gen_range(0..CHARSET.len());
-                CHARSET[idx] as char
-            })
-            .collect()
-    }
 }
 
 pub struct PrepareShareParams {
@@ -814,7 +789,7 @@ mod tests {
         }
     }
 
-    fn raw_share(id: &str, provider_id: &str, token: &str, subdomain: &str) -> ShareRecord {
+    fn raw_share(id: &str, provider_id: &str, subdomain: &str) -> ShareRecord {
         let mut bindings = HashMap::new();
         bindings.insert("claude".to_string(), provider_id.to_string());
         ShareRecord {
@@ -826,7 +801,6 @@ mod tests {
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),
-            share_token: token.to_string(),
             bindings,
             api_key: String::new(),
             settings_config: None,
@@ -899,7 +873,6 @@ mod tests {
         );
         assert_eq!(record.primary_app().as_deref(), Some("claude"));
         assert_eq!(record.status, "paused");
-        assert!(!record.share_token.is_empty());
     }
 
     /// P8 新增：可以一次创建多 app share，bindings 全部落库。
@@ -944,10 +917,10 @@ mod tests {
     fn unique_provider_constraint_blocks_second_active_binding() {
         // 走侧表 UNIQUE INDEX：同一 provider 全局只能挂一个 share-slot。
         let db = fresh_db();
-        db.create_share(&raw_share("s1", "p1", "tok1", "sub1"))
+        db.create_share(&raw_share("s1", "p1", "sub1"))
             .expect("first share inserts");
         let err = db
-            .create_share(&raw_share("s2", "p1", "tok2", "sub2"))
+            .create_share(&raw_share("s2", "p1", "sub2"))
             .expect_err("UNIQUE(provider_id) must reject second active binding");
         assert!(
             err.to_string().to_ascii_lowercase().contains("unique"),
@@ -959,7 +932,7 @@ mod tests {
     #[test]
     fn unique_provider_blocks_same_provider_in_two_slots() {
         let db = fresh_db();
-        let mut share = raw_share("s1", "p1", "tok1", "sub1");
+        let mut share = raw_share("s1", "p1", "sub1");
         // 试图把同一个 provider 同时绑到 claude 和 codex 两个 slot — 侧表 UNIQUE 兜底拒绝。
         share.bindings.insert("codex".to_string(), "p1".to_string());
         let err = db
@@ -979,7 +952,7 @@ mod tests {
             .unwrap();
         db.save_provider("claude", &make_provider("p2", "claude"))
             .unwrap();
-        let mut share = raw_share("s1", "p1", "tok", "sub1");
+        let mut share = raw_share("s1", "p1", "sub1");
         share.status = "paused".to_string();
         db.create_share(&share).unwrap();
 
@@ -1012,7 +985,7 @@ mod tests {
             .unwrap();
         db.save_provider("claude", &make_provider("p2", "claude"))
             .unwrap();
-        let mut share = raw_share("s1", "p1", "tok", "sub1");
+        let mut share = raw_share("s1", "p1", "sub1");
         share.status = "active".to_string();
         db.create_share(&share).unwrap();
 
@@ -1030,7 +1003,7 @@ mod tests {
         let db = fresh_db();
         db.save_provider("claude", &make_provider("p1", "claude"))
             .unwrap();
-        let mut share = raw_share("s1", "p1", "tok", "sub1");
+        let mut share = raw_share("s1", "p1", "sub1");
         share.status = "paused".to_string();
         db.create_share(&share).unwrap();
 
@@ -1042,17 +1015,6 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].old_provider_id.as_deref(), Some("p1"));
         assert!(history[0].new_provider_id.is_none());
-    }
-
-    /// A-1：token 轮换不要求 paused，老 token 立即换。
-    #[test]
-    fn rotate_token_replaces_share_token() {
-        let db = fresh_db();
-        db.create_share(&raw_share("s1", "p1", "old-token", "sub1"))
-            .unwrap();
-        let updated = ShareService::rotate_token(&db, "s1").expect("rotate ok");
-        assert_ne!(updated.share_token, "old-token");
-        assert!(!updated.share_token.is_empty());
     }
 
     /// E-4：api_key 字段是历史遗留死字段，prepare_create 永远写空串。

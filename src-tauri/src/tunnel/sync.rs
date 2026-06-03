@@ -1855,7 +1855,6 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         description: share.description.clone(),
         for_sale: share.for_sale.clone(),
         subdomain: share.subdomain.clone().unwrap_or_default(),
-        share_token: share.share_token.clone(),
         app_type: primary_app,
         provider_id: primary_pid,
         // P9：把全量 slot bindings 也送上去，router dashboard 能渲染 per-slot chip。
@@ -2003,7 +2002,6 @@ mod tests {
                 for_sale_official_price_percent_by_app: HashMap::new(),
                 description: None,
                 for_sale: "No".to_string(),
-                share_token: format!("tok-{id}"),
                 bindings,
                 api_key: String::new(),
                 settings_config: None,
@@ -2092,7 +2090,6 @@ mod tests {
             for_sale_official_price_percent_by_app: pricing,
             description: None,
             for_sale: "Yes".to_string(),
-            share_token: "tok-1".to_string(),
             bindings,
             api_key: String::new(),
             settings_config: None,

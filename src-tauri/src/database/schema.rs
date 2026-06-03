@@ -375,7 +375,6 @@ impl Database {
                 for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
-                share_token TEXT NOT NULL UNIQUE,
                 api_key TEXT NOT NULL,
                 settings_config TEXT,
                 token_limit INTEGER NOT NULL,
@@ -393,11 +392,6 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
-
-        let _ = conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_shares_token ON shares(share_token)",
-            [],
-        );
 
         // P8 多 app share：share ↔ provider 改成 1 share 可对每个 app_type 独立绑定 0/1 个
         // provider。侧表把 (share_id, app_type) → provider_id 拆出来；shares 表本身不再
@@ -591,6 +585,13 @@ impl Database {
                         );
                         Self::migrate_v21_to_v22(conn)?;
                         Self::set_user_version(conn, 22)?;
+                    }
+                    22 => {
+                        log::info!(
+                            "迁移数据库从 v22 到 v23（删除 shares.share_token 列：share_token 已不再用于鉴权，router 边界用 user_api_token 校验，client 端按 X-CC-Switch-Share-Id 识别 share）"
+                        );
+                        Self::migrate_v22_to_v23(conn)?;
+                        Self::set_user_version(conn, 23)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1402,11 +1403,13 @@ impl Database {
         )
         .map_err(|e| AppError::Database(format!("创建 shares 表失败: {e}")))?;
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_shares_token ON shares(share_token)",
-            [],
-        )
-        .map_err(|e| AppError::Database(format!("创建 shares 索引失败: {e}")))?;
+        if Self::has_column(conn, "shares", "share_token")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_shares_token ON shares(share_token)",
+                [],
+            )
+            .map_err(|e| AppError::Database(format!("创建 shares 索引失败: {e}")))?;
+        }
 
         log::info!("v9 -> v10 迁移完成：shares 表（Token 分享）");
         Ok(())
@@ -1721,6 +1724,121 @@ impl Database {
                 })?;
         }
         log::info!("v21 -> v22 迁移完成：shares 表已 DROP app_type/provider_id");
+        Ok(())
+    }
+
+    /// v22 → v23：删除 `shares.share_token` 列。
+    ///
+    /// share_token 历史上承担"router→client 隧道入口认证"角色，但调用方实际身份
+    /// 已经由 router 用 user_api_token + email ACL 在边界完成校验，client 内部
+    /// 只需要按 X-CC-Switch-Share-Id 识别 share 即可（参见 share_guard.rs）。
+    /// 留着该列既是 UX 噪音（GUI 易被误解为 API key），也是潜在外泄面。
+    ///
+    /// 实现细节：`share_token TEXT NOT NULL UNIQUE` 带 UNIQUE 列约束，
+    /// SQLite 的 `ALTER TABLE DROP COLUMN` 拒绝删带 UNIQUE 约束的列，
+    /// 因此走标准 12 步建新表 → COPY → DROP → RENAME 流程。
+    /// share_provider_bindings 通过 `ON DELETE CASCADE` 引用 shares(id)，
+    /// `DROP TABLE shares` 会触发级联清空侧表（即使在事务内、
+    /// PRAGMA defer_foreign_keys 也只延迟约束 *校验*，不能阻止 CASCADE *动作*），
+    /// 因此先把 binding 行旁存到临时表，rebuild 之后再 INSERT 回去。
+    fn migrate_v22_to_v23(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "shares")? {
+            return Ok(());
+        }
+        if !Self::has_column(conn, "shares", "share_token")? {
+            log::info!("v22 -> v23 跳过：shares 表已无 share_token 列（fresh schema）");
+            return Ok(());
+        }
+
+        let bindings_exist = Self::table_exists(conn, "share_provider_bindings")?;
+
+        // 1) 旁存侧表内容；DROP shares 会级联清空它。
+        if bindings_exist {
+            conn.execute(
+                "CREATE TEMP TABLE _v23_share_bindings_snapshot AS \
+                 SELECT * FROM share_provider_bindings",
+                [],
+            )
+            .map_err(|e| {
+                AppError::Database(format!("v22→v23 snapshot share_provider_bindings 失败: {e}"))
+            })?;
+        }
+
+        // 2) 删旧索引（隐式 UNIQUE 索引会随 DROP TABLE 自动消失，这里只处理显式索引）。
+        let _ = conn.execute("DROP INDEX IF EXISTS idx_shares_token", []);
+
+        // 3) 新表 = v23 目标 schema（与 create_tables_on_conn 一致，无 share_token）。
+        conn.execute(
+            "CREATE TABLE shares_v23 (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                owner_email TEXT NOT NULL DEFAULT '',
+                shared_with_emails_json TEXT NOT NULL DEFAULT '[]',
+                market_access_mode TEXT NOT NULL DEFAULT 'selected',
+                for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
+                description TEXT,
+                for_sale TEXT NOT NULL DEFAULT 'No',
+                api_key TEXT NOT NULL DEFAULT '',
+                settings_config TEXT,
+                token_limit INTEGER NOT NULL DEFAULT -1,
+                parallel_limit INTEGER NOT NULL DEFAULT 3,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                requests_count INTEGER NOT NULL DEFAULT 0,
+                expires_at TEXT NOT NULL DEFAULT '',
+                subdomain TEXT,
+                tunnel_url TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                auto_start BOOLEAN NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT '',
+                last_used_at TEXT
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("v22→v23 create shares_v23 失败: {e}")))?;
+
+        // 4) COPY 全量行。auto_start 在早期升级路径里可能没补，用 COALESCE 兜底。
+        conn.execute(
+            "INSERT INTO shares_v23 (
+                id, name, owner_email, shared_with_emails_json, market_access_mode,
+                for_sale_official_price_percent_json, description, for_sale,
+                api_key, settings_config, token_limit, parallel_limit,
+                tokens_used, requests_count, expires_at, subdomain, tunnel_url,
+                status, auto_start, created_at, last_used_at
+            )
+            SELECT
+                id, name, owner_email, shared_with_emails_json, market_access_mode,
+                for_sale_official_price_percent_json, description, for_sale,
+                api_key, settings_config, token_limit, parallel_limit,
+                tokens_used, requests_count, expires_at, subdomain, tunnel_url,
+                status, COALESCE(auto_start, 0), created_at, last_used_at
+            FROM shares",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("v22→v23 copy 行失败: {e}")))?;
+
+        // 5) 干掉旧表 → 重命名新表。
+        conn.execute("DROP TABLE shares", [])
+            .map_err(|e| AppError::Database(format!("v22→v23 drop 旧 shares 失败: {e}")))?;
+        conn.execute("ALTER TABLE shares_v23 RENAME TO shares", [])
+            .map_err(|e| AppError::Database(format!("v22→v23 rename 新表失败: {e}")))?;
+
+        // 6) 把旁存的侧表内容塞回去（DROP shares 时已被 CASCADE 清空）。
+        //    新 shares 表里的行已经回到位，所以 FK 校验通过。
+        if bindings_exist {
+            conn.execute(
+                "INSERT INTO share_provider_bindings (share_id, app_type, provider_id, created_at) \
+                 SELECT share_id, app_type, provider_id, created_at \
+                 FROM _v23_share_bindings_snapshot",
+                [],
+            )
+            .map_err(|e| {
+                AppError::Database(format!("v22→v23 restore share_provider_bindings 失败: {e}"))
+            })?;
+            conn.execute("DROP TABLE _v23_share_bindings_snapshot", [])
+                .map_err(|e| AppError::Database(format!("v22→v23 drop temp snapshot 失败: {e}")))?;
+        }
+
+        log::info!("v22 -> v23 迁移完成：shares 表已 DROP share_token");
         Ok(())
     }
 

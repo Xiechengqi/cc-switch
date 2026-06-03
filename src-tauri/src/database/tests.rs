@@ -914,10 +914,11 @@ fn create_share_works_after_v21_to_v22_drops_legacy_columns() {
 
     // 模拟新 create_share 的 INSERT — 不绑 app_type / provider_id。
     // 在 v21→v22 之前这一条会因为 NOT NULL 约束失败；之后应当成功。
+    // v22→v23 又把 share_token 列删了，所以这里也不带它。
     conn.execute(
-        "INSERT INTO shares (id, share_token, status, name)
-         VALUES ('s2', 'tok-2', 'paused', 's2-name')",
+        "INSERT INTO shares (id, status, name)
+         VALUES ('s2', 'paused', 's2-name')",
         [],
     )
-    .expect("create_share INSERT should succeed after v21→v22");
+    .expect("create_share INSERT should succeed after v21→v22 / v22→v23");
 }

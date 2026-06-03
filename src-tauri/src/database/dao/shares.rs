@@ -15,7 +15,6 @@ pub struct ShareRecord {
     pub for_sale_official_price_percent_by_app: HashMap<String, u16>,
     pub description: Option<String>,
     pub for_sale: String,
-    pub share_token: String,
     /// P8: 多 app share。一个 share 可同时给 claude / codex / gemini 分别绑定 0/1 个
     /// provider。键为 app_type，值为该 slot 当前绑定的 provider id。slot 为空 = 该
     /// app 不可用，请求路径会拒绝并 emit share-needs-rebind。
@@ -83,7 +82,7 @@ pub struct ShareBindingHistoryEntry {
 }
 
 impl Database {
-    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, share_token, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
+    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
 
     pub fn create_share(&self, share: &ShareRecord) -> Result<(), AppError> {
         let mut conn = lock_conn!(self.conn);
@@ -91,10 +90,10 @@ impl Database {
             .transaction()
             .map_err(|e| AppError::Database(e.to_string()))?;
         tx.execute(
-            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, share_token, api_key,
+            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, api_key,
              settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at,
              subdomain, tunnel_url, status, auto_start, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
                 share.id,
                 share.name,
@@ -106,7 +105,6 @@ impl Database {
                     .map_err(|e| AppError::Database(e.to_string()))?,
                 share.description,
                 share.for_sale,
-                share.share_token,
                 share.api_key,
                 share.settings_config,
                 share.token_limit,
@@ -146,27 +144,6 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut rows = stmt
             .query(params![id])
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        match rows.next().map_err(|e| AppError::Database(e.to_string()))? {
-            Some(row) => {
-                let mut share = Self::row_to_share(row)?;
-                share.bindings = Self::load_share_bindings_on_conn(&conn, &share.id)?;
-                Ok(Some(share))
-            }
-            None => Ok(None),
-        }
-    }
-
-    pub fn get_share_by_token(&self, token: &str) -> Result<Option<ShareRecord>, AppError> {
-        let conn = lock_conn!(self.conn);
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {} FROM shares WHERE share_token = ?1",
-                Self::SHARE_SELECT_COLUMNS
-            ))
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        let mut rows = stmt
-            .query(params![token])
             .map_err(|e| AppError::Database(e.to_string()))?;
         match rows.next().map_err(|e| AppError::Database(e.to_string()))? {
             Some(row) => {
@@ -346,16 +323,6 @@ impl Database {
         conn.execute(
             "UPDATE shares SET parallel_limit = ?2 WHERE id = ?1",
             params![id, parallel_limit],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn update_share_api_key(&self, id: &str, api_key: &str) -> Result<(), AppError> {
-        let conn = lock_conn!(self.conn);
-        conn.execute(
-            "UPDATE shares SET share_token = ?2 WHERE id = ?1",
-            params![id, api_key],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -563,23 +530,6 @@ impl Database {
         Ok(())
     }
 
-    /// 轮换 share_token 到一个新值。
-    pub fn rotate_share_token(&self, share_id: &str, new_token: &str) -> Result<(), AppError> {
-        let conn = lock_conn!(self.conn);
-        let affected = conn
-            .execute(
-                "UPDATE shares SET share_token = ?2 WHERE id = ?1",
-                params![share_id, new_token],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        if affected == 0 {
-            return Err(AppError::Message(format!(
-                "rotate token failed: share {share_id} not found"
-            )));
-        }
-        Ok(())
-    }
-
     /// 读 share 最近 N 条 binding 历史，按时间倒序。
     pub fn list_share_binding_history(
         &self,
@@ -659,27 +609,26 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?,
             description: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
             for_sale: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
-            share_token: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
             bindings: HashMap::new(),
-            api_key: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
-            settings_config: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
-            token_limit: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
-            parallel_limit: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
-            tokens_used: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
-            requests_count: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
-            expires_at: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
-            subdomain: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
-            tunnel_url: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
-            status: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
-            auto_start: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
-            created_at: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
-            last_used_at: row.get(21).map_err(|e| AppError::Database(e.to_string()))?,
+            api_key: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
+            settings_config: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
+            token_limit: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
+            parallel_limit: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
+            tokens_used: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
+            requests_count: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
+            expires_at: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
+            subdomain: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
+            tunnel_url: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
+            status: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
+            auto_start: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
+            created_at: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
+            last_used_at: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
         })
     }
 
     /// SHARE_SELECT_COLUMNS 的列数（用于 JOIN 查询定位附加列下标）。
     const fn share_column_count() -> usize {
-        22
+        21
     }
 
     /// 读侧表中 share_id 对应的所有 binding（app_type → provider_id）。

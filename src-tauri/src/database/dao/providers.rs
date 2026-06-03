@@ -984,7 +984,6 @@ mod provider_catalog_prune_tests {
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),
-            share_token: "token".to_string(),
             bindings,
             api_key: "key".to_string(),
             settings_config: None,

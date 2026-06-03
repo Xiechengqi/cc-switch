@@ -8,6 +8,7 @@ import {
   setCurrentProviderId,
   setLiveProviderIds,
   setProviders,
+  setSettings,
 } from "../msw/state";
 import { emitTauriEvent } from "../msw/tauriMocks";
 
@@ -247,6 +248,19 @@ describe("App integration with MSW", () => {
   });
 
   it("duplicates openclaw providers with a generated key that avoids live-only ids", async () => {
+    // P9-D：默认 visibleApps.openclaw = false，App 的 useEffect 会立刻把
+    // setActiveApp("openclaw") 退回 "claude"。测试需要显式打开 openclaw 可见性。
+    setSettings({
+      visibleApps: {
+        claude: true,
+        "claude-desktop": false,
+        codex: true,
+        gemini: true,
+        opencode: false,
+        openclaw: true,
+        hermes: false,
+      },
+    });
     setProviders("openclaw", {
       deepseek: {
         id: "deepseek",
@@ -267,6 +281,14 @@ describe("App integration with MSW", () => {
 
     const { default: App } = await import("@/App");
     renderApp(App);
+
+    // 等首屏 settings/providers 全部加载完，否则 visibleApps 默认值会让
+    // setActiveApp("openclaw") 被 App useEffect 立刻退回 "claude"。
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "claude-1",
+      ),
+    );
 
     fireEvent.click(screen.getByText("switch-openclaw"));
 
@@ -290,6 +312,17 @@ describe("App integration with MSW", () => {
   });
 
   it("shows toast when duplicate cannot load live provider ids", async () => {
+    setSettings({
+      visibleApps: {
+        claude: true,
+        "claude-desktop": false,
+        codex: true,
+        gemini: true,
+        opencode: false,
+        openclaw: true,
+        hermes: false,
+      },
+    });
     setProviders("openclaw", {
       deepseek: {
         id: "deepseek",
@@ -313,6 +346,14 @@ describe("App integration with MSW", () => {
 
     const { default: App } = await import("@/App");
     renderApp(App);
+
+    // 等首屏 settings/providers 全部加载完，否则 visibleApps 默认值会让
+    // setActiveApp("openclaw") 被 App useEffect 立刻退回 "claude"。
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "claude-1",
+      ),
+    );
 
     fireEvent.click(screen.getByText("switch-openclaw"));
 

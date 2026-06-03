@@ -1,11 +1,20 @@
 import "cross-fetch/polyfill";
 import { vi } from "vitest";
 import { server } from "./server";
+import {
+  emitEvent,
+  invokeCommand as eventInvokeCommand,
+  registerEventHandler,
+} from "./tauriEventBus";
 
 const TAURI_ENDPOINT = "http://tauri.local";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: async (command: string, payload: Record<string, unknown> = {}) => {
+    // 与 setupGlobals 里 __TAURI_INTERNALS__.invoke 共享 event bus，保证静态 import
+    // 和动态 import 路径都能 listen / unlisten。
+    const routed = eventInvokeCommand(command, payload);
+    if (routed !== undefined) return routed;
     const response = await fetch(`${TAURI_ENDPOINT}/${command}`, {
       method: "POST",
       headers: {
@@ -27,20 +36,30 @@ vi.mock("@tauri-apps/api/core", () => ({
       return text;
     }
   },
+  transformCallback: (
+    callback: (...args: unknown[]) => unknown,
+    _once: boolean,
+  ) => {
+    // 复用 setupGlobals 的 registerCallback：保持 callback id 命名空间统一。
+    const internals = (globalThis.window as unknown as {
+      __TAURI_INTERNALS__: {
+        transformCallback: (
+          cb: (...args: unknown[]) => unknown,
+          once: boolean,
+        ) => number;
+      };
+    }).__TAURI_INTERNALS__;
+    return internals.transformCallback(callback, _once);
+  },
 }));
 
-const listeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
-
-const ensureListenerSet = (event: string) => {
-  if (!listeners.has(event)) {
-    listeners.set(event, new Set());
-  }
-  return listeners.get(event)!;
-};
-
+/**
+ * 测试触发 Tauri 事件：把 (event, payload) 派发给所有已注册 listener。
+ * 不论 listener 通过静态 `@tauri-apps/api/event::listen` 还是动态 import 的 REAL
+ * listen 注册，都共享同一份 tauriEventBus 注册表。
+ */
 export const emitTauriEvent = (event: string, payload: unknown) => {
-  const handlers = listeners.get(event);
-  handlers?.forEach((handler) => handler({ payload }));
+  emitEvent(event, payload);
 };
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -48,11 +67,7 @@ vi.mock("@tauri-apps/api/event", () => ({
     event: string,
     handler: (event: { payload: unknown }) => void,
   ) => {
-    const set = ensureListenerSet(event);
-    set.add(handler);
-    return () => {
-      set.delete(handler);
-    };
+    return registerEventHandler(event, handler as never);
   },
 }));
 

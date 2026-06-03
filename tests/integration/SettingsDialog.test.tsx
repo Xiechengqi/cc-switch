@@ -152,10 +152,15 @@ describe("SettingsPage integration", () => {
     );
     fireEvent.click(screen.getByText("settings.tabAdvanced"));
     fireEvent.click(screen.getByText("settings.advanced.configDir.title"));
-    const appInput = await screen.findByPlaceholderText(
+    const appInput = (await screen.findByPlaceholderText(
       "settings.browsePlaceholderApp",
+    )) as HTMLInputElement;
+    // useDirectorySettings 用 Promise.all(14) 并行拉默认目录；DOM 节点（placeholder）
+    // 在 useState 初值时就存在，但 value 要等加载完成的 setState 触发 commit 才填好。
+    // 同步 expect 会抢跑，所以包一层 waitFor。
+    await waitFor(() =>
+      expect(appInput.value).toBe("/home/mock/.cc-switch"),
     );
-    expect((appInput as HTMLInputElement).value).toBe("/home/mock/.cc-switch");
   });
 
   it("imports configuration and triggers success callback", async () => {

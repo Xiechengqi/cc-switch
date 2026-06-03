@@ -80,6 +80,9 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
     limit,
     defaultValue: `${used} used / ${limit} covered in plan`,
   });
+  const planTitle = credentialMessage
+    ? formatKiroPlanTitle(credentialMessage)
+    : null;
 
   if (inline) {
     return (
@@ -104,12 +107,11 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
           </button>
         </div>
         <div className="flex items-center gap-1.5">
-          {credentialMessage && <KiroPlanBadge title={credentialMessage} />}
-          <span className="text-gray-500 dark:text-gray-400">
-            {t("subscription.kiroCredits", { defaultValue: "Credits" })}:
-          </span>
+          {planTitle && (
+            <KiroPlanBadge title={credentialMessage ?? planTitle} label={planTitle} />
+          )}
           <span className="font-medium tabular-nums text-foreground">
-            {used} / {limit}
+            {used}/{limit}
           </span>
           <span
             className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}
@@ -132,7 +134,9 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
       <div className="flex items-center justify-between mb-2">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
-            {credentialMessage && <KiroPlanBadge title={credentialMessage} />}
+            {planTitle && (
+              <KiroPlanBadge title={credentialMessage ?? planTitle} label={planTitle} />
+            )}
             <span className="min-w-0 truncate text-xs font-medium text-gray-500 dark:text-gray-400">
               {t("subscription.kiroEstimatedUsage", {
                 defaultValue: "Estimated Usage",
@@ -197,20 +201,35 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
   );
 };
 
-function KiroPlanBadge({ title }: { title: string }) {
+function KiroPlanBadge({ title, label }: { title: string; label: string }) {
   return (
     <span
       className="inline-flex max-w-28 flex-shrink-0 items-center rounded-md border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
       title={title}
     >
-      <span className="min-w-0 truncate">{title}</span>
+      <span className="min-w-0 truncate">{label}</span>
     </span>
   );
+}
+
+function formatKiroPlanTitle(value: string): string {
+  return value
+    .trim()
+    .split(/\s+/)
+    .map((word) => {
+      const lower = word.toLowerCase();
+      if (lower === "kiro") return "Kiro";
+      if (lower === "oauth") return "OAuth";
+      if (lower.startsWith("pro")) return `Pro${word.slice(3)}`;
+      return `${word.charAt(0).toUpperCase()}${word.slice(1).toLowerCase()}`;
+    })
+    .join(" ");
 }
 
 function formatCredits(value: number, locale: string): string {
   return new Intl.NumberFormat(locale, {
     maximumFractionDigits: value % 1 === 0 ? 0 : 2,
+    useGrouping: false,
   }).format(value);
 }
 

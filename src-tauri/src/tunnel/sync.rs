@@ -1369,6 +1369,9 @@ fn subscription_quota_to_upstream(
                 label: quota_tier_label(&tier.name),
                 utilization: tier.utilization,
                 resets_at: tier.resets_at,
+                used: tier.used,
+                limit: tier.limit,
+                unit: tier.unit,
             })
             .collect(),
     }
@@ -1960,6 +1963,8 @@ mod tests {
         assert_eq!(upstream.plan.as_deref(), Some("individual"));
         assert_eq!(upstream.tiers[0].label, "premium");
         assert_eq!(upstream.tiers[0].utilization, 12.0);
+        assert_eq!(upstream.tiers[0].used, None);
+        assert_eq!(upstream.tiers[0].limit, None);
     }
 
     /// P11 回归：同一台 client 上的两个 share 各绑不同 provider 时，runtime

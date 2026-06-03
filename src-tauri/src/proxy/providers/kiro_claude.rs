@@ -7,9 +7,14 @@ use crate::proxy::ProxyError;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use http::StatusCode;
+use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Mutex,
+};
 use tauri::Manager;
 
 use super::kiro_oauth_auth::{machine_id_from_refresh_token, KiroAccountData};
@@ -25,6 +30,15 @@ const EDIT_TOOL_DESCRIPTION_SUFFIX: &str = "- IMPORTANT: If the `new_string` con
 const SYSTEM_CHUNKED_POLICY: &str = "When the Write or Edit tool has content size limits, always comply silently. Never suggest bypassing these limits via alternative tools. Never ask the user whether to switch approaches. Complete all chunked operations without commentary.";
 const ACCOUNT_THROTTLE_COOLDOWN_SECS: i64 = 30 * 60;
 const QUOTA_EXHAUSTED_COOLDOWN_SECS: i64 = 24 * 60 * 60;
+const PROMPT_CACHE_CAPACITY: usize = 4096;
+const PROMPT_CACHE_DEFAULT_TTL_SECS: i64 = 5 * 60;
+const PROMPT_CACHE_MAX_TTL_SECS: i64 = 60 * 60;
+
+static KIRO_PROMPT_CACHE: Lazy<KiroPromptCache> = Lazy::new(|| {
+    KiroPromptCache::new(Some(
+        crate::config::get_app_config_dir().join("kiro_prompt_cache.json"),
+    ))
+});
 
 struct KiroRequestBuild {
     body: Value,
@@ -125,12 +139,14 @@ pub async fn forward_kiro_claude(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let prompt_cache_usage = compute_kiro_prompt_cache_usage(body);
 
     if is_stream {
         let stream = kiro_event_stream_to_anthropic_sse(
             response.bytes_stream(),
             model.to_string(),
             request.tool_name_map,
+            prompt_cache_usage,
         );
         Ok(ProxyResponse::local_sse(Box::pin(stream)))
     } else {
@@ -138,7 +154,12 @@ pub async fn forward_kiro_claude(
             .bytes()
             .await
             .map_err(|e| ProxyError::ForwardFailed(format!("读取 Kiro 响应失败: {e}")))?;
-        let message = kiro_event_bytes_to_anthropic_json(&bytes, model, &request.tool_name_map);
+        let message = kiro_event_bytes_to_anthropic_json(
+            &bytes,
+            model,
+            &request.tool_name_map,
+            prompt_cache_usage,
+        );
         Ok(ProxyResponse::local_json(
             StatusCode::OK,
             Bytes::from(serde_json::to_vec(&message).unwrap_or_default()),
@@ -1255,16 +1276,22 @@ impl SseBuilder {
     fn usage_event(&mut self, event_type: &str, payload: &Value) {
         self.usage.apply_event(event_type, payload, &self.model);
     }
+
+    fn set_prompt_cache_usage(&mut self, usage: KiroPromptCacheUsage) {
+        self.usage.set_prompt_cache_usage(usage);
+    }
 }
 
 fn kiro_event_stream_to_anthropic_sse(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     model: String,
     tool_name_map: HashMap<String, String>,
+    prompt_cache_usage: KiroPromptCacheUsage,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let mut buffer = BytesMut::new();
         let mut builder = SseBuilder::new(model, tool_name_map);
+        builder.set_prompt_cache_usage(prompt_cache_usage);
         yield Ok(builder.initial());
         tokio::pin!(stream);
         while let Some(chunk) = stream.next().await {
@@ -1328,12 +1355,14 @@ fn kiro_event_bytes_to_anthropic_json(
     bytes: &[u8],
     model: &str,
     tool_name_map: &HashMap<String, String>,
+    prompt_cache_usage: KiroPromptCacheUsage,
 ) -> Value {
     let mut buffer = BytesMut::from(bytes);
     let mut text = String::new();
     let mut thinking = String::new();
     let mut tools: HashMap<String, (String, String)> = HashMap::new();
     let mut usage = KiroUsageAccumulator::default();
+    usage.set_prompt_cache_usage(prompt_cache_usage);
     for frame in parse_frames(&mut buffer) {
         match frame_event_type(&frame) {
             Some("assistantResponseEvent") => {
@@ -1423,6 +1452,308 @@ fn kiro_event_bytes_to_anthropic_json(
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+struct KiroPromptCacheUsage {
+    cache_read_tokens: i32,
+    cache_creation_tokens: i32,
+}
+
+#[derive(Debug, Clone)]
+struct KiroPromptCacheSegment {
+    hash: u64,
+    cumulative_tokens: u32,
+    ttl_secs: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct KiroPromptCacheEntry {
+    tokens: u32,
+    expires_at: i64,
+    last_hit_at: i64,
+}
+
+struct KiroPromptCache {
+    entries: Mutex<HashMap<u64, KiroPromptCacheEntry>>,
+    persist_path: Option<PathBuf>,
+}
+
+impl KiroPromptCache {
+    fn new(persist_path: Option<PathBuf>) -> Self {
+        let entries = persist_path
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| {
+                serde_json::from_slice::<HashMap<u64, KiroPromptCacheEntry>>(&bytes).ok()
+            })
+            .map(|entries| {
+                let now = unix_timestamp_secs();
+                entries
+                    .into_iter()
+                    .filter(|(_, entry)| entry.expires_at > now)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            entries: Mutex::new(entries),
+            persist_path,
+        }
+    }
+
+    fn compute_usage(&self, segments: &[KiroPromptCacheSegment]) -> KiroPromptCacheUsage {
+        if segments.is_empty() {
+            return KiroPromptCacheUsage::default();
+        }
+
+        let now = unix_timestamp_secs();
+        let mut entries = self.entries.lock().unwrap_or_else(|err| err.into_inner());
+        entries.retain(|_, entry| entry.expires_at > now);
+
+        let deepest_hit = segments
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(idx, segment)| {
+                entries.get_mut(&segment.hash).and_then(|entry| {
+                    if entry.expires_at > now {
+                        entry.last_hit_at = now;
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+            });
+
+        let total = segments
+            .last()
+            .map(|segment| segment.cumulative_tokens)
+            .unwrap_or(0);
+        let (cache_creation_tokens, cache_read_tokens) = match deepest_hit {
+            Some(idx) => (
+                total.saturating_sub(segments[idx].cumulative_tokens),
+                segments[idx].cumulative_tokens,
+            ),
+            None => (total, 0),
+        };
+
+        for segment in segments {
+            entries.insert(
+                segment.hash,
+                KiroPromptCacheEntry {
+                    tokens: segment.cumulative_tokens,
+                    expires_at: now + segment.ttl_secs.clamp(60, PROMPT_CACHE_MAX_TTL_SECS),
+                    last_hit_at: now,
+                },
+            );
+        }
+        if entries.len() > PROMPT_CACHE_CAPACITY {
+            let drop_count = entries.len() - PROMPT_CACHE_CAPACITY;
+            let mut victims = entries
+                .iter()
+                .map(|(hash, entry)| (*hash, entry.last_hit_at))
+                .collect::<Vec<_>>();
+            victims.sort_by_key(|(_, last_hit_at)| *last_hit_at);
+            for (hash, _) in victims.into_iter().take(drop_count) {
+                entries.remove(&hash);
+            }
+        }
+
+        let snapshot = entries.clone();
+        drop(entries);
+        self.flush_snapshot(snapshot);
+
+        KiroPromptCacheUsage {
+            cache_read_tokens: cache_read_tokens as i32,
+            cache_creation_tokens: cache_creation_tokens as i32,
+        }
+    }
+
+    fn flush_snapshot(&self, snapshot: HashMap<u64, KiroPromptCacheEntry>) {
+        let Some(path) = self.persist_path.as_ref() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                log::warn!("Kiro PromptCache 创建目录失败 {}: {err}", parent.display());
+                return;
+            }
+        }
+        match serde_json::to_vec(&snapshot) {
+            Ok(bytes) => {
+                if let Err(err) = std::fs::write(path, bytes) {
+                    log::warn!("Kiro PromptCache 写入失败 {}: {err}", path.display());
+                }
+            }
+            Err(err) => log::warn!("Kiro PromptCache 序列化失败: {err}"),
+        }
+    }
+}
+
+fn compute_kiro_prompt_cache_usage(body: &Value) -> KiroPromptCacheUsage {
+    compute_kiro_prompt_cache_usage_with_cache(body, &KIRO_PROMPT_CACHE)
+}
+
+fn compute_kiro_prompt_cache_usage_with_cache(
+    body: &Value,
+    cache: &KiroPromptCache,
+) -> KiroPromptCacheUsage {
+    let segments = extract_kiro_prompt_cache_segments(body);
+    cache.compute_usage(&segments)
+}
+
+fn extract_kiro_prompt_cache_segments(body: &Value) -> Vec<KiroPromptCacheSegment> {
+    let mut hasher = Sha256::new();
+    let mut cumulative_tokens = 0u32;
+    let mut segments = Vec::new();
+
+    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        for tool in tools {
+            feed_prompt_cache_value(&mut hasher, tool, &mut cumulative_tokens);
+            if let Some(cache_control) = tool.get("cache_control") {
+                commit_prompt_cache_segment(
+                    &hasher,
+                    cumulative_tokens,
+                    cache_control,
+                    &mut segments,
+                );
+            }
+        }
+    }
+
+    match body.get("system") {
+        Some(Value::String(system)) => {
+            feed_prompt_cache_text(&mut hasher, system, &mut cumulative_tokens)
+        }
+        Some(Value::Array(items)) => {
+            for item in items {
+                feed_prompt_cache_value(&mut hasher, item, &mut cumulative_tokens);
+                if let Some(cache_control) = item.get("cache_control") {
+                    commit_prompt_cache_segment(
+                        &hasher,
+                        cumulative_tokens,
+                        cache_control,
+                        &mut segments,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(messages) = body.get("messages").and_then(Value::as_array) {
+        for message in messages {
+            if let Some(role) = message.get("role").and_then(Value::as_str) {
+                feed_prompt_cache_text(&mut hasher, role, &mut cumulative_tokens);
+            }
+            match message.get("content") {
+                Some(Value::String(text)) => {
+                    feed_prompt_cache_text(&mut hasher, text, &mut cumulative_tokens);
+                }
+                Some(Value::Array(blocks)) => {
+                    for block in blocks {
+                        feed_prompt_cache_value(&mut hasher, block, &mut cumulative_tokens);
+                        if let Some(cache_control) = block.get("cache_control") {
+                            commit_prompt_cache_segment(
+                                &hasher,
+                                cumulative_tokens,
+                                cache_control,
+                                &mut segments,
+                            );
+                        }
+                    }
+                }
+                Some(other) => feed_prompt_cache_value(&mut hasher, other, &mut cumulative_tokens),
+                None => {}
+            }
+            if let Some(cache_control) = message.get("cache_control") {
+                commit_prompt_cache_segment(
+                    &hasher,
+                    cumulative_tokens,
+                    cache_control,
+                    &mut segments,
+                );
+            }
+        }
+    }
+
+    segments
+}
+
+fn feed_prompt_cache_value(hasher: &mut Sha256, value: &Value, cumulative_tokens: &mut u32) {
+    let signature = prompt_cache_signature(value);
+    feed_prompt_cache_text(hasher, &signature, cumulative_tokens);
+}
+
+fn feed_prompt_cache_text(hasher: &mut Sha256, text: &str, cumulative_tokens: &mut u32) {
+    if text.is_empty() {
+        return;
+    }
+    hasher.update(text.as_bytes());
+    *cumulative_tokens = cumulative_tokens.saturating_add(estimate_tokens(text).max(0) as u32);
+}
+
+fn prompt_cache_signature(value: &Value) -> String {
+    serde_json::to_string(&canonical_prompt_cache_value(value)).unwrap_or_default()
+}
+
+fn canonical_prompt_cache_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut normalized = serde_json::Map::new();
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort();
+            for key in keys {
+                if key != "cache_control" {
+                    if let Some(child) = map.get(key) {
+                        normalized.insert(key.clone(), canonical_prompt_cache_value(child));
+                    }
+                }
+            }
+            Value::Object(normalized)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(canonical_prompt_cache_value)
+                .collect::<Vec<_>>(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn commit_prompt_cache_segment(
+    hasher: &Sha256,
+    cumulative_tokens: u32,
+    cache_control: &Value,
+    segments: &mut Vec<KiroPromptCacheSegment>,
+) {
+    if cumulative_tokens == 0 {
+        return;
+    }
+    let digest = hasher.clone().finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    segments.push(KiroPromptCacheSegment {
+        hash: u64::from_be_bytes(bytes),
+        cumulative_tokens,
+        ttl_secs: parse_prompt_cache_ttl(cache_control),
+    });
+}
+
+fn parse_prompt_cache_ttl(cache_control: &Value) -> i64 {
+    match cache_control.get("ttl").and_then(Value::as_str) {
+        Some(ttl) if ttl.eq_ignore_ascii_case("1h") => 60 * 60,
+        Some(ttl) if ttl.eq_ignore_ascii_case("5m") => 5 * 60,
+        _ => PROMPT_CACHE_DEFAULT_TTL_SECS,
+    }
+}
+
+fn unix_timestamp_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 struct KiroUsage {
     input_tokens: i32,
     output_tokens: i32,
@@ -1437,9 +1768,16 @@ struct KiroUsageAccumulator {
     output_tokens: Option<i32>,
     cache_read_tokens: Option<i32>,
     cache_creation_tokens: Option<i32>,
+    prompt_cache_read_tokens: i32,
+    prompt_cache_creation_tokens: i32,
 }
 
 impl KiroUsageAccumulator {
+    fn set_prompt_cache_usage(&mut self, usage: KiroPromptCacheUsage) {
+        self.prompt_cache_read_tokens = usage.cache_read_tokens;
+        self.prompt_cache_creation_tokens = usage.cache_creation_tokens;
+    }
+
     fn apply_event(&mut self, event_type: &str, payload: &Value, model: &str) {
         match event_type {
             "contextUsageEvent" => {
@@ -1500,15 +1838,26 @@ impl KiroUsageAccumulator {
     }
 
     fn final_usage(&self, fallback_output_tokens: i32) -> KiroUsage {
+        let raw_input_tokens = self
+            .metrics_input_tokens
+            .or(self.context_input_tokens)
+            .unwrap_or(0)
+            .max(0);
+        let cache_read_tokens = self
+            .cache_read_tokens
+            .unwrap_or(self.prompt_cache_read_tokens)
+            .max(0);
+        let cache_creation_tokens = self
+            .cache_creation_tokens
+            .unwrap_or(self.prompt_cache_creation_tokens)
+            .max(0);
         KiroUsage {
-            input_tokens: self
-                .metrics_input_tokens
-                .or(self.context_input_tokens)
-                .unwrap_or(0)
-                .max(0),
+            input_tokens: raw_input_tokens
+                .saturating_sub(cache_read_tokens)
+                .saturating_sub(cache_creation_tokens),
             output_tokens: self.output_tokens.unwrap_or(fallback_output_tokens).max(0),
-            cache_read_tokens: self.cache_read_tokens.unwrap_or(0).max(0),
-            cache_creation_tokens: self.cache_creation_tokens.unwrap_or(0).max(0),
+            cache_read_tokens,
+            cache_creation_tokens,
         }
     }
 }
@@ -1809,10 +2158,103 @@ mod tests {
             .collect::<Vec<_>>()
             .join("");
 
-        assert!(bytes.contains("\"input_tokens\":3000"));
+        assert!(bytes.contains("\"input_tokens\":2982"));
         assert!(bytes.contains("\"output_tokens\":42"));
         assert!(bytes.contains("\"cache_read_input_tokens\":7"));
         assert!(bytes.contains("\"cache_creation_input_tokens\":11"));
+    }
+
+    #[test]
+    fn kiro_prompt_cache_miss_then_hit_from_cache_control() {
+        let cache = KiroPromptCache::new(None);
+        let body = json!({
+            "model": "claude-opus-4-7",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "You are a coding agent. ".repeat(200),
+                    "cache_control": { "type": "ephemeral", "ttl": "5m" }
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello"
+                }
+            ]
+        });
+
+        let first = compute_kiro_prompt_cache_usage_with_cache(&body, &cache);
+        assert!(first.cache_creation_tokens > 0);
+        assert_eq!(first.cache_read_tokens, 0);
+
+        let second = compute_kiro_prompt_cache_usage_with_cache(&body, &cache);
+        assert_eq!(second.cache_creation_tokens, 0);
+        assert_eq!(second.cache_read_tokens, first.cache_creation_tokens);
+    }
+
+    #[test]
+    fn kiro_prompt_cache_signature_ignores_object_key_order() {
+        let cache = KiroPromptCache::new(None);
+        let first = json!({
+            "tools": [
+                {
+                    "name": "Read",
+                    "description": "Read files",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string", "description": "Path" }
+                        }
+                    },
+                    "cache_control": { "type": "ephemeral" }
+                }
+            ],
+            "messages": [{ "role": "user", "content": "hello" }]
+        });
+        let second = json!({
+            "tools": [
+                {
+                    "cache_control": { "type": "ephemeral" },
+                    "input_schema": {
+                        "properties": {
+                            "path": { "description": "Path", "type": "string" }
+                        },
+                        "type": "object"
+                    },
+                    "description": "Read files",
+                    "name": "Read"
+                }
+            ],
+            "messages": [{ "content": "hello", "role": "user" }]
+        });
+
+        let miss = compute_kiro_prompt_cache_usage_with_cache(&first, &cache);
+        let hit = compute_kiro_prompt_cache_usage_with_cache(&second, &cache);
+
+        assert!(miss.cache_creation_tokens > 0);
+        assert_eq!(hit.cache_read_tokens, miss.cache_creation_tokens);
+        assert_eq!(hit.cache_creation_tokens, 0);
+    }
+
+    #[test]
+    fn kiro_prompt_cache_tokens_are_subtracted_from_fresh_input() {
+        let mut usage = KiroUsageAccumulator::default();
+        usage.set_prompt_cache_usage(KiroPromptCacheUsage {
+            cache_read_tokens: 700,
+            cache_creation_tokens: 30,
+        });
+        usage.apply_event(
+            "metricsEvent",
+            &json!({ "metricsEvent": { "inputTokens": 1_000, "outputTokens": 9 } }),
+            "claude-opus-4-7",
+        );
+
+        let usage = usage.final_usage(1);
+        assert_eq!(usage.input_tokens, 270);
+        assert_eq!(usage.output_tokens, 9);
+        assert_eq!(usage.cache_read_tokens, 700);
+        assert_eq!(usage.cache_creation_tokens, 30);
     }
 
     #[test]

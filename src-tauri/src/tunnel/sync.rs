@@ -569,6 +569,11 @@ async fn refresh_share_runtime_after_provider_switch(
     }
 }
 
+/// 全局"哪些 app 的本地代理目前是开的"。`model_health` 探针等"与具体 share 无关"
+/// 的路径用它来决定要不要跑该 app 的检查。**不要**用它来构建 share 的 SUPPORT/
+/// app_runtimes 快照——多 share 模式下不同 share 会绑不同 app slot，需要按 share
+/// 自己的 bindings 决定，否则 router 的 dashboard 会显示同 client 所有 share 数据
+/// 都一样（P11 复盘）。
 pub(crate) async fn query_share_support(db: &Database) -> ShareSupport {
     ShareSupport {
         claude: db
@@ -589,13 +594,26 @@ pub(crate) async fn query_share_support(db: &Database) -> ShareSupport {
     }
 }
 
+/// P11：单个 share 的 SUPPORT —— 直接来自 share.bindings。一条 share 在某个 app
+/// slot 有 binding，该 app 就是 supported；否则 false。这与请求路径上
+/// `resolve_share_outcome` 的判断口径一致：没有 binding 的 slot 会被 401 拒绝。
+fn share_support_from_bindings(share: &ShareRecord) -> ShareSupport {
+    ShareSupport {
+        claude: share.bindings.contains_key("claude"),
+        codex: share.bindings.contains_key("codex"),
+        gemini: share.bindings.contains_key("gemini"),
+    }
+}
+
 pub(crate) async fn build_share_runtime_snapshot(
     share: &ShareRecord,
     db: &Database,
 ) -> ShareRuntimeSnapshot {
-    let support = query_share_support(db).await;
-    let app_runtimes = build_all_upstream_provider_snapshots(db, &support, share).await;
-    let app_providers = build_all_app_provider_snapshots(db, &support).await;
+    // P11：snapshot 必须 per-share。SUPPORT 和 app_runtimes 都按 share.bindings
+    // 决定，避免同 client 多 share 在 router dashboard 上显示同一份内容。
+    let support = share_support_from_bindings(share);
+    let app_runtimes = build_all_upstream_provider_snapshots(db, share).await;
+    let app_providers = build_all_app_provider_snapshots(db, share).await;
     let model_health = crate::tunnel::model_health::current_share_model_health_summary().await;
     ShareRuntimeSnapshot {
         share_id: share.id.clone(),
@@ -611,25 +629,21 @@ pub(crate) async fn build_share_runtime_snapshot(
     }
 }
 
-async fn build_all_app_provider_snapshots(
-    db: &Database,
-    support: &ShareSupport,
-) -> ShareAppProviders {
+async fn build_all_app_provider_snapshots(db: &Database, share: &ShareRecord) -> ShareAppProviders {
     ShareAppProviders {
-        claude: build_app_provider_snapshots(db, AppType::Claude, support.claude).await,
-        codex: build_app_provider_snapshots(db, AppType::Codex, support.codex).await,
-        gemini: build_app_provider_snapshots(db, AppType::Gemini, support.gemini).await,
+        claude: build_app_provider_snapshots(db, AppType::Claude, share).await,
+        codex: build_app_provider_snapshots(db, AppType::Codex, share).await,
+        gemini: build_app_provider_snapshots(db, AppType::Gemini, share).await,
     }
 }
 
 async fn build_app_provider_snapshots(
     db: &Database,
     app: AppType,
-    enabled: bool,
+    share: &ShareRecord,
 ) -> Vec<ShareAppProvider> {
-    let current_provider_id = crate::settings::get_effective_current_provider(db, &app)
-        .ok()
-        .flatten();
+    let bound_provider_id = share.bindings.get(app.as_str()).cloned();
+    let enabled = bound_provider_id.is_some();
     let providers = match db.get_all_providers(app.as_str()) {
         Ok(providers) => providers,
         Err(err) => {
@@ -647,7 +661,8 @@ async fn build_app_provider_snapshots(
             build_app_provider_snapshot(
                 &app,
                 provider,
-                current_provider_id.as_deref() == Some(provider_id.as_str()),
+                // is_current 现在按 "是否就是本 share 在该 slot 绑的那个" 判定。
+                bound_provider_id.as_deref() == Some(provider_id.as_str()),
                 enabled,
             )
             .await,
@@ -718,7 +733,6 @@ async fn build_app_provider_snapshot(
 
 async fn build_all_upstream_provider_snapshots(
     db: &Database,
-    support: &ShareSupport,
     share: &ShareRecord,
 ) -> ShareAppRuntimes {
     let (kiro, cursor, antigravity, copilot) = tokio::join!(
@@ -727,10 +741,27 @@ async fn build_all_upstream_provider_snapshots(
         build_oauth_provider_snapshot("antigravity_oauth"),
         build_oauth_provider_snapshot("github_copilot"),
     );
+    // P11：每个 app 的 runtime 必须按 share.bindings[app] 取，避免所有 share 都拿到
+    // "全局 current provider"的同一份数据。slot 没绑定时该 app 的 runtime 留空。
     let mut runtimes = ShareAppRuntimes {
-        claude: build_upstream_provider_snapshot_for_app(db, support.claude, AppType::Claude).await,
-        codex: build_upstream_provider_snapshot_for_app(db, support.codex, AppType::Codex).await,
-        gemini: build_upstream_provider_snapshot_for_app(db, support.gemini, AppType::Gemini).await,
+        claude: build_upstream_provider_snapshot_for_app(
+            db,
+            share.bindings.get("claude").map(String::as_str),
+            AppType::Claude,
+        )
+        .await,
+        codex: build_upstream_provider_snapshot_for_app(
+            db,
+            share.bindings.get("codex").map(String::as_str),
+            AppType::Codex,
+        )
+        .await,
+        gemini: build_upstream_provider_snapshot_for_app(
+            db,
+            share.bindings.get("gemini").map(String::as_str),
+            AppType::Gemini,
+        )
+        .await,
         kiro,
         cursor,
         antigravity,
@@ -795,25 +826,14 @@ fn apply_share_for_sale_pricing_override(share: &ShareRecord, runtimes: &mut Sha
 
 async fn build_upstream_provider_snapshot_for_app(
     db: &Database,
-    enabled: bool,
+    bound_provider_id: Option<&str>,
     app: AppType,
 ) -> Option<ShareUpstreamProvider> {
-    if !enabled {
-        return None;
-    }
-
-    let provider_id = match crate::settings::get_effective_current_provider(db, &app) {
-        Ok(Some(id)) => id,
-        Ok(None) => {
-            return Some(unknown_upstream_provider(app.as_str()));
-        }
-        Err(err) => {
-            log::debug!(
-                "[TunnelSync] failed to resolve current provider for {}: {err}",
-                app.as_str()
-            );
-            return Some(unknown_upstream_provider(app.as_str()));
-        }
+    // P11：bound_provider_id 来自 share.bindings[app_str]。slot 未绑定 → None；
+    // 绑定指向已被删除的 provider → unknown，避免 router dashboard 留白。
+    let provider_id = match bound_provider_id {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => return None,
     };
 
     let provider = match db.get_provider_by_id(&provider_id, app.as_str()) {
@@ -1930,5 +1950,104 @@ mod tests {
         assert_eq!(upstream.plan.as_deref(), Some("individual"));
         assert_eq!(upstream.tiers[0].label, "premium");
         assert_eq!(upstream.tiers[0].utilization, 12.0);
+    }
+
+    /// P11 回归：同一台 client 上的两个 share 各绑不同 provider 时，runtime
+    /// snapshot 必须按 share 自己的 bindings 取数据，而不是全局 current
+    /// provider。否则 router dashboard 会把同一个 SUPPORT 数据复制到所有 share。
+    #[tokio::test]
+    async fn build_share_runtime_snapshot_uses_per_share_bindings() {
+        use crate::database::Database;
+        use crate::provider::{Provider, ProviderMeta};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        fn make_provider(id: &str, app_type: &str) -> Provider {
+            let mut provider = Provider::with_id(
+                id.to_string(),
+                format!("Provider {id}"),
+                serde_json::json!({ "env": {} }),
+                Some(String::new()),
+            );
+            provider.category = Some("custom".to_string());
+            provider.meta = Some(ProviderMeta {
+                provider_type: Some(app_type.to_string()),
+                ..Default::default()
+            });
+            provider
+        }
+        fn make_share(id: &str, claude_pid: &str) -> ShareRecord {
+            let mut bindings = HashMap::new();
+            bindings.insert("claude".to_string(), claude_pid.to_string());
+            ShareRecord {
+                id: id.to_string(),
+                name: id.to_string(),
+                owner_email: "u@example.com".to_string(),
+                shared_with_emails: Vec::new(),
+                market_access_mode: "selected".to_string(),
+                for_sale_official_price_percent_by_app: HashMap::new(),
+                description: None,
+                for_sale: "No".to_string(),
+                share_token: format!("tok-{id}"),
+                bindings,
+                api_key: String::new(),
+                settings_config: None,
+                token_limit: -1,
+                parallel_limit: 3,
+                tokens_used: 0,
+                requests_count: 0,
+                expires_at: "2100-01-01T00:00:00Z".to_string(),
+                subdomain: Some(format!("sub-{id}")),
+                tunnel_url: None,
+                status: "active".to_string(),
+                auto_start: false,
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+                last_used_at: None,
+            }
+        }
+
+        let db = Arc::new(Database::memory().expect("memory db"));
+        db.save_provider("claude", &make_provider("p-alpha", "claude"))
+            .expect("save alpha");
+        db.save_provider("claude", &make_provider("p-beta", "claude"))
+            .expect("save beta");
+
+        let share_a = make_share("share-a", "p-alpha");
+        let share_b = make_share("share-b", "p-beta");
+
+        let snap_a = build_share_runtime_snapshot(&share_a, &db).await;
+        let snap_b = build_share_runtime_snapshot(&share_b, &db).await;
+
+        // SUPPORT 必须按 bindings 派生：两条 share 都只绑了 claude。
+        assert!(snap_a.support.claude && !snap_a.support.codex && !snap_a.support.gemini);
+        assert!(snap_b.support.claude && !snap_b.support.codex && !snap_b.support.gemini);
+
+        // app_runtimes.claude 必须各自命中自己绑定的 provider，不能同源。
+        let a_claude = snap_a.app_runtimes.claude.expect("share-a claude runtime");
+        let b_claude = snap_b.app_runtimes.claude.expect("share-b claude runtime");
+        assert_eq!(a_claude.provider_name.as_deref(), Some("Provider p-alpha"));
+        assert_eq!(b_claude.provider_name.as_deref(), Some("Provider p-beta"));
+
+        // app_providers.claude 同时列出两条 provider，但 is_current 只命中 share 自己绑的那条。
+        let a_current_ids: Vec<String> = snap_a
+            .app_providers
+            .claude
+            .iter()
+            .filter(|p| p.is_current)
+            .map(|p| p.id.clone())
+            .collect();
+        let b_current_ids: Vec<String> = snap_b
+            .app_providers
+            .claude
+            .iter()
+            .filter(|p| p.is_current)
+            .map(|p| p.id.clone())
+            .collect();
+        assert_eq!(a_current_ids, vec!["p-alpha"]);
+        assert_eq!(b_current_ids, vec!["p-beta"]);
+
+        // Slot 没绑定时，对应 app 的 runtime 必须为空（codex/gemini 没绑定）。
+        assert!(snap_a.app_runtimes.codex.is_none());
+        assert!(snap_a.app_runtimes.gemini.is_none());
     }
 }

@@ -1607,9 +1607,7 @@ impl Database {
         // 对全新部署的 DB，shares 从一开始就是 P8 schema；v20→v21 的"孤儿 share 暂停"
         // 逻辑对它没有意义，直接跳过。
         if !Self::has_column(conn, "shares", "provider_id")? {
-            log::info!(
-                "v20 -> v21 跳过：shares.provider_id 已不存在（P8 schema 下绑定走侧表）"
-            );
+            log::info!("v20 -> v21 跳过：shares.provider_id 已不存在（P8 schema 下绑定走侧表）");
             return Ok(());
         }
         let affected = conn
@@ -1622,9 +1620,7 @@ impl Database {
                 [],
             )
             .map_err(|e| {
-                AppError::Database(format!(
-                    "v20→v21 标记孤儿 share 为 paused 失败: {e}"
-                ))
+                AppError::Database(format!("v20→v21 标记孤儿 share 为 paused 失败: {e}"))
             })?;
         if affected > 0 {
             log::warn!(
@@ -1659,9 +1655,7 @@ impl Database {
         let has_app_type = Self::has_column(conn, "shares", "app_type")?;
         let has_provider_id = Self::has_column(conn, "shares", "provider_id")?;
         if !has_app_type && !has_provider_id {
-            log::info!(
-                "v21 -> v22 跳过：shares 表已无 app_type/provider_id 列（fresh schema）"
-            );
+            log::info!("v21 -> v22 跳过：shares 表已无 app_type/provider_id 列（fresh schema）");
             return Ok(());
         }
 
@@ -1705,9 +1699,7 @@ impl Database {
                         "v21→v22 backfill share_provider_bindings failed: {e}"
                     ))
                 })?;
-            log::info!(
-                "v21 -> v22 回填了 {backfilled} 条 binding 到 share_provider_bindings"
-            );
+            log::info!("v21 -> v22 回填了 {backfilled} 条 binding 到 share_provider_bindings");
         }
 
         // 3) 删旧索引——它们引用即将 DROP 的列，SQLite 会因此拒绝 DROP COLUMN。

@@ -1032,11 +1032,14 @@ struct SseBuilder {
     message_id: String,
     model: String,
     tool_name_map: HashMap<String, String>,
-    text_started: bool,
+    text_index: Option<i32>,
     text_stopped: bool,
+    thinking_index: Option<i32>,
+    thinking_stopped: bool,
     next_index: i32,
     tool_indices: HashMap<String, i32>,
     output_tokens: i32,
+    usage: KiroUsageAccumulator,
 }
 
 impl SseBuilder {
@@ -1074,17 +1077,72 @@ impl SseBuilder {
         }
         self.output_tokens += estimate_tokens(text);
         let mut out = Vec::new();
-        if !self.text_started {
-            self.text_started = true;
+        if self.thinking_index.is_some() && !self.thinking_stopped {
+            self.thinking_stopped = true;
+            if let Some(index) = self.thinking_index {
+                out.push(sse(
+                    "content_block_stop",
+                    json!({"type":"content_block_stop","index":index}),
+                ));
+            }
+        }
+        if self.text_stopped {
+            self.text_index = None;
+            self.text_stopped = false;
+        }
+        let index = if let Some(index) = self.text_index {
+            index
+        } else {
+            let index = self.next_index;
+            self.next_index += 1;
+            self.text_index = Some(index);
             out.push(sse(
                 "content_block_start",
-                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                json!({"type":"content_block_start","index":index,"content_block":{"type":"text","text":""}}),
             ));
-            self.next_index = self.next_index.max(1);
-        }
+            index
+        };
         out.push(sse(
             "content_block_delta",
-            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}),
+            json!({"type":"content_block_delta","index":index,"delta":{"type":"text_delta","text":text}}),
+        ));
+        out
+    }
+
+    fn thinking_delta(&mut self, text: &str) -> Vec<Bytes> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        self.output_tokens += estimate_tokens(text);
+        let mut out = Vec::new();
+        if self.text_index.is_some() && !self.text_stopped {
+            self.text_stopped = true;
+            if let Some(index) = self.text_index {
+                out.push(sse(
+                    "content_block_stop",
+                    json!({"type":"content_block_stop","index":index}),
+                ));
+            }
+        }
+        if self.thinking_stopped {
+            self.thinking_index = None;
+            self.thinking_stopped = false;
+        }
+        let index = if let Some(index) = self.thinking_index {
+            index
+        } else {
+            let index = self.next_index;
+            self.next_index += 1;
+            self.thinking_index = Some(index);
+            out.push(sse(
+                "content_block_start",
+                json!({"type":"content_block_start","index":index,"content_block":{"type":"thinking","thinking":""}}),
+            ));
+            index
+        };
+        out.push(sse(
+            "content_block_delta",
+            json!({"type":"content_block_delta","index":index,"delta":{"type":"thinking_delta","thinking":text}}),
         ));
         out
     }
@@ -1106,11 +1164,21 @@ impl SseBuilder {
             .unwrap_or(false);
 
         let mut out = Vec::new();
-        if self.text_started && !self.text_stopped {
+        if self.thinking_index.is_some() && !self.thinking_stopped {
+            self.thinking_stopped = true;
+            if let Some(index) = self.thinking_index {
+                out.push(sse(
+                    "content_block_stop",
+                    json!({"type":"content_block_stop","index":index}),
+                ));
+            }
+        }
+        if self.text_index.is_some() && !self.text_stopped {
             self.text_stopped = true;
+            let index = self.text_index.unwrap_or(0);
             out.push(sse(
                 "content_block_stop",
-                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"content_block_stop","index":index}),
             ));
         }
 
@@ -1144,11 +1212,21 @@ impl SseBuilder {
 
     fn final_events(&mut self) -> Vec<Bytes> {
         let mut out = Vec::new();
-        if self.text_started && !self.text_stopped {
+        if self.thinking_index.is_some() && !self.thinking_stopped {
+            self.thinking_stopped = true;
+            if let Some(index) = self.thinking_index {
+                out.push(sse(
+                    "content_block_stop",
+                    json!({"type":"content_block_stop","index":index}),
+                ));
+            }
+        }
+        if self.text_index.is_some() && !self.text_stopped {
             self.text_stopped = true;
+            let index = self.text_index.unwrap_or(0);
             out.push(sse(
                 "content_block_stop",
-                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"content_block_stop","index":index}),
             ));
         }
         let stop_reason = if self.tool_indices.is_empty() {
@@ -1156,12 +1234,26 @@ impl SseBuilder {
         } else {
             "tool_use"
         };
+        let usage = self.usage.final_usage(self.output_tokens);
         out.push(sse(
             "message_delta",
-            json!({"type":"message_delta","delta":{"stop_reason":stop_reason,"stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":self.output_tokens}}),
+            json!({
+                "type":"message_delta",
+                "delta":{"stop_reason":stop_reason,"stop_sequence":null},
+                "usage":{
+                    "input_tokens":usage.input_tokens,
+                    "output_tokens":usage.output_tokens,
+                    "cache_read_input_tokens":usage.cache_read_tokens,
+                    "cache_creation_input_tokens":usage.cache_creation_tokens
+                }
+            }),
         ));
         out.push(sse("message_stop", json!({"type":"message_stop"})));
         out
+    }
+
+    fn usage_event(&mut self, event_type: &str, payload: &Value) {
+        self.usage.apply_event(event_type, payload, &self.model);
     }
 }
 
@@ -1205,9 +1297,27 @@ fn process_frame_to_sse(builder: &mut SseBuilder, frame: &KiroFrame) -> Vec<Byte
                     .unwrap_or("");
                 builder.assistant_delta(text)
             }
+            Some("codeEvent") => {
+                let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
+                let text = payload
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                builder.assistant_delta(text)
+            }
+            Some("reasoningContentEvent") => {
+                let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
+                builder.thinking_delta(reasoning_text(&payload).unwrap_or(""))
+            }
             Some("toolUseEvent") => {
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
                 builder.tool_delta(&payload)
+            }
+            Some("contextUsageEvent") | Some("metricsEvent") | Some("meteringEvent") => {
+                let event_type = frame_event_type(frame).unwrap_or_default();
+                let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
+                builder.usage_event(event_type, &payload);
+                Vec::new()
             }
             _ => Vec::new(),
         },
@@ -1221,13 +1331,27 @@ fn kiro_event_bytes_to_anthropic_json(
 ) -> Value {
     let mut buffer = BytesMut::from(bytes);
     let mut text = String::new();
+    let mut thinking = String::new();
     let mut tools: HashMap<String, (String, String)> = HashMap::new();
+    let mut usage = KiroUsageAccumulator::default();
     for frame in parse_frames(&mut buffer) {
         match frame_event_type(&frame) {
             Some("assistantResponseEvent") => {
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
                 if let Some(chunk) = payload.get("content").and_then(|v| v.as_str()) {
                     text.push_str(chunk);
+                }
+            }
+            Some("codeEvent") => {
+                let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
+                if let Some(chunk) = payload.get("content").and_then(|v| v.as_str()) {
+                    text.push_str(chunk);
+                }
+            }
+            Some("reasoningContentEvent") => {
+                let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
+                if let Some(chunk) = reasoning_text(&payload) {
+                    thinking.push_str(chunk);
                 }
             }
             Some("toolUseEvent") => {
@@ -1251,11 +1375,19 @@ fn kiro_event_bytes_to_anthropic_json(
                 let entry = tools.entry(id).or_insert((name, String::new()));
                 entry.1.push_str(&input);
             }
+            Some("contextUsageEvent") | Some("metricsEvent") | Some("meteringEvent") => {
+                let event_type = frame_event_type(&frame).unwrap_or_default();
+                let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
+                usage.apply_event(event_type, &payload, model);
+            }
             _ => {}
         }
     }
 
     let mut content = Vec::new();
+    if !thinking.is_empty() {
+        content.push(json!({"type":"thinking","thinking":thinking}));
+    }
     if !text.is_empty() {
         content.push(json!({"type":"text","text":text}));
     }
@@ -1271,6 +1403,8 @@ fn kiro_event_bytes_to_anthropic_json(
     } else {
         "end_turn"
     };
+    let fallback_output_tokens = estimate_tokens(&format!("{thinking}{text}"));
+    let usage = usage.final_usage(fallback_output_tokens);
     json!({
         "id": format!("msg_{}", uuid::Uuid::new_v4().to_string().replace('-', "")),
         "type": "message",
@@ -1279,8 +1413,116 @@ fn kiro_event_bytes_to_anthropic_json(
         "content": content,
         "stop_reason": stop_reason,
         "stop_sequence": null,
-        "usage": {"input_tokens": 0, "output_tokens": estimate_tokens(&text)}
+        "usage": {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_input_tokens": usage.cache_read_tokens,
+            "cache_creation_input_tokens": usage.cache_creation_tokens
+        }
     })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct KiroUsage {
+    input_tokens: i32,
+    output_tokens: i32,
+    cache_read_tokens: i32,
+    cache_creation_tokens: i32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct KiroUsageAccumulator {
+    context_input_tokens: Option<i32>,
+    metrics_input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+    cache_read_tokens: Option<i32>,
+    cache_creation_tokens: Option<i32>,
+}
+
+impl KiroUsageAccumulator {
+    fn apply_event(&mut self, event_type: &str, payload: &Value, model: &str) {
+        match event_type {
+            "contextUsageEvent" => {
+                if let Some(tokens) = context_usage_input_tokens(payload, model) {
+                    self.context_input_tokens = Some(tokens);
+                }
+            }
+            "metricsEvent" => self.apply_metrics(payload),
+            "meteringEvent" => {}
+            _ => {}
+        }
+    }
+
+    fn apply_metrics(&mut self, payload: &Value) {
+        let metrics = payload.get("metricsEvent").unwrap_or(payload);
+        if let Some(tokens) = number_field(
+            metrics,
+            &[
+                "inputTokens",
+                "input_tokens",
+                "promptTokens",
+                "prompt_tokens",
+            ],
+        ) {
+            self.metrics_input_tokens = Some(tokens);
+        }
+        if let Some(tokens) = number_field(
+            metrics,
+            &[
+                "outputTokens",
+                "output_tokens",
+                "completionTokens",
+                "completion_tokens",
+            ],
+        ) {
+            self.output_tokens = Some(tokens);
+        }
+        if let Some(tokens) = number_field(
+            metrics,
+            &[
+                "cacheReadInputTokens",
+                "cache_read_input_tokens",
+                "cacheReadTokens",
+            ],
+        ) {
+            self.cache_read_tokens = Some(tokens);
+        }
+        if let Some(tokens) = number_field(
+            metrics,
+            &[
+                "cacheCreationInputTokens",
+                "cache_creation_input_tokens",
+                "cacheCreationTokens",
+            ],
+        ) {
+            self.cache_creation_tokens = Some(tokens);
+        }
+    }
+
+    fn final_usage(&self, fallback_output_tokens: i32) -> KiroUsage {
+        KiroUsage {
+            input_tokens: self
+                .metrics_input_tokens
+                .or(self.context_input_tokens)
+                .unwrap_or(0)
+                .max(0),
+            output_tokens: self.output_tokens.unwrap_or(fallback_output_tokens).max(0),
+            cache_read_tokens: self.cache_read_tokens.unwrap_or(0).max(0),
+            cache_creation_tokens: self.cache_creation_tokens.unwrap_or(0).max(0),
+        }
+    }
+}
+
+fn reasoning_text(payload: &Value) -> Option<&str> {
+    if let Some(text) = payload.as_str() {
+        return Some(text);
+    }
+    let value = payload.get("reasoningContentEvent").unwrap_or(payload);
+    value
+        .as_str()
+        .or_else(|| value.get("text").and_then(Value::as_str))
+        .or_else(|| value.get("content").and_then(Value::as_str))
+        .or_else(|| value.get("reasoningContent").and_then(Value::as_str))
 }
 
 fn sse(event: &str, data: Value) -> Bytes {
@@ -1288,6 +1530,58 @@ fn sse(event: &str, data: Value) -> Bytes {
         "event: {event}\ndata: {}\n\n",
         serde_json::to_string(&data).unwrap_or_default()
     ))
+}
+
+fn context_usage_input_tokens(payload: &Value, model: &str) -> Option<i32> {
+    let value = payload.get("contextUsageEvent").unwrap_or(payload);
+    let percentage = number_f64_field(value, &["contextUsagePercentage"])?;
+    Some((percentage * context_window_size(model) as f64 / 100.0).floor() as i32)
+        .filter(|tokens| *tokens > 0)
+}
+
+fn number_field(value: &Value, keys: &[&str]) -> Option<i32> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(number_value))
+}
+
+fn number_f64_field(value: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(number_f64_value))
+}
+
+fn number_value(value: &Value) -> Option<i32> {
+    if let Some(n) = value.as_i64() {
+        return i32::try_from(n).ok();
+    }
+    if let Some(n) = value.as_u64() {
+        return i32::try_from(n).ok();
+    }
+    value.as_f64().and_then(|n| {
+        if n.is_finite() && n >= 0.0 && n <= i32::MAX as f64 {
+            Some(n as i32)
+        } else {
+            None
+        }
+    })
+}
+
+fn number_f64_value(value: &Value) -> Option<f64> {
+    if let Some(n) = value.as_f64() {
+        return n.is_finite().then_some(n);
+    }
+    if let Some(n) = value.as_i64() {
+        return Some(n as f64);
+    }
+    value.as_u64().map(|n| n as f64)
+}
+
+fn context_window_size(model: &str) -> i32 {
+    let normalized = model.to_ascii_lowercase();
+    if normalized.contains("[1m]") || normalized.contains("-1m") {
+        1_000_000
+    } else {
+        200_000
+    }
 }
 
 fn estimate_tokens(text: &str) -> i32 {
@@ -1456,6 +1750,107 @@ mod tests {
             .collect::<Vec<_>>()
             .join("");
         assert!(bytes.contains("very_long_original_name"));
+    }
+
+    #[test]
+    fn kiro_reasoning_and_code_events_emit_claude_blocks() {
+        let mut builder = SseBuilder::new("claude-sonnet-4-8".to_string(), HashMap::new());
+        let reasoning_frame = KiroFrame {
+            headers: HashMap::from([(
+                ":event-type".to_string(),
+                "reasoningContentEvent".to_string(),
+            )]),
+            payload: serde_json::to_vec(&json!({
+                "reasoningContentEvent": { "text": "think first" }
+            }))
+            .unwrap(),
+        };
+        let code_frame = KiroFrame {
+            headers: HashMap::from([(":event-type".to_string(), "codeEvent".to_string())]),
+            payload: serde_json::to_vec(&json!({ "content": "visible answer" })).unwrap(),
+        };
+
+        let bytes = process_frame_to_sse(&mut builder, &reasoning_frame)
+            .into_iter()
+            .chain(process_frame_to_sse(&mut builder, &code_frame))
+            .map(|b| String::from_utf8(b.to_vec()).unwrap())
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(bytes.contains("\"type\":\"thinking\""));
+        assert!(bytes.contains("\"type\":\"thinking_delta\""));
+        assert!(bytes.contains("\"thinking\":\"think first\""));
+        assert!(bytes.contains("\"type\":\"text_delta\""));
+        assert!(bytes.contains("\"text\":\"visible answer\""));
+    }
+
+    #[test]
+    fn kiro_usage_events_are_emitted_in_final_claude_delta() {
+        let mut builder = SseBuilder::new("claude-sonnet-4-8".to_string(), HashMap::new());
+        builder.usage_event(
+            "contextUsageEvent",
+            &json!({ "contextUsagePercentage": 1.5 }),
+        );
+        builder.usage_event(
+            "metricsEvent",
+            &json!({
+                "metricsEvent": {
+                    "outputTokens": 42,
+                    "cacheReadInputTokens": 7,
+                    "cacheCreationInputTokens": 11
+                }
+            }),
+        );
+
+        let bytes = builder
+            .final_events()
+            .into_iter()
+            .map(|b| String::from_utf8(b.to_vec()).unwrap())
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(bytes.contains("\"input_tokens\":3000"));
+        assert!(bytes.contains("\"output_tokens\":42"));
+        assert!(bytes.contains("\"cache_read_input_tokens\":7"));
+        assert!(bytes.contains("\"cache_creation_input_tokens\":11"));
+    }
+
+    #[test]
+    fn kiro_metrics_input_overrides_context_usage_when_available() {
+        let mut usage = KiroUsageAccumulator::default();
+        usage.apply_event(
+            "contextUsageEvent",
+            &json!({ "contextUsageEvent": { "contextUsagePercentage": 2.0 } }),
+            "claude-sonnet-4-8[1m]",
+        );
+        usage.apply_event(
+            "metricsEvent",
+            &json!({ "inputTokens": 123, "outputTokens": 9 }),
+            "claude-sonnet-4-8[1m]",
+        );
+
+        let usage = usage.final_usage(1);
+        assert_eq!(usage.input_tokens, 123);
+        assert_eq!(usage.output_tokens, 9);
+    }
+
+    #[test]
+    fn kiro_metrics_input_keeps_priority_when_context_arrives_later() {
+        let mut usage = KiroUsageAccumulator::default();
+        usage.apply_event(
+            "metricsEvent",
+            &json!({ "metricsEvent": { "inputTokens": 123, "outputTokens": 9 } }),
+            "claude-sonnet-4-8",
+        );
+        usage.apply_event(
+            "contextUsageEvent",
+            &json!({ "contextUsagePercentage": 2.0 }),
+            "claude-sonnet-4-8",
+        );
+
+        let usage = usage.final_usage(1);
+        assert_eq!(usage.input_tokens, 123);
+        assert_eq!(usage.output_tokens, 9);
     }
 
     #[test]

@@ -1062,46 +1062,53 @@ impl KiroOAuthManager {
         );
         let amz_user_agent = format!("aws-sdk-js/1.0.0 KiroIDE-2.3.0-{machine_id}");
 
-        // Try q.<region> first (requires valid profileArn).
-        let profile_arn = account.profile_arn.as_deref().filter(|v| !v.is_empty());
+        let q_host = format!("q.{region}.amazonaws.com");
+        let profile_arn = account
+            .profile_arn
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| default_profile_arn(account));
 
-        if let Some(arn) = profile_arn {
-            let host = format!("q.{region}.amazonaws.com");
-            let mut url = format!(
-                "https://{host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
-            );
-            url.push_str("&profileArn=");
-            url.push_str(&urlencoding::encode(arn));
-
+        for url in [
+            usage_limits_url(&q_host, Some(profile_arn)),
+            usage_limits_url(&q_host, None),
+        ] {
             let resp = self
-                .http_client
-                .get(&url)
-                .header("x-amz-user-agent", &amz_user_agent)
-                .header("user-agent", &user_agent)
-                .header("host", &host)
-                .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
-                .header("amz-sdk-request", "attempt=1; max=1")
-                .header("Authorization", format!("Bearer {token}"))
-                .header("Connection", "close")
-                .send()
-                .await
-                .map_err(KiroOAuthError::from)?;
-
+                .send_usage_limits_get(&url, &q_host, &amz_user_agent, &user_agent, token)
+                .await?;
             if resp.status().is_success() {
                 return Ok(resp);
             }
-            // Non-2xx (e.g. 400 "Invalid profileArn") — fall through to codewhisperer endpoint.
         }
 
-        // Fallback: codewhisperer.<region>.amazonaws.com works without profileArn
-        // (Builder ID accounts that have no stored profile_arn hit this path).
+        // Fallback: 9router uses the legacy CodeWhisperer host with the same
+        // query parameters, and it works for Builder ID sessions that have no
+        // account-specific profileArn.
         let cw_host = format!("codewhisperer.{region}.amazonaws.com");
-        let cw_url = format!("https://{cw_host}/getUsageLimits");
+        let cw_url = usage_limits_url(&cw_host, None);
+        let resp = self
+            .send_usage_limits_get(&cw_url, &cw_host, &amz_user_agent, &user_agent, token)
+            .await?;
+        if resp.status().is_success() {
+            return Ok(resp);
+        }
+        Ok(resp)
+    }
+
+    async fn send_usage_limits_get(
+        &self,
+        url: &str,
+        host: &str,
+        amz_user_agent: &str,
+        user_agent: &str,
+        token: &str,
+    ) -> Result<reqwest::Response, KiroOAuthError> {
         self.http_client
-            .get(cw_url)
-            .header("x-amz-user-agent", &amz_user_agent)
-            .header("user-agent", &user_agent)
-            .header("host", &cw_host)
+            .get(url)
+            .header("x-amz-user-agent", amz_user_agent)
+            .header("user-agent", user_agent)
+            .header("host", host)
+            .header("Accept", "application/json")
             .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
             .header("amz-sdk-request", "attempt=1; max=1")
             .header("Authorization", format!("Bearer {token}"))
@@ -1363,6 +1370,17 @@ fn sha256_hex(input: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn usage_limits_url(host: &str, profile_arn: Option<&str>) -> String {
+    let mut url = format!(
+        "https://{host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+    );
+    if let Some(profile_arn) = profile_arn.filter(|v| !v.trim().is_empty()) {
+        url.push_str("&profileArn=");
+        url.push_str(&urlencoding::encode(profile_arn));
+    }
+    url
+}
+
 fn first_email(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
     values
         .into_iter()
@@ -1513,5 +1531,19 @@ mod tests {
         };
 
         assert_eq!(usage.account_email(), Some("user@example.com"));
+    }
+
+    #[test]
+    fn usage_limits_url_includes_required_query_params() {
+        let url = usage_limits_url(
+            "q.us-east-1.amazonaws.com",
+            Some("arn:aws:codewhisperer:us-east-1:123:profile/ABC"),
+        );
+
+        assert!(url.starts_with("https://q.us-east-1.amazonaws.com/getUsageLimits?"));
+        assert!(url.contains("origin=AI_EDITOR"));
+        assert!(url.contains("resourceType=AGENTIC_REQUEST"));
+        assert!(url.contains("isEmailRequired=true"));
+        assert!(url.contains("profileArn=arn%3Aaws%3Acodewhisperer"));
     }
 }

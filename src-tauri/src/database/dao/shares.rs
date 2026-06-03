@@ -564,11 +564,7 @@ impl Database {
     }
 
     /// 轮换 share_token 到一个新值。
-    pub fn rotate_share_token(
-        &self,
-        share_id: &str,
-        new_token: &str,
-    ) -> Result<(), AppError> {
+    pub fn rotate_share_token(&self, share_id: &str, new_token: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         let affected = conn
             .execute(
@@ -605,7 +601,11 @@ impl Database {
                     id: row.get(0)?,
                     old_provider_id: row.get(1)?,
                     // "" 是"清空 slot"事件的 sentinel —— 见 upsert_share_binding_with_history。
-                    new_provider_id: if raw_new.is_empty() { None } else { Some(raw_new) },
+                    new_provider_id: if raw_new.is_empty() {
+                        None
+                    } else {
+                        Some(raw_new)
+                    },
                     app_type: row.get(3)?,
                     changed_at: row.get(4)?,
                 })

@@ -424,9 +424,7 @@ pub async fn list_share_binding_history(
 /// 不包含 share_token / api_key 以外的敏感字段；token 仍然要包含因为换设备后
 /// 用户希望接入方零改造。
 #[tauri::command]
-pub async fn export_all_shares(
-    state: State<'_, AppState>,
-) -> Result<Vec<ShareRecord>, String> {
+pub async fn export_all_shares(state: State<'_, AppState>) -> Result<Vec<ShareRecord>, String> {
     ShareService::list(&state.db).map_err(|e: AppError| e.to_string())
 }
 

@@ -378,10 +378,7 @@ impl ShareService {
 
     /// 轮换 share_token。
     /// share 不需要 paused —— 老 token 立即失效，新 token 立即可用。
-    pub fn rotate_token(
-        db: &Arc<Database>,
-        share_id: &str,
-    ) -> Result<ShareRecord, AppError> {
+    pub fn rotate_token(db: &Arc<Database>, share_id: &str) -> Result<ShareRecord, AppError> {
         // 确认存在并取一个新 token。
         db.get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
@@ -649,9 +646,7 @@ pub(crate) fn normalize_share_app_type(value: &str) -> Result<String, AppError> 
 fn normalize_provider_id(value: &str) -> Result<String, AppError> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(AppError::Message(
-            "Share provider_id 不能为空".to_string(),
-        ));
+        return Err(AppError::Message("Share provider_id 不能为空".to_string()));
     }
     Ok(value.to_string())
 }
@@ -854,7 +849,9 @@ mod tests {
         let db = fresh_db();
         let mut params = base_params("");
         // 显式塞一个空 provider_id 进 binding，触发 normalize_provider_id 拒绝。
-        params.bindings.insert("claude".to_string(), "   ".to_string());
+        params
+            .bindings
+            .insert("claude".to_string(), "   ".to_string());
         let err = ShareService::prepare_create(&db, params)
             .expect_err("empty provider_id must be rejected");
         assert!(
@@ -896,7 +893,10 @@ mod tests {
             .expect("save provider");
         let record = ShareService::prepare_create(&db, base_params("p1"))
             .expect("valid binding should succeed");
-        assert_eq!(record.bindings.get("claude").map(String::as_str), Some("p1"));
+        assert_eq!(
+            record.bindings.get("claude").map(String::as_str),
+            Some("p1")
+        );
         assert_eq!(record.primary_app().as_deref(), Some("claude"));
         assert_eq!(record.status, "paused");
         assert!(!record.share_token.is_empty());
@@ -911,14 +911,22 @@ mod tests {
         db.save_provider("codex", &make_provider("p-codex", "codex"))
             .unwrap();
         let mut params = base_params("p-claude");
-        params.bindings.insert("codex".to_string(), "p-codex".to_string());
+        params
+            .bindings
+            .insert("codex".to_string(), "p-codex".to_string());
         let record = ShareService::prepare_create(&db, params).expect("multi-app prepare ok");
         ShareService::create(&db, record.clone()).expect("create ok");
 
         let stored = db.get_share_by_id(&record.id).unwrap().unwrap();
         assert_eq!(stored.supported_apps(), vec!["claude", "codex"]);
-        assert_eq!(stored.bindings.get("claude").map(String::as_str), Some("p-claude"));
-        assert_eq!(stored.bindings.get("codex").map(String::as_str), Some("p-codex"));
+        assert_eq!(
+            stored.bindings.get("claude").map(String::as_str),
+            Some("p-claude")
+        );
+        assert_eq!(
+            stored.bindings.get("codex").map(String::as_str),
+            Some("p-codex")
+        );
     }
 
     /// P8 新增：完全不绑也允许（用户后续逐个挂）。
@@ -927,8 +935,7 @@ mod tests {
         let db = fresh_db();
         let mut params = base_params("ignored");
         params.bindings.clear();
-        let record =
-            ShareService::prepare_create(&db, params).expect("empty bindings allowed");
+        let record = ShareService::prepare_create(&db, params).expect("empty bindings allowed");
         assert!(record.bindings.is_empty());
         assert!(record.primary_app().is_none());
     }
@@ -978,7 +985,10 @@ mod tests {
 
         let updated = ShareService::update_provider_binding(&db, "s1", "claude", Some("p2"))
             .expect("rebind succeeds");
-        assert_eq!(updated.bindings.get("claude").map(String::as_str), Some("p2"));
+        assert_eq!(
+            updated.bindings.get("claude").map(String::as_str),
+            Some("p2")
+        );
 
         let history = db.list_share_binding_history("s1", 10).unwrap();
         assert_eq!(history.len(), 1);
@@ -1051,8 +1061,7 @@ mod tests {
         let db = fresh_db();
         db.save_provider("claude", &make_provider("p1", "claude"))
             .unwrap();
-        let record =
-            ShareService::prepare_create(&db, base_params("p1")).expect("prepare ok");
+        let record = ShareService::prepare_create(&db, base_params("p1")).expect("prepare ok");
         assert_eq!(record.api_key, "");
     }
 }

@@ -555,10 +555,7 @@ fn create_usage_collector(
                 let share_name = share_name.clone();
                 let share_user_email = share_user_email.clone();
                 let incoming_request_id = incoming_request_id.clone();
-                let total_tokens = i64::from(usage.input_tokens)
-                    + i64::from(usage.output_tokens)
-                    + i64::from(usage.cache_read_tokens)
-                    + i64::from(usage.cache_creation_tokens);
+                let total_tokens = share_total_tokens(app_type_str, &usage);
                 let request_id = incoming_request_id
                     .clone()
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -720,10 +717,7 @@ fn spawn_log_usage(
     let share_name = ctx.share_name.clone();
     let share_user_email = ctx.share_user_email.clone();
     let incoming_request_id = ctx.incoming_request_id.clone();
-    let total_tokens = i64::from(usage.input_tokens)
-        + i64::from(usage.output_tokens)
-        + i64::from(usage.cache_read_tokens)
-        + i64::from(usage.cache_creation_tokens);
+    let total_tokens = share_total_tokens(&app_type_str, &usage);
     let should_log_request = enable_logging || share_id.is_some();
     let request_id = incoming_request_id
         .clone()
@@ -877,6 +871,8 @@ pub(crate) fn build_share_request_log(
     session_id: Option<String>,
     user_email: Option<String>,
 ) -> crate::tunnel::config::ShareTunnelRequestLog {
+    let usage = share_usage_for_display(app_type, usage);
+
     crate::tunnel::config::ShareTunnelRequestLog {
         request_id: request_id.to_string(),
         share_id: share_id.to_string(),
@@ -906,6 +902,26 @@ pub(crate) fn build_share_request_log(
         user_email,
         created_at: Utc::now().timestamp(),
     }
+}
+
+fn share_total_tokens(app_type: &str, usage: &TokenUsage) -> i64 {
+    let usage = share_usage_for_display(app_type, usage);
+    i64::from(usage.input_tokens)
+        + i64::from(usage.output_tokens)
+        + i64::from(usage.cache_read_tokens)
+        + i64::from(usage.cache_creation_tokens)
+}
+
+fn share_usage_for_display(app_type: &str, usage: &TokenUsage) -> TokenUsage {
+    if !matches!(app_type, "codex" | "gemini") {
+        return usage.clone();
+    }
+
+    let mut normalized = usage.clone();
+    if usage.input_tokens >= usage.cache_read_tokens {
+        normalized.input_tokens = usage.input_tokens - usage.cache_read_tokens;
+    }
+    normalized
 }
 
 /// 创建带日志记录和超时控制的透传流
@@ -1178,6 +1194,93 @@ mod tests {
             Some("application/json"),
             false
         ));
+    }
+
+    #[test]
+    fn test_share_usage_normalizes_codex_cache_inclusive_input() {
+        let usage = TokenUsage {
+            input_tokens: 156_541,
+            output_tokens: 357,
+            cache_read_tokens: 155_520,
+            cache_creation_tokens: 0,
+            model: None,
+            message_id: None,
+        };
+
+        let log = build_share_request_log(
+            "req-1",
+            "share-1",
+            "Share",
+            "provider-1",
+            "Provider",
+            "codex",
+            "gpt-5.5",
+            "gpt-5.5",
+            200,
+            1000,
+            Some(100),
+            &usage,
+            true,
+            Some("session-1".to_string()),
+            Some("user@example.com".to_string()),
+        );
+
+        assert_eq!(log.input_tokens, 1_021);
+        assert_eq!(log.output_tokens, 357);
+        assert_eq!(log.cache_read_tokens, 155_520);
+        assert_eq!(log.cache_creation_tokens, 0);
+        assert_eq!(share_total_tokens("codex", &usage), 156_898);
+    }
+
+    #[test]
+    fn test_share_usage_keeps_claude_fresh_input() {
+        let usage = TokenUsage {
+            input_tokens: 200,
+            output_tokens: 100,
+            cache_read_tokens: 5_000,
+            cache_creation_tokens: 10_000,
+            model: None,
+            message_id: None,
+        };
+
+        let log = build_share_request_log(
+            "req-2",
+            "share-1",
+            "Share",
+            "provider-1",
+            "Provider",
+            "claude",
+            "claude-opus-4-6",
+            "claude-opus-4-6",
+            200,
+            1000,
+            None,
+            &usage,
+            false,
+            None,
+            None,
+        );
+
+        assert_eq!(log.input_tokens, 200);
+        assert_eq!(log.cache_read_tokens, 5_000);
+        assert_eq!(share_total_tokens("claude", &usage), 15_300);
+    }
+
+    #[test]
+    fn test_share_usage_keeps_malformed_cache_inclusive_input() {
+        let usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 5,
+            cache_read_tokens: 999,
+            cache_creation_tokens: 0,
+            model: None,
+            message_id: None,
+        };
+
+        let normalized = share_usage_for_display("codex", &usage);
+
+        assert_eq!(normalized.input_tokens, 100);
+        assert_eq!(share_total_tokens("codex", &usage), 1_104);
     }
 
     fn build_state(db: Arc<Database>) -> ProxyState {

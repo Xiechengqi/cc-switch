@@ -1830,15 +1830,25 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
     // 不会通过 active 状态推送到 router。
     let primary_app = share.primary_app().unwrap_or_default();
     let primary_pid = share.primary_provider_id();
+    // P12：未绑定 provider 的 app 不应该被外部分享。从 bindings 直接派生 support
+    // （之前是 Default::default 全 false，要等 runtime snapshot 才修正——但 sync
+    // 这一步 router 已经把 enabled_<app> 写进 shares 表了；同步晚到的窗口里 market
+    // 可能正好选到一个未绑定 app）。同时把 pricing map 也按 bindings 过滤，避免历史
+    // 上设过价但现已解绑的 app 仍带价"漏出去"。
+    let support = share_support_from_bindings(share);
+    let for_sale_pricing: HashMap<String, u16> = share
+        .for_sale_official_price_percent_by_app
+        .iter()
+        .filter(|(app, _)| share.bindings.contains_key(*app))
+        .map(|(app, percent)| (app.clone(), *percent))
+        .collect();
     ShareTunnelMetadata {
         share_id: share.id.clone(),
         share_name: share.name.clone(),
         owner_email: share.owner_email.clone(),
         shared_with_emails: share.shared_with_emails.clone(),
         market_access_mode: share.market_access_mode.clone(),
-        for_sale_official_price_percent_by_app: share
-            .for_sale_official_price_percent_by_app
-            .clone(),
+        for_sale_official_price_percent_by_app: for_sale_pricing,
         description: share.description.clone(),
         for_sale: share.for_sale.clone(),
         subdomain: share.subdomain.clone().unwrap_or_default(),
@@ -1855,7 +1865,7 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         auto_start: share.auto_start,
         created_at: share.created_at.clone(),
         expires_at: share.expires_at.clone(),
-        support: Default::default(),
+        support,
         upstream_provider: None,
         app_runtimes: Default::default(),
     }
@@ -2049,5 +2059,65 @@ mod tests {
         // Slot 没绑定时，对应 app 的 runtime 必须为空（codex/gemini 没绑定）。
         assert!(snap_a.app_runtimes.codex.is_none());
         assert!(snap_a.app_runtimes.gemini.is_none());
+    }
+
+    /// P12 回归：share_metadata_from_record（sync 时写到 router 的 wire payload）
+    /// 必须按 bindings 派生 support，且 pricing map 不能把未绑定的 app 漏出去。
+    /// 否则 router 在 share 同步刚写入 / 用户解绑后立刻 enable for_sale 这种窗口里，
+    /// 会把未绑定的 app 当成"可用"，市场调度命中后才被 client 401 拒。
+    #[test]
+    fn share_metadata_from_record_respects_unbound_slots() {
+        use std::collections::HashMap;
+
+        let mut bindings = HashMap::new();
+        bindings.insert("claude".to_string(), "p-claude".to_string());
+        // codex / gemini 未绑定
+
+        // 历史定价残留：codex 之前被定过价 80%，现在已解绑。
+        let mut pricing = HashMap::new();
+        pricing.insert("claude".to_string(), 60u16);
+        pricing.insert("codex".to_string(), 80u16);
+
+        let share = ShareRecord {
+            id: "s1".to_string(),
+            name: "s1".to_string(),
+            owner_email: "u@example.com".to_string(),
+            shared_with_emails: Vec::new(),
+            market_access_mode: "all".to_string(),
+            for_sale_official_price_percent_by_app: pricing,
+            description: None,
+            for_sale: "Yes".to_string(),
+            share_token: "tok-1".to_string(),
+            bindings,
+            api_key: String::new(),
+            settings_config: None,
+            token_limit: -1,
+            parallel_limit: 3,
+            tokens_used: 0,
+            requests_count: 0,
+            expires_at: "2100-01-01T00:00:00Z".to_string(),
+            subdomain: Some("alpha".to_string()),
+            tunnel_url: None,
+            status: "active".to_string(),
+            auto_start: false,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            last_used_at: None,
+        };
+
+        let metadata = share_metadata_from_record(&share);
+
+        // SUPPORT 必须按 bindings 派生：未绑定的 codex/gemini 显式 false。
+        assert!(metadata.support.claude);
+        assert!(!metadata.support.codex);
+        assert!(!metadata.support.gemini);
+
+        // Pricing 只能包含已绑定的 app。codex 已解绑，老定价不能漏出去。
+        assert_eq!(metadata.for_sale_official_price_percent_by_app.get("claude"), Some(&60));
+        assert!(!metadata
+            .for_sale_official_price_percent_by_app
+            .contains_key("codex"));
+        assert!(!metadata
+            .for_sale_official_price_percent_by_app
+            .contains_key("gemini"));
     }
 }

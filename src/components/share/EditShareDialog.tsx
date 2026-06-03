@@ -198,6 +198,17 @@ export function EditShareDialog({
   const [expiryMinuteInput, setExpiryMinuteInput] = useState("");
   const [expiryPermanent, setExpiryPermanent] = useState(false);
 
+  // P12：providerSalePricing 是页面级 (claude/codex/gemini) 全量列表；本 share 没有
+  // 绑定某个 app 时，这个 app 不参与外部分享——既不展示定价 row，也不能 dirty/save
+  // 该 slot 的价格。所有下游 dirty/validity/render 都走这个 filtered 列表。
+  const effectiveProviderSalePricing = useMemo(
+    () =>
+      providerSalePricing.filter((item) =>
+        Boolean(share.bindings?.[item.app as keyof typeof share.bindings]),
+      ),
+    [providerSalePricing, share.bindings],
+  );
+
   const marketEmailSet = new Set(
     markets.map((market) => market.email.toLowerCase()),
   );
@@ -251,7 +262,7 @@ export function EditShareDialog({
     setMarketAccessModeInput(currentMarketAccessMode);
     setForSaleInput(share.forSale);
     setSalePricingInputs(
-      salePricingInputValues(providerSalePricing, currentShareSalePricing),
+      salePricingInputValues(effectiveProviderSalePricing, currentShareSalePricing),
     );
     setAutoStartInput(share.autoStart);
     const permanent = isPermanentExpiry(share.expiresAt);
@@ -272,7 +283,7 @@ export function EditShareDialog({
       setExpiryMinuteInput("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, share, providerSalePricing]);
+  }, [open, share, effectiveProviderSalePricing]);
 
   const parsedTokenLimit = Number.parseInt(tokenLimitInput, 10);
   const tokenLimitDirty =
@@ -345,15 +356,15 @@ export function EditShareDialog({
   );
   const forSaleDirty = forSaleInput !== share.forSale;
   const salePricingCurrentValues = salePricingInputValues(
-    providerSalePricing,
+    effectiveProviderSalePricing,
     currentShareSalePricing,
   );
-  const salePricingDirty = providerSalePricing.some(
+  const salePricingDirty = effectiveProviderSalePricing.some(
     (item) =>
       (salePricingInputs[item.app] ?? "") !==
       (salePricingCurrentValues[item.app] ?? ""),
   );
-  const salePricingInvalid = providerSalePricing.some((item) => {
+  const salePricingInvalid = effectiveProviderSalePricing.some((item) => {
     const value = (salePricingInputs[item.app] ?? "").trim();
     if (value === "") return false;
     if (!/^\d+$/.test(value)) return true;
@@ -869,7 +880,7 @@ export function EditShareDialog({
               </div>
             </DialogSection>
 
-            {providerSalePricing.length > 0 ? (
+            {effectiveProviderSalePricing.length > 0 ? (
               <DialogSection
                 title={t("share.modelPricingPercentTitle", {
                   defaultValue: "模型定价（Share 默认；供应商非空时优先）",
@@ -877,7 +888,7 @@ export function EditShareDialog({
                 invalid={salePricingInvalid}
               >
                 <div className="grid gap-3 md:grid-cols-3">
-                  {providerSalePricing.map((item) => (
+                  {effectiveProviderSalePricing.map((item) => (
                     <div key={item.app} className="space-y-1">
                       <Label className="text-xs text-muted-foreground">
                         {item.label}

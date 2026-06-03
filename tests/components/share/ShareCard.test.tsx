@@ -394,7 +394,14 @@ describe("ShareCard", () => {
     const handlers = createHandlers();
     renderShareCard(
       <ShareCard
-        share={{ ...baseShare, forSale: "Yes" }}
+        share={{
+          ...baseShare,
+          forSale: "Yes",
+          // P12：定价 row 只对已绑定 app 显示。本测试用 claude 价格，必须先有
+          // claude binding，否则 EditShareDialog 不渲染该 row，下面 spinbutton
+          // 也找不到。
+          bindings: { claude: "test-provider" },
+        }}
         tunnelConfig={tunnelConfig}
         tunnelConfigured={true}
         providerSalePricing={[
@@ -434,7 +441,11 @@ describe("ShareCard", () => {
     ];
     const { rerender } = renderShareCard(
       <ShareCard
-        share={{ ...baseShare, forSale: "Yes" }}
+        share={{
+          ...baseShare,
+          forSale: "Yes",
+          bindings: { claude: "test-provider" },
+        }}
         tunnelConfig={tunnelConfig}
         tunnelConfigured={true}
         providerSalePricing={providerSalePricing}
@@ -450,7 +461,12 @@ describe("ShareCard", () => {
     rerender(
       <QueryClientProvider client={createTestQueryClient()}>
         <ShareCard
-          share={{ ...baseShare, forSale: "Yes", requestsCount: 4 }}
+          share={{
+            ...baseShare,
+            forSale: "Yes",
+            requestsCount: 4,
+            bindings: { claude: "test-provider" },
+          }}
           tunnelConfig={tunnelConfig}
           tunnelConfigured={true}
           providerSalePricing={[...providerSalePricing]}
@@ -460,6 +476,36 @@ describe("ShareCard", () => {
     );
 
     expect(screen.getAllByRole("spinbutton")[0]).toHaveValue(15);
+  });
+
+  it("hides per-app pricing rows for apps the share has no binding for (P12)", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    renderShareCard(
+      <ShareCard
+        share={{
+          ...baseShare,
+          forSale: "Yes",
+          // 只绑 claude，codex/gemini 留空——它们的定价行必须不渲染。
+          bindings: { claude: "test-provider" },
+        }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        providerSalePricing={[
+          { app: "claude", label: "Claude", providerName: "Claude P", percent: 20 },
+          { app: "codex", label: "Codex", providerName: "Codex P", percent: 30 },
+          { app: "gemini", label: "Gemini", providerName: "Gemini P", percent: 40 },
+        ]}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    // 定价行用 min=1 max=100 的 number input；未绑定的 codex/gemini 不该有 row。
+    const pricingInputs = document.querySelectorAll<HTMLInputElement>(
+      'input[type="number"][min="1"][max="100"]',
+    );
+    expect(pricingInputs.length).toBe(1);
   });
 
   it("restores market selection to the default while preserving Share To emails", async () => {

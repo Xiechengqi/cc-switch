@@ -585,6 +585,13 @@ impl Database {
                         Self::migrate_v20_to_v21(conn)?;
                         Self::set_user_version(conn, 21)?;
                     }
+                    21 => {
+                        log::info!(
+                            "迁移数据库从 v21 到 v22（P8 残留：把 shares.app_type/provider_id 列回填到 share_provider_bindings 后 DROP，避免新 INSERT 触发 NOT NULL 约束）"
+                        );
+                        Self::migrate_v21_to_v22(conn)?;
+                        Self::set_user_version(conn, 22)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -1625,6 +1632,103 @@ impl Database {
             );
         }
         log::info!("v20 -> v21 迁移完成：孤儿 share 已暂停");
+        Ok(())
+    }
+
+    /// v21 -> v22 迁移：把 P8 多 app share 改造里没及时清理的 `shares.app_type`
+    /// 和 `shares.provider_id` 两个老列回填到侧表后 DROP。
+    ///
+    /// 历史：P8 把 share ↔ provider 改成多槽，新代码用 `share_provider_bindings`
+    /// 侧表，`shares` 表的 CREATE 语句也去掉了 app_type / provider_id 两列。但老 DB
+    /// 升级到 P8 时只跑到 v21（pause 孤儿 share），两列依然存在且 NOT NULL；新版本
+    /// 的 `create_share` INSERT 不绑这两列，SQLite 直接抛 `NOT NULL constraint
+    /// failed: shares.app_type`，用户表现就是"创建第二个 share 失败"。
+    ///
+    /// 修复路径：
+    /// 1. 确保侧表存在（create_tables 已经会建，但迁移先于业务逻辑跑，多兜一道）。
+    /// 2. 用 `INSERT OR IGNORE` 把老列里的 (app_type, provider_id) 回填到侧表，
+    ///    跳过 app_type / provider_id 为空的孤儿行。
+    /// 3. 删掉依赖 provider_id 的旧索引（不然 DROP COLUMN 会报"used in index"）。
+    /// 4. ALTER TABLE DROP COLUMN 把两列移除（SQLite 3.35+ 支持，Tauri 自带的版本满足）。
+    ///
+    /// 全新部署的 DB 这两列从一开始就不存在，函数走列检测分支直接 no-op。
+    fn migrate_v21_to_v22(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "shares")? {
+            return Ok(());
+        }
+        let has_app_type = Self::has_column(conn, "shares", "app_type")?;
+        let has_provider_id = Self::has_column(conn, "shares", "provider_id")?;
+        if !has_app_type && !has_provider_id {
+            log::info!(
+                "v21 -> v22 跳过：shares 表已无 app_type/provider_id 列（fresh schema）"
+            );
+            return Ok(());
+        }
+
+        // 1) 侧表存在性兜底。迁移和 create_tables 的相对顺序未来可能调整，
+        // 这里 IF NOT EXISTS 一道保险，迁移结束后表一定可用。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS share_provider_bindings (
+                share_id    TEXT NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+                app_type    TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (share_id, app_type)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("v21→v22 ensure side table failed: {e}")))?;
+        let _ = conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_share_bindings_provider_unique
+             ON share_provider_bindings(provider_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_share_bindings_share
+             ON share_provider_bindings(share_id)",
+            [],
+        );
+
+        // 2) 回填。only when 两列都存在 且 都有值。INSERT OR IGNORE 让重跑安全。
+        if has_app_type && has_provider_id {
+            let backfilled = conn
+                .execute(
+                    "INSERT OR IGNORE INTO share_provider_bindings (share_id, app_type, provider_id)
+                     SELECT id, app_type, provider_id
+                     FROM shares
+                     WHERE app_type IS NOT NULL AND TRIM(app_type) != ''
+                       AND provider_id IS NOT NULL AND TRIM(provider_id) != ''",
+                    [],
+                )
+                .map_err(|e| {
+                    AppError::Database(format!(
+                        "v21→v22 backfill share_provider_bindings failed: {e}"
+                    ))
+                })?;
+            log::info!(
+                "v21 -> v22 回填了 {backfilled} 条 binding 到 share_provider_bindings"
+            );
+        }
+
+        // 3) 删旧索引——它们引用即将 DROP 的列，SQLite 会因此拒绝 DROP COLUMN。
+        let _ = conn.execute("DROP INDEX IF EXISTS idx_shares_provider_unique", []);
+        let _ = conn.execute("DROP INDEX IF EXISTS idx_shares_app_status", []);
+
+        // 4) 落实 DROP COLUMN。先 provider_id 再 app_type；顺序不影响正确性，
+        // 但失败时让日志能精确指到具体列。
+        if has_provider_id {
+            conn.execute("ALTER TABLE shares DROP COLUMN provider_id", [])
+                .map_err(|e| {
+                    AppError::Database(format!("v21→v22 drop shares.provider_id 失败: {e}"))
+                })?;
+        }
+        if has_app_type {
+            conn.execute("ALTER TABLE shares DROP COLUMN app_type", [])
+                .map_err(|e| {
+                    AppError::Database(format!("v21→v22 drop shares.app_type 失败: {e}"))
+                })?;
+        }
+        log::info!("v21 -> v22 迁移完成：shares 表已 DROP app_type/provider_id");
         Ok(())
     }
 

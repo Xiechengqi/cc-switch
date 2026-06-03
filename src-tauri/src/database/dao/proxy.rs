@@ -53,6 +53,18 @@ pub(crate) fn validate_pricing_source(value: &str) -> Result<&str, AppError> {
     }
 }
 
+fn share_log_input_tokens_for_display(
+    app_type: &str,
+    input_tokens: u32,
+    cache_read_tokens: u32,
+) -> u32 {
+    if matches!(app_type, "codex" | "gemini") && input_tokens >= cache_read_tokens {
+        input_tokens - cache_read_tokens
+    } else {
+        input_tokens
+    }
+}
+
 impl Database {
     pub fn get_recent_share_request_logs(
         &self,
@@ -84,13 +96,18 @@ impl Database {
 
         let rows = stmt
             .query_map(rusqlite::params![share_id, limit as i64], |row| {
+                let app_type: String = row.get(5)?;
+                let input_tokens = row.get::<_, i64>(15)? as u32;
+                let cache_read_tokens = row.get::<_, i64>(17)? as u32;
+                let display_input_tokens =
+                    share_log_input_tokens_for_display(&app_type, input_tokens, cache_read_tokens);
                 Ok(ShareTunnelRequestLog {
                     request_id: row.get(0)?,
                     share_id: row.get(1)?,
                     share_name: row.get(2)?,
                     provider_id: row.get(3)?,
                     provider_name: row.get(4)?,
-                    app_type: row.get(5)?,
+                    app_type,
                     model: row.get(6)?,
                     request_model: row.get(7)?,
                     request_agent: row.get(8)?,
@@ -100,9 +117,9 @@ impl Database {
                     status_code: row.get::<_, i64>(12)? as u16,
                     latency_ms: row.get::<_, i64>(13)? as u64,
                     first_token_ms: row.get::<_, Option<i64>>(14)?.map(|v| v as u64),
-                    input_tokens: row.get::<_, i64>(15)? as u32,
+                    input_tokens: display_input_tokens,
                     output_tokens: row.get::<_, i64>(16)? as u32,
-                    cache_read_tokens: row.get::<_, i64>(17)? as u32,
+                    cache_read_tokens,
                     cache_creation_tokens: row.get::<_, i64>(18)? as u32,
                     is_streaming: row.get::<_, i64>(19)? != 0,
                     session_id: row.get(20)?,
@@ -941,8 +958,91 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::share_log_input_tokens_for_display;
     use crate::database::Database;
     use crate::error::AppError;
+
+    #[test]
+    fn test_share_log_input_tokens_for_display() {
+        assert_eq!(
+            share_log_input_tokens_for_display("codex", 161_256, 160_128),
+            1_128
+        );
+        assert_eq!(
+            share_log_input_tokens_for_display("gemini", 10_000, 8_000),
+            2_000
+        );
+        assert_eq!(
+            share_log_input_tokens_for_display("claude", 200, 5_000),
+            200
+        );
+        assert_eq!(share_log_input_tokens_for_display("codex", 100, 999), 100);
+    }
+
+    #[test]
+    fn test_recent_share_request_logs_normalizes_codex_cache_inclusive_input(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+
+        {
+            let conn = db
+                .conn
+                .lock()
+                .map_err(|e| AppError::Database(format!("Mutex lock failed: {e}")))?;
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model, request_model,
+                    request_agent, requested_model, actual_model, actual_model_source,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    latency_ms, first_token_ms, status_code, session_id, provider_type,
+                    is_streaming, cost_multiplier, created_at, share_id, share_name, user_email
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+                )",
+                rusqlite::params![
+                    "req-cache",
+                    "provider-1",
+                    "codex",
+                    "gpt-5.5",
+                    "gpt-5.5",
+                    "codex",
+                    "gpt-5.5",
+                    "gpt-5.5",
+                    "official",
+                    161_256i64,
+                    513i64,
+                    160_128i64,
+                    0i64,
+                    11_706i64,
+                    Some(150i64),
+                    200i64,
+                    Some("session-1"),
+                    Some("codex_oauth"),
+                    1i64,
+                    "1.0",
+                    1_717_171_717i64,
+                    Some("share-1"),
+                    Some("Share"),
+                    Some("user@example.com"),
+                ],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        let logs = db.get_recent_share_request_logs("share-1", 10)?;
+
+        assert_eq!(logs.len(), 1);
+        let log = &logs[0];
+        assert_eq!(log.input_tokens, 1_128);
+        assert_eq!(log.output_tokens, 513);
+        assert_eq!(log.cache_read_tokens, 160_128);
+        assert_eq!(log.cache_creation_tokens, 0);
+        assert_eq!(log.session_id.as_deref(), Some("session-1"));
+        assert!(log.is_streaming);
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_default_cost_multiplier_round_trip() -> Result<(), AppError> {

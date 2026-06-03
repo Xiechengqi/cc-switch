@@ -129,6 +129,13 @@ impl ShareService {
         // 只删自己；多 share 模式下不能再级联删全部。
         // 调用方（commands/share.rs）负责先 stop_tunnel(share_id) 释放 SSH 通道。
         db.delete_share(share_id)?;
+        // 清掉这条 share 在 model_health store 里所有 app slot 的残留条目。
+        // 不做的话进程 OnceLock store 会一直留着，下次同 id share（极不可能但
+        // 路径上不该假定不会发生）就会读到陈旧结果。
+        let share_id = share_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            crate::tunnel::model_health::purge_share(&share_id).await;
+        });
         Ok(())
     }
 
@@ -374,6 +381,14 @@ impl ShareService {
         let updated = db
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        // binding 改了（解绑或换 provider）—— 清掉旧 provider 在 model_health
+        // store 里的探测结果，避免 dashboard 显示的还是上一个 provider 的状态，
+        // 直到下一轮 30 min 的调度循环跑过来才覆盖掉。
+        let purge_share_id = share_id.to_string();
+        let purge_app_type = app_type.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::tunnel::model_health::purge_share_app(&purge_share_id, &purge_app_type).await;
+        });
         crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
         Ok(updated)
     }

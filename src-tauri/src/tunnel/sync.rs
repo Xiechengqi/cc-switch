@@ -569,31 +569,6 @@ async fn refresh_share_runtime_after_provider_switch(
     }
 }
 
-/// 全局"哪些 app 的本地代理目前是开的"。`model_health` 探针等"与具体 share 无关"
-/// 的路径用它来决定要不要跑该 app 的检查。**不要**用它来构建 share 的 SUPPORT/
-/// app_runtimes 快照——多 share 模式下不同 share 会绑不同 app slot，需要按 share
-/// 自己的 bindings 决定，否则 router 的 dashboard 会显示同 client 所有 share 数据
-/// 都一样（P11 复盘）。
-pub(crate) async fn query_share_support(db: &Database) -> ShareSupport {
-    ShareSupport {
-        claude: db
-            .get_proxy_config_for_app("claude")
-            .await
-            .map(|c| c.enabled)
-            .unwrap_or(false),
-        codex: db
-            .get_proxy_config_for_app("codex")
-            .await
-            .map(|c| c.enabled)
-            .unwrap_or(false),
-        gemini: db
-            .get_proxy_config_for_app("gemini")
-            .await
-            .map(|c| c.enabled)
-            .unwrap_or(false),
-    }
-}
-
 /// P11：单个 share 的 SUPPORT —— 直接来自 share.bindings。一条 share 在某个 app
 /// slot 有 binding，该 app 就是 supported；否则 false。这与请求路径上
 /// `resolve_share_outcome` 的判断口径一致：没有 binding 的 slot 会被 401 拒绝。
@@ -614,7 +589,20 @@ pub(crate) async fn build_share_runtime_snapshot(
     let support = share_support_from_bindings(share);
     let app_runtimes = build_all_upstream_provider_snapshots(db, share).await;
     let app_providers = build_all_app_provider_snapshots(db, share).await;
-    let model_health = crate::tunnel::model_health::current_share_model_health_summary().await;
+    // model_health 同样 per-share：store 按 (share_id, app_type) 索引；额外把
+    // 自己当前 binding 的 app 集合传过去，挡住 store 里残留的、已经不再绑定的
+    // 旧条目（解绑/改绑路径上有 active purge，但 defense in depth）。
+    let bound_apps: std::collections::HashSet<String> = share
+        .bindings
+        .iter()
+        .filter(|(_, pid)| !pid.trim().is_empty())
+        .map(|(app, _)| app.clone())
+        .collect();
+    let model_health = crate::tunnel::model_health::current_share_model_health_summary_for_share(
+        &share.id,
+        &bound_apps,
+    )
+    .await;
     ShareRuntimeSnapshot {
         share_id: share.id.clone(),
         queried_at: chrono::Utc::now().timestamp(),

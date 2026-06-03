@@ -74,6 +74,7 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
   const utilization = Math.round(tier.utilization);
   const resetCountdown = countdownStr(tier.resetsAt);
   const resetDate = formatResetDate(tier.resetsAt, i18n.language);
+  const credentialMessage = quota.credentialMessage?.trim();
   const usageText = t("subscription.kiroCreditsUsage", {
     used,
     limit,
@@ -103,6 +104,7 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
           </button>
         </div>
         <div className="flex items-center gap-1.5">
+          {credentialMessage && <KiroPlanBadge title={credentialMessage} />}
           <span className="text-gray-500 dark:text-gray-400">
             {t("subscription.kiroCredits", { defaultValue: "Credits" })}:
           </span>
@@ -129,12 +131,15 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
     <div className="mt-3 rounded-xl border border-border-default bg-card px-4 py-3 shadow-sm">
       <div className="flex items-center justify-between mb-2">
         <div className="min-w-0">
-          <div className="text-xs text-gray-500 dark:text-gray-400 font-medium">
-            {t("subscription.kiroEstimatedUsage", {
-              defaultValue: "Estimated Usage",
-            })}
+          <div className="flex min-w-0 items-center gap-2">
+            {credentialMessage && <KiroPlanBadge title={credentialMessage} />}
+            <span className="min-w-0 truncate text-xs font-medium text-gray-500 dark:text-gray-400">
+              {t("subscription.kiroEstimatedUsage", {
+                defaultValue: "Estimated Usage",
+              })}
+            </span>
             {resetDate && (
-              <span className="ml-2 font-normal text-muted-foreground/70">
+              <span className="flex-shrink-0 text-xs font-normal text-muted-foreground/70">
                 {t("subscription.kiroResetsOn", {
                   date: resetDate,
                   defaultValue: `resets on ${resetDate}`,
@@ -142,11 +147,6 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
               </span>
             )}
           </div>
-          {quota.credentialMessage && (
-            <div className="mt-0.5 text-[10px] uppercase tracking-normal text-muted-foreground truncate">
-              {quota.credentialMessage}
-            </div>
-          )}
         </div>
         <div className="flex items-center gap-2">
           {quota.queriedAt && (
@@ -196,6 +196,17 @@ const KiroOauthQuotaFooter: React.FC<KiroOauthQuotaFooterProps> = ({
     </div>
   );
 };
+
+function KiroPlanBadge({ title }: { title: string }) {
+  return (
+    <span
+      className="inline-flex max-w-28 flex-shrink-0 items-center rounded-md border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+      title={title}
+    >
+      <span className="min-w-0 truncate">{title}</span>
+    </span>
+  );
+}
 
 function formatCredits(value: number, locale: string): string {
   return new Intl.NumberFormat(locale, {

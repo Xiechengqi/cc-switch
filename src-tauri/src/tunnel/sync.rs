@@ -2112,7 +2112,12 @@ mod tests {
         assert!(!metadata.support.gemini);
 
         // Pricing 只能包含已绑定的 app。codex 已解绑，老定价不能漏出去。
-        assert_eq!(metadata.for_sale_official_price_percent_by_app.get("claude"), Some(&60));
+        assert_eq!(
+            metadata
+                .for_sale_official_price_percent_by_app
+                .get("claude"),
+            Some(&60)
+        );
         assert!(!metadata
             .for_sale_official_price_percent_by_app
             .contains_key("codex"));

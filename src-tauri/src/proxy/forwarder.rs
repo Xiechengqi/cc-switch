@@ -1272,8 +1272,15 @@ impl RequestForwarder {
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
         let mut filtered_body = prepare_upstream_request_body(request_body);
+        let codex_oauth_upstream_session_id = self
+            .session_client_provided
+            .then(|| codex_oauth_upstream_session_id(&self.session_id))
+            .flatten();
         if adapter.name() == "Codex" && provider.is_codex_official_with_managed_auth() {
-            filtered_body = normalize_codex_oauth_responses_body(filtered_body);
+            filtered_body = normalize_codex_oauth_responses_body(
+                filtered_body,
+                codex_oauth_upstream_session_id.as_deref(),
+            );
         }
         if is_claude_oauth_provider {
             filtered_body = sign_claude_oauth_messages_body(filtered_body);
@@ -1670,12 +1677,14 @@ impl RequestForwarder {
                 }
             }
 
-            let codex_oauth_session_headers =
-                if should_send_codex_oauth_session_headers && self.session_client_provided {
-                    build_codex_oauth_session_headers(&self.session_id)
-                } else {
-                    Vec::new()
-                };
+            let codex_oauth_session_headers = if should_send_codex_oauth_session_headers {
+                codex_oauth_upstream_session_id
+                    .as_deref()
+                    .map(build_codex_oauth_session_headers)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
 
             // --- Copilot 优化器：动态 header 注入 ---
             if let Some((ref classification, ref det_request_id, ref interaction_id)) =
@@ -3074,9 +3083,18 @@ fn build_anthropic_beta_value(headers: &axum::http::HeaderMap, is_claude_oauth: 
     betas.join(",")
 }
 
-fn normalize_codex_oauth_responses_body(mut body: Value) -> Value {
+fn normalize_codex_oauth_responses_body(mut body: Value, prompt_cache_key: Option<&str>) -> Value {
     body["store"] = Value::Bool(false);
     body["stream"] = Value::Bool(true);
+
+    if body.get("prompt_cache_key").is_none() {
+        if let Some(key) = prompt_cache_key
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+        {
+            body["prompt_cache_key"] = Value::String(key.to_string());
+        }
+    }
 
     match body.get_mut("include") {
         Some(Value::Array(include)) => {
@@ -3109,6 +3127,21 @@ fn normalize_codex_oauth_responses_body(mut body: Value) -> Value {
     }
 
     body
+}
+
+fn codex_oauth_upstream_session_id(session_id: &str) -> Option<String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+
+    let session_id = session_id.strip_prefix("codex_").unwrap_or(session_id);
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        None
+    } else {
+        Some(session_id.to_string())
+    }
 }
 
 fn maybe_add_share_auth_header(
@@ -4184,7 +4217,7 @@ mod tests {
             "stream": false
         });
 
-        let normalized = normalize_codex_oauth_responses_body(body);
+        let normalized = normalize_codex_oauth_responses_body(body, None);
 
         assert_eq!(normalized["store"], json!(false));
         assert_eq!(normalized["stream"], json!(true));
@@ -4208,7 +4241,7 @@ mod tests {
             "parallel_tool_calls": true
         });
 
-        let normalized = normalize_codex_oauth_responses_body(body);
+        let normalized = normalize_codex_oauth_responses_body(body, None);
         let include = normalized["include"].as_array().unwrap();
 
         assert!(include.contains(&json!("file_search_call.results")));
@@ -4231,11 +4264,63 @@ mod tests {
             "top_p": 0.9
         });
 
-        let normalized = normalize_codex_oauth_responses_body(body);
+        let normalized = normalize_codex_oauth_responses_body(body, None);
 
         assert!(normalized.get("max_output_tokens").is_none());
         assert!(normalized.get("temperature").is_none());
         assert!(normalized.get("top_p").is_none());
+    }
+
+    #[test]
+    fn normalize_codex_oauth_responses_body_injects_prompt_cache_key() {
+        let body = json!({
+            "model": "gpt-5.4",
+            "input": "ping"
+        });
+
+        let normalized = normalize_codex_oauth_responses_body(body, Some("session-123"));
+
+        assert_eq!(normalized["prompt_cache_key"], json!("session-123"));
+    }
+
+    #[test]
+    fn normalize_codex_oauth_responses_body_preserves_existing_prompt_cache_key() {
+        let body = json!({
+            "model": "gpt-5.4",
+            "input": "ping",
+            "prompt_cache_key": "client-key"
+        });
+
+        let normalized = normalize_codex_oauth_responses_body(body, Some("session-123"));
+
+        assert_eq!(normalized["prompt_cache_key"], json!("client-key"));
+    }
+
+    #[test]
+    fn normalize_codex_oauth_responses_body_does_not_inject_without_session() {
+        let body = json!({
+            "model": "gpt-5.4",
+            "input": "ping"
+        });
+
+        let normalized = normalize_codex_oauth_responses_body(body, None);
+
+        assert!(normalized.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn codex_oauth_upstream_session_id_strips_internal_prefix() {
+        assert_eq!(
+            codex_oauth_upstream_session_id("codex_736fc774-8efb-4f67-b8ab-771fc2afe205")
+                .as_deref(),
+            Some("736fc774-8efb-4f67-b8ab-771fc2afe205")
+        );
+        assert_eq!(
+            codex_oauth_upstream_session_id("  session-123  ").as_deref(),
+            Some("session-123")
+        );
+        assert_eq!(codex_oauth_upstream_session_id("codex_"), None);
+        assert_eq!(codex_oauth_upstream_session_id(""), None);
     }
 
     #[test]

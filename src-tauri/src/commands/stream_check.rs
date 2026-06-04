@@ -688,8 +688,9 @@ async fn send_antigravity_oauth_stream_check(
     access_token: &str,
     project_id: &str,
 ) -> Result<u16, AppError> {
+    let model = crate::services::antigravity_models::normalize_antigravity_model_id(model);
     let request = json!({
-        "model": model,
+        "model": &model,
         "contents": [{
             "role": "user",
             "parts": [{ "text": test_prompt }]

@@ -60,7 +60,7 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     settingsConfig: {
       env: {
         GOOGLE_GEMINI_BASE_URL: "https://daily-cloudcode-pa.googleapis.com",
-        GEMINI_MODEL: "gemini-3-pro-preview",
+        GEMINI_MODEL: "gemini-3.5-flash-medium",
       },
       config: {
         general: {
@@ -69,7 +69,7 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
       },
     },
     baseURL: "https://daily-cloudcode-pa.googleapis.com",
-    model: "gemini-3-pro-preview",
+    model: "gemini-3.5-flash-medium",
     description: "Antigravity OAuth",
     category: "official",
     providerType: "antigravity_oauth",

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "@/lib/runtime";
 import type { EnvConflict, BackupInfo } from "@/types/env";
 
 /**
@@ -13,7 +13,7 @@ import type { EnvConflict, BackupInfo } from "@/types/env";
 export async function checkEnvConflicts(
   appType: string,
 ): Promise<EnvConflict[]> {
-  return invoke<EnvConflict[]>("check_env_conflicts", { app: appType });
+  return invokeCommand<EnvConflict[]>("check_env_conflicts", { app: appType });
 }
 
 /**
@@ -24,7 +24,7 @@ export async function checkEnvConflicts(
 export async function deleteEnvVars(
   conflicts: EnvConflict[],
 ): Promise<BackupInfo> {
-  return invoke<BackupInfo>("delete_env_vars", { conflicts });
+  return invokeCommand<BackupInfo>("delete_env_vars", { conflicts });
 }
 
 /**
@@ -32,7 +32,7 @@ export async function deleteEnvVars(
  * @param backupPath 备份文件路径
  */
 export async function restoreEnvBackup(backupPath: string): Promise<void> {
-  return invoke<void>("restore_env_backup", { backupPath });
+  return invokeCommand<void>("restore_env_backup", { backupPath });
 }
 
 /**

@@ -1949,6 +1949,19 @@ impl RequestForwarder {
                     )
                 })?;
                 outbound_body["project"] = serde_json::json!(project_id);
+                if outbound_body
+                    .get("model")
+                    .and_then(|value| value.as_str())
+                    .map(|model| model.to_ascii_lowercase().contains("claude"))
+                    .unwrap_or(false)
+                {
+                    ordered_headers.insert(
+                        "anthropic-beta",
+                        http::HeaderValue::from_static(
+                            "claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+                        ),
+                    );
+                }
             }
 
             // 序列化请求体
@@ -2547,6 +2560,7 @@ pub(crate) fn build_antigravity_forward_request(
                 .map(ToString::to_string)
         })
         .map(|model| super::gemini_url::normalize_gemini_model_id(&model).to_string())
+        .map(|model| crate::services::antigravity_models::normalize_antigravity_model_id(&model))
         .filter(|model| !model.trim().is_empty())
         .ok_or_else(|| {
             ProxyError::ConfigError("Antigravity OAuth 反代缺少模型名，无法构造请求".to_string())
@@ -2583,7 +2597,8 @@ pub(crate) fn build_antigravity_forward_request(
         "model": model,
         "userAgent": "antigravity",
         "requestType": "agent",
-        "requestId": format!("agent-{}", uuid::Uuid::new_v4()),
+        "requestId": antigravity_request_id(),
+        "enabledCreditTypes": ["GOOGLE_ONE_AI"],
         "request": inner_request,
     });
 
@@ -2595,6 +2610,12 @@ fn sanitize_antigravity_request(mut request: Value) -> Value {
     sanitize_antigravity_contents(&mut request);
     sanitize_antigravity_tools(&mut request);
     request
+}
+
+fn antigravity_request_id() -> String {
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let random = uuid::Uuid::new_v4().simple().to_string();
+    format!("agent/{}/{}", timestamp_ms, &random[..8])
 }
 
 fn clamp_antigravity_max_output_tokens(request: &mut Value) {
@@ -4124,7 +4145,8 @@ mod tests {
         assert_eq!(body["requestType"], "agent");
         assert!(body["requestId"]
             .as_str()
-            .is_some_and(|id| id.starts_with("agent-")));
+            .is_some_and(|id| id.starts_with("agent/")));
+        assert_eq!(body["enabledCreditTypes"][0], "GOOGLE_ONE_AI");
         assert_eq!(body["request"]["sessionId"], "session-1");
         assert_eq!(
             body["request"]["generationConfig"]["maxOutputTokens"],
@@ -4147,6 +4169,18 @@ mod tests {
         );
         assert!(body["request"].get("stream").is_none());
         assert!(body.get("project").is_none());
+    }
+
+    #[test]
+    fn build_antigravity_forward_request_normalizes_claude_plugin_aliases() {
+        let (_, body) = build_antigravity_forward_request(
+            "/v1beta/models/claude-4.6-sonnet-thinking:streamGenerateContent?alt=sse",
+            &json!({ "contents": [] }),
+            "session-1",
+        )
+        .expect("build antigravity request");
+
+        assert_eq!(body["model"], "claude-sonnet-4-6-thinking");
     }
 
     #[test]

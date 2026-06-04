@@ -1760,7 +1760,9 @@ impl Database {
                 [],
             )
             .map_err(|e| {
-                AppError::Database(format!("v22→v23 snapshot share_provider_bindings 失败: {e}"))
+                AppError::Database(format!(
+                    "v22→v23 snapshot share_provider_bindings 失败: {e}"
+                ))
             })?;
         }
 

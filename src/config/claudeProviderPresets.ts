@@ -182,8 +182,13 @@ export const providerPresets: ProviderPreset[] = [
     settingsConfig: {
       env: {
         ANTHROPIC_BASE_URL: "https://daily-cloudcode-pa.googleapis.com",
-        ANTHROPIC_MODEL: "gemini-3-pro-preview",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gemini-3-flash",
+        ANTHROPIC_MODEL: "gemini-3.5-flash-medium",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gemini-3.5-flash-low",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Gemini 3.5 Flash (Low)",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6-thinking",
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Claude Sonnet 4.6 (Thinking)",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-6-thinking",
+        ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "Claude Opus 4.6 (Thinking)",
       },
     },
     isOfficial: true,

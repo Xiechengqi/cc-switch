@@ -1,10 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "@/lib/runtime";
 import type { TFunction } from "i18next";
 import { toast } from "sonner";
 
 export interface FetchedModel {
   id: string;
   ownedBy: string | null;
+  displayName?: string | null;
 }
 
 /**
@@ -19,7 +20,7 @@ export async function fetchModelsForConfig(
   isFullUrl?: boolean,
   modelsUrl?: string,
 ): Promise<FetchedModel[]> {
-  return invoke("fetch_models_for_config", {
+  return invokeCommand("fetch_models_for_config", {
     baseUrl,
     apiKey,
     isFullUrl,
@@ -35,7 +36,21 @@ export async function fetchModelsForConfig(
 export async function fetchCodexOauthModels(
   accountId?: string | null,
 ): Promise<FetchedModel[]> {
-  return invoke("get_codex_oauth_models", {
+  return invokeCommand("get_codex_oauth_models", {
+    accountId: accountId || null,
+  });
+}
+
+/**
+ * 获取 Antigravity OAuth 可用模型列表
+ *
+ * Antigravity OAuth 使用 Cloud Code v1internal 的 fetchAvailableModels，
+ * 不兼容普通 /v1/models。
+ */
+export async function fetchAntigravityOauthModels(
+  accountId?: string | null,
+): Promise<FetchedModel[]> {
+  return invokeCommand("get_antigravity_oauth_models", {
     accountId: accountId || null,
   });
 }

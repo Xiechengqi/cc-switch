@@ -1426,6 +1426,7 @@ pub fn run() {
             commands::get_cached_oauth_quota,
             commands::refresh_oauth_quota,
             commands::get_codex_oauth_models,
+            commands::get_antigravity_oauth_models,
             commands::preview_codex_session_parse,
             commands::import_codex_sessions,
             commands::export_codex_sessions,

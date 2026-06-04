@@ -456,6 +456,35 @@ pub async fn query_antigravity_quota_with_token(
     // Fetch plan tier via loadCodeAssist (integer enums required for Antigravity).
     let plan_label =
         fetch_antigravity_plan_label(&crate::proxy::http_client::get(), access_token).await;
+
+    match crate::services::antigravity_models::fetch_antigravity_available_models(
+        access_token,
+        project_id,
+    )
+    .await
+    {
+        Ok(models) => {
+            let tiers =
+                crate::services::antigravity_models::antigravity_models_to_quota_tiers(&models);
+            if !tiers.is_empty() {
+                return SubscriptionQuota {
+                    tool: tool_name.to_string(),
+                    credential_status: CredentialStatus::Valid,
+                    credential_message: plan_label,
+                    success: true,
+                    tiers,
+                    extra_usage: None,
+                    error: None,
+                    queried_at: Some(now_millis()),
+                    failure: None,
+                };
+            }
+        }
+        Err(err) => {
+            log::warn!("Antigravity fetchAvailableModels quota failed, falling back: {err}");
+        }
+    }
+
     let mut result = retrieve_user_quota(access_token, project_id, plan_label).await;
     result.tool = tool_name.to_string();
     result

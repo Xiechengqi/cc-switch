@@ -14,6 +14,8 @@ use std::time::Duration;
 pub struct FetchedModel {
     pub id: String,
     pub owned_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// OpenAI 兼容的 /v1/models 响应格式
@@ -97,6 +99,7 @@ pub async fn fetch_models(
                 .map(|m| FetchedModel {
                     id: m.id,
                     owned_by: m.owned_by,
+                    display_name: None,
                 })
                 .collect();
 

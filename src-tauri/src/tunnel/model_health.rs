@@ -334,7 +334,11 @@ mod tests {
         bound.insert("codex".to_string());
 
         let summary = current_share_model_health_summary_for_share("share-1", &bound).await;
-        assert_eq!(summary.claude.len(), 1, "claude must remain after codex purge");
+        assert_eq!(
+            summary.claude.len(),
+            1,
+            "claude must remain after codex purge"
+        );
         assert!(summary.codex.is_empty(), "codex slot was just purged");
     }
 }

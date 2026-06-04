@@ -74,7 +74,7 @@ export function ModelInputWithFetch({
                     key={model.id}
                     onSelect={() => onChange(model.id)}
                   >
-                    {model.id}
+                    {model.displayName || model.id}
                   </DropdownMenuItem>
                 ))}
               </div>

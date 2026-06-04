@@ -42,7 +42,7 @@ export function ModelDropdown({
             <DropdownMenuLabel>{vendor}</DropdownMenuLabel>
             {grouped[vendor].map((m) => (
               <DropdownMenuItem key={m.id} onSelect={() => onSelect(m.id)}>
-                {m.id}
+                {m.displayName || m.id}
               </DropdownMenuItem>
             ))}
           </div>

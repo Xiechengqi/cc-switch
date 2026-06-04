@@ -1,5 +1,5 @@
 // 配置相关 API
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "@/lib/runtime";
 
 export type AppType = "claude" | "codex" | "gemini" | "omo" | "omo_slim";
 
@@ -9,7 +9,7 @@ export type AppType = "claude" | "codex" | "gemini" | "omo" | "omo_slim";
  * @deprecated 使用 getCommonConfigSnippet('claude') 替代
  */
 export async function getClaudeCommonConfigSnippet(): Promise<string | null> {
-  return invoke<string | null>("get_claude_common_config_snippet");
+  return invokeCommand<string | null>("get_claude_common_config_snippet");
 }
 
 /**
@@ -21,7 +21,7 @@ export async function getClaudeCommonConfigSnippet(): Promise<string | null> {
 export async function setClaudeCommonConfigSnippet(
   snippet: string,
 ): Promise<void> {
-  return invoke("set_claude_common_config_snippet", { snippet });
+  return invokeCommand("set_claude_common_config_snippet", { snippet });
 }
 
 /**
@@ -32,7 +32,7 @@ export async function setClaudeCommonConfigSnippet(
 export async function getCommonConfigSnippet(
   appType: AppType,
 ): Promise<string | null> {
-  return invoke<string | null>("get_common_config_snippet", { appType });
+  return invokeCommand<string | null>("get_common_config_snippet", { appType });
 }
 
 /**
@@ -45,7 +45,7 @@ export async function setCommonConfigSnippet(
   appType: AppType,
   snippet: string,
 ): Promise<void> {
-  return invoke("set_common_config_snippet", { appType, snippet });
+  return invokeCommand("set_common_config_snippet", { appType, snippet });
 }
 
 /**
@@ -73,5 +73,5 @@ export async function extractCommonConfigSnippet(
     args.settingsConfig = settingsConfig;
   }
 
-  return invoke<string>("extract_common_config_snippet", args);
+  return invokeCommand<string>("extract_common_config_snippet", args);
 }

@@ -2,14 +2,14 @@ use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
 use axum::{
-    Json,
     body::Bytes,
     extract::{Path as AxumPath, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
+    Json,
 };
-use serde::{Deserialize, de::DeserializeOwned};
-use serde_json::{Value, json};
+use serde::{de::DeserializeOwned, Deserialize};
+use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 
 use crate::{
@@ -21,11 +21,11 @@ use crate::{
     error::AppError,
     provider::Provider,
     proxy::{
-        CircuitBreakerConfig,
         server::ProxyState,
         types::{AppProxyConfig, GlobalProxyConfig, ProxyConfig, ProxyStatus},
+        CircuitBreakerConfig,
     },
-    services::{ProviderService, share::ShareService},
+    services::{share::ShareService, ProviderService},
     store::AppState,
     tunnel::config::ShareTunnelStatus,
 };
@@ -299,13 +299,11 @@ async fn invoke_local_admin_scoped(
         "get_proxy_status" => Ok(json!(proxy_status(state).await)),
         "get_proxy_takeover_status" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(
-                app_state
-                    .proxy_service
-                    .get_takeover_status()
-                    .await
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(app_state
+                .proxy_service
+                .get_takeover_status()
+                .await
+                .map_err(WebError::internal)?))
         }
         "get_proxy_config" => {
             let app_state = required_app_state(state)?;
@@ -323,13 +321,11 @@ async fn invoke_local_admin_scoped(
         }
         "get_global_proxy_config" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(
-                app_state
-                    .db
-                    .get_global_proxy_config()
-                    .await
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(app_state
+                .db
+                .get_global_proxy_config()
+                .await
+                .map_err(WebError::internal)?))
         }
         "update_global_proxy_config" => {
             let app_state = required_app_state(state)?;
@@ -344,13 +340,11 @@ async fn invoke_local_admin_scoped(
         "get_proxy_config_for_app" => {
             let app_state = required_app_state(state)?;
             let app_type = string_arg(&args, "appType")?;
-            Ok(json!(
-                app_state
-                    .db
-                    .get_proxy_config_for_app(&app_type)
-                    .await
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(app_state
+                .db
+                .get_proxy_config_for_app(&app_type)
+                .await
+                .map_err(WebError::internal)?))
         }
         "update_proxy_config_for_app" => {
             let app_state = required_app_state(state)?;
@@ -371,13 +365,11 @@ async fn invoke_local_admin_scoped(
         }
         "start_proxy_server" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(
-                app_state
-                    .proxy_service
-                    .start()
-                    .await
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(app_state
+                .proxy_service
+                .start()
+                .await
+                .map_err(WebError::internal)?))
         }
         "stop_proxy_server" => {
             let app_state = required_app_state(state)?;
@@ -418,13 +410,11 @@ async fn invoke_local_admin_scoped(
         }
         "is_live_takeover_active" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(
-                app_state
-                    .proxy_service
-                    .is_takeover_active()
-                    .await
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(app_state
+                .proxy_service
+                .is_takeover_active()
+                .await
+                .map_err(WebError::internal)?))
         }
         "set_proxy_takeover_for_app" => {
             let app_state = required_app_state(state)?;
@@ -459,12 +449,10 @@ async fn invoke_local_admin_scoped(
                 return Ok(json!([]));
             };
             let shares = ShareService::list(&app_state.db)?;
-            Ok(json!(
-                shares
-                    .into_iter()
-                    .map(sanitize_share_for_web)
-                    .collect::<Vec<_>>()
-            ))
+            Ok(json!(shares
+                .into_iter()
+                .map(sanitize_share_for_web)
+                .collect::<Vec<_>>()))
         }
         "get_share_detail" => {
             let share_id = string_arg(&args, "shareId")?;
@@ -503,20 +491,26 @@ async fn invoke_local_admin_scoped(
                 .get("addToLive")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
-            Ok(json!(
-                ProviderService::add(&app_state, app_type, provider, add_to_live)
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(ProviderService::add(
+                &app_state,
+                app_type,
+                provider,
+                add_to_live
+            )
+            .map_err(WebError::internal)?))
         }
         "update_provider" => {
             let app_state = required_app_state(state)?;
             let app_type = app_type_arg(&args, "app")?;
             let provider: Provider = value_arg(&args, "provider")?;
             let original_id = args.get("originalId").and_then(Value::as_str);
-            Ok(json!(
-                ProviderService::update(&app_state, app_type.clone(), original_id, provider)
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(ProviderService::update(
+                &app_state,
+                app_type.clone(),
+                original_id,
+                provider
+            )
+            .map_err(WebError::internal)?))
         }
         "delete_provider" => {
             let app_state = required_app_state(state)?;
@@ -536,22 +530,18 @@ async fn invoke_local_admin_scoped(
         "get_failover_queue" => {
             let app_state = required_app_state(state)?;
             let app_type = string_arg(&args, "appType")?;
-            Ok(json!(
-                app_state
-                    .db
-                    .get_failover_queue(&app_type)
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(app_state
+                .db
+                .get_failover_queue(&app_type)
+                .map_err(WebError::internal)?))
         }
         "get_available_providers_for_failover" => {
             let app_state = required_app_state(state)?;
             let app_type = string_arg(&args, "appType")?;
-            Ok(json!(
-                app_state
-                    .db
-                    .get_available_providers_for_failover(&app_type)
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(app_state
+                .db
+                .get_available_providers_for_failover(&app_type)
+                .map_err(WebError::internal)?))
         }
         "add_to_failover_queue" => {
             let app_state = required_app_state(state)?;
@@ -597,13 +587,11 @@ async fn invoke_local_admin_scoped(
             let app_state = required_app_state(state)?;
             let provider_id = string_arg(&args, "providerId")?;
             let app_type = string_arg(&args, "appType")?;
-            Ok(json!(
-                app_state
-                    .db
-                    .get_provider_health(&provider_id, &app_type)
-                    .await
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(app_state
+                .db
+                .get_provider_health(&provider_id, &app_type)
+                .await
+                .map_err(WebError::internal)?))
         }
         "reset_circuit_breaker" => {
             let app_state = required_app_state(state)?;
@@ -621,15 +609,378 @@ async fn invoke_local_admin_scoped(
                 .map_err(WebError::internal)?;
             Ok(json!(null))
         }
-        "get_circuit_breaker_config" => {
+        "stream_check_provider" => {
+            let app_state = required_app_state(state)?;
+            let app = required_app_handle(state)?;
+            let app_type = app_type_arg(&args, "appType")?;
+            let provider_id = string_arg(&args, "providerId")?;
+            let providers = app_state
+                .db
+                .get_all_providers(app_type.as_str())
+                .map_err(WebError::internal)?;
+            let provider = providers
+                .get(&provider_id)
+                .ok_or_else(|| WebError::bad_request(format!("供应商 {provider_id} 不存在")))?;
+            Ok(json!(crate::commands::run_stream_check_for_provider(
+                &app_state.db,
+                Some(app),
+                &app_type,
+                provider,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "stream_check_all_providers" => {
+            let app_state = required_app_state(state)?;
+            let app = required_app_handle(state)?;
+            let app_type = app_type_arg(&args, "appType")?;
+            let proxy_targets_only = args
+                .get("proxyTargetsOnly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let providers = app_state
+                .db
+                .get_all_providers(app_type.as_str())
+                .map_err(WebError::internal)?;
+            let allowed_ids = if proxy_targets_only {
+                Some(proxy_target_provider_ids(&app_state, app_type.as_str())?)
+            } else {
+                None
+            };
+            let mut results = Vec::new();
+            for (provider_id, provider) in providers {
+                if allowed_ids
+                    .as_ref()
+                    .is_some_and(|ids| !ids.contains(&provider_id))
+                {
+                    continue;
+                }
+                let result = crate::commands::run_stream_check_for_provider(
+                    &app_state.db,
+                    Some(app),
+                    &app_type,
+                    &provider,
+                )
+                .await
+                .map_err(WebError::internal)?;
+                results.push((provider_id, result));
+            }
+            Ok(json!(results))
+        }
+        "get_stream_check_config" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(app_state
+                .db
+                .get_stream_check_config()
+                .map_err(WebError::internal)?))
+        }
+        "save_stream_check_config" => {
+            let app_state = required_app_state(state)?;
+            let config = value_arg(&args, "config")?;
+            app_state
+                .db
+                .save_stream_check_config(&config)
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "fetch_models_for_config" => Ok(json!(crate::commands::fetch_models_for_config(
+            string_arg(&args, "baseUrl")?,
+            string_arg(&args, "apiKey")?,
+            args.get("isFullUrl").and_then(Value::as_bool),
+            optional_string_arg(&args, "modelsUrl"),
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "get_codex_oauth_models" => {
+            let codex = required_state::<CodexOAuthState>(state, "codex oauth")?;
+            Ok(json!(crate::commands::get_codex_oauth_models(
+                optional_string_arg(&args, "accountId"),
+                codex,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "get_antigravity_oauth_models" => {
+            let antigravity = required_state::<AntigravityOAuthState>(state, "antigravity oauth")?;
+            Ok(json!(crate::commands::get_antigravity_oauth_models(
+                optional_string_arg(&args, "accountId"),
+                antigravity,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "read_live_provider_settings" => Ok(json!(crate::commands::read_live_provider_settings(
+            string_arg(&args, "app")?
+        )
+        .map_err(WebError::internal)?)),
+        "test_api_endpoints" => Ok(json!(crate::commands::test_api_endpoints(
+            value_arg(&args, "urls")?,
+            args.get("timeoutSecs").and_then(Value::as_u64),
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "get_custom_endpoints" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_custom_endpoints(
+                app_state,
+                string_arg(&args, "app")?,
+                string_arg(&args, "providerId")?,
+            )
+            .map_err(WebError::internal)?))
+        }
+        "add_custom_endpoint" => {
+            let app_state = required_app_state(state)?;
+            crate::commands::add_custom_endpoint(
+                app_state,
+                string_arg(&args, "app")?,
+                string_arg(&args, "providerId")?,
+                string_arg(&args, "url")?,
+            )
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "remove_custom_endpoint" => {
+            let app_state = required_app_state(state)?;
+            crate::commands::remove_custom_endpoint(
+                app_state,
+                string_arg(&args, "app")?,
+                string_arg(&args, "providerId")?,
+                string_arg(&args, "url")?,
+            )
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "update_endpoint_last_used" => {
+            let app_state = required_app_state(state)?;
+            crate::commands::update_endpoint_last_used(
+                app_state,
+                string_arg(&args, "app")?,
+                string_arg(&args, "providerId")?,
+                string_arg(&args, "url")?,
+            )
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "get_claude_common_config_snippet" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_claude_common_config_snippet(
+                app_state
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "set_claude_common_config_snippet" => {
+            let app_state = required_app_state(state)?;
+            crate::commands::set_claude_common_config_snippet(
+                args.get("snippet")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                app_state,
+            )
+            .await
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "get_common_config_snippet" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_common_config_snippet(
+                string_arg(&args, "appType")?,
+                app_state,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "set_common_config_snippet" => {
+            let app_state = required_app_state(state)?;
+            crate::commands::set_common_config_snippet(
+                string_arg(&args, "appType")?,
+                args.get("snippet")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                app_state,
+            )
+            .await
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "extract_common_config_snippet" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::extract_common_config_snippet(
+                string_arg(&args, "appType")?,
+                optional_string_arg(&args, "settingsConfig"),
+                app_state,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "queryProviderUsage" => {
+            let app = required_app_handle(state)?.clone();
+            let app_state = required_app_state(state)?;
+            let copilot = required_state::<CopilotAuthState>(state, "copilot auth")?;
+            Ok(json!(crate::commands::queryProviderUsage(
+                app,
+                app_state,
+                copilot,
+                string_arg(&args, "providerId")?,
+                string_arg(&args, "app")?,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "testUsageScript" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::testUsageScript(
+                app_state,
+                string_arg(&args, "providerId")?,
+                string_arg(&args, "app")?,
+                string_arg(&args, "scriptCode")?,
+                args.get("timeout").and_then(Value::as_u64),
+                optional_string_arg(&args, "apiKey"),
+                optional_string_arg(&args, "baseUrl"),
+                optional_string_arg(&args, "accessToken"),
+                optional_string_arg(&args, "userId"),
+                optional_string_arg(&args, "templateType"),
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "get_usage_summary" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_usage_summary(
+                app_state,
+                optional_i64_arg(&args, "startDate"),
+                optional_i64_arg(&args, "endDate"),
+                optional_string_arg(&args, "appType"),
+            )
+            .map_err(WebError::internal)?))
+        }
+        "get_usage_summary_by_app" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_usage_summary_by_app(
+                app_state,
+                optional_i64_arg(&args, "startDate"),
+                optional_i64_arg(&args, "endDate"),
+            )
+            .map_err(WebError::internal)?))
+        }
+        "get_usage_trends" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_usage_trends(
+                app_state,
+                optional_i64_arg(&args, "startDate"),
+                optional_i64_arg(&args, "endDate"),
+                optional_string_arg(&args, "appType"),
+            )
+            .map_err(WebError::internal)?))
+        }
+        "get_provider_stats" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_provider_stats(
+                app_state,
+                optional_i64_arg(&args, "startDate"),
+                optional_i64_arg(&args, "endDate"),
+                optional_string_arg(&args, "appType"),
+            )
+            .map_err(WebError::internal)?))
+        }
+        "get_model_stats" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_model_stats(
+                app_state,
+                optional_i64_arg(&args, "startDate"),
+                optional_i64_arg(&args, "endDate"),
+                optional_string_arg(&args, "appType"),
+            )
+            .map_err(WebError::internal)?))
+        }
+        "get_request_logs" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_request_logs(
+                app_state,
+                value_arg(&args, "filters")?,
+                optional_u32_arg(&args, "page").unwrap_or(0),
+                optional_u32_arg(&args, "pageSize").unwrap_or(20),
+            )
+            .map_err(WebError::internal)?))
+        }
+        "get_request_detail" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::get_request_detail(
+                app_state,
+                string_arg(&args, "requestId")?
+            )
+            .map_err(WebError::internal)?))
+        }
+        "get_model_pricing" => {
             let app_state = required_app_state(state)?;
             Ok(json!(
-                app_state
-                    .db
-                    .get_circuit_breaker_config()
-                    .await
-                    .map_err(WebError::internal)?
+                crate::commands::get_model_pricing(app_state).map_err(WebError::internal)?
             ))
+        }
+        "update_model_pricing" => {
+            let app_state = required_app_state(state)?;
+            crate::commands::update_model_pricing(
+                app_state,
+                string_arg(&args, "modelId")?,
+                string_arg(&args, "displayName")?,
+                string_arg(&args, "inputCost")?,
+                string_arg(&args, "outputCost")?,
+                string_arg(&args, "cacheReadCost")?,
+                string_arg(&args, "cacheCreationCost")?,
+            )
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "delete_model_pricing" => {
+            let app_state = required_app_state(state)?;
+            crate::commands::delete_model_pricing(app_state, string_arg(&args, "modelId")?)
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "check_provider_limits" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(crate::commands::check_provider_limits(
+                app_state,
+                string_arg(&args, "providerId")?,
+                string_arg(&args, "appType")?,
+            )
+            .map_err(WebError::internal)?))
+        }
+        "sync_session_usage" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(
+                crate::commands::sync_session_usage(app_state).map_err(WebError::internal)?
+            ))
+        }
+        "get_usage_data_sources" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(
+                crate::commands::get_usage_data_sources(app_state).map_err(WebError::internal)?
+            ))
+        }
+        "check_env_conflicts" => Ok(json!(crate::commands::check_env_conflicts(string_arg(
+            &args, "app"
+        )?)
+        .map_err(WebError::internal)?)),
+        "delete_env_vars" => Ok(json!(crate::commands::delete_env_vars(value_arg(
+            &args,
+            "conflicts"
+        )?)
+        .map_err(WebError::internal)?)),
+        "restore_env_backup" => {
+            crate::commands::restore_env_backup(string_arg(&args, "backupPath")?)
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "get_circuit_breaker_config" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(app_state
+                .db
+                .get_circuit_breaker_config()
+                .await
+                .map_err(WebError::internal)?))
         }
         "update_circuit_breaker_config" => {
             let app_state = required_app_state(state)?;
@@ -809,6 +1160,16 @@ fn optional_string_arg(args: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn optional_i64_arg(args: &Value, key: &str) -> Option<i64> {
+    args.get(key).and_then(Value::as_i64)
+}
+
+fn optional_u32_arg(args: &Value, key: &str) -> Option<u32> {
+    args.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
 fn bool_arg(args: &Value, key: &str) -> Result<bool, WebError> {
     args.get(key)
         .and_then(Value::as_bool)
@@ -817,6 +1178,28 @@ fn bool_arg(args: &Value, key: &str) -> Result<bool, WebError> {
 
 fn app_type_arg(args: &Value, key: &str) -> Result<AppType, WebError> {
     AppType::from_str(&string_arg(args, key)?).map_err(WebError::internal)
+}
+
+fn proxy_target_provider_ids(
+    state: &AppState,
+    app_type: &str,
+) -> Result<std::collections::HashSet<String>, WebError> {
+    let mut ids = std::collections::HashSet::new();
+    if let Some(current_id) = state
+        .db
+        .get_current_provider(app_type)
+        .map_err(WebError::internal)?
+    {
+        ids.insert(current_id);
+    }
+    for item in state
+        .db
+        .get_failover_queue(app_type)
+        .map_err(WebError::internal)?
+    {
+        ids.insert(item.provider_id);
+    }
+    Ok(ids)
 }
 
 async fn set_auto_failover_enabled_for_web(
@@ -924,65 +1307,57 @@ async fn managed_auth_command(
     let auth_provider = string_arg(&args, "authProvider")?;
 
     match command {
-        "auth_list_accounts" => Ok(json!(
-            crate::commands::auth_list_accounts(
-                auth_provider,
-                copilot,
-                codex,
-                claude,
-                gemini,
-                antigravity,
-                kiro,
-                cursor,
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
-        "auth_get_status" => Ok(json!(
-            crate::commands::auth_get_status(
-                auth_provider,
-                copilot,
-                codex,
-                claude,
-                gemini,
-                antigravity,
-                kiro,
-                cursor,
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
-        "auth_start_login" => Ok(json!(
-            crate::commands::auth_start_login(
-                auth_provider,
-                optional_string_arg(&args, "githubDomain"),
-                copilot,
-                codex,
-                claude,
-                gemini,
-                antigravity,
-                kiro,
-                cursor,
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
-        "auth_poll_for_account" => Ok(json!(
-            crate::commands::auth_poll_for_account(
-                auth_provider,
-                string_arg(&args, "deviceCode")?,
-                optional_string_arg(&args, "githubDomain"),
-                copilot,
-                codex,
-                claude,
-                gemini,
-                antigravity,
-                kiro,
-                cursor,
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
+        "auth_list_accounts" => Ok(json!(crate::commands::auth_list_accounts(
+            auth_provider,
+            copilot,
+            codex,
+            claude,
+            gemini,
+            antigravity,
+            kiro,
+            cursor,
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "auth_get_status" => Ok(json!(crate::commands::auth_get_status(
+            auth_provider,
+            copilot,
+            codex,
+            claude,
+            gemini,
+            antigravity,
+            kiro,
+            cursor,
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "auth_start_login" => Ok(json!(crate::commands::auth_start_login(
+            auth_provider,
+            optional_string_arg(&args, "githubDomain"),
+            copilot,
+            codex,
+            claude,
+            gemini,
+            antigravity,
+            kiro,
+            cursor,
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "auth_poll_for_account" => Ok(json!(crate::commands::auth_poll_for_account(
+            auth_provider,
+            string_arg(&args, "deviceCode")?,
+            optional_string_arg(&args, "githubDomain"),
+            copilot,
+            codex,
+            claude,
+            gemini,
+            antigravity,
+            kiro,
+            cursor,
+        )
+        .await
+        .map_err(WebError::internal)?)),
         "auth_remove_account" => {
             crate::commands::auth_remove_account(
                 auth_provider,
@@ -1043,42 +1418,32 @@ async fn copilot_command(
 ) -> Result<Value, WebError> {
     let copilot = required_state::<CopilotAuthState>(state, "copilot auth")?;
     match command {
-        "copilot_list_accounts" => Ok(json!(
-            crate::commands::copilot_list_accounts(copilot)
-                .await
-                .map_err(WebError::internal)?
-        )),
-        "copilot_get_auth_status" => Ok(json!(
-            crate::commands::copilot_get_auth_status(copilot)
-                .await
-                .map_err(WebError::internal)?
-        )),
-        "copilot_start_device_flow" => Ok(json!(
-            crate::commands::copilot_start_device_flow(
-                optional_string_arg(&args, "githubDomain"),
-                copilot
-            )
+        "copilot_list_accounts" => Ok(json!(crate::commands::copilot_list_accounts(copilot)
             .await
-            .map_err(WebError::internal)?
-        )),
-        "copilot_poll_for_auth" => Ok(json!(
-            crate::commands::copilot_poll_for_auth(
-                string_arg(&args, "deviceCode")?,
-                optional_string_arg(&args, "githubDomain"),
-                copilot,
-            )
+            .map_err(WebError::internal)?)),
+        "copilot_get_auth_status" => Ok(json!(crate::commands::copilot_get_auth_status(copilot)
             .await
-            .map_err(WebError::internal)?
-        )),
-        "copilot_poll_for_account" => Ok(json!(
-            crate::commands::copilot_poll_for_account(
-                string_arg(&args, "deviceCode")?,
-                optional_string_arg(&args, "githubDomain"),
-                copilot,
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
+            .map_err(WebError::internal)?)),
+        "copilot_start_device_flow" => Ok(json!(crate::commands::copilot_start_device_flow(
+            optional_string_arg(&args, "githubDomain"),
+            copilot
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "copilot_poll_for_auth" => Ok(json!(crate::commands::copilot_poll_for_auth(
+            string_arg(&args, "deviceCode")?,
+            optional_string_arg(&args, "githubDomain"),
+            copilot,
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "copilot_poll_for_account" => Ok(json!(crate::commands::copilot_poll_for_account(
+            string_arg(&args, "deviceCode")?,
+            optional_string_arg(&args, "githubDomain"),
+            copilot,
+        )
+        .await
+        .map_err(WebError::internal)?)),
         "copilot_remove_account" => {
             crate::commands::copilot_remove_account(string_arg(&args, "accountId")?, copilot)
                 .await
@@ -1097,37 +1462,31 @@ async fn copilot_command(
                 .map_err(WebError::internal)?;
             Ok(json!(null))
         }
-        "copilot_is_authenticated" => Ok(json!(
-            crate::commands::copilot_is_authenticated(copilot)
-                .await
-                .map_err(WebError::internal)?
-        )),
-        "copilot_get_models" => Ok(json!(
-            crate::commands::copilot_get_models(copilot)
-                .await
-                .map_err(WebError::internal)?
-        )),
-        "copilot_get_models_for_account" => Ok(json!(
-            crate::commands::copilot_get_models_for_account(
+        "copilot_is_authenticated" => Ok(json!(crate::commands::copilot_is_authenticated(copilot)
+            .await
+            .map_err(WebError::internal)?)),
+        "copilot_get_models" => Ok(json!(crate::commands::copilot_get_models(copilot)
+            .await
+            .map_err(WebError::internal)?)),
+        "copilot_get_models_for_account" => {
+            Ok(json!(crate::commands::copilot_get_models_for_account(
                 string_arg(&args, "accountId")?,
                 copilot
             )
             .await
-            .map_err(WebError::internal)?
-        )),
-        "copilot_get_usage" => Ok(json!(
-            crate::commands::copilot_get_usage(copilot)
-                .await
-                .map_err(WebError::internal)?
-        )),
-        "copilot_get_usage_for_account" => Ok(json!(
-            crate::commands::copilot_get_usage_for_account(
+            .map_err(WebError::internal)?))
+        }
+        "copilot_get_usage" => Ok(json!(crate::commands::copilot_get_usage(copilot)
+            .await
+            .map_err(WebError::internal)?)),
+        "copilot_get_usage_for_account" => {
+            Ok(json!(crate::commands::copilot_get_usage_for_account(
                 string_arg(&args, "accountId")?,
                 copilot
             )
             .await
-            .map_err(WebError::internal)?
-        )),
+            .map_err(WebError::internal)?))
+        }
         _ => Err(WebError::not_found(format!(
             "copilot web command is not exposed: {command}"
         ))),
@@ -1141,26 +1500,20 @@ async fn deepseek_command(
 ) -> Result<Value, WebError> {
     let deepseek = required_state::<DeepSeekAccountState>(state, "deepseek account")?;
     match command {
-        "deepseek_account_list" => Ok(json!(
-            crate::commands::deepseek_account_list(deepseek)
-                .await
-                .map_err(WebError::internal)?
-        )),
-        "deepseek_account_status" => Ok(json!(
-            crate::commands::deepseek_account_status(deepseek)
-                .await
-                .map_err(WebError::internal)?
-        )),
-        "deepseek_account_add" => Ok(json!(
-            crate::commands::deepseek_account_add(
-                optional_string_arg(&args, "email"),
-                optional_string_arg(&args, "mobile"),
-                string_arg(&args, "password")?,
-                deepseek,
-            )
+        "deepseek_account_list" => Ok(json!(crate::commands::deepseek_account_list(deepseek)
             .await
-            .map_err(WebError::internal)?
-        )),
+            .map_err(WebError::internal)?)),
+        "deepseek_account_status" => Ok(json!(crate::commands::deepseek_account_status(deepseek)
+            .await
+            .map_err(WebError::internal)?)),
+        "deepseek_account_add" => Ok(json!(crate::commands::deepseek_account_add(
+            optional_string_arg(&args, "email"),
+            optional_string_arg(&args, "mobile"),
+            string_arg(&args, "password")?,
+            deepseek,
+        )
+        .await
+        .map_err(WebError::internal)?)),
         "deepseek_account_remove" => {
             crate::commands::deepseek_account_remove(string_arg(&args, "accountId")?, deepseek)
                 .await
@@ -1197,51 +1550,46 @@ async fn oauth_quota_command(
     let cursor = required_state::<CursorOAuthState>(state, "cursor oauth")?;
 
     match command {
-        "get_cached_oauth_quota" => Ok(json!(
-            crate::commands::get_cached_oauth_quota(
-                string_arg(&args, "authProvider")?,
-                optional_string_arg(&args, "accountId"),
-                quota,
-                codex,
-                claude,
-                gemini,
-                copilot,
-                kiro,
-                antigravity,
-                cursor,
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
-        "refresh_oauth_quota" => Ok(json!(
-            crate::commands::refresh_oauth_quota(
-                string_arg(&args, "authProvider")?,
-                optional_string_arg(&args, "accountId"),
-                quota,
-                codex,
-                claude,
-                gemini,
-                copilot,
-                kiro,
-                antigravity,
-                cursor,
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
-        "get_claude_oauth_quota" => Ok(json!(
-            crate::commands::get_claude_oauth_quota(
-                optional_string_arg(&args, "accountId"),
-                claude
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
-        "get_codex_oauth_quota" => Ok(json!(
-            crate::commands::get_codex_oauth_quota(optional_string_arg(&args, "accountId"), codex)
-                .await
-                .map_err(WebError::internal)?
-        )),
+        "get_cached_oauth_quota" => Ok(json!(crate::commands::get_cached_oauth_quota(
+            string_arg(&args, "authProvider")?,
+            optional_string_arg(&args, "accountId"),
+            quota,
+            codex,
+            claude,
+            gemini,
+            copilot,
+            kiro,
+            antigravity,
+            cursor,
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "refresh_oauth_quota" => Ok(json!(crate::commands::refresh_oauth_quota(
+            string_arg(&args, "authProvider")?,
+            optional_string_arg(&args, "accountId"),
+            quota,
+            codex,
+            claude,
+            gemini,
+            copilot,
+            kiro,
+            antigravity,
+            cursor,
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "get_claude_oauth_quota" => Ok(json!(crate::commands::get_claude_oauth_quota(
+            optional_string_arg(&args, "accountId"),
+            claude
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "get_codex_oauth_quota" => Ok(json!(crate::commands::get_codex_oauth_quota(
+            optional_string_arg(&args, "accountId"),
+            codex
+        )
+        .await
+        .map_err(WebError::internal)?)),
         _ => Err(WebError::not_found(format!(
             "oauth quota web command is not exposed: {command}"
         ))),
@@ -1257,28 +1605,26 @@ async fn subscription_command(
         "get_subscription_quota" => {
             let app = required_app_handle(state)?.clone();
             let app_state = required_app_state(state)?;
-            Ok(json!(
-                crate::commands::get_subscription_quota(app, app_state, string_arg(&args, "tool")?)
-                    .await
-                    .map_err(WebError::internal)?
-            ))
+            Ok(json!(crate::commands::get_subscription_quota(
+                app,
+                app_state,
+                string_arg(&args, "tool")?
+            )
+            .await
+            .map_err(WebError::internal)?))
         }
-        "get_coding_plan_quota" => Ok(json!(
-            crate::services::coding_plan::get_coding_plan_quota(
-                &string_arg(&args, "baseUrl")?,
-                &string_arg(&args, "apiKey")?,
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
-        "get_balance" => Ok(json!(
-            crate::services::balance::get_balance(
-                &string_arg(&args, "baseUrl")?,
-                &string_arg(&args, "apiKey")?,
-            )
-            .await
-            .map_err(WebError::internal)?
-        )),
+        "get_coding_plan_quota" => Ok(json!(crate::services::coding_plan::get_coding_plan_quota(
+            &string_arg(&args, "baseUrl")?,
+            &string_arg(&args, "apiKey")?,
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "get_balance" => Ok(json!(crate::services::balance::get_balance(
+            &string_arg(&args, "baseUrl")?,
+            &string_arg(&args, "apiKey")?,
+        )
+        .await
+        .map_err(WebError::internal)?)),
         _ => Err(WebError::not_found(format!(
             "subscription web command is not exposed: {command}"
         ))),
@@ -1405,6 +1751,24 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "get_circuit_breaker_config"
             | "update_circuit_breaker_config"
             | "get_circuit_breaker_stats"
+            | "stream_check_provider"
+            | "stream_check_all_providers"
+            | "get_stream_check_config"
+            | "save_stream_check_config"
+            | "fetch_models_for_config"
+            | "get_codex_oauth_models"
+            | "get_antigravity_oauth_models"
+            | "read_live_provider_settings"
+            | "test_api_endpoints"
+            | "get_custom_endpoints"
+            | "add_custom_endpoint"
+            | "remove_custom_endpoint"
+            | "update_endpoint_last_used"
+            | "get_claude_common_config_snippet"
+            | "set_claude_common_config_snippet"
+            | "get_common_config_snippet"
+            | "set_common_config_snippet"
+            | "extract_common_config_snippet"
             | "auth_start_login"
             | "auth_poll_for_account"
             | "auth_list_accounts"
@@ -1437,6 +1801,8 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "refresh_oauth_quota"
             | "get_coding_plan_quota"
             | "get_balance"
+            | "queryProviderUsage"
+            | "testUsageScript"
             | "get_usage_summary"
             | "get_usage_summary_by_app"
             | "get_usage_trends"
@@ -1447,6 +1813,12 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "get_model_pricing"
             | "update_model_pricing"
             | "delete_model_pricing"
+            | "check_provider_limits"
+            | "sync_session_usage"
+            | "get_usage_data_sources"
+            | "check_env_conflicts"
+            | "delete_env_vars"
+            | "restore_env_backup"
     )
 }
 

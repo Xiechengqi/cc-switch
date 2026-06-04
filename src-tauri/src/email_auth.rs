@@ -959,7 +959,7 @@ fn create_file(path: &Path) -> Result<fs::File, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmailAuthState, humanize_remote_owner_binding_error};
+    use super::{humanize_remote_owner_binding_error, EmailAuthState};
 
     #[test]
     fn humanize_remote_owner_binding_error_maps_expired_proof() {

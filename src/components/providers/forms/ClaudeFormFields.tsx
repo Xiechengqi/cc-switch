@@ -47,6 +47,7 @@ import {
 } from "@/lib/api/copilot";
 import type { CopilotModel } from "@/lib/api/copilot";
 import {
+  fetchAntigravityOauthModels,
   fetchCodexOauthModels,
   fetchModelsForConfig,
   showFetchModelsError,
@@ -265,6 +266,14 @@ export function ClaudeFormFields({
   const [codexOauthModelsLoading, setCodexOauthModelsLoading] = useState(false);
   const codexOauthModelsRequestRef = useRef(0);
 
+  // Antigravity OAuth 可用模型列表
+  const [antigravityOauthModels, setAntigravityOauthModels] = useState<
+    FetchedModel[]
+  >([]);
+  const [antigravityOauthModelsLoading, setAntigravityOauthModelsLoading] =
+    useState(false);
+  const antigravityOauthModelsRequestRef = useRef(0);
+
   // 通用模型获取（非 Copilot 供应商）
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
@@ -389,6 +398,28 @@ export function ClaudeFormFields({
     t,
   ]);
 
+  const handleFetchAntigravityOauthModels = useCallback(() => {
+    const requestId = antigravityOauthModelsRequestRef.current + 1;
+    antigravityOauthModelsRequestRef.current = requestId;
+    setAntigravityOauthModelsLoading(true);
+    fetchAntigravityOauthModels(selectedAntigravityAccountId)
+      .then((models) => {
+        if (antigravityOauthModelsRequestRef.current !== requestId) return;
+        setAntigravityOauthModels(models);
+        showModelFetchResult(models.length);
+      })
+      .catch((err) => {
+        if (antigravityOauthModelsRequestRef.current !== requestId) return;
+        console.warn("[AntigravityOAuth] Failed to fetch models:", err);
+        showFetchModelsError(err, t);
+      })
+      .finally(() => {
+        if (antigravityOauthModelsRequestRef.current === requestId) {
+          setAntigravityOauthModelsLoading(false);
+        }
+      });
+  }, [selectedAntigravityAccountId, showModelFetchResult, t]);
+
   useEffect(() => {
     copilotModelsRequestRef.current += 1;
     setCopilotModels([]);
@@ -401,16 +432,26 @@ export function ClaudeFormFields({
     setCodexOauthModelsLoading(false);
   }, [isCodexOauthPreset, isCodexOauthAuthenticated, selectedCodexAccountId]);
 
+  useEffect(() => {
+    antigravityOauthModelsRequestRef.current += 1;
+    setAntigravityOauthModels([]);
+    setAntigravityOauthModelsLoading(false);
+  }, [isAntigravityOauthPreset, selectedAntigravityAccountId]);
+
   const modelFetchLoading = isCopilotPreset
     ? modelsLoading
     : isCodexOauthPreset
       ? codexOauthModelsLoading
-      : isFetchingModels;
+      : isAntigravityOauthPreset
+        ? antigravityOauthModelsLoading
+        : isFetchingModels;
   const handleModelFetchClick = isCopilotPreset
     ? handleFetchCopilotModels
     : isCodexOauthPreset
       ? handleFetchCodexOauthModels
-      : handleFetchModels;
+      : isAntigravityOauthPreset
+        ? handleFetchAntigravityOauthModels
+        : handleFetchModels;
 
   // 模型输入框：支持手动输入 + 下拉选择
   const renderModelInput = (
@@ -432,6 +473,19 @@ export function ClaudeFormFields({
           placeholder={placeholder}
           fetchedModels={codexOauthModels}
           isLoading={codexOauthModelsLoading}
+        />
+      );
+    }
+
+    if (isAntigravityOauthPreset) {
+      return (
+        <ModelInputWithFetch
+          id={id}
+          value={value}
+          onChange={updateValue}
+          placeholder={placeholder}
+          fetchedModels={antigravityOauthModels}
+          isLoading={antigravityOauthModelsLoading}
         />
       );
     }

@@ -212,8 +212,9 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   }
 
   // 成功获取数据
+  const allowUnknownTierNames = appIdForExpiredHint === "antigravity_oauth";
   const tiers = (quota.tiers || []).filter((tier) => {
-    if (!(tier.name in TIER_I18N_KEYS)) return false;
+    if (!allowUnknownTierNames && !(tier.name in TIER_I18N_KEYS)) return false;
     if (visibleTierNames && !visibleTierNames.includes(tier.name)) return false;
     return true;
   });

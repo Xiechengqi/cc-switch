@@ -206,6 +206,7 @@ export interface ClientTunnelState {
 }
 
 export interface ClientTunnelUpdateParams {
+  ownerEmail: string;
   subdomain: string;
   enabled: boolean;
   autoStart: boolean;

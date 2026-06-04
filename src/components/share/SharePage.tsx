@@ -167,8 +167,15 @@ export function SharePage({
   const claimClientTunnelMutation = useClaimClientTunnelMutation();
   const startClientTunnelMutation = useStartClientTunnelMutation();
   const stopClientTunnelMutation = useStopClientTunnelMutation();
+  const [clientOwnerEmailInput, setClientOwnerEmailInput] = useState("");
   const [clientSubdomainInput, setClientSubdomainInput] = useState("");
   const clientTunnel = clientTunnelQuery.data;
+
+  useEffect(() => {
+    if (clientTunnel?.config.ownerEmail) {
+      setClientOwnerEmailInput(clientTunnel.config.ownerEmail);
+    }
+  }, [clientTunnel?.config.ownerEmail]);
 
   useEffect(() => {
     if (clientTunnel?.config.subdomain) {
@@ -246,6 +253,28 @@ export function SharePage({
   const primaryShare = shares[0] ?? null;
   const routerSessionEmail = routerSession?.user?.email?.trim().toLowerCase();
   const primaryShareOwnerEmail = primaryShare?.ownerEmail?.trim().toLowerCase();
+  const normalizedClientOwnerEmail = clientOwnerEmailInput.trim().toLowerCase();
+  const clientTunnelSaving = claimClientTunnelMutation.isPending;
+
+  const saveClientTunnel = useCallback(
+    (ownerEmail: string = normalizedClientOwnerEmail) =>
+      claimClientTunnelMutation.mutateAsync({
+        ownerEmail,
+        subdomain: clientSubdomainInput.trim(),
+        enabled: true,
+        autoStart: true,
+      }),
+    [
+      claimClientTunnelMutation,
+      clientSubdomainInput,
+      normalizedClientOwnerEmail,
+    ],
+  );
+
+  const handleSaveClientTunnel = useCallback(() => {
+    if (!clientSubdomainInput.trim() || !normalizedClientOwnerEmail) return;
+    void saveClientTunnel();
+  }, [clientSubdomainInput, normalizedClientOwnerEmail, saveClientTunnel]);
   const canManageShareFromRouter =
     shareScoped &&
     Boolean(routerSession?.authenticated) &&
@@ -467,9 +496,16 @@ export function SharePage({
                   <div className="text-xs font-medium text-muted-foreground">
                     Client Tunnel Owner
                   </div>
-                  <div className="mt-2 truncate text-sm">
-                    {clientTunnel?.config.ownerEmail ?? "-"}
-                  </div>
+                  <Input
+                    className="mt-1 h-8"
+                    type="email"
+                    value={clientOwnerEmailInput}
+                    placeholder="owner@example.com"
+                    disabled={clientTunnelQuery.isLoading || clientTunnelSaving}
+                    onChange={(event) =>
+                      setClientOwnerEmailInput(event.target.value)
+                    }
+                  />
                 </div>
                 <div>
                   <div className="text-xs font-medium text-muted-foreground">
@@ -478,10 +514,7 @@ export function SharePage({
                   <Input
                     className="mt-1 h-8"
                     value={clientSubdomainInput}
-                    disabled={
-                      clientTunnelQuery.isLoading ||
-                      claimClientTunnelMutation.isPending
-                    }
+                    disabled={clientTunnelQuery.isLoading || clientTunnelSaving}
                     onChange={(event) =>
                       setClientSubdomainInput(event.target.value)
                     }
@@ -520,15 +553,10 @@ export function SharePage({
                   size="sm"
                   disabled={
                     !clientSubdomainInput.trim() ||
-                    claimClientTunnelMutation.isPending
+                    !normalizedClientOwnerEmail ||
+                    clientTunnelSaving
                   }
-                  onClick={() =>
-                    claimClientTunnelMutation.mutate({
-                      subdomain: clientSubdomainInput.trim(),
-                      enabled: true,
-                      autoStart: true,
-                    })
-                  }
+                  onClick={handleSaveClientTunnel}
                 >
                   保存
                 </Button>

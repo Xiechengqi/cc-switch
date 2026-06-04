@@ -159,6 +159,7 @@ pub struct ClientTunnelState {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientTunnelUpdateParams {
+    pub owner_email: String,
     pub subdomain: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -854,7 +855,7 @@ async fn write_client_tunnel_config(
     params: ClientTunnelUpdateParams,
     claim: bool,
 ) -> Result<ClientTunnelState, String> {
-    let owner_email = installation_owner_email().await?;
+    let owner_email = normalize_owner_email(&params.owner_email)?;
     let subdomain = normalize_subdomain(&params.subdomain)?;
     let local_config = ClientTunnelSettingsView {
         owner_email: owner_email.clone(),

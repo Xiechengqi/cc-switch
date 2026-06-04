@@ -1,9 +1,11 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, it, expect, beforeEach } from "vitest";
 import { SharePage } from "@/components/share";
 import { createTestQueryClient } from "../../utils/testQueryClient";
+import { server } from "../../msw/server";
 import {
   setEmailAuthStatus,
   setSettings,
@@ -96,5 +98,75 @@ describe("SharePage", () => {
     await waitFor(() =>
       expect(listShares()[0]?.ownerEmail).toBe("new-owner@example.com"),
     );
+  });
+
+  it("saves client tunnel owner email directly", async () => {
+    const user = userEvent.setup();
+    let savedParams: Record<string, unknown> | null = null;
+    server.use(
+      http.post("http://tauri.local/get_client_tunnel", () =>
+        HttpResponse.json({
+          config: {
+            ownerEmail: "client@example.com",
+            subdomain: "app-client",
+            enabled: true,
+            autoStart: true,
+            tunnelUrl: "https://app-client.example.com",
+          },
+          status: {
+            info: null,
+            lastError: null,
+            requiresOwnerLogin: false,
+          },
+        }),
+      ),
+      http.post(
+        "http://tauri.local/claim_client_tunnel",
+        async ({ request }) => {
+          const body = (await request.json()) as {
+            params: Record<string, unknown>;
+          };
+          savedParams = body.params;
+          return HttpResponse.json({
+            config: {
+              ownerEmail: body.params.ownerEmail,
+              subdomain: body.params.subdomain,
+              enabled: body.params.enabled,
+              autoStart: body.params.autoStart,
+              tunnelUrl: `https://${body.params.subdomain}.example.com`,
+            },
+            status: {
+              info: null,
+              lastError: null,
+              requiresOwnerLogin: false,
+            },
+          });
+        },
+      ),
+      http.post("http://tauri.local/list_share_markets", () =>
+        HttpResponse.json([]),
+      ),
+    );
+
+    renderPage();
+
+    const ownerInput = await screen.findByDisplayValue("client@example.com");
+    await user.clear(ownerInput);
+    await user.type(ownerInput, "new-client@example.com");
+    const panel = ownerInput.closest(".rounded-lg");
+    expect(panel).not.toBeNull();
+    await user.click(
+      within(panel as HTMLElement).getByRole("button", { name: "保存" }),
+    );
+
+    await waitFor(() =>
+      expect(savedParams).toEqual({
+        ownerEmail: "new-client@example.com",
+        subdomain: "app-client",
+        enabled: true,
+        autoStart: true,
+      }),
+    );
+    expect(screen.queryByText("Change Owner Email")).not.toBeInTheDocument();
   });
 });

@@ -1,4 +1,5 @@
 use std::path::{Component, Path, PathBuf};
+use std::str::FromStr;
 
 use axum::{
     Json,
@@ -7,14 +8,24 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::{
+    app_config::AppType,
+    commands::{
+        AntigravityOAuthState, ClaudeOAuthState, CodexOAuthState, CopilotAuthState,
+        CursorOAuthState, DeepSeekAccountState, GeminiOAuthState, KiroOAuthState, OauthQuotaState,
+    },
     error::AppError,
-    proxy::{server::ProxyState, types::ProxyStatus},
-    services::share::ShareService,
+    provider::Provider,
+    proxy::{
+        CircuitBreakerConfig,
+        server::ProxyState,
+        types::{AppProxyConfig, GlobalProxyConfig, ProxyConfig, ProxyStatus},
+    },
+    services::{ProviderService, share::ShareService},
     store::AppState,
     tunnel::config::ShareTunnelStatus,
 };
@@ -286,14 +297,163 @@ async fn invoke_local_admin_scoped(
             Ok(json!(true))
         }
         "get_proxy_status" => Ok(json!(proxy_status(state).await)),
-        "get_proxy_takeover_status" => Ok(json!({
-            "claude": false,
-            "codex": false,
-            "gemini": false,
-            "opencode": false,
-            "openclaw": false,
-            "hermes": false,
-        })),
+        "get_proxy_takeover_status" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(
+                app_state
+                    .proxy_service
+                    .get_takeover_status()
+                    .await
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "get_proxy_config" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(app_state.proxy_service.get_config().await))
+        }
+        "update_proxy_config" => {
+            let app_state = required_app_state(state)?;
+            let config: ProxyConfig = value_arg(&args, "config")?;
+            app_state
+                .proxy_service
+                .update_config(&config)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "get_global_proxy_config" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(
+                app_state
+                    .db
+                    .get_global_proxy_config()
+                    .await
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "update_global_proxy_config" => {
+            let app_state = required_app_state(state)?;
+            let config: GlobalProxyConfig = value_arg(&args, "config")?;
+            app_state
+                .db
+                .update_global_proxy_config(config)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "get_proxy_config_for_app" => {
+            let app_state = required_app_state(state)?;
+            let app_type = string_arg(&args, "appType")?;
+            Ok(json!(
+                app_state
+                    .db
+                    .get_proxy_config_for_app(&app_type)
+                    .await
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "update_proxy_config_for_app" => {
+            let app_state = required_app_state(state)?;
+            let config: AppProxyConfig = value_arg(&args, "config")?;
+            let app_type = config.app_type.clone();
+            let circuit_config = CircuitBreakerConfig::from(&config);
+            app_state
+                .db
+                .update_proxy_config_for_app(config)
+                .await
+                .map_err(WebError::internal)?;
+            app_state
+                .proxy_service
+                .update_circuit_breaker_config_for_app(&app_type, circuit_config)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "start_proxy_server" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(
+                app_state
+                    .proxy_service
+                    .start()
+                    .await
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "stop_proxy_server" => {
+            let app_state = required_app_state(state)?;
+            let takeover = app_state
+                .proxy_service
+                .get_takeover_status()
+                .await
+                .map_err(WebError::internal)?;
+            if takeover.claude
+                || takeover.codex
+                || takeover.gemini
+                || takeover.opencode
+                || takeover.openclaw
+            {
+                return Err(WebError::bad_request(
+                    "仍有应用处于代理接管状态，请先关闭对应应用接管后再停止本地路由。",
+                ));
+            }
+            app_state
+                .proxy_service
+                .stop()
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "stop_proxy_with_restore" => {
+            let app_state = required_app_state(state)?;
+            app_state
+                .proxy_service
+                .stop_with_restore()
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "is_proxy_running" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(app_state.proxy_service.is_running().await))
+        }
+        "is_live_takeover_active" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(
+                app_state
+                    .proxy_service
+                    .is_takeover_active()
+                    .await
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "set_proxy_takeover_for_app" => {
+            let app_state = required_app_state(state)?;
+            let app_type = string_arg(&args, "appType")?;
+            let enabled = bool_arg(&args, "enabled")?;
+            app_state
+                .proxy_service
+                .set_takeover_for_app(&app_type, enabled)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "switch_proxy_provider" => {
+            let app_state = required_app_state(state)?;
+            let app_type = string_arg(&args, "appType")?;
+            let provider_id = string_arg(&args, "providerId")?;
+            app_state
+                .proxy_service
+                .switch_proxy_target(&app_type, &provider_id)
+                .await
+                .map_err(WebError::internal)?;
+            if let Ok(app_enum) = AppType::from_str(&app_type) {
+                crate::tunnel::sync::schedule_share_runtime_refresh_after_provider_switch(
+                    app_state.db.clone(),
+                    app_enum,
+                );
+            }
+            Ok(json!(null))
+        }
         "list_shares" => {
             let Some(app_state) = app_state(state) else {
                 return Ok(json!([]));
@@ -321,8 +481,204 @@ async fn invoke_local_admin_scoped(
         }
         "get_client_tunnel_status" => Ok(json!(client_tunnel_status(state).await)),
         "get_client_tunnel" => Ok(json!(client_tunnel_projection(state).await)),
-        "get_providers" => Ok(json!({ "providers": {}, "currentProviderId": null })),
-        "get_current_provider" => Ok(json!(null)),
+        "get_providers" => {
+            let app_state = required_app_state(state)?;
+            let app_type = app_type_arg(&args, "app")?;
+            Ok(json!(
+                ProviderService::list(&app_state, app_type).map_err(WebError::internal)?
+            ))
+        }
+        "get_current_provider" => {
+            let app_state = required_app_state(state)?;
+            let app_type = app_type_arg(&args, "app")?;
+            Ok(json!(
+                ProviderService::current(&app_state, app_type).map_err(WebError::internal)?
+            ))
+        }
+        "add_provider" => {
+            let app_state = required_app_state(state)?;
+            let app_type = app_type_arg(&args, "app")?;
+            let provider: Provider = value_arg(&args, "provider")?;
+            let add_to_live = args
+                .get("addToLive")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            Ok(json!(
+                ProviderService::add(&app_state, app_type, provider, add_to_live)
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "update_provider" => {
+            let app_state = required_app_state(state)?;
+            let app_type = app_type_arg(&args, "app")?;
+            let provider: Provider = value_arg(&args, "provider")?;
+            let original_id = args.get("originalId").and_then(Value::as_str);
+            Ok(json!(
+                ProviderService::update(&app_state, app_type.clone(), original_id, provider)
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "delete_provider" => {
+            let app_state = required_app_state(state)?;
+            let app_type = app_type_arg(&args, "app")?;
+            let id = string_arg(&args, "id")?;
+            ProviderService::delete(&app_state, app_type, &id).map_err(WebError::internal)?;
+            Ok(json!(true))
+        }
+        "switch_provider" => {
+            let app_state = required_app_state(state)?;
+            let app_type = app_type_arg(&args, "app")?;
+            let id = string_arg(&args, "id")?;
+            Ok(json!(
+                ProviderService::switch(&app_state, app_type, &id).map_err(WebError::internal)?
+            ))
+        }
+        "get_failover_queue" => {
+            let app_state = required_app_state(state)?;
+            let app_type = string_arg(&args, "appType")?;
+            Ok(json!(
+                app_state
+                    .db
+                    .get_failover_queue(&app_type)
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "get_available_providers_for_failover" => {
+            let app_state = required_app_state(state)?;
+            let app_type = string_arg(&args, "appType")?;
+            Ok(json!(
+                app_state
+                    .db
+                    .get_available_providers_for_failover(&app_type)
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "add_to_failover_queue" => {
+            let app_state = required_app_state(state)?;
+            let app_type = string_arg(&args, "appType")?;
+            let provider_id = string_arg(&args, "providerId")?;
+            app_state
+                .db
+                .add_to_failover_queue(&app_type, &provider_id)
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "remove_from_failover_queue" => {
+            let app_state = required_app_state(state)?;
+            let app_type = string_arg(&args, "appType")?;
+            let provider_id = string_arg(&args, "providerId")?;
+            app_state
+                .db
+                .remove_from_failover_queue(&app_type, &provider_id)
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "get_auto_failover_enabled" => {
+            let app_state = required_app_state(state)?;
+            let app_type = string_arg(&args, "appType")?;
+            Ok(json!(
+                app_state
+                    .db
+                    .get_proxy_config_for_app(&app_type)
+                    .await
+                    .map_err(WebError::internal)?
+                    .auto_failover_enabled
+            ))
+        }
+        "set_auto_failover_enabled" => {
+            let app_state = required_app_state(state)?;
+            let app = required_app_handle(state)?.clone();
+            let app_type = string_arg(&args, "appType")?;
+            let enabled = bool_arg(&args, "enabled")?;
+            set_auto_failover_enabled_for_web(app, &app_state, &app_type, enabled).await?;
+            Ok(json!(null))
+        }
+        "get_provider_health" => {
+            let app_state = required_app_state(state)?;
+            let provider_id = string_arg(&args, "providerId")?;
+            let app_type = string_arg(&args, "appType")?;
+            Ok(json!(
+                app_state
+                    .db
+                    .get_provider_health(&provider_id, &app_type)
+                    .await
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "reset_circuit_breaker" => {
+            let app_state = required_app_state(state)?;
+            let provider_id = string_arg(&args, "providerId")?;
+            let app_type = string_arg(&args, "appType")?;
+            app_state
+                .db
+                .update_provider_health(&provider_id, &app_type, true, None)
+                .await
+                .map_err(WebError::internal)?;
+            app_state
+                .proxy_service
+                .reset_provider_circuit_breaker(&provider_id, &app_type)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "get_circuit_breaker_config" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(
+                app_state
+                    .db
+                    .get_circuit_breaker_config()
+                    .await
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "update_circuit_breaker_config" => {
+            let app_state = required_app_state(state)?;
+            let config: CircuitBreakerConfig = value_arg(&args, "config")?;
+            app_state
+                .db
+                .update_circuit_breaker_config(&config)
+                .await
+                .map_err(WebError::internal)?;
+            app_state
+                .proxy_service
+                .update_circuit_breaker_configs(config)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "get_circuit_breaker_stats" => Ok(json!(null)),
+        "auth_list_accounts" => managed_auth_command(state, command, args).await,
+        "auth_get_status" => managed_auth_command(state, command, args).await,
+        "auth_start_login" => managed_auth_command(state, command, args).await,
+        "auth_poll_for_account" => managed_auth_command(state, command, args).await,
+        "auth_remove_account" => managed_auth_command(state, command, args).await,
+        "auth_set_default_account" => managed_auth_command(state, command, args).await,
+        "auth_logout" => managed_auth_command(state, command, args).await,
+        "copilot_list_accounts" => copilot_command(state, command, args).await,
+        "copilot_get_auth_status" => copilot_command(state, command, args).await,
+        "copilot_start_device_flow" => copilot_command(state, command, args).await,
+        "copilot_poll_for_auth" => copilot_command(state, command, args).await,
+        "copilot_poll_for_account" => copilot_command(state, command, args).await,
+        "copilot_remove_account" => copilot_command(state, command, args).await,
+        "copilot_set_default_account" => copilot_command(state, command, args).await,
+        "copilot_logout" => copilot_command(state, command, args).await,
+        "copilot_is_authenticated" => copilot_command(state, command, args).await,
+        "copilot_get_models" => copilot_command(state, command, args).await,
+        "copilot_get_models_for_account" => copilot_command(state, command, args).await,
+        "copilot_get_usage" => copilot_command(state, command, args).await,
+        "copilot_get_usage_for_account" => copilot_command(state, command, args).await,
+        "deepseek_account_list" => deepseek_command(state, command, args).await,
+        "deepseek_account_status" => deepseek_command(state, command, args).await,
+        "deepseek_account_add" => deepseek_command(state, command, args).await,
+        "deepseek_account_remove" => deepseek_command(state, command, args).await,
+        "deepseek_account_set_default" => deepseek_command(state, command, args).await,
+        "get_cached_oauth_quota" => oauth_quota_command(state, command, args).await,
+        "refresh_oauth_quota" => oauth_quota_command(state, command, args).await,
+        "get_claude_oauth_quota" => oauth_quota_command(state, command, args).await,
+        "get_codex_oauth_quota" => oauth_quota_command(state, command, args).await,
+        "get_subscription_quota" => subscription_command(state, command, args).await,
+        "get_coding_plan_quota" => subscription_command(state, command, args).await,
+        "get_balance" => subscription_command(state, command, args).await,
         _ => Err(WebError::not_found(format!(
             "local admin web command is allowlisted but not implemented yet: {command}"
         ))),
@@ -416,6 +772,519 @@ fn app_state(state: &ProxyState) -> Option<tauri::State<'_, AppState>> {
         .and_then(|app| app.try_state::<AppState>())
 }
 
+fn required_app_handle(state: &ProxyState) -> Result<&tauri::AppHandle, WebError> {
+    state
+        .app_handle
+        .as_ref()
+        .ok_or_else(|| WebError::internal("app handle is unavailable"))
+}
+
+fn required_app_state(state: &ProxyState) -> Result<tauri::State<'_, AppState>, WebError> {
+    app_state(state).ok_or_else(|| WebError::internal("app state is unavailable"))
+}
+
+fn required_state<'a, T: Send + Sync + 'static>(
+    state: &'a ProxyState,
+    label: &str,
+) -> Result<tauri::State<'a, T>, WebError> {
+    required_app_handle(state)?
+        .try_state::<T>()
+        .ok_or_else(|| WebError::internal(format!("{label} state is unavailable")))
+}
+
+fn value_arg<T: DeserializeOwned>(args: &Value, key: &str) -> Result<T, WebError> {
+    let value = args
+        .get(key)
+        .cloned()
+        .ok_or_else(|| WebError::bad_request(format!("{key} is required")))?;
+    serde_json::from_value(value)
+        .map_err(|err| WebError::bad_request(format!("invalid {key}: {err}")))
+}
+
+fn optional_string_arg(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn bool_arg(args: &Value, key: &str) -> Result<bool, WebError> {
+    args.get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| WebError::bad_request(format!("{key} is required")))
+}
+
+fn app_type_arg(args: &Value, key: &str) -> Result<AppType, WebError> {
+    AppType::from_str(&string_arg(args, key)?).map_err(WebError::internal)
+}
+
+async fn set_auto_failover_enabled_for_web(
+    app: tauri::AppHandle,
+    state: &AppState,
+    app_type: &str,
+    enabled: bool,
+) -> Result<(), WebError> {
+    let mut config = state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .map_err(WebError::internal)?;
+
+    if enabled && !config.enabled {
+        return Err(WebError::bad_request(
+            "需要先启用该应用的代理接管，再开启故障转移",
+        ));
+    }
+
+    let mut auto_added_provider_id: Option<String> = None;
+    let p1_provider_id = if enabled {
+        let mut queue = state
+            .db
+            .get_failover_queue(app_type)
+            .map_err(WebError::internal)?;
+
+        if queue.is_empty() {
+            let app_enum = AppType::from_str(app_type)
+                .map_err(|_| WebError::bad_request(format!("无效的应用类型: {app_type}")))?;
+            let current_id = crate::settings::get_effective_current_provider(&state.db, &app_enum)
+                .map_err(WebError::internal)?
+                .ok_or_else(|| {
+                    WebError::bad_request("故障转移队列为空，且未设置当前供应商，无法开启故障转移")
+                })?;
+            state
+                .db
+                .add_to_failover_queue(app_type, &current_id)
+                .map_err(WebError::internal)?;
+            auto_added_provider_id = Some(current_id);
+            queue = state
+                .db
+                .get_failover_queue(app_type)
+                .map_err(WebError::internal)?;
+        }
+
+        queue
+            .first()
+            .map(|item| item.provider_id.clone())
+            .ok_or_else(|| WebError::bad_request("故障转移队列为空，无法开启故障转移"))?
+    } else {
+        String::new()
+    };
+
+    if enabled {
+        if let Err(err) = state
+            .proxy_service
+            .switch_proxy_target(app_type, &p1_provider_id)
+            .await
+        {
+            if let Some(provider_id) = auto_added_provider_id {
+                let _ = state.db.remove_from_failover_queue(app_type, &provider_id);
+            }
+            return Err(WebError::internal(err));
+        }
+    }
+
+    config.auto_failover_enabled = enabled;
+    state
+        .db
+        .update_proxy_config_for_app(config)
+        .await
+        .map_err(WebError::internal)?;
+
+    if enabled {
+        let _ = app.emit(
+            "provider-switched",
+            json!({
+                "appType": app_type,
+                "providerId": p1_provider_id,
+                "source": "failoverEnabled"
+            }),
+        );
+    }
+    if let Ok(new_menu) = crate::tray::create_tray_menu(&app, state) {
+        if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
+            let _ = tray.set_menu(Some(new_menu));
+        }
+    }
+    Ok(())
+}
+
+async fn managed_auth_command(
+    state: &ProxyState,
+    command: &str,
+    args: Value,
+) -> Result<Value, WebError> {
+    let copilot = required_state::<CopilotAuthState>(state, "copilot auth")?;
+    let codex = required_state::<CodexOAuthState>(state, "codex oauth")?;
+    let claude = required_state::<ClaudeOAuthState>(state, "claude oauth")?;
+    let gemini = required_state::<GeminiOAuthState>(state, "gemini oauth")?;
+    let antigravity = required_state::<AntigravityOAuthState>(state, "antigravity oauth")?;
+    let kiro = required_state::<KiroOAuthState>(state, "kiro oauth")?;
+    let cursor = required_state::<CursorOAuthState>(state, "cursor oauth")?;
+    let auth_provider = string_arg(&args, "authProvider")?;
+
+    match command {
+        "auth_list_accounts" => Ok(json!(
+            crate::commands::auth_list_accounts(
+                auth_provider,
+                copilot,
+                codex,
+                claude,
+                gemini,
+                antigravity,
+                kiro,
+                cursor,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "auth_get_status" => Ok(json!(
+            crate::commands::auth_get_status(
+                auth_provider,
+                copilot,
+                codex,
+                claude,
+                gemini,
+                antigravity,
+                kiro,
+                cursor,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "auth_start_login" => Ok(json!(
+            crate::commands::auth_start_login(
+                auth_provider,
+                optional_string_arg(&args, "githubDomain"),
+                copilot,
+                codex,
+                claude,
+                gemini,
+                antigravity,
+                kiro,
+                cursor,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "auth_poll_for_account" => Ok(json!(
+            crate::commands::auth_poll_for_account(
+                auth_provider,
+                string_arg(&args, "deviceCode")?,
+                optional_string_arg(&args, "githubDomain"),
+                copilot,
+                codex,
+                claude,
+                gemini,
+                antigravity,
+                kiro,
+                cursor,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "auth_remove_account" => {
+            crate::commands::auth_remove_account(
+                auth_provider,
+                string_arg(&args, "accountId")?,
+                copilot,
+                codex,
+                claude,
+                gemini,
+                antigravity,
+                kiro,
+                cursor,
+            )
+            .await
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "auth_set_default_account" => {
+            crate::commands::auth_set_default_account(
+                auth_provider,
+                string_arg(&args, "accountId")?,
+                copilot,
+                codex,
+                claude,
+                gemini,
+                antigravity,
+                kiro,
+                cursor,
+            )
+            .await
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "auth_logout" => {
+            crate::commands::auth_logout(
+                auth_provider,
+                copilot,
+                codex,
+                claude,
+                gemini,
+                antigravity,
+                kiro,
+                cursor,
+            )
+            .await
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        _ => Err(WebError::not_found(format!(
+            "managed auth web command is not exposed: {command}"
+        ))),
+    }
+}
+
+async fn copilot_command(
+    state: &ProxyState,
+    command: &str,
+    args: Value,
+) -> Result<Value, WebError> {
+    let copilot = required_state::<CopilotAuthState>(state, "copilot auth")?;
+    match command {
+        "copilot_list_accounts" => Ok(json!(
+            crate::commands::copilot_list_accounts(copilot)
+                .await
+                .map_err(WebError::internal)?
+        )),
+        "copilot_get_auth_status" => Ok(json!(
+            crate::commands::copilot_get_auth_status(copilot)
+                .await
+                .map_err(WebError::internal)?
+        )),
+        "copilot_start_device_flow" => Ok(json!(
+            crate::commands::copilot_start_device_flow(
+                optional_string_arg(&args, "githubDomain"),
+                copilot
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "copilot_poll_for_auth" => Ok(json!(
+            crate::commands::copilot_poll_for_auth(
+                string_arg(&args, "deviceCode")?,
+                optional_string_arg(&args, "githubDomain"),
+                copilot,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "copilot_poll_for_account" => Ok(json!(
+            crate::commands::copilot_poll_for_account(
+                string_arg(&args, "deviceCode")?,
+                optional_string_arg(&args, "githubDomain"),
+                copilot,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "copilot_remove_account" => {
+            crate::commands::copilot_remove_account(string_arg(&args, "accountId")?, copilot)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "copilot_set_default_account" => {
+            crate::commands::copilot_set_default_account(string_arg(&args, "accountId")?, copilot)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "copilot_logout" => {
+            crate::commands::copilot_logout(copilot)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "copilot_is_authenticated" => Ok(json!(
+            crate::commands::copilot_is_authenticated(copilot)
+                .await
+                .map_err(WebError::internal)?
+        )),
+        "copilot_get_models" => Ok(json!(
+            crate::commands::copilot_get_models(copilot)
+                .await
+                .map_err(WebError::internal)?
+        )),
+        "copilot_get_models_for_account" => Ok(json!(
+            crate::commands::copilot_get_models_for_account(
+                string_arg(&args, "accountId")?,
+                copilot
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "copilot_get_usage" => Ok(json!(
+            crate::commands::copilot_get_usage(copilot)
+                .await
+                .map_err(WebError::internal)?
+        )),
+        "copilot_get_usage_for_account" => Ok(json!(
+            crate::commands::copilot_get_usage_for_account(
+                string_arg(&args, "accountId")?,
+                copilot
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        _ => Err(WebError::not_found(format!(
+            "copilot web command is not exposed: {command}"
+        ))),
+    }
+}
+
+async fn deepseek_command(
+    state: &ProxyState,
+    command: &str,
+    args: Value,
+) -> Result<Value, WebError> {
+    let deepseek = required_state::<DeepSeekAccountState>(state, "deepseek account")?;
+    match command {
+        "deepseek_account_list" => Ok(json!(
+            crate::commands::deepseek_account_list(deepseek)
+                .await
+                .map_err(WebError::internal)?
+        )),
+        "deepseek_account_status" => Ok(json!(
+            crate::commands::deepseek_account_status(deepseek)
+                .await
+                .map_err(WebError::internal)?
+        )),
+        "deepseek_account_add" => Ok(json!(
+            crate::commands::deepseek_account_add(
+                optional_string_arg(&args, "email"),
+                optional_string_arg(&args, "mobile"),
+                string_arg(&args, "password")?,
+                deepseek,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "deepseek_account_remove" => {
+            crate::commands::deepseek_account_remove(string_arg(&args, "accountId")?, deepseek)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        "deepseek_account_set_default" => {
+            crate::commands::deepseek_account_set_default(
+                string_arg(&args, "accountId")?,
+                deepseek,
+            )
+            .await
+            .map_err(WebError::internal)?;
+            Ok(json!(null))
+        }
+        _ => Err(WebError::not_found(format!(
+            "deepseek web command is not exposed: {command}"
+        ))),
+    }
+}
+
+async fn oauth_quota_command(
+    state: &ProxyState,
+    command: &str,
+    args: Value,
+) -> Result<Value, WebError> {
+    let quota = required_state::<OauthQuotaState>(state, "oauth quota")?;
+    let codex = required_state::<CodexOAuthState>(state, "codex oauth")?;
+    let claude = required_state::<ClaudeOAuthState>(state, "claude oauth")?;
+    let gemini = required_state::<GeminiOAuthState>(state, "gemini oauth")?;
+    let copilot = required_state::<CopilotAuthState>(state, "copilot auth")?;
+    let kiro = required_state::<KiroOAuthState>(state, "kiro oauth")?;
+    let antigravity = required_state::<AntigravityOAuthState>(state, "antigravity oauth")?;
+    let cursor = required_state::<CursorOAuthState>(state, "cursor oauth")?;
+
+    match command {
+        "get_cached_oauth_quota" => Ok(json!(
+            crate::commands::get_cached_oauth_quota(
+                string_arg(&args, "authProvider")?,
+                optional_string_arg(&args, "accountId"),
+                quota,
+                codex,
+                claude,
+                gemini,
+                copilot,
+                kiro,
+                antigravity,
+                cursor,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "refresh_oauth_quota" => Ok(json!(
+            crate::commands::refresh_oauth_quota(
+                string_arg(&args, "authProvider")?,
+                optional_string_arg(&args, "accountId"),
+                quota,
+                codex,
+                claude,
+                gemini,
+                copilot,
+                kiro,
+                antigravity,
+                cursor,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "get_claude_oauth_quota" => Ok(json!(
+            crate::commands::get_claude_oauth_quota(
+                optional_string_arg(&args, "accountId"),
+                claude
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "get_codex_oauth_quota" => Ok(json!(
+            crate::commands::get_codex_oauth_quota(optional_string_arg(&args, "accountId"), codex)
+                .await
+                .map_err(WebError::internal)?
+        )),
+        _ => Err(WebError::not_found(format!(
+            "oauth quota web command is not exposed: {command}"
+        ))),
+    }
+}
+
+async fn subscription_command(
+    state: &ProxyState,
+    command: &str,
+    args: Value,
+) -> Result<Value, WebError> {
+    match command {
+        "get_subscription_quota" => {
+            let app = required_app_handle(state)?.clone();
+            let app_state = required_app_state(state)?;
+            Ok(json!(
+                crate::commands::get_subscription_quota(app, app_state, string_arg(&args, "tool")?)
+                    .await
+                    .map_err(WebError::internal)?
+            ))
+        }
+        "get_coding_plan_quota" => Ok(json!(
+            crate::services::coding_plan::get_coding_plan_quota(
+                &string_arg(&args, "baseUrl")?,
+                &string_arg(&args, "apiKey")?,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        "get_balance" => Ok(json!(
+            crate::services::balance::get_balance(
+                &string_arg(&args, "baseUrl")?,
+                &string_arg(&args, "apiKey")?,
+            )
+            .await
+            .map_err(WebError::internal)?
+        )),
+        _ => Err(WebError::not_found(format!(
+            "subscription web command is not exposed: {command}"
+        ))),
+    }
+}
+
 async fn client_tunnel_status(state: &ProxyState) -> ShareTunnelStatus {
     let Some(app_state) = app_state(state) else {
         return ShareTunnelStatus {
@@ -470,9 +1339,14 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "update_proxy_config"
             | "get_global_proxy_config"
             | "update_global_proxy_config"
+            | "get_proxy_config_for_app"
+            | "update_proxy_config_for_app"
             | "start_proxy_server"
             | "stop_proxy_server"
+            | "stop_proxy_with_restore"
             | "is_proxy_running"
+            | "is_live_takeover_active"
+            | "set_proxy_takeover_for_app"
             | "switch_proxy_provider"
             | "get_providers"
             | "get_current_provider"
@@ -520,6 +1394,49 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "start_client_tunnel"
             | "stop_client_tunnel"
             | "get_client_tunnel_status"
+            | "get_failover_queue"
+            | "get_available_providers_for_failover"
+            | "add_to_failover_queue"
+            | "remove_from_failover_queue"
+            | "get_auto_failover_enabled"
+            | "set_auto_failover_enabled"
+            | "get_provider_health"
+            | "reset_circuit_breaker"
+            | "get_circuit_breaker_config"
+            | "update_circuit_breaker_config"
+            | "get_circuit_breaker_stats"
+            | "auth_start_login"
+            | "auth_poll_for_account"
+            | "auth_list_accounts"
+            | "auth_get_status"
+            | "auth_remove_account"
+            | "auth_set_default_account"
+            | "auth_logout"
+            | "copilot_start_device_flow"
+            | "copilot_poll_for_auth"
+            | "copilot_poll_for_account"
+            | "copilot_list_accounts"
+            | "copilot_get_auth_status"
+            | "copilot_remove_account"
+            | "copilot_set_default_account"
+            | "copilot_logout"
+            | "copilot_is_authenticated"
+            | "copilot_get_models"
+            | "copilot_get_models_for_account"
+            | "copilot_get_usage"
+            | "copilot_get_usage_for_account"
+            | "deepseek_account_add"
+            | "deepseek_account_list"
+            | "deepseek_account_status"
+            | "deepseek_account_remove"
+            | "deepseek_account_set_default"
+            | "get_subscription_quota"
+            | "get_claude_oauth_quota"
+            | "get_codex_oauth_quota"
+            | "get_cached_oauth_quota"
+            | "refresh_oauth_quota"
+            | "get_coding_plan_quota"
+            | "get_balance"
             | "get_usage_summary"
             | "get_usage_summary_by_app"
             | "get_usage_trends"

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "@/lib/runtime";
 
 export type ManagedAuthProvider =
   | "github_copilot"
@@ -55,7 +55,7 @@ export async function authStartLogin(
   authProvider: ManagedAuthProvider,
   githubDomain?: string,
 ): Promise<ManagedAuthDeviceCodeResponse> {
-  return invoke<ManagedAuthDeviceCodeResponse>("auth_start_login", {
+  return invokeCommand<ManagedAuthDeviceCodeResponse>("auth_start_login", {
     authProvider,
     githubDomain: githubDomain || null,
   });
@@ -66,7 +66,7 @@ export async function authPollForAccount(
   deviceCode: string,
   githubDomain?: string,
 ): Promise<ManagedAuthAccount | null> {
-  return invoke<ManagedAuthAccount | null>("auth_poll_for_account", {
+  return invokeCommand<ManagedAuthAccount | null>("auth_poll_for_account", {
     authProvider,
     deviceCode,
     githubDomain: githubDomain || null,
@@ -76,7 +76,7 @@ export async function authPollForAccount(
 export async function authListAccounts(
   authProvider: ManagedAuthProvider,
 ): Promise<ManagedAuthAccount[]> {
-  return invoke<ManagedAuthAccount[]>("auth_list_accounts", {
+  return invokeCommand<ManagedAuthAccount[]>("auth_list_accounts", {
     authProvider,
   });
 }
@@ -84,7 +84,7 @@ export async function authListAccounts(
 export async function authGetStatus(
   authProvider: ManagedAuthProvider,
 ): Promise<ManagedAuthStatus> {
-  return invoke<ManagedAuthStatus>("auth_get_status", {
+  return invokeCommand<ManagedAuthStatus>("auth_get_status", {
     authProvider,
   });
 }
@@ -93,7 +93,7 @@ export async function authRemoveAccount(
   authProvider: ManagedAuthProvider,
   accountId: string,
 ): Promise<void> {
-  return invoke("auth_remove_account", {
+  return invokeCommand("auth_remove_account", {
     authProvider,
     accountId,
   });
@@ -103,7 +103,7 @@ export async function authSetDefaultAccount(
   authProvider: ManagedAuthProvider,
   accountId: string,
 ): Promise<void> {
-  return invoke("auth_set_default_account", {
+  return invokeCommand("auth_set_default_account", {
     authProvider,
     accountId,
   });
@@ -112,7 +112,7 @@ export async function authSetDefaultAccount(
 export async function authLogout(
   authProvider: ManagedAuthProvider,
 ): Promise<void> {
-  return invoke("auth_logout", {
+  return invokeCommand("auth_logout", {
     authProvider,
   });
 }
@@ -122,7 +122,7 @@ export async function deepseekAccountAdd(params: {
   mobile?: string | null;
   password: string;
 }): Promise<DeepSeekAccount> {
-  return invoke<DeepSeekAccount>("deepseek_account_add", {
+  return invokeCommand<DeepSeekAccount>("deepseek_account_add", {
     email: params.email || null,
     mobile: params.mobile || null,
     password: params.password,
@@ -130,21 +130,21 @@ export async function deepseekAccountAdd(params: {
 }
 
 export async function deepseekAccountList(): Promise<DeepSeekAccount[]> {
-  return invoke<DeepSeekAccount[]>("deepseek_account_list");
+  return invokeCommand<DeepSeekAccount[]>("deepseek_account_list");
 }
 
 export async function deepseekAccountStatus(): Promise<DeepSeekAccountStatus> {
-  return invoke<DeepSeekAccountStatus>("deepseek_account_status");
+  return invokeCommand<DeepSeekAccountStatus>("deepseek_account_status");
 }
 
 export async function deepseekAccountRemove(accountId: string): Promise<void> {
-  return invoke("deepseek_account_remove", { accountId });
+  return invokeCommand("deepseek_account_remove", { accountId });
 }
 
 export async function deepseekAccountSetDefault(
   accountId: string,
 ): Promise<void> {
-  return invoke("deepseek_account_set_default", { accountId });
+  return invokeCommand("deepseek_account_set_default", { accountId });
 }
 
 export const authApi = {

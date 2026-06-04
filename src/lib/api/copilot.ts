@@ -5,7 +5,7 @@
  * 支持多账号管理。
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "@/lib/runtime";
 
 /**
  * GitHub 设备码响应
@@ -58,7 +58,7 @@ export interface CopilotAuthStatus {
  * @returns 设备码响应，包含用户码和验证 URL
  */
 export async function copilotStartDeviceFlow(): Promise<CopilotDeviceCodeResponse> {
-  return invoke<CopilotDeviceCodeResponse>("copilot_start_device_flow");
+  return invokeCommand<CopilotDeviceCodeResponse>("copilot_start_device_flow");
 }
 
 /**
@@ -70,7 +70,7 @@ export async function copilotStartDeviceFlow(): Promise<CopilotDeviceCodeRespons
  * @returns true 表示认证成功，false 表示仍在等待用户授权
  */
 export async function copilotPollForAuth(deviceCode: string): Promise<boolean> {
-  return invoke<boolean>("copilot_poll_for_auth", {
+  return invokeCommand<boolean>("copilot_poll_for_auth", {
     deviceCode,
   });
 }
@@ -81,14 +81,14 @@ export async function copilotPollForAuth(deviceCode: string): Promise<boolean> {
  * @returns 认证状态，包含是否已认证、用户名和过期时间
  */
 export async function copilotGetAuthStatus(): Promise<CopilotAuthStatus> {
-  return invoke<CopilotAuthStatus>("copilot_get_auth_status");
+  return invokeCommand<CopilotAuthStatus>("copilot_get_auth_status");
 }
 
 /**
  * 注销 Copilot 认证
  */
 export async function copilotLogout(): Promise<void> {
-  return invoke("copilot_logout");
+  return invokeCommand("copilot_logout");
 }
 
 /**
@@ -97,7 +97,7 @@ export async function copilotLogout(): Promise<void> {
  * @returns true 表示已认证
  */
 export async function copilotIsAuthenticated(): Promise<boolean> {
-  return invoke<boolean>("copilot_is_authenticated");
+  return invokeCommand<boolean>("copilot_is_authenticated");
 }
 
 /**
@@ -118,7 +118,7 @@ export interface CopilotModel {
  * @returns Copilot Token
  */
 export async function copilotGetToken(): Promise<string> {
-  return invoke<string>("copilot_get_token");
+  return invokeCommand<string>("copilot_get_token");
 }
 
 /**
@@ -127,7 +127,7 @@ export async function copilotGetToken(): Promise<string> {
  * @returns 可用模型列表
  */
 export async function copilotGetModels(): Promise<CopilotModel[]> {
-  return invoke<CopilotModel[]>("copilot_get_models");
+  return invokeCommand<CopilotModel[]>("copilot_get_models");
 }
 
 /**
@@ -164,7 +164,7 @@ export interface CopilotUsageResponse {
  * @returns 使用量信息，包含计划类型、重置日期和配额快照
  */
 export async function copilotGetUsage(): Promise<CopilotUsageResponse> {
-  return invoke<CopilotUsageResponse>("copilot_get_usage");
+  return invokeCommand<CopilotUsageResponse>("copilot_get_usage");
 }
 
 // ==================== 多账号管理 API ====================
@@ -175,7 +175,7 @@ export async function copilotGetUsage(): Promise<CopilotUsageResponse> {
  * @returns 账号列表
  */
 export async function copilotListAccounts(): Promise<GitHubAccount[]> {
-  return invoke<GitHubAccount[]>("copilot_list_accounts");
+  return invokeCommand<GitHubAccount[]>("copilot_list_accounts");
 }
 
 /**
@@ -190,7 +190,7 @@ export async function copilotListAccounts(): Promise<GitHubAccount[]> {
 export async function copilotPollForAccount(
   deviceCode: string,
 ): Promise<GitHubAccount | null> {
-  return invoke<GitHubAccount | null>("copilot_poll_for_account", {
+  return invokeCommand<GitHubAccount | null>("copilot_poll_for_account", {
     deviceCode,
   });
 }
@@ -201,7 +201,7 @@ export async function copilotPollForAccount(
  * @param accountId - GitHub 用户 ID
  */
 export async function copilotRemoveAccount(accountId: string): Promise<void> {
-  return invoke("copilot_remove_account", { accountId });
+  return invokeCommand("copilot_remove_account", { accountId });
 }
 
 /**
@@ -212,7 +212,7 @@ export async function copilotRemoveAccount(accountId: string): Promise<void> {
 export async function copilotSetDefaultAccount(
   accountId: string,
 ): Promise<void> {
-  return invoke("copilot_set_default_account", { accountId });
+  return invokeCommand("copilot_set_default_account", { accountId });
 }
 
 /**
@@ -226,7 +226,7 @@ export async function copilotSetDefaultAccount(
 export async function copilotGetTokenForAccount(
   accountId: string,
 ): Promise<string> {
-  return invoke<string>("copilot_get_token_for_account", { accountId });
+  return invokeCommand<string>("copilot_get_token_for_account", { accountId });
 }
 
 /**
@@ -238,7 +238,7 @@ export async function copilotGetTokenForAccount(
 export async function copilotGetModelsForAccount(
   accountId: string,
 ): Promise<CopilotModel[]> {
-  return invoke<CopilotModel[]>("copilot_get_models_for_account", {
+  return invokeCommand<CopilotModel[]>("copilot_get_models_for_account", {
     accountId,
   });
 }
@@ -252,7 +252,7 @@ export async function copilotGetModelsForAccount(
 export async function copilotGetUsageForAccount(
   accountId: string,
 ): Promise<CopilotUsageResponse> {
-  return invoke<CopilotUsageResponse>("copilot_get_usage_for_account", {
+  return invokeCommand<CopilotUsageResponse>("copilot_get_usage_for_account", {
     accountId,
   });
 }

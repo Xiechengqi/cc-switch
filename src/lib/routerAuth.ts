@@ -7,6 +7,7 @@ export interface RouterAuthState {
   email?: string | null;
   accessToken?: string | null;
   refreshToken?: string | null;
+  apiToken?: string | null;
   expiresAt?: string | null;
   refreshExpiresAt?: string | null;
 }
@@ -52,6 +53,18 @@ export function clearRouterSessionTokens(): void {
     email: null,
     accessToken: null,
     refreshToken: null,
+    apiToken: null,
+    expiresAt: null,
+    refreshExpiresAt: null,
+  });
+}
+
+export function setRouterApiToken(apiToken: string): void {
+  mergeAuthState({
+    email: null,
+    accessToken: null,
+    refreshToken: null,
+    apiToken: apiToken.trim(),
     expiresAt: null,
     refreshExpiresAt: null,
   });
@@ -219,24 +232,38 @@ async function signAuthPayload(
 
 function authBearerHeaders(): Record<string, string> {
   const state = readAuthState();
-  return state.accessToken
-    ? { authorization: `Bearer ${state.accessToken}` }
-    : {};
+  const token = state.accessToken || state.apiToken;
+  return token ? { authorization: `Bearer ${token}` } : {};
 }
 
 async function refreshAccessToken(): Promise<boolean> {
   const state = readAuthState();
-  if (!state.refreshToken || !state.installationId) return false;
-  const response = await fetch("/v1/auth/session/refresh", {
+  if (!state.refreshToken) return false;
+  if (state.installationId) {
+    const response = await fetch("/v1/auth/session/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        refreshToken: state.refreshToken,
+        installationId: state.installationId,
+      }),
+    });
+    if (await applyRefreshResponse(response)) return true;
+  }
+  const response = await fetch("/web-api/auth/session/refresh", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       refreshToken: state.refreshToken,
-      installationId: state.installationId,
     }),
   });
+  return applyRefreshResponse(response);
+}
+
+async function applyRefreshResponse(response: Response): Promise<boolean> {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return false;
+  if (!data.accessToken || !data.refreshToken) return false;
   mergeAuthState({
     accessToken: data.accessToken,
     refreshToken: data.refreshToken,
@@ -279,8 +306,17 @@ export async function getRouterSessionStatus(): Promise<RouterSessionStatus> {
 
 export async function requestRouterEmailCode(
   email: string,
+  options?: { clientWeb?: boolean },
 ): Promise<{ maskedDestination: string; cooldownSecs?: number }> {
   const normalizedEmail = email.trim().toLowerCase();
+  if (options?.clientWeb) {
+    const response = await fetch("/web-api/auth/email/request-code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: normalizedEmail }),
+    });
+    return parseJsonResponse(response);
+  }
   const signed = await signAuthPayload("auth_request_code", {
     email: normalizedEmail,
     purpose: "login",
@@ -295,10 +331,12 @@ export async function requestRouterEmailCode(
 
 export async function requestRouterEmailCodeWithIdentityRetry(
   email: string,
+  options?: { clientWeb?: boolean },
 ): Promise<{ maskedDestination: string; cooldownSecs?: number }> {
   try {
-    return await requestRouterEmailCode(email);
+    return await requestRouterEmailCode(email, options);
   } catch (error) {
+    if (options?.clientWeb) throw error;
     const message = error instanceof Error ? error.message : String(error);
     if (!shouldResetInstallationIdentity(message)) throw error;
     resetInstallationIdentity();
@@ -309,15 +347,21 @@ export async function requestRouterEmailCodeWithIdentityRetry(
 export async function verifyRouterEmailCode(
   email: string,
   code: string,
+  options?: { clientWeb?: boolean },
 ): Promise<RouterSessionStatus> {
-  const identity = await ensureInstallationIdentity();
-  const response = await fetch("/v1/auth/email/verify-code", {
+  const endpoint = options?.clientWeb
+    ? "/web-api/auth/email/verify-code"
+    : "/v1/auth/email/verify-code";
+  const identity = options?.clientWeb
+    ? null
+    : await ensureInstallationIdentity();
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       email: email.trim().toLowerCase(),
       code: code.trim(),
-      installationId: identity.installationId,
+      ...(identity ? { installationId: identity.installationId } : {}),
     }),
   });
   const data = await parseJsonResponse<{
@@ -331,8 +375,19 @@ export async function verifyRouterEmailCode(
     email: data.user?.email || email.trim().toLowerCase(),
     accessToken: data.accessToken,
     refreshToken: data.refreshToken,
+    apiToken: null,
     expiresAt: data.expiresAt,
     refreshExpiresAt: data.refreshExpiresAt,
   });
+  if (options?.clientWeb) {
+    return {
+      authenticated: true,
+      user: data.user || {
+        id: email.trim().toLowerCase(),
+        email: email.trim().toLowerCase(),
+      },
+      expiresAt: data.expiresAt,
+    };
+  }
   return getRouterSessionStatus();
 }

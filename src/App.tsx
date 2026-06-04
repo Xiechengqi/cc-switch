@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
@@ -51,6 +51,12 @@ import {
   isTauriRuntime,
   type WebRuntimeContext,
 } from "@/lib/runtime";
+import {
+  clearRouterSessionTokens,
+  requestRouterEmailCodeWithIdentityRetry,
+  setRouterApiToken,
+  verifyRouterEmailCode,
+} from "@/lib/routerAuth";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
@@ -84,6 +90,7 @@ import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { UniversalProviderPanel } from "@/components/universal";
 import { McpIcon } from "@/components/BrandIcons";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
 import {
   useDisableCurrentOmo,
@@ -179,6 +186,12 @@ function App() {
     useState<WebRuntimeContext | null>(() =>
       isTauriRuntime() ? { mode: "local-admin" } : null,
     );
+  const refreshWebRuntimeContext = useCallback(async () => {
+    if (isTauriRuntime()) return { mode: "local-admin" } as WebRuntimeContext;
+    const context = await getWebRuntimeContext();
+    setWebRuntimeContext(context);
+    return context;
+  }, []);
 
   useEffect(() => {
     if (isTauriRuntime()) return;
@@ -193,7 +206,7 @@ function App() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [refreshWebRuntimeContext]);
 
   if (!isTauriRuntime() && !webRuntimeContext) {
     return null;
@@ -205,7 +218,182 @@ function App() {
     );
   }
 
+  if (!isTauriRuntime() && webRuntimeContext?.mode === "client-login") {
+    return <ClientWebLoginPage onAuthenticated={refreshWebRuntimeContext} />;
+  }
+
   return <DesktopApp />;
+}
+
+function ClientWebLoginPage({
+  onAuthenticated,
+}: {
+  onAuthenticated: () => Promise<WebRuntimeContext>;
+}) {
+  const [mode, setMode] = useState<"email" | "token">("email");
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [apiToken, setApiToken] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const finishAuth = useCallback(async () => {
+    const context = await onAuthenticated();
+    if (context.mode === "client-login") {
+      throw new Error("登录凭证无权访问当前 client");
+    }
+  }, [onAuthenticated]);
+
+  const sendCode = useCallback(async () => {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await requestRouterEmailCodeWithIdentityRetry(normalized, {
+        clientWeb: true,
+      });
+      setEmail(normalized);
+      setCode("");
+      setCodeSent(true);
+      toast.success("验证码已发送");
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, email]);
+
+  const verifyCode = useCallback(async () => {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized || code.trim().length < 6 || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await verifyRouterEmailCode(normalized, code.trim(), { clientWeb: true });
+      await finishAuth();
+      toast.success("已登录 client");
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, code, email, finishAuth]);
+
+  const loginWithToken = useCallback(async () => {
+    const token = apiToken.trim();
+    if (!token || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      setRouterApiToken(token);
+      await finishAuth();
+      toast.success("已使用 API token 登录 client");
+    } catch (err) {
+      clearRouterSessionTokens();
+      setError(extractErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [apiToken, busy, finishAuth]);
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10 text-foreground">
+      <div className="w-full max-w-sm rounded-lg border border-border bg-card p-5 shadow-sm">
+        <div className="mb-5">
+          <div className="text-lg font-semibold">Client Web 登录</div>
+          <div className="mt-1 text-sm text-muted-foreground">
+            使用邮箱验证码或 Router API token 访问当前 client。
+          </div>
+        </div>
+        <div className="mb-4 grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant={mode === "email" ? "default" : "outline"}
+            onClick={() => setMode("email")}
+          >
+            邮箱验证码
+          </Button>
+          <Button
+            type="button"
+            variant={mode === "token" ? "default" : "outline"}
+            onClick={() => setMode("token")}
+          >
+            API Token
+          </Button>
+        </div>
+        {mode === "email" ? (
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void (codeSent ? verifyCode() : sendCode());
+            }}
+          >
+            <Input
+              type="email"
+              value={email}
+              placeholder="owner@example.com"
+              disabled={busy || codeSent}
+              onChange={(event) => setEmail(event.currentTarget.value)}
+            />
+            {codeSent ? (
+              <Input
+                value={code}
+                placeholder="验证码"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                disabled={busy}
+                onChange={(event) => setCode(event.currentTarget.value)}
+              />
+            ) : null}
+            <Button type="submit" disabled={busy || !email.trim()}>
+              {codeSent ? "验证并登录" : "发送验证码"}
+            </Button>
+            {codeSent ? (
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => {
+                  setCodeSent(false);
+                  setCode("");
+                }}
+              >
+                更换邮箱
+              </Button>
+            ) : null}
+          </form>
+        ) : (
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void loginWithToken();
+            }}
+          >
+            <Input
+              value={apiToken}
+              placeholder="ccrt_..."
+              type="password"
+              autoComplete="off"
+              disabled={busy}
+              onChange={(event) => setApiToken(event.currentTarget.value)}
+            />
+            <Button type="submit" disabled={busy || !apiToken.trim()}>
+              登录
+            </Button>
+          </form>
+        )}
+        {error ? (
+          <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function DesktopApp() {

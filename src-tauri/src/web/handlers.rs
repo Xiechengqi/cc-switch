@@ -1,13 +1,14 @@
 use std::path::{Component, Path, PathBuf};
 
 use axum::{
+    Json,
     body::Bytes,
     extract::{Path as AxumPath, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    Json,
 };
-use serde_json::{json, Value};
+use serde::Deserialize;
+use serde_json::{Value, json};
 use tauri::Manager;
 
 use crate::{
@@ -83,6 +84,65 @@ pub async fn invoke(
             }
         }
         Err(err) => error_response(err.status, &err.message),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailCodeRequest {
+    email: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyEmailCodeRequest {
+    email: String,
+    code: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshSessionRequest {
+    refresh_token: String,
+}
+
+pub async fn request_email_code(Json(input): Json<EmailCodeRequest>) -> Response {
+    let email = input.email.trim().to_ascii_lowercase();
+    if email.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "email is required");
+    }
+    let config = current_tunnel_config();
+    match crate::email_auth::request_code(&config, &email).await {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(StatusCode::BAD_GATEWAY, &err),
+    }
+}
+
+pub async fn verify_email_code(Json(input): Json<VerifyEmailCodeRequest>) -> Response {
+    let email = input.email.trim().to_ascii_lowercase();
+    let code = input.code.trim().to_string();
+    if email.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "email is required");
+    }
+    if code.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "code is required");
+    }
+    let config = current_tunnel_config();
+    match crate::email_auth::verify_client_web_code(&config, &email, &code).await {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(StatusCode::BAD_GATEWAY, &err),
+    }
+}
+
+pub async fn refresh_session(Json(input): Json<RefreshSessionRequest>) -> Response {
+    let refresh_token = input.refresh_token.trim().to_string();
+    if refresh_token.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "refreshToken is required");
+    }
+    let config = current_tunnel_config();
+    match crate::email_auth::refresh_client_web_session(&config, &refresh_token).await {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(StatusCode::UNAUTHORIZED, &err),
     }
 }
 
@@ -239,10 +299,12 @@ async fn invoke_local_admin_scoped(
                 return Ok(json!([]));
             };
             let shares = ShareService::list(&app_state.db)?;
-            Ok(json!(shares
-                .into_iter()
-                .map(sanitize_share_for_web)
-                .collect::<Vec<_>>()))
+            Ok(json!(
+                shares
+                    .into_iter()
+                    .map(sanitize_share_for_web)
+                    .collect::<Vec<_>>()
+            ))
         }
         "get_share_detail" => {
             let share_id = string_arg(&args, "shareId")?;
@@ -472,8 +534,7 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
 }
 
 fn share_connect_info(share: &crate::database::ShareRecord) -> Value {
-    let config = crate::tunnel::config::current_tunnel_config()
-        .unwrap_or_else(crate::tunnel::config::TunnelConfig::default_public_service);
+    let config = current_tunnel_config();
     let subdomain = share
         .subdomain
         .clone()
@@ -482,6 +543,11 @@ fn share_connect_info(share: &crate::database::ShareRecord) -> Value {
         "tunnelUrl": share.tunnel_url.clone().unwrap_or_else(|| config.get_tunnel_addr(&subdomain)),
         "subdomain": subdomain,
     })
+}
+
+fn current_tunnel_config() -> crate::tunnel::config::TunnelConfig {
+    crate::tunnel::config::current_tunnel_config()
+        .unwrap_or_else(crate::tunnel::config::TunnelConfig::default_public_service)
 }
 
 fn share_settings_projection() -> Value {

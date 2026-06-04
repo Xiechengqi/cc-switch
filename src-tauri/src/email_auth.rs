@@ -273,6 +273,49 @@ pub async fn verify_code(
     })
 }
 
+pub async fn verify_client_web_code(
+    config: &crate::tunnel::config::TunnelConfig,
+    email: &str,
+    code: &str,
+) -> Result<serde_json::Value, String> {
+    let body = verify_code_with_router_endpoint(
+        config,
+        email,
+        code,
+        "/v1/client-web/auth/email/verify-code",
+    )
+    .await?;
+    serde_json::to_value(body).map_err(|e| format!("serialize email auth response failed: {e}"))
+}
+
+pub async fn refresh_client_web_session(
+    config: &crate::tunnel::config::TunnelConfig,
+    refresh_token: &str,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("create email auth client failed: {e}"))?;
+    let identity = crate::tunnel::identity::ensure_identity(&client, config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "{}/v1/auth/session/refresh",
+        config.get_server_addr().trim_end_matches('/')
+    );
+    let response = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "refreshToken": refresh_token,
+            "installationId": identity.installation_id,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("refresh email auth session failed: {e}"))?;
+    let body: RouterRefreshSessionResponse = handle_json_response(response).await?;
+    serde_json::to_value(body).map_err(|e| format!("serialize email auth response failed: {e}"))
+}
+
 pub async fn change_owner_email(
     config: &crate::tunnel::config::TunnelConfig,
     old_email: &str,
@@ -339,6 +382,15 @@ async fn verify_code_with_router(
     email: &str,
     code: &str,
 ) -> Result<RouterVerifyEmailCodeResponse, String> {
+    verify_code_with_router_endpoint(config, email, code, "/v1/auth/email/verify-code").await
+}
+
+async fn verify_code_with_router_endpoint(
+    config: &crate::tunnel::config::TunnelConfig,
+    email: &str,
+    code: &str,
+    path: &str,
+) -> Result<RouterVerifyEmailCodeResponse, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(AUTH_REQUEST_TIMEOUT_SECS))
         .build()
@@ -346,10 +398,7 @@ async fn verify_code_with_router(
     let identity = crate::tunnel::identity::ensure_identity(&client, config)
         .await
         .map_err(|e| e.to_string())?;
-    let url = format!(
-        "{}/v1/auth/email/verify-code",
-        config.get_server_addr().trim_end_matches('/')
-    );
+    let url = format!("{}{}", config.get_server_addr().trim_end_matches('/'), path);
     let response = client
         .post(&url)
         .json(&serde_json::json!({
@@ -910,7 +959,7 @@ fn create_file(path: &Path) -> Result<fs::File, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{humanize_remote_owner_binding_error, EmailAuthState};
+    use super::{EmailAuthState, humanize_remote_owner_binding_error};
 
     #[test]
     fn humanize_remote_owner_binding_error_maps_expired_proof() {

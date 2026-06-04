@@ -9,24 +9,24 @@
 //! a direct (non-proxied) CLI request.
 
 use super::{
+    ProxyError,
     failover_switch::FailoverSwitchManager,
     handlers,
     log_codes::srv as log_srv,
     provider_router::ProviderRouter,
     providers::{codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore},
     types::*,
-    ProxyError,
 };
 use crate::database::Database;
 use axum::{
+    Router,
     extract::DefaultBodyLimit,
     routing::{any, get, post},
-    Router,
 };
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{RwLock, oneshot};
 use tokio::task::JoinHandle;
 
 /// 代理服务器状态（共享）
@@ -292,6 +292,18 @@ impl ProxyServer {
             .route("/favicon.ico", get(crate::web::handlers::serve_favicon))
             .route("/assets/*path", get(crate::web::handlers::serve_asset))
             .route("/web-api/context", get(crate::web::handlers::context))
+            .route(
+                "/web-api/auth/email/request-code",
+                post(crate::web::handlers::request_email_code),
+            )
+            .route(
+                "/web-api/auth/email/verify-code",
+                post(crate::web::handlers::verify_email_code),
+            )
+            .route(
+                "/web-api/auth/session/refresh",
+                post(crate::web::handlers::refresh_session),
+            )
             .route(
                 "/web-api/invoke/:command",
                 post(crate::web::handlers::invoke),

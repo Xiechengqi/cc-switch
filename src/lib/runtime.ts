@@ -1,3 +1,5 @@
+import { routerAuthFetch } from "@/lib/routerAuth";
+
 export type RuntimeMode = "tauri" | "web";
 
 export function isTauriRuntime(): boolean {
@@ -17,7 +19,7 @@ export async function invokeCommand<T>(
     return invoke<T>(command, args);
   }
 
-  const response = await fetch(`/web-api/invoke/${encodeURIComponent(command)}`, {
+  const response = await routerAuthFetch(`/web-api/invoke/${encodeURIComponent(command)}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -46,7 +48,7 @@ export async function invokeCommand<T>(
 }
 
 export interface WebRuntimeContext {
-  mode: "local-admin" | "share";
+  mode: "local-admin" | "share" | "client-login";
   shareId?: string;
   shareName?: string;
   subdomain?: string | null;
@@ -59,9 +61,12 @@ export async function getWebRuntimeContext(): Promise<WebRuntimeContext> {
   if (isTauriRuntime()) {
     return { mode: "local-admin" };
   }
-  const response = await fetch("/web-api/context", {
+  const response = await routerAuthFetch("/web-api/context", {
     headers: { accept: "application/json" },
   });
+  if (response.status === 401 || response.status === 403) {
+    return { mode: "client-login" };
+  }
   if (!response.ok) {
     throw new Error(await response.text());
   }

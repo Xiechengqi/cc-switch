@@ -1305,6 +1305,9 @@ async fn managed_auth_command(
     let kiro = required_state::<KiroOAuthState>(state, "kiro oauth")?;
     let cursor = required_state::<CursorOAuthState>(state, "cursor oauth")?;
     let auth_provider = string_arg(&args, "authProvider")?;
+    if command == "auth_start_login" && is_local_callback_auth_provider(&auth_provider) {
+        return Err(WebError::bad_request(local_callback_auth_blocked_message()));
+    }
 
     match command {
         "auth_list_accounts" => Ok(json!(crate::commands::auth_list_accounts(
@@ -1409,6 +1412,17 @@ async fn managed_auth_command(
             "managed auth web command is not exposed: {command}"
         ))),
     }
+}
+
+fn is_local_callback_auth_provider(auth_provider: &str) -> bool {
+    matches!(
+        auth_provider,
+        "claude_oauth" | "google_gemini_oauth" | "antigravity_oauth"
+    )
+}
+
+fn local_callback_auth_blocked_message() -> &'static str {
+    "当前通过 client URL 访问，无法添加需要 localhost 回调的 OAuth 账号。请在 cc-switch 桌面端本机添加该账号后再回到 client URL 使用。Codex/Copilot/Kiro/Cursor 等非 localhost 回调登录不受影响。"
 }
 
 async fn copilot_command(

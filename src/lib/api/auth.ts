@@ -1,4 +1,4 @@
-import { invokeCommand } from "@/lib/runtime";
+import { invokeCommand, isTauriRuntime } from "@/lib/runtime";
 
 export type ManagedAuthProvider =
   | "github_copilot"
@@ -51,10 +51,53 @@ export interface ManagedAuthDeviceCodeResponse {
   interval: number;
 }
 
+const LOCAL_CALLBACK_AUTH_PROVIDERS = new Set<ManagedAuthProvider>([
+  "claude_oauth",
+  "google_gemini_oauth",
+  "antigravity_oauth",
+]);
+
+function isLoopbackHostname(hostname: string): boolean {
+  const value = hostname.trim().toLowerCase();
+  return (
+    value === "localhost" ||
+    value.endsWith(".localhost") ||
+    value === "127.0.0.1" ||
+    value === "0.0.0.0" ||
+    value === "::1" ||
+    value === "[::1]"
+  );
+}
+
+export function isLocalCallbackAuthProvider(
+  authProvider: ManagedAuthProvider,
+): boolean {
+  return LOCAL_CALLBACK_AUTH_PROVIDERS.has(authProvider);
+}
+
+export function shouldBlockLocalCallbackAuthInClientWeb(
+  authProvider: ManagedAuthProvider,
+): boolean {
+  if (!isLocalCallbackAuthProvider(authProvider) || isTauriRuntime()) {
+    return false;
+  }
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return !isLoopbackHostname(window.location.hostname);
+}
+
+export function localCallbackAuthBlockedMessage(): string {
+  return "当前通过 client URL 访问，无法添加需要 localhost 回调的 OAuth 账号。请在 cc-switch 桌面端本机添加该账号后再回到 client URL 使用。Codex/Copilot/Kiro/Cursor 等非 localhost 回调登录不受影响。";
+}
+
 export async function authStartLogin(
   authProvider: ManagedAuthProvider,
   githubDomain?: string,
 ): Promise<ManagedAuthDeviceCodeResponse> {
+  if (shouldBlockLocalCallbackAuthInClientWeb(authProvider)) {
+    throw new Error(localCallbackAuthBlockedMessage());
+  }
   return invokeCommand<ManagedAuthDeviceCodeResponse>("auth_start_login", {
     authProvider,
     githubDomain: githubDomain || null,

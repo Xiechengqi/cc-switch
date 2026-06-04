@@ -35,6 +35,9 @@ export type {
   ShareTunnelStatus,
   TunnelConfig,
   ConnectInfo,
+  ClientTunnelConfig,
+  ClientTunnelState,
+  ClientTunnelUpdateParams,
 } from "./share";
 export {
   SHARE_APP_TYPES,

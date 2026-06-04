@@ -113,7 +113,9 @@ const EMPTY_MARKETS: PublicMarket[] = [];
  *  - 跨设备同毫秒并发：前缀通常不同（不同 owner email）。
  *  - email 完全没有可用字母时（如 `123@x.com`）回退到 `s` 占位前缀。
  */
-export function deriveSubdomainFromEmail(email: string | null | undefined): string {
+export function deriveSubdomainFromEmail(
+  email: string | null | undefined,
+): string {
   const local = (email ?? "").split("@")[0] ?? "";
   const filtered = local.toLowerCase().replace(/[^a-z]/g, "");
   const prefix =
@@ -184,14 +186,20 @@ export function CreateShareDialog({
 
   const form = useForm<CreateShareFormInput, unknown, CreateShareFormValues>({
     resolver: zodResolver(createShareSchema),
-    defaultValues: buildDefaultValues(ownerEmail ?? "", defaultApp, providersByApp),
+    defaultValues: buildDefaultValues(
+      ownerEmail ?? "",
+      defaultApp,
+      providersByApp,
+    ),
   });
 
   useEffect(() => {
     if (!open) return;
     setOwnerEmailInput(ownerEmail ?? "");
     setRouterDomain(tunnelConfig.domain);
-    form.reset(buildDefaultValues(ownerEmail ?? "", defaultApp, providersByApp));
+    form.reset(
+      buildDefaultValues(ownerEmail ?? "", defaultApp, providersByApp),
+    );
     setIsPermanent(true);
     setLastFiniteTokenLimit(DEFAULT_TOKEN_LIMIT_FALLBACK);
     setLastFiniteParallelLimit(DEFAULT_PARALLEL_LIMIT);
@@ -227,6 +235,18 @@ export function CreateShareDialog({
   const ownerEmailInvalid =
     !normalizedOwnerEmail ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedOwnerEmail);
+  const defaultShareApp = toShareAppType(defaultApp);
+  const defaultProviderId =
+    (form.watch(`bindings.${defaultShareApp}` as const) as
+      | string
+      | undefined) ?? "";
+  const defaultProvider = (providersByApp?.[defaultShareApp] ?? []).find(
+    (provider) => provider.id === defaultProviderId,
+  );
+  const defaultProviderLabel =
+    defaultProvider?.name ||
+    defaultProviderId ||
+    t("share.unbound", { defaultValue: "未绑定" });
 
   const expandAdvanced = () => {
     setAdvancedExpanded(true);
@@ -246,9 +266,11 @@ export function CreateShareDialog({
         ownerEmail: normalizedOwnerEmail,
         // P8：把空字符串过滤掉，只发用户真的选了的 slot。
         bindings: Object.fromEntries(
-          (Object.entries(values.bindings ?? {}) as Array<
-            [keyof ShareBindings, string]
-          >).filter(([, pid]) => pid && pid.length > 0),
+          (
+            Object.entries(values.bindings ?? {}) as Array<
+              [keyof ShareBindings, string]
+            >
+          ).filter(([, pid]) => pid && pid.length > 0),
         ),
         description: values.description || undefined,
         forSale: values.forSale,
@@ -290,6 +312,7 @@ export function CreateShareDialog({
         tokenLimit,
         parallelLimit,
         subdomain: subdomainValue,
+        providerBinding: `${defaultShareApp} · ${defaultProviderLabel}`,
       }),
     [
       t,
@@ -301,6 +324,8 @@ export function CreateShareDialog({
       tokenLimit,
       parallelLimit,
       subdomainValue,
+      defaultShareApp,
+      defaultProviderLabel,
     ],
   );
 
@@ -355,102 +380,40 @@ export function CreateShareDialog({
             <div className="text-xs text-muted-foreground">
               {t("share.providerBindingsHint", {
                 defaultValue:
-                  "为每个 app 独立挑一个 provider，留空 = 该 app 在本 share 上不可用。至少绑一个，否则 share 没意义。",
+                  "默认绑定当前 App 选中的 Provider。需要让同一个 share 支持多个 App 时，再进入高级设置独立配置。",
               })}
             </div>
-            <div className="grid gap-2">
-              {SHARE_APP_TYPES.map((app) => {
-                const candidates = providersByApp?.[app] ?? [];
-                const fieldKey = `bindings.${app}` as const;
-                const value = (form.watch(fieldKey) as string | undefined) ?? "";
-                return (
-                  <div
-                    key={app}
-                    className="grid gap-1 rounded-md border border-default/50 p-2"
-                  >
-                    <div className="flex items-center justify-between text-xs font-medium uppercase text-muted-foreground">
-                      <span>{app}</span>
-                      {value ? (
-                        <Badge variant="outline" className="text-[10px]">
-                          {t("share.bound", { defaultValue: "已绑定" })}
-                        </Badge>
-                      ) : (
-                        <Badge
-                          variant="outline"
-                          className="text-[10px] text-muted-foreground"
-                        >
-                          {t("share.unbound", { defaultValue: "未绑定" })}
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Select
-                        value={value || undefined}
-                        onValueChange={(next) =>
-                          form.setValue(fieldKey, next, {
-                            shouldValidate: true,
-                            shouldDirty: true,
-                          })
-                        }
-                      >
-                        <SelectTrigger
-                          id={`share-create-provider-${app}`}
-                          className="flex-1"
-                        >
-                          <SelectValue
-                            placeholder={t("share.providerBindingPlaceholder", {
-                              defaultValue: `为 ${app} 选一个 provider`,
-                            })}
-                          />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {candidates.length === 0 ? (
-                            <SelectItem value="__empty__" disabled>
-                              {t("share.providerBindingEmpty", {
-                                defaultValue: `{{app}} 下没有可绑定的 provider`,
-                                app,
-                              })}
-                            </SelectItem>
-                          ) : (
-                            candidates.map((provider) => (
-                              <SelectItem
-                                key={provider.id}
-                                value={provider.id}
-                                disabled={provider.disabled}
-                              >
-                                {provider.name}
-                                {provider.disabled
-                                  ? ` · ${t("share.providerBindingTaken", {
-                                      defaultValue: "已被其他 share 绑定",
-                                    })}`
-                                  : ""}
-                              </SelectItem>
-                            ))
-                          )}
-                        </SelectContent>
-                      </Select>
-                      {value ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() =>
-                            form.setValue(fieldKey, "", {
-                              shouldValidate: true,
-                              shouldDirty: true,
-                            })
-                          }
-                          title={t("share.providerBindingClear", {
-                            defaultValue: "清空（解绑）",
-                          })}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      ) : null}
-                    </div>
+            <div className="rounded-md border border-default/50 bg-muted/10 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium uppercase text-muted-foreground">
+                    {defaultShareApp}
                   </div>
-                );
-              })}
+                  <div className="mt-1 truncate text-sm font-medium">
+                    {defaultProviderLabel}
+                  </div>
+                </div>
+                {defaultProviderId ? (
+                  <Badge variant="outline" className="text-[10px]">
+                    {t("share.bound", { defaultValue: "已绑定" })}
+                  </Badge>
+                ) : (
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] text-muted-foreground"
+                  >
+                    {t("share.unbound", { defaultValue: "未绑定" })}
+                  </Badge>
+                )}
+              </div>
+              {!defaultProviderId ? (
+                <div className="mt-2 text-xs text-destructive">
+                  {t("share.providerBindingEmptyCurrent", {
+                    defaultValue:
+                      "当前 App 没有可自动绑定的 Provider。请先添加 Provider，或进入高级设置选择其它 App。",
+                  })}
+                </div>
+              ) : null}
             </div>
             {form.formState.errors.bindings ? (
               <div className="text-xs text-destructive">
@@ -511,9 +474,7 @@ export function CreateShareDialog({
               type="button"
               className="flex w-full items-center justify-between gap-2 px-3 py-2 text-sm font-medium"
               onClick={() =>
-                advancedExpanded
-                  ? setAdvancedExpanded(false)
-                  : expandAdvanced()
+                advancedExpanded ? setAdvancedExpanded(false) : expandAdvanced()
               }
               aria-expanded={advancedExpanded}
               aria-controls="share-create-advanced"
@@ -539,6 +500,124 @@ export function CreateShareDialog({
                 id="share-create-advanced"
                 className="grid gap-3 border-t border-border-default px-3 py-3 md:grid-cols-2"
               >
+                <div className="space-y-2 md:col-span-2">
+                  <div>
+                    <Label>
+                      {t("share.providerBindingsAdvanced", {
+                        defaultValue: "按 App 独立绑定 Provider",
+                      })}
+                    </Label>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {t("share.providerBindingsAdvancedHint", {
+                        defaultValue:
+                          "每个 App 最多绑定一个 Provider；留空表示该 App 在本 share 上不可用。",
+                      })}
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    {SHARE_APP_TYPES.map((app) => {
+                      const candidates = providersByApp?.[app] ?? [];
+                      const fieldKey = `bindings.${app}` as const;
+                      const value =
+                        (form.watch(fieldKey) as string | undefined) ?? "";
+                      return (
+                        <div
+                          key={app}
+                          className="grid gap-1 rounded-md border border-default/50 p-2"
+                        >
+                          <div className="flex items-center justify-between text-xs font-medium uppercase text-muted-foreground">
+                            <span>{app}</span>
+                            {value ? (
+                              <Badge variant="outline" className="text-[10px]">
+                                {t("share.bound", { defaultValue: "已绑定" })}
+                              </Badge>
+                            ) : (
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] text-muted-foreground"
+                              >
+                                {t("share.unbound", { defaultValue: "未绑定" })}
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Select
+                              value={value || undefined}
+                              onValueChange={(next) =>
+                                form.setValue(fieldKey, next, {
+                                  shouldValidate: true,
+                                  shouldDirty: true,
+                                })
+                              }
+                            >
+                              <SelectTrigger
+                                id={`share-create-provider-${app}`}
+                                className="flex-1"
+                              >
+                                <SelectValue
+                                  placeholder={t(
+                                    "share.providerBindingPlaceholder",
+                                    {
+                                      defaultValue: `为 ${app} 选一个 provider`,
+                                    },
+                                  )}
+                                />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {candidates.length === 0 ? (
+                                  <SelectItem value="__empty__" disabled>
+                                    {t("share.providerBindingEmpty", {
+                                      defaultValue: `{{app}} 下没有可绑定的 provider`,
+                                      app,
+                                    })}
+                                  </SelectItem>
+                                ) : (
+                                  candidates.map((provider) => (
+                                    <SelectItem
+                                      key={provider.id}
+                                      value={provider.id}
+                                      disabled={provider.disabled}
+                                    >
+                                      {provider.name}
+                                      {provider.disabled
+                                        ? ` · ${t(
+                                            "share.providerBindingTaken",
+                                            {
+                                              defaultValue:
+                                                "已被其他 share 绑定",
+                                            },
+                                          )}`
+                                        : ""}
+                                    </SelectItem>
+                                  ))
+                                )}
+                              </SelectContent>
+                            </Select>
+                            {value ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() =>
+                                  form.setValue(fieldKey, "", {
+                                    shouldValidate: true,
+                                    shouldDirty: true,
+                                  })
+                                }
+                                title={t("share.providerBindingClear", {
+                                  defaultValue: "清空（解绑）",
+                                })}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="space-y-1.5">
                   <Label htmlFor="share-for-sale">{t("share.forSale")}</Label>
                   <Select
@@ -606,7 +685,9 @@ export function CreateShareDialog({
                   </Label>
                   <div className="flex flex-wrap items-center gap-2">
                     <Select
-                      value={marketAccessMode === "all" ? "__all__" : "__selected__"}
+                      value={
+                        marketAccessMode === "all" ? "__all__" : "__selected__"
+                      }
                       onValueChange={(value) => {
                         form.setValue(
                           "marketAccessMode",
@@ -722,7 +803,10 @@ export function CreateShareDialog({
                         onCheckedChange={(checked) => {
                           const next = checked === true;
                           if (next) {
-                            if (typeof tokenLimit === "number" && tokenLimit > 0) {
+                            if (
+                              typeof tokenLimit === "number" &&
+                              tokenLimit > 0
+                            ) {
                               setLastFiniteTokenLimit(tokenLimit);
                             }
                             form.setValue("tokenLimit", UNLIMITED_TOKEN_LIMIT, {
@@ -880,7 +964,9 @@ export function CreateShareDialog({
               <ul className="mt-1 grid gap-0.5 md:grid-cols-2">
                 {summary.map((line) => (
                   <li key={line.key}>
-                    <span className="text-muted-foreground">{line.label}：</span>
+                    <span className="text-muted-foreground">
+                      {line.label}：
+                    </span>
                     <span>{line.value}</span>
                   </li>
                 ))}
@@ -927,7 +1013,7 @@ export function CreateShareDialog({
         })}
         message={[
           t("share.createDialog.defaultsConfirm.body", {
-            defaultValue: "你未展开 \"高级设置\"，将按以下默认值创建：",
+            defaultValue: '你未展开 "高级设置"，将按以下默认值创建：',
           }),
           "",
           ...summary.map((line) => `• ${line.label}：${line.value}`),
@@ -974,9 +1060,15 @@ function buildDefaultsSummary(
     tokenLimit: number;
     parallelLimit: number;
     subdomain: string;
+    providerBinding: string;
   },
 ): SummaryLine[] {
   const lines: SummaryLine[] = [
+    {
+      key: "providerBinding",
+      label: t("share.providerBindings", { defaultValue: "Provider 绑定" }),
+      value: values.providerBinding,
+    },
     {
       key: "autoStart",
       label: t("share.autoStart"),
@@ -1026,7 +1118,9 @@ function buildDefaultsSummary(
       label: t("share.subdomain"),
       value: values.subdomain.trim()
         ? values.subdomain.trim()
-        : t("share.createDialog.subdomainAuto", { defaultValue: "(由后端生成)" }),
+        : t("share.createDialog.subdomainAuto", {
+            defaultValue: "(由后端生成)",
+          }),
     },
   ];
   return lines;

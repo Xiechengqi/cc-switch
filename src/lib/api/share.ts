@@ -192,6 +192,25 @@ export interface ConnectInfo {
   subdomain: string;
 }
 
+export interface ClientTunnelConfig {
+  ownerEmail: string;
+  subdomain: string;
+  enabled: boolean;
+  autoStart: boolean;
+  tunnelUrl?: string | null;
+}
+
+export interface ClientTunnelState {
+  config: ClientTunnelConfig;
+  status: ShareTunnelStatus;
+}
+
+export interface ClientTunnelUpdateParams {
+  subdomain: string;
+  enabled: boolean;
+  autoStart: boolean;
+}
+
 async function create(params: CreateShareParams): Promise<ShareRecord> {
   return invokeCommand<ShareRecord>("create_share", { params });
 }
@@ -358,6 +377,34 @@ async function configureTunnel(config: TunnelConfig): Promise<void> {
   return invokeCommand("configure_tunnel", { config });
 }
 
+async function getClientTunnel(): Promise<ClientTunnelState> {
+  return invokeCommand<ClientTunnelState>("get_client_tunnel");
+}
+
+async function claimClientTunnel(
+  params: ClientTunnelUpdateParams,
+): Promise<ClientTunnelState> {
+  return invokeCommand<ClientTunnelState>("claim_client_tunnel", { params });
+}
+
+async function updateClientTunnel(
+  params: ClientTunnelUpdateParams,
+): Promise<ClientTunnelState> {
+  return invokeCommand<ClientTunnelState>("update_client_tunnel", { params });
+}
+
+async function startClientTunnel(): Promise<TunnelInfo> {
+  return invokeCommand<TunnelInfo>("start_client_tunnel");
+}
+
+async function stopClientTunnel(): Promise<void> {
+  return invokeCommand("stop_client_tunnel");
+}
+
+async function getClientTunnelStatus(): Promise<ShareTunnelStatus> {
+  return invokeCommand<ShareTunnelStatus>("get_client_tunnel_status");
+}
+
 export const shareApi = {
   create,
   delete: remove,
@@ -390,6 +437,12 @@ export const shareApi = {
   getTunnelStatus,
   getConnectInfo,
   configureTunnel,
+  getClientTunnel,
+  claimClientTunnel,
+  updateClientTunnel,
+  startClientTunnel,
+  stopClientTunnel,
+  getClientTunnelStatus,
 };
 
 export const createShare = create;

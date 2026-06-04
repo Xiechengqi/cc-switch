@@ -352,6 +352,8 @@ pub struct AppSettings {
     // ===== Token 分享（share router 内网穿透）=====
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_router_domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_tunnel: Option<ClientTunnelSettings>,
 
     // ===== 本机自动迁移状态 =====
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -421,9 +423,31 @@ impl Default for AppSettings {
             backup_retain_count: None,
             preferred_terminal: None,
             share_router_domain: None,
+            client_tunnel: None,
             local_migrations: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTunnelSettings {
+    pub owner_email: String,
+    pub subdomain: String,
+    #[serde(default = "default_client_tunnel_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_client_tunnel_auto_start")]
+    pub auto_start: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_url: Option<String>,
+}
+
+fn default_client_tunnel_enabled() -> bool {
+    true
+}
+
+fn default_client_tunnel_auto_start() -> bool {
+    true
 }
 
 impl AppSettings {
@@ -490,6 +514,14 @@ impl AppSettings {
             sync.normalize();
             if sync.is_empty() {
                 self.webdav_sync = None;
+            }
+        }
+
+        if let Some(client_tunnel) = &mut self.client_tunnel {
+            client_tunnel.owner_email = client_tunnel.owner_email.trim().to_ascii_lowercase();
+            client_tunnel.subdomain = client_tunnel.subdomain.trim().to_ascii_lowercase();
+            if client_tunnel.owner_email.is_empty() || client_tunnel.subdomain.is_empty() {
+                self.client_tunnel = None;
             }
         }
     }

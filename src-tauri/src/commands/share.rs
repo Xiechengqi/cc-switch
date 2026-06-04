@@ -137,6 +137,39 @@ pub struct ConnectInfo {
     pub subdomain: String,
 }
 
+const CLIENT_TUNNEL_ID: &str = "__client_web__";
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTunnelSettingsView {
+    pub owner_email: String,
+    pub subdomain: String,
+    pub enabled: bool,
+    pub auto_start: bool,
+    pub tunnel_url: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTunnelState {
+    pub config: ClientTunnelSettingsView,
+    pub status: ShareTunnelStatus,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTunnelUpdateParams {
+    pub subdomain: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_start: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[tauri::command]
 pub async fn create_share(
     state: State<'_, AppState>,
@@ -745,6 +778,311 @@ pub async fn get_tunnel_status(
         info,
         last_error,
     })
+}
+
+#[tauri::command]
+pub async fn get_client_tunnel(state: State<'_, AppState>) -> Result<ClientTunnelState, String> {
+    let config = load_or_default_client_tunnel_config().await?;
+    let status = client_tunnel_status(state.inner()).await;
+    Ok(ClientTunnelState { config, status })
+}
+
+#[tauri::command]
+pub async fn claim_client_tunnel(
+    state: State<'_, AppState>,
+    params: ClientTunnelUpdateParams,
+) -> Result<ClientTunnelState, String> {
+    write_client_tunnel_config(state.inner(), params, true).await
+}
+
+#[tauri::command]
+pub async fn update_client_tunnel(
+    state: State<'_, AppState>,
+    params: ClientTunnelUpdateParams,
+) -> Result<ClientTunnelState, String> {
+    write_client_tunnel_config(state.inner(), params, false).await
+}
+
+#[tauri::command]
+pub async fn start_client_tunnel(state: State<'_, AppState>) -> Result<TunnelInfo, String> {
+    start_client_tunnel_with_error_tracking(state.inner())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn stop_client_tunnel(state: State<'_, AppState>) -> Result<(), String> {
+    let mut mgr = state.tunnel_manager.write().await;
+    if mgr.get_info(CLIENT_TUNNEL_ID).is_some() {
+        mgr.stop_tunnel(CLIENT_TUNNEL_ID)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_client_tunnel_status(
+    state: State<'_, AppState>,
+) -> Result<ShareTunnelStatus, String> {
+    Ok(client_tunnel_status(state.inner()).await)
+}
+
+pub async fn restore_client_tunnel(state: &AppState) -> Result<(), AppError> {
+    let settings = crate::settings::get_settings();
+    let Some(config) = settings.client_tunnel else {
+        return Ok(());
+    };
+    if !config.enabled || !config.auto_start {
+        return Ok(());
+    }
+    let already_running = {
+        let mgr = state.tunnel_manager.read().await;
+        mgr.get_info(CLIENT_TUNNEL_ID).is_some()
+    };
+    if already_running {
+        return Ok(());
+    }
+    if let Err(err) = start_client_tunnel_with_error_tracking(state).await {
+        log::warn!("[Share] Failed to restore client tunnel: {err}");
+    }
+    Ok(())
+}
+
+async fn write_client_tunnel_config(
+    state: &AppState,
+    params: ClientTunnelUpdateParams,
+    claim: bool,
+) -> Result<ClientTunnelState, String> {
+    let owner_email = installation_owner_email().await?;
+    let subdomain = normalize_subdomain(&params.subdomain)?;
+    let local_config = ClientTunnelSettingsView {
+        owner_email: owner_email.clone(),
+        subdomain: subdomain.clone(),
+        enabled: params.enabled,
+        auto_start: params.auto_start,
+        tunnel_url: Some(current_tunnel_config().get_tunnel_addr(&subdomain)),
+    };
+    let router_config = current_tunnel_config();
+    let http_client = reqwest::Client::new();
+    let remote_claim = crate::tunnel::connection::ClientTunnelClaim {
+        owner_email: owner_email.clone(),
+        subdomain: subdomain.clone(),
+        enabled: params.enabled,
+    };
+    let remote = if claim {
+        crate::tunnel::connection::claim_client_tunnel(&http_client, &router_config, &remote_claim)
+            .await
+    } else {
+        crate::tunnel::connection::update_client_tunnel(&http_client, &router_config, &remote_claim)
+            .await
+    }
+    .map_err(|e| crate::email_auth::humanize_remote_owner_binding_error(&e.to_string()))?;
+
+    let saved = ClientTunnelSettingsView {
+        tunnel_url: Some(remote.tunnel_url),
+        ..local_config
+    };
+    save_client_tunnel_settings(&saved)?;
+
+    if saved.enabled && saved.auto_start {
+        if let Err(err) = start_client_tunnel_with_error_tracking(state).await {
+            log::warn!("[Share] start client tunnel after save failed: {err}");
+        }
+    } else {
+        let mut mgr = state.tunnel_manager.write().await;
+        if mgr.get_info(CLIENT_TUNNEL_ID).is_some() {
+            let _ = mgr.stop_tunnel(CLIENT_TUNNEL_ID).await;
+        }
+    }
+
+    Ok(ClientTunnelState {
+        config: saved,
+        status: client_tunnel_status(state).await,
+    })
+}
+
+async fn start_client_tunnel_with_error_tracking(state: &AppState) -> Result<TunnelInfo, AppError> {
+    match start_client_tunnel_inner(state).await {
+        Ok(info) => {
+            state
+                .tunnel_manager
+                .write()
+                .await
+                .clear_last_error(CLIENT_TUNNEL_ID);
+            Ok(info)
+        }
+        Err(err) => {
+            state
+                .tunnel_manager
+                .write()
+                .await
+                .set_last_error(CLIENT_TUNNEL_ID, err.to_string());
+            Err(err)
+        }
+    }
+}
+
+async fn start_client_tunnel_inner(state: &AppState) -> Result<TunnelInfo, AppError> {
+    let config = load_or_default_client_tunnel_config()
+        .await
+        .map_err(AppError::Message)?;
+    if !config.enabled {
+        return Err(AppError::Message("client tunnel is disabled".into()));
+    }
+    let router_config = current_tunnel_config();
+    let http_client = reqwest::Client::new();
+    crate::tunnel::connection::claim_client_tunnel(
+        &http_client,
+        &router_config,
+        &crate::tunnel::connection::ClientTunnelClaim {
+            owner_email: config.owner_email.clone(),
+            subdomain: config.subdomain.clone(),
+            enabled: true,
+        },
+    )
+    .await
+    .map_err(|e| {
+        AppError::Message(crate::email_auth::humanize_remote_owner_binding_error(
+            &e.to_string(),
+        ))
+    })?;
+
+    let local_addr = current_proxy_local_addr(state).await?;
+    ensure_proxy_reachable(&local_addr).await?;
+    {
+        let mut mgr = state.tunnel_manager.write().await;
+        if mgr.get_info(CLIENT_TUNNEL_ID).is_some() {
+            mgr.stop_tunnel(CLIENT_TUNNEL_ID)
+                .await
+                .map_err(|e| AppError::Message(e.to_string()))?;
+        }
+        let info = mgr
+            .start_tunnel(
+                CLIENT_TUNNEL_ID,
+                TunnelRequest {
+                    tunnel_type: TunnelType::ClientWebHttp,
+                    subdomain: config.subdomain.clone(),
+                    local_addr,
+                    share_metadata: None,
+                },
+                state.db.clone(),
+            )
+            .await
+            .map_err(|e| AppError::Message(e.to_string()))?;
+        let mut saved = config;
+        saved.tunnel_url = Some(info.tunnel_url.clone());
+        save_client_tunnel_settings(&saved).map_err(AppError::Message)?;
+        Ok(info)
+    }
+}
+
+async fn client_tunnel_status(state: &AppState) -> ShareTunnelStatus {
+    let mgr = state.tunnel_manager.read().await;
+    ShareTunnelStatus {
+        info: mgr.get_info(CLIENT_TUNNEL_ID),
+        last_error: mgr.get_last_error(CLIENT_TUNNEL_ID),
+        requires_owner_login: false,
+    }
+}
+
+async fn load_or_default_client_tunnel_config() -> Result<ClientTunnelSettingsView, String> {
+    let settings = crate::settings::get_settings();
+    if let Some(config) = settings.client_tunnel {
+        return Ok(ClientTunnelSettingsView {
+            owner_email: config.owner_email,
+            subdomain: config.subdomain,
+            enabled: config.enabled,
+            auto_start: config.auto_start,
+            tunnel_url: config.tunnel_url,
+        });
+    }
+    let owner_email = installation_owner_email().await?;
+    let subdomain = format!("app-{}", derive_subdomain_from_email(&owner_email));
+    Ok(ClientTunnelSettingsView {
+        owner_email,
+        subdomain: normalize_subdomain(&subdomain)?,
+        enabled: true,
+        auto_start: true,
+        tunnel_url: None,
+    })
+}
+
+fn save_client_tunnel_settings(config: &ClientTunnelSettingsView) -> Result<(), String> {
+    let mut settings = crate::settings::get_settings();
+    settings.client_tunnel = Some(crate::settings::ClientTunnelSettings {
+        owner_email: config.owner_email.clone(),
+        subdomain: config.subdomain.clone(),
+        enabled: config.enabled,
+        auto_start: config.auto_start,
+        tunnel_url: config.tunnel_url.clone(),
+    });
+    crate::settings::update_settings(settings).map_err(|e| e.to_string())
+}
+
+async fn installation_owner_email() -> Result<String, String> {
+    let config = current_tunnel_config();
+    let owner = crate::email_auth::fetch_remote_owner_binding(&config)
+        .await?
+        .ok_or_else(|| "client tunnel requires a verified installation owner email".to_string())?;
+    normalize_owner_email(&owner)
+}
+
+fn derive_subdomain_from_email(email: &str) -> String {
+    let local = email.split('@').next().unwrap_or_default();
+    let filtered: String = local
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .map(|ch| ch.to_ascii_lowercase())
+        .take(10)
+        .collect();
+    let prefix = if filtered.is_empty() {
+        "s".to_string()
+    } else {
+        filtered
+    };
+    let suffix = chrono::Utc::now().timestamp_millis().max(0);
+    format!("{prefix}-{}", base36_suffix(suffix as u64, 5))
+}
+
+fn base36_suffix(mut value: u64, len: usize) -> String {
+    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut buf = Vec::new();
+    loop {
+        buf.push(ALPHABET[(value % 36) as usize] as char);
+        value /= 36;
+        if value == 0 {
+            break;
+        }
+    }
+    while buf.len() < len {
+        buf.push('0');
+    }
+    let full = buf.iter().rev().collect::<String>();
+    full.chars()
+        .rev()
+        .take(len)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
+}
+
+fn normalize_subdomain(value: &str) -> Result<String, String> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.len() < 3 || value.len() > 63 {
+        return Err("subdomain 长度必须在 3-63 之间".to_string());
+    }
+    if value.starts_with('-') || value.ends_with('-') {
+        return Err("subdomain 不能以 - 开头或结尾".to_string());
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    {
+        return Err("subdomain 只能包含小写字母、数字和 -".to_string());
+    }
+    Ok(value)
 }
 
 #[tauri::command]

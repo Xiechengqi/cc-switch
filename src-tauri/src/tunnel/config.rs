@@ -124,6 +124,7 @@ pub struct TunnelRequest {
 #[serde(rename_all = "lowercase")]
 pub enum TunnelType {
     Http,
+    ClientWebHttp,
     Tcp,
 }
 
@@ -131,8 +132,13 @@ impl TunnelType {
     pub fn as_str(&self) -> &'static str {
         match self {
             TunnelType::Http => "http",
+            TunnelType::ClientWebHttp => "client-web-http",
             TunnelType::Tcp => "tcp",
         }
+    }
+
+    pub fn is_http_like(&self) -> bool {
+        matches!(self, TunnelType::Http | TunnelType::ClientWebHttp)
     }
 }
 

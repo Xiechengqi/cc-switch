@@ -119,7 +119,7 @@ impl TunnelManager {
 
         // 3. Start health check (HTTP only)
         let (reconnect_tx, reconnect_rx) = mpsc::channel(1);
-        let health_task = if req.tunnel_type == TunnelType::Http {
+        let health_task = if req.tunnel_type.is_http_like() {
             let checker = HealthChecker::new(
                 config.clone(),
                 req.subdomain.clone(),

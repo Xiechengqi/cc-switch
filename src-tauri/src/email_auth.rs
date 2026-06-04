@@ -415,7 +415,7 @@ pub async fn session_me() -> Result<EmailSessionMeResponse, String> {
     })
 }
 
-async fn fetch_remote_owner_binding(
+pub(crate) async fn fetch_remote_owner_binding(
     config: &crate::tunnel::config::TunnelConfig,
 ) -> Result<Option<String>, String> {
     fetch_remote_owner_binding_inner(config, true).await

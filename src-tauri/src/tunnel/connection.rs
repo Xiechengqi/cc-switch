@@ -2,6 +2,7 @@ use super::config::{ShareTunnelMetadata, TunnelConfig, TunnelType};
 use super::error::TunnelError;
 use super::identity;
 use serde::Deserialize;
+use serde::Serialize;
 use tokio::time::sleep;
 
 const SHARE_ROUTER_REQUEST_TIMEOUT_SECS: u64 = 20;
@@ -23,6 +24,36 @@ pub struct LeaseResponse {
 #[derive(Deserialize)]
 struct ErrorResponse {
     message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTunnelClaim {
+    pub owner_email: String,
+    pub subdomain: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTunnelView {
+    pub installation_id: String,
+    pub owner_email: String,
+    pub subdomain: String,
+    pub enabled: bool,
+    pub tunnel_url: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTunnelResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub tunnel: Option<ClientTunnelView>,
 }
 
 async fn read_error_message(resp: reqwest::Response) -> String {
@@ -80,6 +111,95 @@ pub async fn issue_lease(
     share_metadata: Option<ShareTunnelMetadata>,
 ) -> Result<LeaseResponse, TunnelError> {
     issue_lease_inner(client, config, tunnel_type, subdomain, share_metadata, true).await
+}
+
+pub async fn claim_client_tunnel(
+    client: &reqwest::Client,
+    config: &TunnelConfig,
+    claim: &ClientTunnelClaim,
+) -> Result<ClientTunnelView, TunnelError> {
+    write_client_tunnel(client, config, "client_tunnel_claim", claim, true).await
+}
+
+pub async fn update_client_tunnel(
+    client: &reqwest::Client,
+    config: &TunnelConfig,
+    claim: &ClientTunnelClaim,
+) -> Result<ClientTunnelView, TunnelError> {
+    write_client_tunnel(client, config, "client_tunnel_update", claim, true).await
+}
+
+async fn write_client_tunnel(
+    client: &reqwest::Client,
+    config: &TunnelConfig,
+    action: &str,
+    claim: &ClientTunnelClaim,
+    allow_identity_reset_retry: bool,
+) -> Result<ClientTunnelView, TunnelError> {
+    let identity = identity::ensure_identity(client, config).await?;
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let signature = identity::sign_action_payload(
+        &identity,
+        &identity.installation_id,
+        action,
+        claim,
+        timestamp_ms,
+        &nonce,
+    )?;
+    let url = if action == "client_tunnel_claim" {
+        format!(
+            "{}/v1/installations/client-tunnel/claim",
+            config.get_server_addr()
+        )
+    } else {
+        format!(
+            "{}/v1/installations/client-tunnel",
+            config.get_server_addr()
+        )
+    };
+    let request = if action == "client_tunnel_claim" {
+        client.post(&url)
+    } else {
+        client.patch(&url)
+    };
+    let resp = send_share_router_request(
+        request
+            .json(&serde_json::json!({
+                "installationId": identity.installation_id,
+                "timestampMs": timestamp_ms,
+                "nonce": nonce,
+                "signature": signature,
+                "tunnel": claim,
+            }))
+            .timeout(std::time::Duration::from_secs(
+                SHARE_ROUTER_REQUEST_TIMEOUT_SECS,
+            )),
+        "write client tunnel",
+        &url,
+    )
+    .await?;
+    if resp.status().is_success() {
+        let body: ClientTunnelResponse = resp
+            .json()
+            .await
+            .map_err(|e| TunnelError::Api(format!("parse client tunnel response: {e}")))?;
+        if body.ok {
+            return body
+                .tunnel
+                .ok_or_else(|| TunnelError::Api("client tunnel response missing tunnel".into()));
+        }
+        return Err(TunnelError::Api(
+            "client tunnel request was not accepted".into(),
+        ));
+    }
+
+    let message = read_error_message(resp).await;
+    if allow_identity_reset_retry && identity::should_reset_identity_for_api_error(&message) {
+        identity::refresh_installation_registration(client, config).await?;
+        return Box::pin(write_client_tunnel(client, config, action, claim, false)).await;
+    }
+    Err(TunnelError::Api(message))
 }
 
 async fn issue_lease_inner(

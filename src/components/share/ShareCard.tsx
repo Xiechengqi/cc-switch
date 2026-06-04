@@ -117,7 +117,10 @@ interface ShareCardProps {
    * 当前 app 下可绑定的 provider 列表（同 CreateShareDialog 的形态）。
    * 由 ShareList 透传，传给 EditShareDialog 的 Provider Select。
    */
-  providersByAppForEdit?: Record<"claude" | "codex" | "gemini", ProviderOption[]>;
+  providersByAppForEdit?: Record<
+    "claude" | "codex" | "gemini",
+    ProviderOption[]
+  >;
   onUpdateProviderBinding: (
     share: ShareRecord,
     appType: "claude" | "codex" | "gemini",
@@ -426,17 +429,6 @@ export function ShareCard({
               }
             />
           </div>
-          {/* token 已废弃：调用方使用各自在 router 登录后拿到的 user_api_token，
-              这里只展示接入命令模板（占位符 $ROUTER_API_TOKEN 让被分享方知道要替换）。 */}
-          <div className="mt-3">
-            <ConnectCommandLine
-              baseUrl={tunnelDisplay.tunnelUrl}
-              appType={primaryAppType ?? "claude"}
-              onCopyCommand={(cmd) =>
-                void handleCopy(cmd, "share.toast.copyCommand")
-              }
-            />
-          </div>
         </section>
 
         <section className="space-y-4 border-t border-border-default/70 pt-4">
@@ -540,7 +532,9 @@ export function ShareCard({
         onUpdateOwnerEmail={onUpdateOwnerEmail}
         onTransferOwner={onTransferOwner}
         onUpdateAcl={onUpdateAcl}
-        providersByApp={providersByAppForEdit ?? { claude: [], codex: [], gemini: [] }}
+        providersByApp={
+          providersByAppForEdit ?? { claude: [], codex: [], gemini: [] }
+        }
         providerNameByKey={providerNameByKey}
         onUpdateProviderBinding={onUpdateProviderBinding}
         onRebindAtomic={onRebindAtomic}
@@ -646,66 +640,6 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
     <div className="min-w-0 rounded-md border border-border-default/70 bg-muted/10 px-3 py-2">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 break-all text-sm">{value}</div>
-    </div>
-  );
-}
-
-/**
- * 展示 share 接入命令模板。token 不再由 cc-switch 颁发——调用方各自带
- * router 登录后的 user_api_token 调用 share URL。模板里用 $ROUTER_API_TOKEN
- * 占位符，被分享方应替换为自己实际的值。
- */
-function ConnectCommandLine({
-  baseUrl,
-  appType,
-  onCopyCommand,
-}: {
-  baseUrl: string;
-  appType: string;
-  onCopyCommand: (cmd: string) => void;
-}) {
-  const { t } = useTranslation();
-
-  const command = (() => {
-    switch (appType) {
-      case "claude":
-        return `export ANTHROPIC_BASE_URL=${baseUrl}\nexport ANTHROPIC_AUTH_TOKEN=$ROUTER_API_TOKEN`;
-      case "codex":
-        return `export OPENAI_BASE_URL=${baseUrl}\nexport OPENAI_API_KEY=$ROUTER_API_TOKEN`;
-      case "gemini":
-        return `export GEMINI_BASE_URL=${baseUrl}\nexport GOOGLE_API_KEY=$ROUTER_API_TOKEN`;
-      default:
-        return `BASE_URL=${baseUrl}\nTOKEN=$ROUTER_API_TOKEN`;
-    }
-  })();
-
-  return (
-    <div className="rounded-md border border-border-default/70 bg-muted/10 px-3 py-2">
-      <div className="flex items-center justify-between">
-        <div className="text-xs text-muted-foreground">
-          {t("share.connectInfoLabel", { defaultValue: "接入命令" })}
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-7 gap-1 text-xs"
-          onClick={() => onCopyCommand(command)}
-          title={command}
-        >
-          <Copy className="h-3.5 w-3.5" />
-          {t("share.commandCopy", { defaultValue: "复制接入命令" })}
-        </Button>
-      </div>
-      <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">
-        {command}
-      </pre>
-      <div className="mt-2 text-[11px] text-muted-foreground">
-        {t("share.connectInfoHint", {
-          defaultValue:
-            "$ROUTER_API_TOKEN 替换为自己在 router 登录后获得的 API token。",
-        })}
-      </div>
     </div>
   );
 }

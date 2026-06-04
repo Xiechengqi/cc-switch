@@ -3,6 +3,8 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import {
   shareApi,
+  type ClientTunnelState,
+  type ClientTunnelUpdateParams,
   type ConnectInfo,
   type CreateShareParams,
   type PublicMarket,
@@ -29,6 +31,8 @@ export const shareKeys = {
   connectInfo: (shareId: string) =>
     [...shareKeys.all, "connect-info", shareId] as const,
   markets: () => [...shareKeys.all, "markets"] as const,
+  clientTunnel: () => [...shareKeys.all, "client-tunnel"] as const,
+  clientTunnelStatus: () => [...shareKeys.all, "client-tunnel-status"] as const,
 };
 
 type ShareMutationMessages = {
@@ -130,6 +134,126 @@ export function useShareMarketsQuery(enabled = true) {
     queryFn: shareApi.listMarkets,
     enabled,
     staleTime: 60_000,
+  });
+}
+
+export function useClientTunnelQuery(enabled = true) {
+  return useQuery<ClientTunnelState>({
+    queryKey: shareKeys.clientTunnel(),
+    queryFn: shareApi.getClientTunnel,
+    enabled,
+    refetchInterval: enabled ? TUNNEL_POLL_INTERVAL_MS : false,
+    refetchIntervalInBackground: true,
+  });
+}
+
+function useClientTunnelWriteMutation(
+  mutationFn: (params: ClientTunnelUpdateParams) => Promise<ClientTunnelState>,
+) {
+  const queryClient = useQueryClient();
+  const buildMessages = useShareMutationMessages();
+
+  return useMutation({
+    mutationFn,
+    onSuccess: async (state) => {
+      queryClient.setQueryData(shareKeys.clientTunnel(), state);
+      await queryClient.invalidateQueries({ queryKey: shareKeys.clientTunnel() });
+      toast.success(
+        buildMessages({
+          successKey: "share.clientTunnel.saveSuccess",
+          successDefault: "Client tunnel 已保存",
+          errorKey: "",
+          errorDefault: "",
+        }).success,
+      );
+    },
+    onError: (error: Error) => {
+      toast.error(
+        buildMessages(
+          {
+            successKey: "",
+            successDefault: "",
+            errorKey: "share.clientTunnel.saveError",
+            errorDefault: "保存 Client tunnel 失败: {{error}}",
+          },
+          extractErrorMessage(error),
+        ).error,
+      );
+    },
+  });
+}
+
+export function useClaimClientTunnelMutation() {
+  return useClientTunnelWriteMutation(shareApi.claimClientTunnel);
+}
+
+export function useUpdateClientTunnelMutation() {
+  return useClientTunnelWriteMutation(shareApi.updateClientTunnel);
+}
+
+export function useStartClientTunnelMutation() {
+  const queryClient = useQueryClient();
+  const buildMessages = useShareMutationMessages();
+
+  return useMutation({
+    mutationFn: shareApi.startClientTunnel,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: shareKeys.clientTunnel() });
+      toast.success(
+        buildMessages({
+          successKey: "share.clientTunnel.startSuccess",
+          successDefault: "Client tunnel 已启动",
+          errorKey: "",
+          errorDefault: "",
+        }).success,
+      );
+    },
+    onError: (error: Error) => {
+      toast.error(
+        buildMessages(
+          {
+            successKey: "",
+            successDefault: "",
+            errorKey: "share.clientTunnel.startError",
+            errorDefault: "启动 Client tunnel 失败: {{error}}",
+          },
+          extractErrorMessage(error),
+        ).error,
+      );
+    },
+  });
+}
+
+export function useStopClientTunnelMutation() {
+  const queryClient = useQueryClient();
+  const buildMessages = useShareMutationMessages();
+
+  return useMutation({
+    mutationFn: shareApi.stopClientTunnel,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: shareKeys.clientTunnel() });
+      toast.success(
+        buildMessages({
+          successKey: "share.clientTunnel.stopSuccess",
+          successDefault: "Client tunnel 已停止",
+          errorKey: "",
+          errorDefault: "",
+        }).success,
+      );
+    },
+    onError: (error: Error) => {
+      toast.error(
+        buildMessages(
+          {
+            successKey: "",
+            successDefault: "",
+            errorKey: "share.clientTunnel.stopError",
+            errorDefault: "停止 Client tunnel 失败: {{error}}",
+          },
+          extractErrorMessage(error),
+        ).error,
+      );
+    },
   });
 }
 

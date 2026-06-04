@@ -22,6 +22,15 @@ const INDEX_HTML: &str = "index.html";
 
 pub async fn context(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
     match resolve_scope(&state, &headers) {
+        Ok(WebScope::LocalAdmin(scope)) => Json(json!({
+            "mode": "local-admin",
+            "userEmail": scope.user_email,
+            "role": scope.role,
+            "permissions": [
+                "local_admin"
+            ],
+        }))
+        .into_response(),
         Ok(WebScope::Share(scope)) => Json(json!({
             "mode": "share",
             "shareId": scope.share.id,
@@ -61,6 +70,12 @@ pub async fn invoke(
     };
 
     match resolve_scope(&state, &headers) {
+        Ok(WebScope::LocalAdmin(scope)) => {
+            match invoke_local_admin_scoped(&state, scope, &command, args).await {
+                Ok(value) => Json(value).into_response(),
+                Err(err) => error_response(err.status, &err.message),
+            }
+        }
         Ok(WebScope::Share(scope)) => {
             match invoke_share_scoped(&state, scope, &command, args).await {
                 Ok(value) => Json(value).into_response(),
@@ -104,6 +119,13 @@ impl WebError {
         }
     }
 
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -130,11 +152,36 @@ struct ShareScope {
     share: crate::database::ShareRecord,
 }
 
+#[derive(Clone)]
+struct LocalAdminScope {
+    user_email: String,
+    role: String,
+}
+
 enum WebScope {
     Share(ShareScope),
+    LocalAdmin(LocalAdminScope),
 }
 
 fn resolve_scope(state: &ProxyState, headers: &HeaderMap) -> Result<WebScope, WebError> {
+    if let Some(user_email) = headers
+        .get("x-cc-switch-web-user-email")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let role = headers
+            .get("x-cc-switch-web-role")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("owner");
+        return Ok(WebScope::LocalAdmin(LocalAdminScope {
+            user_email: user_email.to_ascii_lowercase(),
+            role: role.to_string(),
+        }));
+    }
+
     let share_id = headers
         .get("x-cc-switch-share-id")
         .and_then(|value| value.to_str().ok())
@@ -154,6 +201,70 @@ fn resolve_scope(state: &ProxyState, headers: &HeaderMap) -> Result<WebScope, We
         ));
     };
     Ok(WebScope::Share(ShareScope { share }))
+}
+
+async fn invoke_local_admin_scoped(
+    state: &ProxyState,
+    _scope: LocalAdminScope,
+    command: &str,
+    args: Value,
+) -> Result<Value, WebError> {
+    if !is_local_admin_command_allowed(command) {
+        return Err(WebError::not_found(format!(
+            "local admin web command is not exposed: {command}"
+        )));
+    }
+
+    match command {
+        "get_settings" => Ok(json!(crate::settings::get_settings_for_frontend())),
+        "save_settings" => {
+            let settings: crate::settings::AppSettings =
+                serde_json::from_value(args.get("settings").cloned().unwrap_or(args))
+                    .map_err(|err| WebError::bad_request(format!("invalid settings: {err}")))?;
+            crate::settings::update_settings(settings)
+                .map_err(|err| WebError::internal(err.to_string()))?;
+            Ok(json!(true))
+        }
+        "get_proxy_status" => Ok(json!(proxy_status(state).await)),
+        "get_proxy_takeover_status" => Ok(json!({
+            "claude": false,
+            "codex": false,
+            "gemini": false,
+            "opencode": false,
+            "openclaw": false,
+            "hermes": false,
+        })),
+        "list_shares" => {
+            let Some(app_state) = app_state(state) else {
+                return Ok(json!([]));
+            };
+            let shares = ShareService::list(&app_state.db)?;
+            Ok(json!(shares
+                .into_iter()
+                .map(sanitize_share_for_web)
+                .collect::<Vec<_>>()))
+        }
+        "get_share_detail" => {
+            let share_id = string_arg(&args, "shareId")?;
+            let Some(app_state) = app_state(state) else {
+                return Ok(json!(null));
+            };
+            let share =
+                ShareService::get_detail(&app_state.db, &share_id)?.map(sanitize_share_for_web);
+            Ok(json!(share))
+        }
+        "get_tunnel_status" => {
+            let share_id = string_arg(&args, "shareId")?;
+            Ok(json!(share_tunnel_status(state, &share_id).await?))
+        }
+        "get_client_tunnel_status" => Ok(json!(client_tunnel_status(state).await)),
+        "get_client_tunnel" => Ok(json!(client_tunnel_projection(state).await)),
+        "get_providers" => Ok(json!({ "providers": {}, "currentProviderId": null })),
+        "get_current_provider" => Ok(json!(null)),
+        _ => Err(WebError::not_found(format!(
+            "local admin web command is allowlisted but not implemented yet: {command}"
+        ))),
+    }
 }
 
 async fn invoke_share_scoped(
@@ -234,6 +345,130 @@ async fn share_tunnel_status(
         info,
         last_error,
     })
+}
+
+fn app_state(state: &ProxyState) -> Option<tauri::State<'_, AppState>> {
+    state
+        .app_handle
+        .as_ref()
+        .and_then(|app| app.try_state::<AppState>())
+}
+
+async fn client_tunnel_status(state: &ProxyState) -> ShareTunnelStatus {
+    let Some(app_state) = app_state(state) else {
+        return ShareTunnelStatus {
+            info: None,
+            last_error: None,
+            requires_owner_login: false,
+        };
+    };
+    let mgr = app_state.tunnel_manager.read().await;
+    ShareTunnelStatus {
+        info: mgr.get_info("__client_web__"),
+        last_error: mgr.get_last_error("__client_web__"),
+        requires_owner_login: false,
+    }
+}
+
+async fn client_tunnel_projection(state: &ProxyState) -> Value {
+    let settings = crate::settings::get_settings();
+    let config = settings.client_tunnel.map(|config| {
+        json!({
+            "ownerEmail": config.owner_email,
+            "subdomain": config.subdomain,
+            "enabled": config.enabled,
+            "autoStart": config.auto_start,
+            "tunnelUrl": config.tunnel_url,
+        })
+    });
+    json!({
+        "config": config,
+        "status": client_tunnel_status(state).await,
+    })
+}
+
+fn string_arg(args: &Value, key: &str) -> Result<String, WebError> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| WebError::bad_request(format!("{key} is required")))
+}
+
+fn is_local_admin_command_allowed(command: &str) -> bool {
+    matches!(
+        command,
+        "get_settings"
+            | "save_settings"
+            | "get_build_info"
+            | "get_proxy_status"
+            | "get_proxy_takeover_status"
+            | "get_proxy_config"
+            | "update_proxy_config"
+            | "get_global_proxy_config"
+            | "update_global_proxy_config"
+            | "start_proxy_server"
+            | "stop_proxy_server"
+            | "is_proxy_running"
+            | "switch_proxy_provider"
+            | "get_providers"
+            | "get_current_provider"
+            | "add_provider"
+            | "update_provider"
+            | "delete_provider"
+            | "switch_provider"
+            | "update_providers_sort_order"
+            | "get_universal_providers"
+            | "get_universal_provider"
+            | "upsert_universal_provider"
+            | "delete_universal_provider"
+            | "sync_universal_provider"
+            | "create_share"
+            | "list_shares"
+            | "get_share_detail"
+            | "enable_share"
+            | "disable_share"
+            | "pause_share"
+            | "resume_share"
+            | "delete_share"
+            | "reset_share_usage"
+            | "update_share_token_limit"
+            | "update_share_parallel_limit"
+            | "update_share_description"
+            | "update_share_for_sale"
+            | "update_share_for_sale_official_price_percent"
+            | "update_share_expiration"
+            | "update_share_auto_start"
+            | "update_share_owner_email"
+            | "transfer_share_owner"
+            | "update_share_provider_binding"
+            | "update_share_acl"
+            | "update_share_subdomain"
+            | "list_share_binding_history"
+            | "list_share_markets"
+            | "get_tunnel_status"
+            | "start_share_tunnel"
+            | "stop_share_tunnel"
+            | "get_share_connect_info"
+            | "configure_tunnel"
+            | "get_client_tunnel"
+            | "claim_client_tunnel"
+            | "update_client_tunnel"
+            | "start_client_tunnel"
+            | "stop_client_tunnel"
+            | "get_client_tunnel_status"
+            | "get_usage_summary"
+            | "get_usage_summary_by_app"
+            | "get_usage_trends"
+            | "get_provider_stats"
+            | "get_model_stats"
+            | "get_request_logs"
+            | "get_request_detail"
+            | "get_model_pricing"
+            | "update_model_pricing"
+            | "delete_model_pricing"
+    )
 }
 
 fn share_connect_info(share: &crate::database::ShareRecord) -> Value {

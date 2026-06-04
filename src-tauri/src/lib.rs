@@ -1205,6 +1205,9 @@ pub fn run() {
                 if let Err(e) = crate::commands::share::restore_active_share_tunnel(&state).await {
                     log::warn!("恢复 active share tunnel 失败: {e}");
                 }
+                if let Err(e) = crate::commands::share::restore_client_tunnel(&state).await {
+                    log::warn!("恢复 client tunnel 失败: {e}");
+                }
                 crate::tunnel::sync::reconcile_share_router_state(state.db.clone());
                 crate::tunnel::sync::schedule_pull_pending_share_edits(state.db.clone());
                 crate::tunnel::sync::spawn_share_edit_event_listener(state.db.clone());
@@ -1225,6 +1228,9 @@ pub fn run() {
                         interval.tick().await;
                         if let Err(e) = crate::commands::share::restore_active_share_tunnel(&state).await {
                             log::warn!("周期性恢复 active share tunnel 失败: {e}");
+                        }
+                        if let Err(e) = crate::commands::share::restore_client_tunnel(&state).await {
+                            log::warn!("周期性恢复 client tunnel 失败: {e}");
                         }
                     }
                 });
@@ -1709,6 +1715,12 @@ pub fn run() {
             commands::get_tunnel_status,
             commands::get_share_connect_info,
             commands::configure_tunnel,
+            commands::get_client_tunnel,
+            commands::claim_client_tunnel,
+            commands::update_client_tunnel,
+            commands::start_client_tunnel,
+            commands::stop_client_tunnel,
+            commands::get_client_tunnel_status,
             commands::email_auth_request_code,
             commands::email_auth_verify_code,
             commands::email_auth_request_owner_change_code,

@@ -3121,13 +3121,30 @@ fn normalize_codex_oauth_responses_body(mut body: Value, prompt_cache_key: Optio
     }
 
     if let Some(obj) = body.as_object_mut() {
-        obj.remove("max_output_tokens");
-        obj.remove("temperature");
-        obj.remove("top_p");
+        for field in CODEX_OAUTH_UNSUPPORTED_RESPONSES_FIELDS {
+            obj.remove(*field);
+        }
     }
 
     body
 }
+
+const CODEX_OAUTH_UNSUPPORTED_RESPONSES_FIELDS: &[&str] = &[
+    "max_output_tokens",
+    "temperature",
+    "top_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "logit_bias",
+    "logprobs",
+    "top_logprobs",
+    "n",
+    "stop",
+    "response_format",
+    "seed",
+    "stream_options",
+    "user",
+];
 
 fn codex_oauth_upstream_session_id(session_id: &str) -> Option<String> {
     let session_id = session_id.trim();
@@ -4261,14 +4278,36 @@ mod tests {
             "input": "ping",
             "max_output_tokens": 16,
             "temperature": 0.7,
-            "top_p": 0.9
+            "top_p": 0.9,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "logit_bias": {"42": -100},
+            "n": 2,
+            "stop": ["END"],
+            "response_format": {"type": "json_object"},
+            "seed": 123,
+            "stream_options": {"include_usage": true},
+            "user": "user-1"
         });
 
         let normalized = normalize_codex_oauth_responses_body(body, None);
 
-        assert!(normalized.get("max_output_tokens").is_none());
-        assert!(normalized.get("temperature").is_none());
-        assert!(normalized.get("top_p").is_none());
+        for field in [
+            "max_output_tokens",
+            "temperature",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "logit_bias",
+            "n",
+            "stop",
+            "response_format",
+            "seed",
+            "stream_options",
+            "user",
+        ] {
+            assert!(normalized.get(field).is_none(), "{field}");
+        }
     }
 
     #[test]

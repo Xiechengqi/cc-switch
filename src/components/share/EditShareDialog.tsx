@@ -311,8 +311,11 @@ export function EditShareDialog({
     });
   }, [providerIdInputs, share.bindings]);
   const bindingsDirty = bindingChanges.some((entry) => entry.dirty);
-  // 后端要求 paused 才能改 binding；UI 同步禁选避免误操作。
-  const bindingsReadOnly = readOnly || !sharePaused;
+  // P16：active 状态下也允许编辑 binding select。保存时若 share 还在 active，走
+  // onRebindAtomic（disable → update → enable）兜底；后端 update_provider_binding
+  // 仍然保留 paused-required 约束，所以"直接绕过"的请求会被拒，安全性由后端守门。
+  // 此处只解开 UI 禁用，避免用户在弹窗里只能看不能改。
+  const bindingsReadOnly = readOnly;
   const normalizedDescription = descriptionInput.trim();
   const descriptionDirty = normalizedDescription !== (share.description ?? "");
   const descriptionInvalid = normalizedDescription.length > 200;
@@ -456,13 +459,19 @@ export function EditShareDialog({
       if (expiryDirty) await onUpdateExpiration(share, expiryIso);
       if (subdomainDirty) await onUpdateSubdomain(share, subdomainInput.trim());
       // P8：逐 slot 写改动。`input === ""` 表示解绑（传 null 给后端）。
+      // P16：share 还在 active 时走 onRebindAtomic（disable→update→enable）；
+      // 后端 update_provider_binding 仍然只接受 paused share，这是为了避免请求
+      // 落在改绑中间态。这里多绑几个时会触发多次 disable/enable —— 对正常 1-2
+      // 个 slot 的改动可以接受；想完全单次 disable/enable 包住改动，手动 pause
+      // 一下再 Save 就行。
       for (const entry of bindingChanges) {
         if (!entry.dirty) continue;
-        await onUpdateProviderBinding(
-          share,
-          entry.app,
-          entry.input.length > 0 ? entry.input : null,
-        );
+        const nextProviderId = entry.input.length > 0 ? entry.input : null;
+        if (!sharePaused && onRebindAtomic) {
+          await onRebindAtomic(share, entry.app, nextProviderId);
+        } else {
+          await onUpdateProviderBinding(share, entry.app, nextProviderId);
+        }
       }
       if (tokenLimitDirty) await onUpdateTokenLimit(share, parsedTokenLimit);
       if (parallelLimitDirty)
@@ -562,9 +571,9 @@ export function EditShareDialog({
                       defaultValue:
                         "为每个 app 独立挑一个 provider，留空 = 该 app 在本 share 上不可用。",
                     })
-                  : t("share.providerBindingPausedRequired", {
+                  : t("share.providerBindingsEditHintActive", {
                       defaultValue:
-                        "改绑前必须先暂停（Pause）share，避免请求落在中间态。",
+                        "为每个 app 独立挑一个 provider，留空 = 该 app 在本 share 上不可用。保存时若 share 还在分享中，会先暂停 → 改绑 → 自动恢复。",
                     })
               }
             >
@@ -572,8 +581,6 @@ export function EditShareDialog({
                 {SHARE_APP_TYPES.map((app) => {
                   const candidates = providersByApp[app] ?? [];
                   const value = providerIdInputs[app] ?? "";
-                  const entry = bindingChanges.find((c) => c.app === app);
-                  const dirty = entry?.dirty ?? false;
                   return (
                     <div
                       key={app}
@@ -657,22 +664,10 @@ export function EditShareDialog({
                           </Button>
                         ) : null}
                       </div>
-                      {/* A-3：share active 时一键 disable→rebind→enable，避免用户被 paused-required 卡住。 */}
-                      {!sharePaused && dirty && onRebindAtomic ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() =>
-                            void onRebindAtomic(share, app, value || null)
-                          }
-                        >
-                          {t("share.rebindAtomicAction", {
-                            defaultValue: "自动暂停并改绑 → 恢复",
-                          })}
-                        </Button>
-                      ) : null}
+                      {/* P16：原本有一个 "自动暂停并改绑 → 恢复" 行内按钮。
+                          现在 Save 已经按 share.status 自动选 update vs.
+                          rebindAtomic，行内按钮变成多余的入口反而引人疑惑，
+                          统一收回到 Save。 */}
                     </div>
                   );
                 })}

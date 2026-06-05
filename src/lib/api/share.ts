@@ -18,6 +18,12 @@ export interface ShareRecord {
   forSale: "Yes" | "No" | "Free";
   /** P8: 每个 app_type 的 provider 绑定。三个 slot 各自独立，0..3 个 entry。 */
   bindings: ShareBindings;
+  /**
+   * P17 动态绑定：列表里的 app 表示该 slot 跟随 cc-switch 当前激活的 provider；
+   * 当用户在 cc-switch 切换该 app 的 provider 时，这条 share 的 binding 会被
+   * 后端自动同步过去。不在列表里的 app 视为固定绑定。缺省视作空集合。
+   */
+  dynamicApps?: string[];
   apiKey: string;
   settingsConfig?: string | null;
   tokenLimit: number;
@@ -37,9 +43,14 @@ export interface CreateShareParams {
   ownerEmail: string;
   /**
    * P8 多 app share：创建时一次性提交 0..3 个 binding。完全为空也允许，用户可后续
-   * 在 Edit 弹窗里逐个挂 provider。
+   * 在 Edit 弹窗里逐个挂 provider。与 `dynamicApps` 互斥（同一 app 不能两边都出现）。
    */
   bindings: ShareBindings;
+  /**
+   * P17 动态绑定：列入的 app 在创建时自动绑定到 cc-switch 当前激活的 provider，
+   * 之后用户在 cc-switch 切换该 app 的 provider，本 share 的 binding 会跟着改。
+   */
+  dynamicApps?: string[];
   description?: string;
   forSale: "Yes" | "No" | "Free";
   tokenLimit: number;

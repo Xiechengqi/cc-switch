@@ -101,6 +101,14 @@ const DEFAULT_TOKEN_LIMIT_FALLBACK = 100000;
 const SUBDOMAIN_PREFIX_LENGTH = 5;
 const SUBDOMAIN_TIMESTAMP_LENGTH = 5;
 const EMPTY_MARKETS: PublicMarket[] = [];
+/**
+ * P17 动态绑定的表单 sentinel：当用户在 Provider Select 里选了"动态绑定当前选中的
+ * provider"，bindings.<app> 写入这个值；performSubmit 时把它折叠成后端的
+ * `dynamicApps: [app]` 字段，bindings 字段里则不再带这个 app 的条目。
+ *
+ * 用 "__" 前缀是为了和真实 provider id（UUID / 用户自定义短名）保留出区分空间。
+ */
+const DYNAMIC_BINDING_VALUE = "__dynamic__";
 
 /**
  * 由 owner email 派生默认 subdomain。
@@ -239,9 +247,13 @@ export function CreateShareDialog({
     (provider) => provider.id === defaultProviderId,
   );
   const defaultProviderLabel =
-    defaultProvider?.name ||
-    defaultProviderId ||
-    t("share.unbound", { defaultValue: "未绑定" });
+    defaultProviderId === DYNAMIC_BINDING_VALUE
+      ? t("share.providerBindingDynamic", {
+          defaultValue: "动态绑定当前选中的 provider",
+        })
+      : defaultProvider?.name ||
+        defaultProviderId ||
+        t("share.unbound", { defaultValue: "未绑定" });
 
   const expandAdvanced = () => {
     setAdvancedExpanded(true);
@@ -256,17 +268,26 @@ export function CreateShareDialog({
     if (nextRouterDomain && nextRouterDomain !== tunnelConfig.domain) {
       await onSaveTunnelConfig({ domain: nextRouterDomain });
     }
+    // P17：拆分两类 slot：
+    //   - DYNAMIC_BINDING_VALUE 折叠成 dynamicApps，后端解析当前激活 provider。
+    //   - 非空 / 非 sentinel 走 bindings，作为固定绑定。
+    //   - 空字符串保持原义：用户未选，不传后端。
+    const allEntries = Object.entries(values.bindings ?? {}) as Array<
+      [keyof ShareBindings, string]
+    >;
+    const fixedBindings = Object.fromEntries(
+      allEntries.filter(
+        ([, pid]) => pid && pid.length > 0 && pid !== DYNAMIC_BINDING_VALUE,
+      ),
+    );
+    const dynamicApps = allEntries
+      .filter(([, pid]) => pid === DYNAMIC_BINDING_VALUE)
+      .map(([app]) => app as string);
     await onSubmit(
       {
         ownerEmail: normalizedOwnerEmail,
-        // P8：把空字符串过滤掉，只发用户真的选了的 slot。
-        bindings: Object.fromEntries(
-          (
-            Object.entries(values.bindings ?? {}) as Array<
-              [keyof ShareBindings, string]
-            >
-          ).filter(([, pid]) => pid && pid.length > 0),
-        ),
+        bindings: fixedBindings,
+        dynamicApps: dynamicApps.length > 0 ? dynamicApps : undefined,
         description: values.description || undefined,
         forSale: values.forSale,
         tokenLimit: values.tokenLimit,
@@ -475,6 +496,7 @@ export function CreateShareDialog({
                       const fieldKey = `bindings.${app}` as const;
                       const value =
                         (form.watch(fieldKey) as string | undefined) ?? "";
+                      const isDynamic = value === DYNAMIC_BINDING_VALUE;
                       return (
                         <div
                           key={app}
@@ -482,7 +504,13 @@ export function CreateShareDialog({
                         >
                           <div className="flex items-center justify-between text-xs font-medium uppercase text-muted-foreground">
                             <span>{app}</span>
-                            {value ? (
+                            {isDynamic ? (
+                              <Badge variant="outline" className="text-[10px]">
+                                {t("share.bindingDynamic", {
+                                  defaultValue: "动态",
+                                })}
+                              </Badge>
+                            ) : value ? (
                               <Badge variant="outline" className="text-[10px]">
                                 {t("share.bound", { defaultValue: "已绑定" })}
                               </Badge>
@@ -516,9 +544,22 @@ export function CreateShareDialog({
                                       defaultValue: `为 ${app} 选一个 provider`,
                                     },
                                   )}
-                                />
+                                >
+                                  {isDynamic
+                                    ? t("share.providerBindingDynamic", {
+                                        defaultValue:
+                                          "动态绑定当前选中的 provider",
+                                      })
+                                    : undefined}
+                                </SelectValue>
                               </SelectTrigger>
                               <SelectContent>
+                                <SelectItem value={DYNAMIC_BINDING_VALUE}>
+                                  {t("share.providerBindingDynamic", {
+                                    defaultValue:
+                                      "动态绑定当前选中的 provider",
+                                  })}
+                                </SelectItem>
                                 {candidates.length === 0 ? (
                                   <SelectItem value="__empty__" disabled>
                                     {t("share.providerBindingEmpty", {

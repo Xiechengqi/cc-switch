@@ -37,12 +37,18 @@ function renderDialog(overrides: Partial<Record<string, unknown>> = {}) {
   return { props, rendered };
 }
 
-// P8：默认 slot 的 Select trigger id 是 `share-create-provider-${app}`。defaultApp
-// = claude 时该 slot 已被预填，但测试也确认显式点选不报错。
+// P17：默认 slot 不再预填，Select trigger 只存在于高级设置展开后的 DOM 里。
+// 这个 helper 会按需展开 advanced，再点击对应 app 的 trigger 选 provider。
 async function selectProvider(
   user: ReturnType<typeof userEvent.setup>,
   providerName: string = TEST_PROVIDERS[0]!.name,
 ) {
+  if (!document.getElementById("share-create-provider-claude")) {
+    const advancedToggle = screen.getByRole("button", {
+      name: /高级设置|advanced/i,
+    });
+    await user.click(advancedToggle);
+  }
   const trigger = document.getElementById("share-create-provider-claude");
   if (!trigger) throw new Error("Provider Select trigger not found");
   await user.click(trigger);
@@ -61,24 +67,20 @@ describe("CreateShareDialog", () => {
     expect(screen.queryByText(/将以默认设置创建/)).toBeInTheDocument();
   });
 
-  it("requires confirmation when creating with defaults", async () => {
+  it("submits with the provider explicitly picked in advanced settings", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
     renderDialog({ onSubmit });
 
+    // P17：默认 bindings 全空，用户必须显式在高级设置里选 provider。
+    // selectProvider 已经把高级设置展开过，所以确认弹窗不会再出现。
     await selectProvider(user);
     await user.click(screen.getByRole("button", { name: "share.create" }));
-
-    // Confirm modal appears
-    expect(screen.getByText(/确认使用默认设置创建/)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "确认创建" }));
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
           ownerEmail: "owner@example.com",
-          // P8：bindings 替换 appType/providerId。defaultApp = claude，预填值会
-          // 走 buildDefaultValues 命中第一条可用 provider。
           bindings: { claude: TEST_PROVIDERS[0]!.id },
           forSale: "Yes",
           autoStart: true,
@@ -99,13 +101,8 @@ describe("CreateShareDialog", () => {
     renderDialog({ onSubmit });
 
     await selectProvider(user);
-    await user.click(
-      screen.getByRole("button", { name: /高级设置|advanced/i }),
-    );
-
     await user.click(screen.getByRole("button", { name: "share.create" }));
 
-    // No confirm modal interaction needed
     expect(screen.queryByText(/确认使用默认设置创建/)).not.toBeInTheDocument();
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
@@ -148,7 +145,6 @@ describe("CreateShareDialog", () => {
     await user.type(ownerEmailInput, "new-owner@example.com");
 
     await user.click(screen.getByRole("button", { name: "share.create" }));
-    await user.click(screen.getByRole("button", { name: "确认创建" }));
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(

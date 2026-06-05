@@ -941,6 +941,8 @@ mod tests {
             used: None,
             limit: None,
             unit: None,
+            used_value_usd: None,
+            max_value_usd: None,
         }
     }
 

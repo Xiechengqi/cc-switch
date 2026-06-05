@@ -11,6 +11,9 @@ export interface QuotaTier {
   used?: number | null;
   limit?: number | null;
   unit?: string | null;
+  usedValueUsd?: number | null;
+  maxValueUsd?: number | null;
+  planLabel?: string | null;
 }
 
 export interface ExtraUsage {

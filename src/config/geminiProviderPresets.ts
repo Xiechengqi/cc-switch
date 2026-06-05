@@ -84,6 +84,24 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     iconColor: "#1A73E8",
   },
   {
+    name: "CherryIN",
+    websiteUrl: "https://open.cherryin.ai",
+    apiKeyUrl: "https://open.cherryin.ai/console/token",
+    settingsConfig: {
+      env: {
+        GOOGLE_GEMINI_BASE_URL: "https://open.cherryin.net",
+        GEMINI_API_KEY: "",
+        GEMINI_MODEL: "google/gemini-3.5-flash",
+      },
+    },
+    baseURL: "https://open.cherryin.net",
+    model: "google/gemini-3.5-flash",
+    description: "CherryIN",
+    category: "aggregator",
+    endpointCandidates: ["https://open.cherryin.net"],
+    icon: "cherryin",
+  },
+  {
     name: "OpenRouter",
     websiteUrl: "https://openrouter.ai",
     apiKeyUrl: "https://openrouter.ai/keys",

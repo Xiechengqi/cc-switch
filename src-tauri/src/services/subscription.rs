@@ -41,6 +41,12 @@ pub struct QuotaTier {
     /// 原始额度单位
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
+    /// ZenMux: 已用额度（USD）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_value_usd: Option<f64>,
+    /// ZenMux: 窗口上限（USD）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_value_usd: Option<f64>,
 }
 
 /// 超额使用信息
@@ -683,6 +689,8 @@ fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
             used: Some(used / 100.0),
             limit: Some(limit / 100.0),
             unit: Some("USD".to_string()),
+    used_value_usd: None,
+    max_value_usd: None,
         }];
     }
 
@@ -696,6 +704,8 @@ fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
             used: None,
             limit: None,
             unit: None,
+    used_value_usd: None,
+    max_value_usd: None,
         }];
     }
 
@@ -818,6 +828,8 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
                         used: None,
                         limit: None,
                         unit: None,
+                        used_value_usd: None,
+                        max_value_usd: None,
                     });
                 }
             }
@@ -839,6 +851,8 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
                         used: None,
                         limit: None,
                         unit: None,
+                        used_value_usd: None,
+                        max_value_usd: None,
                     });
                 }
             }
@@ -1181,6 +1195,8 @@ pub(crate) async fn query_codex_quota(
                     used: None,
                     limit: None,
                     unit: None,
+                    used_value_usd: None,
+                    max_value_usd: None,
                 });
             }
         }
@@ -1678,6 +1694,8 @@ async fn retrieve_user_quota(
             used: None,
             limit: None,
             unit: None,
+            used_value_usd: None,
+            max_value_usd: None,
         })
         .collect();
 

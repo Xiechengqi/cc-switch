@@ -165,6 +165,8 @@ pub fn antigravity_models_to_quota_tiers(models: &[AntigravityAvailableModel]) -
                 used: None,
                 limit: None,
                 unit: None,
+    used_value_usd: None,
+    max_value_usd: None,
             })
         })
         .collect();

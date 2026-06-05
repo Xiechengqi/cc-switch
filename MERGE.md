@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-06-05
+
+- **上游分支：** `main`
+- **上游 HEAD：** `03a9296c`
+- **共同祖先：** `c67494ba`
+- **合并提交数：** 23
+- **主要变更：**
+  - feat: 新增 S3 兼容云存储同步（与 WebDAV 同步并存）
+  - feat(usage): OpenCode session usage 同步；usage 统计 UI polish
+  - feat(quota): ZenMux Token Plan 供应商（手动凭证 + USD 额度富展示，QuotaTier 新增 `used_value_usd` / `max_value_usd`）
+  - feat: CherryIN preset、Codex Zhipu coding plan presets（按规则丢弃）
+  - fix(coding-plan): MiniMax 余额查询新接口适配 + 默认定价；Zhipu quota 路由到用户配置 base URL
+  - fix(proxy): Live 已是 proxy 占位符时跳过 backup/restore；Codex 413 错误澄清为上游限制；Claude Desktop strip [1m] 后缀
+  - fix(codex): Responses→Chat 转换 tools 为空时丢弃 tool_choice；保留 chat routing 中自定义工具元数据；`model_catalog_json` 使用相对文件名；output_tokens_details.reasoning_tokens
+  - fix: copilot 无限空白检测阈值 20→500；macOS Input auto-capitalize 关闭；text-only 模型 media fallback rectifier
+  - fix(i18n): 中文 VS Code 措辞对齐英日
+  - docs: 用户手册刷新
+- **冲突解决：**
+  - `src-tauri/Cargo.toml` / `Cargo.lock`：保留本仓 `urlencoding`（antigravity OAuth 依赖）与 `hex`（cursor/deepseek 依赖）
+  - `src-tauri/src/services/subscription.rs`（QuotaTier 结构 + 多处构造器）：并存本仓 `used/limit/unit`（Kiro Credits 用）与上游 `used_value_usd/max_value_usd`（ZenMux 用）
+  - `src-tauri/src/services/coding_plan.rs`：采纳上游 `parse_minimax_tiers` 重构（适配 MiniMax 新接口"剩余百分比"语义）；补齐所有 QuotaTier 构造器与 SubscriptionQuota.failure 字段以保证编译
+  - `src-tauri/src/services/{antigravity_models,oauth_quota,subscription}.rs`：用脚本批量补齐 QuotaTier 缺失字段
+  - `src-tauri/src/settings.rs`：并存本仓 `client_tunnel` 归一化 + `current_share_router_domain`/`set_share_router_domain` helpers，并入上游 `s3_sync` 归一化
+  - `src-tauri/src/tray.rs`：QuotaTier 测试构造器补齐 6 个字段
+  - `src-tauri/src/services/mod.rs`：并存本仓 `share` 与上游 `session_usage_opencode` 模块
+  - `src/lib/api/settings.ts`：保留本仓 `invokeCommand` 调用形式（替换上游 `invoke`，对 4 个新增 S3 命令统一改为 `invokeCommand`），并入 `S3SyncSettings` 类型导入
+  - `src/types/subscription.ts`：QuotaTier 同时含 `used/limit/unit` 与 `usedValueUsd/maxValueUsd/planLabel`
+  - **`src/config/{claude,codex}ProviderPresets.ts`、`tests/config/codexChatProviderPresets.test.ts`、`src/icons/extracted/{index,metadata}.ts`：按"禁止新添加 API Key 类供应商"指令，全部 preset/icon 冲突采纳 HEAD，剔除上游新增的 CherryIN preset 与 Zhipu coding plan presets**
+- **验证：** `cargo check` exit 0（2 条遗留 dead-code warning）、`tsc --noEmit` 通过
+
+---
+
 ## 2026-05-30
 
 - **上游分支：** `main`

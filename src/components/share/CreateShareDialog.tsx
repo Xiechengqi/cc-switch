@@ -126,21 +126,16 @@ export function deriveSubdomainFromEmail(
 
 function buildDefaultValues(
   ownerEmail: string,
-  defaultApp: AppId | undefined,
-  providersByApp: Record<keyof ShareBindings, ProviderOption[]> | undefined,
+  _defaultApp: AppId | undefined,
+  _providersByApp: Record<keyof ShareBindings, ProviderOption[]> | undefined,
 ): CreateShareFormInput {
-  // 当前 app tab 决定默认聚焦的 slot；同时预填一个未被占用的 provider，
-  // 减少新用户必填两步的摩擦。其它 slot 默认为空。providersByApp 在测试桩里
-  // 可能未传，要 defensive 处理。
+  // P17：创建对话框默认不预填 provider；用户必须在高级设置里显式选择
+  // 固定 provider 或"动态绑定当前选中的 provider"。所有 slot 初始为空。
   const initialBindings: { claude: string; codex: string; gemini: string } = {
     claude: "",
     codex: "",
     gemini: "",
   };
-  const focusApp = toShareAppType(defaultApp);
-  const focusCandidates = providersByApp?.[focusApp] ?? [];
-  const focusDefault = focusCandidates.find((p) => !p.disabled)?.id ?? "";
-  initialBindings[focusApp] = focusDefault;
   return {
     bindings: initialBindings,
     description: "",
@@ -373,58 +368,18 @@ export function CreateShareDialog({
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label>
-              {t("share.providerBindings", { defaultValue: "Provider 绑定" })}
-            </Label>
-            <div className="text-xs text-muted-foreground">
-              {t("share.providerBindingsHint", {
-                defaultValue:
-                  "默认绑定当前 App 选中的 Provider。需要让同一个 share 支持多个 App 时，再进入高级设置独立配置。",
-              })}
+          {/* P17：删除"Provider 绑定"卡片——默认不预填，用户在高级设置里
+              显式选择固定 provider 或"动态绑定当前选中的 provider"。表单级
+              的 bindings 校验错误仍在这里渲染，避免高级设置未展开时静默失败。 */}
+          {form.formState.errors.bindings ? (
+            <div className="text-xs text-destructive">
+              {t(
+                (form.formState.errors.bindings as { message?: string })
+                  ?.message ?? "share.validation.providerRequired",
+                { defaultValue: "至少为一个 app 选择 provider" },
+              )}
             </div>
-            <div className="rounded-md border border-default/50 bg-muted/10 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="text-xs font-medium uppercase text-muted-foreground">
-                    {defaultShareApp}
-                  </div>
-                  <div className="mt-1 truncate text-sm font-medium">
-                    {defaultProviderLabel}
-                  </div>
-                </div>
-                {defaultProviderId ? (
-                  <Badge variant="outline" className="text-[10px]">
-                    {t("share.bound", { defaultValue: "已绑定" })}
-                  </Badge>
-                ) : (
-                  <Badge
-                    variant="outline"
-                    className="text-[10px] text-muted-foreground"
-                  >
-                    {t("share.unbound", { defaultValue: "未绑定" })}
-                  </Badge>
-                )}
-              </div>
-              {!defaultProviderId ? (
-                <div className="mt-2 text-xs text-destructive">
-                  {t("share.providerBindingEmptyCurrent", {
-                    defaultValue:
-                      "当前 App 没有可自动绑定的 Provider。请先添加 Provider，或进入高级设置选择其它 App。",
-                  })}
-                </div>
-              ) : null}
-            </div>
-            {form.formState.errors.bindings ? (
-              <div className="text-xs text-destructive">
-                {t(
-                  (form.formState.errors.bindings as { message?: string })
-                    ?.message ?? "share.validation.providerRequired",
-                  { defaultValue: "至少为一个 app 选择 provider" },
-                )}
-              </div>
-            ) : null}
-          </div>
+          ) : null}
 
           <div className="space-y-1.5">
             <Label htmlFor="share-owner-email">

@@ -1,6 +1,6 @@
 use crate::database::{Database, ShareRecord};
 use crate::error::AppError;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub struct ShareService;
@@ -89,6 +89,36 @@ impl ShareService {
             bindings.insert(app_type, provider_id);
         }
 
+        // P17 动态绑定：把每个 dynamic app 的当前激活 provider 解析后塞进 bindings。
+        // 与显式 bindings 互斥，不允许同一个 app 同时出现在两边——前端要么传固定
+        // provider_id 进 bindings，要么把 app 列进 dynamic_apps 让后端自己解析。
+        let mut dynamic_apps: HashSet<String> = HashSet::new();
+        for raw_app in &params.dynamic_apps {
+            let app_type = normalize_share_app_type(raw_app)?;
+            if bindings.contains_key(&app_type) {
+                return Err(AppError::Message(format!(
+                    "{app_type} 同时出现在固定 bindings 和 dynamic_apps 里，请只选一种"
+                )));
+            }
+            let app = std::str::FromStr::from_str(app_type.as_str())
+                .map_err(|e: AppError| e)?;
+            let current = crate::settings::get_effective_current_provider(db, &app)?
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    AppError::Message(format!(
+                        "{app_type} 当前没有激活的 provider，无法创建动态绑定。请先在 {app_type} 选择一个 provider，或改用固定绑定。"
+                    ))
+                })?;
+            // 校验 provider 在该 app_type 下存在。
+            db.get_provider_by_id(&current, &app_type)?.ok_or_else(|| {
+                AppError::Message(format!(
+                    "{app_type} 当前 provider {current} 已不存在，无法创建动态绑定"
+                ))
+            })?;
+            bindings.insert(app_type.clone(), current);
+            dynamic_apps.insert(app_type);
+        }
+
         let record = ShareRecord {
             id,
             name: owner_email.clone(),
@@ -99,6 +129,7 @@ impl ShareService {
             description,
             for_sale,
             bindings,
+            dynamic_apps,
             api_key: String::new(),
             settings_config: None,
             token_limit,
@@ -613,6 +644,11 @@ pub struct PrepareShareParams {
     /// P8 多 app share：创建时一次性提交 0..3 个 binding（键 = app_type）。
     /// 全空允许（创建后再在 UI 里逐个挂 provider）。
     pub bindings: HashMap<String, String>,
+    /// P17 动态绑定：被列入的 app 在该 share 上设为"跟随当前激活的 provider"。
+    /// 集合内的 app 必须**未出现**在 `bindings` 里；prepare_create 会从 settings
+    /// 解析该 app 的当前 provider 并自动塞进 bindings。如果当前 app 没有激活
+    /// provider，整次创建会被拒绝。
+    pub dynamic_apps: HashSet<String>,
     pub description: Option<String>,
     pub for_sale: String,
     pub token_limit: i64,
@@ -794,6 +830,7 @@ mod tests {
         PrepareShareParams {
             owner_email: "user@example.com".to_string(),
             bindings,
+            dynamic_apps: HashSet::new(),
             description: None,
             for_sale: "No".to_string(),
             token_limit: ShareService::UNLIMITED_TOKEN_LIMIT,
@@ -817,6 +854,7 @@ mod tests {
             description: None,
             for_sale: "No".to_string(),
             bindings,
+            dynamic_apps: HashSet::new(),
             api_key: String::new(),
             settings_config: None,
             token_limit: ShareService::UNLIMITED_TOKEN_LIMIT,

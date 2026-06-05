@@ -96,7 +96,36 @@ pub(crate) fn switch_provider_internal(
     app_type: AppType,
     id: &str,
 ) -> Result<SwitchResult, AppError> {
-    ProviderService::switch(state, app_type, id)
+    let result = ProviderService::switch(state, app_type.clone(), id)?;
+    // P17：把所有 dynamic=1 的 share slot 改成新 provider。partial UNIQUE 索引豁免
+    // dynamic 行，多 share 同时 follow 同一个 provider 也不会冲突。失败只 log，不
+    // 回滚 switch——dynamic 是软同步语义，switch 本身仍然成功。
+    match state
+        .db
+        .redirect_dynamic_bindings_for_app(app_type.as_str(), id)
+    {
+        Ok(affected) if !affected.is_empty() => {
+            log::info!(
+                "P17 动态绑定：app={} 切到 {}，{} 个 share slot 已跟随同步",
+                app_type.as_str(),
+                id,
+                affected.len()
+            );
+            // 触发 router 同步：每个受影响的 share 都重新上报。
+            for sid in affected {
+                if let Ok(Some(share)) = state.db.get_share_by_id(&sid) {
+                    crate::tunnel::sync::schedule_sync_share(share, &state.db);
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(err) => log::warn!(
+            "P17 动态绑定同步失败（app={}, provider={}）：{err}",
+            app_type.as_str(),
+            id
+        ),
+    }
+    Ok(result)
 }
 
 #[cfg_attr(not(feature = "test-hooks"), doc(hidden))]

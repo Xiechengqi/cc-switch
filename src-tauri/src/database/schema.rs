@@ -397,13 +397,17 @@ impl Database {
         // provider。侧表把 (share_id, app_type) → provider_id 拆出来；shares 表本身不再
         // 持有 app_type / provider_id 字段（v21→v22 迁移会把老库的两列 DROP 掉）。
         //   - PK(share_id, app_type) 保证一个 share 内每个 app 至多一个 slot
-        //   - UNIQUE(provider_id) 保证一个 provider 全局只能被一个活跃 slot 占用
+        //   - partial UNIQUE(provider_id) WHERE dynamic = 0：固定绑定全局唯一；动态绑定
+        //     豁免该约束，允许多 share 同时 follow 同一个当前选中的 provider。
         //   - ON DELETE CASCADE：删 share 自动清掉所有 binding
+        //   - dynamic：1 表示该 slot 跟随当前激活的 provider；switch_provider 后
+        //     ProviderService 会扫表把所有 dynamic=1 的 slot 改成新 provider_id。
         conn.execute(
             "CREATE TABLE IF NOT EXISTS share_provider_bindings (
                 share_id    TEXT NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
                 app_type    TEXT NOT NULL,
                 provider_id TEXT NOT NULL,
+                dynamic     INTEGER NOT NULL DEFAULT 0,
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (share_id, app_type)
             )",
@@ -412,7 +416,7 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
         let _ = conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_share_bindings_provider_unique
-             ON share_provider_bindings(provider_id)",
+             ON share_provider_bindings(provider_id) WHERE dynamic = 0",
             [],
         );
         let _ = conn.execute(
@@ -592,6 +596,13 @@ impl Database {
                         );
                         Self::migrate_v22_to_v23(conn)?;
                         Self::set_user_version(conn, 23)?;
+                    }
+                    23 => {
+                        log::info!(
+                            "迁移数据库从 v23 到 v24（share_provider_bindings 新增 dynamic 列 + 把 provider_id 全局 UNIQUE 改成 partial UNIQUE WHERE dynamic = 0：动态绑定不参与 share↔provider 一对一映射，可以多 share 同时 follow 同一个 provider）"
+                        );
+                        Self::migrate_v23_to_v24(conn)?;
+                        Self::set_user_version(conn, 24)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1841,6 +1852,41 @@ impl Database {
         }
 
         log::info!("v22 -> v23 迁移完成：shares 表已 DROP share_token");
+        Ok(())
+    }
+
+    /// v23 → v24：share_provider_bindings 新增 dynamic 列，并把全局 UNIQUE(provider_id)
+    /// 改成 partial UNIQUE WHERE dynamic = 0。动机：动态绑定要让多个 share 同时 follow
+    /// 同一个当前激活的 provider；如果保留全局 UNIQUE，第二个 share 切到该 provider
+    /// 时就会 hit UNIQUE 约束失败。partial unique 保留固定绑定的全局唯一性、豁免动态绑定。
+    fn migrate_v23_to_v24(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "share_provider_bindings")? {
+            log::info!("v23 -> v24 跳过：share_provider_bindings 不存在（fresh schema 或未启用 share）");
+            return Ok(());
+        }
+        if !Self::has_column(conn, "share_provider_bindings", "dynamic")? {
+            conn.execute(
+                "ALTER TABLE share_provider_bindings ADD COLUMN dynamic INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|e| AppError::Database(format!("v23→v24 add dynamic 列失败: {e}")))?;
+        }
+        // 旧的 idx_share_bindings_provider_unique 是全局 UNIQUE；替换成 partial unique。
+        conn.execute("DROP INDEX IF EXISTS idx_share_bindings_provider_unique", [])
+            .map_err(|e| {
+                AppError::Database(format!(
+                    "v23→v24 drop 旧 idx_share_bindings_provider_unique 失败: {e}"
+                ))
+            })?;
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_share_bindings_provider_unique
+             ON share_provider_bindings(provider_id) WHERE dynamic = 0",
+            [],
+        )
+        .map_err(|e| {
+            AppError::Database(format!("v23→v24 create partial UNIQUE 失败: {e}"))
+        })?;
+        log::info!("v23 -> v24 迁移完成：share_provider_bindings 加 dynamic 列 + partial UNIQUE");
         Ok(())
     }
 

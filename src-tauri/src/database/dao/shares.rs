@@ -2,7 +2,7 @@ use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +23,12 @@ pub struct ShareRecord {
     /// provider_id 字段。DAO 在每次 SELECT 后用 `load_share_bindings` 填充本字段。
     #[serde(default)]
     pub bindings: HashMap<String, String>,
+    /// P17: 标记哪些 slot 是"动态绑定"——provider_id 仍然是当前激活的具体 id，但
+    /// 当用户切换该 app 的 active provider 时，cc-switch 会扫表把这些 slot 也指过去。
+    /// 持久化为 share_provider_bindings.dynamic = 1。包含 app_type 字符串集合；不
+    /// 在集合内的 app 视为固定绑定。
+    #[serde(default)]
+    pub dynamic_apps: HashSet<String>,
     /// 历史遗留字段，保留为空字符串。请求路径不读取此字段——上游 API key 始终
     /// 在请求时从绑定的 provider 实时读取。schema NOT NULL 约束要求非空，所以
     /// 用 `""` 占位。可视为已废弃，未来 schema 重整可移除。
@@ -123,10 +129,15 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
         // 同事务写入所有 bindings，确保 share 行和 binding 行原子可见。
         for (app_type, provider_id) in &share.bindings {
+            let dynamic_flag: i64 = if share.dynamic_apps.contains(app_type) {
+                1
+            } else {
+                0
+            };
             tx.execute(
-                "INSERT INTO share_provider_bindings (share_id, app_type, provider_id)
-                 VALUES (?1, ?2, ?3)",
-                params![share.id, app_type, provider_id],
+                "INSERT INTO share_provider_bindings (share_id, app_type, provider_id, dynamic)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![share.id, app_type, provider_id, dynamic_flag],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         }
@@ -148,7 +159,10 @@ impl Database {
         match rows.next().map_err(|e| AppError::Database(e.to_string()))? {
             Some(row) => {
                 let mut share = Self::row_to_share(row)?;
-                share.bindings = Self::load_share_bindings_on_conn(&conn, &share.id)?;
+                let (bindings, dynamic_apps) =
+                    Self::load_share_bindings_on_conn(&conn, &share.id)?;
+                share.bindings = bindings;
+                share.dynamic_apps = dynamic_apps;
                 Ok(Some(share))
             }
             None => Ok(None),
@@ -169,7 +183,10 @@ impl Database {
         let mut result = Vec::new();
         while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
             let mut share = Self::row_to_share(row)?;
-            share.bindings = Self::load_share_bindings_on_conn(&conn, &share.id)?;
+            let (bindings, dynamic_apps) =
+                Self::load_share_bindings_on_conn(&conn, &share.id)?;
+            share.bindings = bindings;
+            share.dynamic_apps = dynamic_apps;
             result.push(share);
         }
         Ok(result)
@@ -210,7 +227,10 @@ impl Database {
             let app_type: String = row
                 .get::<_, String>(Self::share_column_count())
                 .map_err(|e| AppError::Database(e.to_string()))?;
-            share.bindings = Self::load_share_bindings_on_conn(&conn, &share.id)?;
+            let (bindings, dynamic_apps) =
+                Self::load_share_bindings_on_conn(&conn, &share.id)?;
+            share.bindings = bindings;
+            share.dynamic_apps = dynamic_apps;
             result.push((share, app_type));
         }
         Ok(result)
@@ -495,10 +515,11 @@ impl Database {
                     params![share_id, app_type, new_pid],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?,
-            // UPDATE
+            // UPDATE：手动改绑同时清掉 dynamic 标记。如果用户原本是动态绑定，主动选了
+            // 一个固定 provider，则视为退出动态模式。
             (Some(old_pid), Some(new_pid)) => tx
                 .execute(
-                    "UPDATE share_provider_bindings SET provider_id = ?3
+                    "UPDATE share_provider_bindings SET provider_id = ?3, dynamic = 0
                      WHERE share_id = ?1 AND app_type = ?2 AND provider_id = ?4",
                     params![share_id, app_type, new_pid, old_pid],
                 )
@@ -610,6 +631,7 @@ impl Database {
             description: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
             for_sale: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
             bindings: HashMap::new(),
+            dynamic_apps: HashSet::new(),
             api_key: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
             settings_config: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
             token_limit: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
@@ -632,24 +654,88 @@ impl Database {
     }
 
     /// 读侧表中 share_id 对应的所有 binding（app_type → provider_id）。
+    /// 把所有 `app_type` 上 dynamic=1 的 slot 改成 `new_provider_id`。返回受影响
+    /// 的 share_id 列表，供调用方触发 router 同步 / 前端事件。注意：partial UNIQUE
+    /// 索引豁免了 dynamic=1 行，所以即便多个 share 都指向同一个 provider 也不会
+    /// 触发 UNIQUE 冲突。
+    pub fn redirect_dynamic_bindings_for_app(
+        &self,
+        app_type: &str,
+        new_provider_id: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let affected_shares: Vec<(String, Option<String>)> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT share_id, provider_id FROM share_provider_bindings
+                     WHERE app_type = ?1 AND dynamic = 1 AND provider_id != ?2",
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            let mut rows = stmt
+                .query(params![app_type, new_provider_id])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            let mut acc = Vec::new();
+            while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+                let sid: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
+                let old: Option<String> =
+                    row.get(1).map_err(|e| AppError::Database(e.to_string()))?;
+                acc.push((sid, old));
+            }
+            acc
+        };
+
+        if affected_shares.is_empty() {
+            tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+            return Ok(Vec::new());
+        }
+
+        tx.execute(
+            "UPDATE share_provider_bindings SET provider_id = ?2
+             WHERE app_type = ?1 AND dynamic = 1 AND provider_id != ?2",
+            params![app_type, new_provider_id],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        for (sid, old) in &affected_shares {
+            tx.execute(
+                "INSERT INTO share_binding_history (share_id, old_provider_id, new_provider_id, app_type)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![sid, old.as_deref(), new_provider_id, app_type],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(affected_shares.into_iter().map(|(sid, _)| sid).collect())
+    }
+
     fn load_share_bindings_on_conn(
         conn: &rusqlite::Connection,
         share_id: &str,
-    ) -> Result<HashMap<String, String>, AppError> {
+    ) -> Result<(HashMap<String, String>, HashSet<String>), AppError> {
         let mut stmt = conn
             .prepare(
-                "SELECT app_type, provider_id FROM share_provider_bindings WHERE share_id = ?1",
+                "SELECT app_type, provider_id, dynamic FROM share_provider_bindings WHERE share_id = ?1",
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut rows = stmt
             .query(params![share_id])
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut bindings = HashMap::new();
+        let mut dynamic_apps = HashSet::new();
         while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
             let app: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
             let pid: String = row.get(1).map_err(|e| AppError::Database(e.to_string()))?;
+            let dynamic: i64 = row.get(2).map_err(|e| AppError::Database(e.to_string()))?;
+            if dynamic != 0 {
+                dynamic_apps.insert(app.clone());
+            }
             bindings.insert(app, pid);
         }
-        Ok(bindings)
+        Ok((bindings, dynamic_apps))
     }
 }

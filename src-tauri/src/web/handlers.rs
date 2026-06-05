@@ -1236,6 +1236,7 @@ async fn invoke_local_admin_scoped(
                     crate::services::share::PrepareShareParams {
                         owner_email: params.owner_email.clone(),
                         bindings: params.bindings.clone(),
+                        dynamic_apps: params.dynamic_apps.iter().cloned().collect(),
                         description: params.description.clone(),
                         for_sale: params.for_sale.clone(),
                         token_limit: params.token_limit,

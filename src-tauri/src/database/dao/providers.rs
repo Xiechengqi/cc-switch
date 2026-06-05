@@ -985,6 +985,7 @@ mod provider_catalog_prune_tests {
             description: None,
             for_sale: "No".to_string(),
             bindings,
+            dynamic_apps: std::collections::HashSet::new(),
             api_key: "key".to_string(),
             settings_config: None,
             token_limit: -1,

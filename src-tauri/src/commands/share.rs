@@ -20,6 +20,11 @@ pub struct CreateShareParams {
     /// 全空也允许，用户可后续在 UI 里逐个挂 provider。
     #[serde(default)]
     pub bindings: std::collections::HashMap<String, String>,
+    /// P17 动态绑定：列表内的 app 在创建时跟随当前激活的 provider；之后用户
+    /// 在 cc-switch 里切换该 app 的 provider，本 share 的绑定会同步过去。
+    /// 与 `bindings` 互斥（同一 app 不能同时出现）。
+    #[serde(default)]
+    pub dynamic_apps: Vec<String>,
     pub description: Option<String>,
     pub for_sale: String,
     pub token_limit: i64,
@@ -188,6 +193,7 @@ pub async fn create_share(
             PrepareShareParams {
                 owner_email: owner_email.clone(),
                 bindings: params.bindings.clone(),
+                dynamic_apps: params.dynamic_apps.iter().cloned().collect(),
                 description: params.description.clone(),
                 for_sale: params.for_sale.clone(),
                 token_limit: params.token_limit,

@@ -15,19 +15,27 @@ use tauri::{Emitter, Manager};
 use crate::{
     app_config::AppType,
     commands::{
+        share::{
+            ClientTunnelUpdateParams, CreateShareParams, TransferShareOwnerParams,
+            UpdateShareAclParams, UpdateShareAutoStartParams, UpdateShareDescriptionParams,
+            UpdateShareExpirationParams, UpdateShareForSaleOfficialPricePercentParams,
+            UpdateShareForSaleParams, UpdateShareOwnerEmailParams, UpdateShareParallelLimitParams,
+            UpdateShareProviderBindingParams, UpdateShareSubdomainParams,
+            UpdateShareTokenLimitParams,
+        },
         AntigravityOAuthState, ClaudeOAuthState, CodexOAuthState, CopilotAuthState,
         CursorOAuthState, DeepSeekAccountState, GeminiOAuthState, KiroOAuthState, OauthQuotaState,
     },
     error::AppError,
-    provider::Provider,
+    provider::{Provider, UniversalProvider},
     proxy::{
         server::ProxyState,
         types::{AppProxyConfig, GlobalProxyConfig, ProxyConfig, ProxyStatus},
         CircuitBreakerConfig,
     },
-    services::{share::ShareService, ProviderService},
+    services::{provider::ProviderSortUpdate, share::ShareService, ProviderService},
     store::AppState,
-    tunnel::config::ShareTunnelStatus,
+    tunnel::config::{ShareTunnelStatus, TunnelConfig},
 };
 
 const INDEX_HTML: &str = "index.html";
@@ -1030,6 +1038,507 @@ async fn invoke_local_admin_scoped(
         "get_subscription_quota" => subscription_command(state, command, args).await,
         "get_coding_plan_quota" => subscription_command(state, command, args).await,
         "get_balance" => subscription_command(state, command, args).await,
+        // ===== P0: share metadata / EditDialog 直调（12 条）=====
+        "update_share_owner_email" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareOwnerEmailParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_owner_email(
+                    &app_state.db,
+                    &params.share_id,
+                    &params.owner_email,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "transfer_share_owner" => {
+            let app_state = required_app_state(state)?;
+            let params: TransferShareOwnerParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::transfer_owner_email(
+                    &app_state.db,
+                    &params.share_id,
+                    &params.target_email,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "update_share_acl" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareAclParams = value_arg(&args, "params")?;
+            // 与 Tauri 命令一致：从已存在记录读 owner_email，避免 web 调用方伪造 owner。
+            let share = ShareService::get_detail(&app_state.db, &params.share_id)
+                .map_err(WebError::internal)?
+                .ok_or_else(|| {
+                    WebError::bad_request(format!("Share not found: {}", params.share_id))
+                })?;
+            let owner_email = share.owner_email.clone();
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_acl(
+                    &app_state.db,
+                    &params.share_id,
+                    &owner_email,
+                    params.shared_with_emails,
+                    &params.market_access_mode,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "update_share_subdomain" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareSubdomainParams = value_arg(&args, "params")?;
+            // 镜像 Tauri 命令：先 claim_share_subdomain → stop tunnel → update DB → 若 active 重启 tunnel。
+            let share = ShareService::get_detail(&app_state.db, &params.share_id)
+                .map_err(WebError::internal)?
+                .ok_or_else(|| {
+                    WebError::bad_request(format!("Share not found: {}", params.share_id))
+                })?;
+            let requested_subdomain = params.subdomain.clone();
+            let mut next = share.clone();
+            next.subdomain = Some(requested_subdomain.clone());
+            crate::tunnel::sync::claim_share_subdomain(&next, &app_state.db)
+                .await
+                .map_err(|e| {
+                    WebError::internal(crate::email_auth::humanize_remote_owner_binding_error(&e))
+                })?;
+            {
+                let mut mgr = app_state.tunnel_manager.write().await;
+                if mgr.get_info(&params.share_id).is_some() {
+                    mgr.stop_tunnel(&params.share_id)
+                        .await
+                        .map_err(WebError::internal)?;
+                }
+            }
+            let updated = ShareService::update_subdomain(
+                &app_state.db,
+                &params.share_id,
+                &requested_subdomain,
+            )
+            .map_err(WebError::internal)?;
+            if updated.status == "active" {
+                crate::commands::share::start_share_tunnel_with_error_tracking(
+                    &app_state,
+                    &params.share_id,
+                )
+                .await
+                .map_err(WebError::internal)?;
+            }
+            Ok(json!(sanitize_share_for_web(updated)))
+        }
+        "update_share_description" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareDescriptionParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_description(
+                    &app_state.db,
+                    &params.share_id,
+                    params.description,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "update_share_expiration" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareExpirationParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_expires_at(
+                    &app_state.db,
+                    &params.share_id,
+                    &params.expires_at,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "update_share_auto_start" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareAutoStartParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_auto_start(
+                    &app_state.db,
+                    &params.share_id,
+                    params.auto_start,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "update_share_for_sale" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareForSaleParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_for_sale(
+                    &app_state.db,
+                    &params.share_id,
+                    &params.for_sale,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "update_share_for_sale_official_price_percent" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareForSaleOfficialPricePercentParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_for_sale_official_price_percent_by_app(
+                    &app_state.db,
+                    &params.share_id,
+                    params.pricing,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "update_share_token_limit" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareTokenLimitParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_token_limit(
+                    &app_state.db,
+                    &params.share_id,
+                    params.token_limit,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "update_share_parallel_limit" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareParallelLimitParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_parallel_limit(
+                    &app_state.db,
+                    &params.share_id,
+                    params.parallel_limit,
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        "update_share_provider_binding" => {
+            let app_state = required_app_state(state)?;
+            let params: UpdateShareProviderBindingParams = value_arg(&args, "params")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::update_provider_binding(
+                    &app_state.db,
+                    &params.share_id,
+                    &params.app_type,
+                    params.provider_id.as_deref(),
+                )
+                .map_err(WebError::internal)?,
+            )))
+        }
+        // ===== P1: share lifecycle（8 条）=====
+        "create_share" => {
+            let app_state = required_app_state(state)?;
+            let params: CreateShareParams = value_arg(&args, "params")?;
+            // 镜像 Tauri 命令：尝试 5 次申请 subdomain（被占就重试随机生成的）。
+            let requested_subdomain = params.subdomain.clone();
+            let mut last_claim_error: Option<String> = None;
+            let mut created = None;
+            for _ in 0..5 {
+                let candidate = ShareService::prepare_create(
+                    &app_state.db,
+                    crate::services::share::PrepareShareParams {
+                        owner_email: params.owner_email.clone(),
+                        bindings: params.bindings.clone(),
+                        description: params.description.clone(),
+                        for_sale: params.for_sale.clone(),
+                        token_limit: params.token_limit,
+                        parallel_limit: params.parallel_limit,
+                        expires_in_secs: params.expires_in_secs,
+                        subdomain: requested_subdomain.clone(),
+                        auto_start: params.auto_start,
+                    },
+                )
+                .map_err(WebError::internal)?;
+                match crate::tunnel::sync::claim_share_subdomain(&candidate, &app_state.db).await {
+                    Ok(()) => {
+                        created = Some(candidate);
+                        break;
+                    }
+                    Err(err)
+                        if requested_subdomain.is_none()
+                            && err.contains("subdomain already claimed") =>
+                    {
+                        last_claim_error = Some(err);
+                        continue;
+                    }
+                    Err(err) => {
+                        return Err(WebError::internal(
+                            crate::email_auth::humanize_remote_owner_binding_error(&err),
+                        ));
+                    }
+                }
+            }
+            let share = created.ok_or_else(|| {
+                WebError::internal(crate::email_auth::humanize_remote_owner_binding_error(
+                    &last_claim_error.unwrap_or_else(|| {
+                        "unable to allocate an available subdomain".to_string()
+                    }),
+                ))
+            })?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::create(&app_state.db, share).map_err(WebError::internal)?,
+            )))
+        }
+        "delete_share" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            // 镜像 Tauri 命令：先停 tunnel，再删 DB，最后 schedule remote 通知。
+            {
+                let mut mgr = app_state.tunnel_manager.write().await;
+                if mgr.get_info(&share_id).is_some() {
+                    if let Err(e) = mgr.stop_tunnel(&share_id).await {
+                        log::warn!("[Web] 停止隧道失败（将继续删除）: {e}");
+                    }
+                }
+            }
+            ShareService::delete(&app_state.db, &share_id).map_err(WebError::internal)?;
+            crate::tunnel::sync::schedule_delete_share(share_id);
+            Ok(json!(true))
+        }
+        "pause_share" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            ShareService::pause(&app_state.db, &share_id).map_err(WebError::internal)?;
+            Ok(json!(true))
+        }
+        "resume_share" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            ShareService::resume(&app_state.db, &share_id).map_err(WebError::internal)?;
+            Ok(json!(true))
+        }
+        "enable_share" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            ShareService::resume(&app_state.db, &share_id).map_err(WebError::internal)?;
+            let info = crate::commands::share::start_share_tunnel_with_error_tracking(
+                &app_state,
+                &share_id,
+            )
+            .await
+            .map_err(WebError::internal)?;
+            Ok(json!(info))
+        }
+        "disable_share" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            // 镜像 Tauri 命令：清 tunnel 记录 → pause → auto_start=false → 远端 sync → 停 tunnel。
+            app_state
+                .db
+                .clear_share_tunnel(&share_id)
+                .map_err(WebError::internal)?;
+            ShareService::pause(&app_state.db, &share_id).map_err(WebError::internal)?;
+            app_state
+                .db
+                .update_share_auto_start(&share_id, false)
+                .map_err(WebError::internal)?;
+            if let Ok(Some(share)) = app_state.db.get_share_by_id(&share_id) {
+                let metadata = crate::tunnel::sync::share_metadata_from_record(&share);
+                if let Err(err) = crate::tunnel::sync::sync_share_metadata_now(metadata).await {
+                    log::warn!("[Web] immediate remote sync after disable failed for {share_id}: {err}");
+                }
+            }
+            {
+                let mut mgr = app_state.tunnel_manager.write().await;
+                if mgr.get_info(&share_id).is_some() {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        mgr.stop_tunnel(&share_id),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            log::warn!("[Web] stop tunnel after disable failed for {share_id}: {err}");
+                        }
+                        Err(_) => {
+                            log::warn!("[Web] stop tunnel after disable timed out for {share_id}");
+                        }
+                    }
+                }
+            }
+            Ok(json!(true))
+        }
+        "reset_share_usage" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            Ok(json!(sanitize_share_for_web(
+                ShareService::reset_usage(&app_state.db, &share_id).map_err(WebError::internal)?,
+            )))
+        }
+        "list_share_binding_history" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize)
+                .unwrap_or(20);
+            Ok(json!(ShareService::list_binding_history(
+                &app_state.db,
+                &share_id,
+                limit,
+            )
+            .map_err(WebError::internal)?))
+        }
+        // ===== P2: tunnel 控制（3 share + 4 client = 7 条）=====
+        "start_share_tunnel" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            let info = crate::commands::share::start_share_tunnel_with_error_tracking(
+                &app_state,
+                &share_id,
+            )
+            .await
+            .map_err(WebError::internal)?;
+            Ok(json!(info))
+        }
+        "stop_share_tunnel" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            {
+                let mut mgr = app_state.tunnel_manager.write().await;
+                mgr.stop_tunnel(&share_id).await.map_err(WebError::internal)?;
+            }
+            app_state
+                .db
+                .clear_share_tunnel(&share_id)
+                .map_err(WebError::internal)?;
+            Ok(json!(true))
+        }
+        "configure_tunnel" => {
+            let app_state = required_app_state(state)?;
+            let config: TunnelConfig = value_arg(&args, "config")?;
+            // 与 Tauri 一致：持久化到 AppSettings + 同步 TunnelManager 里的 config。
+            let mut settings = crate::settings::get_settings();
+            settings.set_share_router_domain(Some(config.domain.clone()));
+            crate::settings::update_settings(settings).map_err(WebError::internal)?;
+            let mut mgr = app_state.tunnel_manager.write().await;
+            mgr.set_config(config);
+            Ok(json!(true))
+        }
+        "claim_client_tunnel" => {
+            let app_state = required_app_state(state)?;
+            let params: ClientTunnelUpdateParams = value_arg(&args, "params")?;
+            Ok(json!(crate::commands::share::write_client_tunnel_config(
+                &app_state, params, true,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "update_client_tunnel" => {
+            let app_state = required_app_state(state)?;
+            let params: ClientTunnelUpdateParams = value_arg(&args, "params")?;
+            Ok(json!(crate::commands::share::write_client_tunnel_config(
+                &app_state, params, false,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "start_client_tunnel" => {
+            let app_state = required_app_state(state)?;
+            let info = crate::commands::share::start_client_tunnel_with_error_tracking(&app_state)
+                .await
+                .map_err(WebError::internal)?;
+            Ok(json!(info))
+        }
+        "stop_client_tunnel" => {
+            let app_state = required_app_state(state)?;
+            let mut mgr = app_state.tunnel_manager.write().await;
+            if mgr
+                .get_info(crate::commands::share::WEB_CLIENT_TUNNEL_ID)
+                .is_some()
+            {
+                mgr.stop_tunnel(crate::commands::share::WEB_CLIENT_TUNNEL_ID)
+                    .await
+                    .map_err(WebError::internal)?;
+            }
+            Ok(json!(true))
+        }
+        // ===== P3: universal provider + 杂项（7 条）=====
+        "get_universal_providers" => {
+            let app_state = required_app_state(state)?;
+            Ok(json!(
+                ProviderService::list_universal(&app_state).map_err(WebError::internal)?
+            ))
+        }
+        "get_universal_provider" => {
+            let app_state = required_app_state(state)?;
+            let id = string_arg(&args, "id")?;
+            Ok(json!(
+                ProviderService::get_universal(&app_state, &id).map_err(WebError::internal)?
+            ))
+        }
+        "upsert_universal_provider" => {
+            let app_state = required_app_state(state)?;
+            let provider: UniversalProvider = value_arg(&args, "provider")?;
+            let id = provider.id.clone();
+            let result = ProviderService::upsert_universal(&app_state, provider)
+                .map_err(WebError::internal)?;
+            // emit 事件让 desktop UI 同步刷新（如果它和 web 共用同一进程）。
+            if let Ok(handle) = required_app_handle(state) {
+                let _ = handle.emit(
+                    "universal-provider-synced",
+                    crate::commands::UniversalProviderSyncedEvent {
+                        action: "upsert".to_string(),
+                        id,
+                    },
+                );
+            }
+            Ok(json!(result))
+        }
+        "delete_universal_provider" => {
+            let app_state = required_app_state(state)?;
+            let id = string_arg(&args, "id")?;
+            let result = ProviderService::delete_universal(&app_state, &id)
+                .map_err(WebError::internal)?;
+            if let Ok(handle) = required_app_handle(state) {
+                let _ = handle.emit(
+                    "universal-provider-synced",
+                    crate::commands::UniversalProviderSyncedEvent {
+                        action: "delete".to_string(),
+                        id,
+                    },
+                );
+            }
+            Ok(json!(result))
+        }
+        "sync_universal_provider" => {
+            let app_state = required_app_state(state)?;
+            let id = string_arg(&args, "id")?;
+            let result = ProviderService::sync_universal_to_apps(&app_state, &id)
+                .map_err(WebError::internal)?;
+            if let Ok(handle) = required_app_handle(state) {
+                let _ = handle.emit(
+                    "universal-provider-synced",
+                    crate::commands::UniversalProviderSyncedEvent {
+                        action: "sync".to_string(),
+                        id,
+                    },
+                );
+            }
+            Ok(json!(result))
+        }
+        "update_providers_sort_order" => {
+            let app_state = required_app_state(state)?;
+            let app_type = app_type_arg(&args, "app")?;
+            let updates: Vec<ProviderSortUpdate> = value_arg(&args, "updates")?;
+            Ok(json!(ProviderService::update_sort_order(
+                &app_state, app_type, updates,
+            )
+            .map_err(WebError::internal)?))
+        }
+        "get_build_info" => Ok(crate::commands::get_build_info()),
+        "get_share_connect_info" => {
+            let app_state = required_app_state(state)?;
+            let share_id = string_arg(&args, "shareId")?;
+            let share = ShareService::get_detail(&app_state.db, &share_id)
+                .map_err(WebError::internal)?
+                .ok_or_else(|| WebError::not_found(format!("Share not found: {share_id}")))?;
+            Ok(share_connect_info(&share))
+        }
+        "list_share_markets" => Ok(json!(
+            crate::commands::share::list_share_markets()
+                .await
+                .map_err(WebError::internal)?
+        )),
         _ => Err(WebError::not_found(format!(
             "local admin web command is allowlisted but not implemented yet: {command}"
         ))),

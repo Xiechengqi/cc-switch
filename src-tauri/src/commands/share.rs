@@ -138,6 +138,7 @@ pub struct ConnectInfo {
 }
 
 const CLIENT_TUNNEL_ID: &str = "__client_web__";
+pub(crate) const WEB_CLIENT_TUNNEL_ID: &str = CLIENT_TUNNEL_ID;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -657,7 +658,7 @@ pub async fn restore_active_share_tunnel(state: &AppState) -> Result<(), AppErro
     Ok(())
 }
 
-async fn start_share_tunnel_with_error_tracking(
+pub(crate) async fn start_share_tunnel_with_error_tracking(
     state: &AppState,
     share_id: &str,
 ) -> Result<TunnelInfo, AppError> {
@@ -850,7 +851,7 @@ pub async fn restore_client_tunnel(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn write_client_tunnel_config(
+pub(crate) async fn write_client_tunnel_config(
     state: &AppState,
     params: ClientTunnelUpdateParams,
     claim: bool,
@@ -903,7 +904,9 @@ async fn write_client_tunnel_config(
     })
 }
 
-async fn start_client_tunnel_with_error_tracking(state: &AppState) -> Result<TunnelInfo, AppError> {
+pub(crate) async fn start_client_tunnel_with_error_tracking(
+    state: &AppState,
+) -> Result<TunnelInfo, AppError> {
     match start_client_tunnel_inner(state).await {
         Ok(info) => {
             state

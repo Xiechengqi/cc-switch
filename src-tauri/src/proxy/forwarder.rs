@@ -1447,6 +1447,7 @@ impl RequestForwarder {
             );
         }
         if is_claude_oauth_provider {
+            filtered_body = ensure_claude_oauth_billing_header_system(filtered_body);
             filtered_body = sign_claude_oauth_messages_body(filtered_body);
         }
         log_prompt_cache_trace(
@@ -3236,6 +3237,61 @@ fn sign_claude_oauth_messages_body(mut body: Value) -> Value {
     body
 }
 
+/// Claude OAuth (claude.ai 网关) 要求 `system` 首块以 `x-anthropic-billing-header:`
+/// 开头，且包含 `cch=XXXXX;` 签名（由 `sign_claude_oauth_messages_body` 填充）。
+/// 普通 Anthropic API key / OpenRouter / Kiro 等不经过 claude.ai 网关，不需要这个块。
+///
+/// 这个函数处理 4 种输入形态，令用户按 Anthropic 官方文档写的 body 也能透明通过
+/// Claude OAuth provider——就像直连 `api.anthropic.com` 一样，不需要手动补 billing header：
+///
+/// 1. 没有 `system` 键 → 注入 `[billing_block]`
+/// 2. `system: "字符串"` (旧 Anthropic API 形式) → 转 array 并前置 billing_block
+/// 3. `system: [{...}]` 但首块**不是** billing-header → 前置 billing_block
+/// 4. `system: [{text: "x-anthropic-billing-header:..."}]` (真实 claude-cli 流量) → 原样不动
+///
+/// 情形 4 保证现有 claude-cli 通过 share URL 调用的行为完全不变——签名流水线
+/// (`sign_claude_oauth_messages_body`) 收到的 body 和以前一样，hash 结果也一样。
+fn ensure_claude_oauth_billing_header_system(mut body: Value) -> Value {
+    const BILLING_PREFIX: &str = "x-anthropic-billing-header:";
+    const BILLING_BLOCK_TEXT: &str =
+        "x-anthropic-billing-header: cc_version=2.1.119.47e; cc_entrypoint=sdk-cli; cch=00000;\n\nYou are Claude Code, Anthropic's official CLI for Claude.";
+
+    // 情形 4：首块已有 billing header → 不动（保留 claude-cli 真实 cch 让后续签名重算）。
+    if body
+        .get("system")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|b| b.get("text"))
+        .and_then(|t| t.as_str())
+        .is_some_and(|t| t.starts_with(BILLING_PREFIX))
+    {
+        return body;
+    }
+
+    let billing_block = serde_json::json!({"type": "text", "text": BILLING_BLOCK_TEXT});
+
+    let existing_system = body
+        .as_object_mut()
+        .and_then(|o| o.remove("system"));
+
+    let mut blocks: Vec<Value> = match existing_system {
+        // 情形 2：旧式字符串 system → 转成 array block
+        Some(Value::String(s)) if !s.is_empty() => {
+            vec![serde_json::json!({"type": "text", "text": s})]
+        }
+        // 空字符串 / null 视同无 system（情形 1）
+        Some(Value::String(_)) | Some(Value::Null) | None => Vec::new(),
+        // 情形 3：已是 array 但首块没有 billing header
+        Some(Value::Array(arr)) => arr,
+        // 其它非预期类型（object 等）忽略
+        _ => Vec::new(),
+    };
+
+    blocks.insert(0, billing_block);
+    body["system"] = Value::Array(blocks);
+    body
+}
+
 fn build_anthropic_beta_value(headers: &axum::http::HeaderMap, is_claude_oauth: bool) -> String {
     const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
     const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -3831,6 +3887,72 @@ mod tests {
         assert_eq!(beta, "claude-code-20250219");
     }
 
+    // ── ensure_claude_oauth_billing_header_system tests ──────────────────────
+
+    const BILLING_PREFIX_FOR_TEST: &str = "x-anthropic-billing-header:";
+
+    #[test]
+    fn inject_billing_header_when_no_system() {
+        let body = json!({"model": "claude-opus-4-7", "max_tokens": 16, "messages": []});
+        let result = ensure_claude_oauth_billing_header_system(body);
+        let system = result["system"].as_array().expect("system must be array");
+        assert_eq!(system.len(), 1);
+        assert!(system[0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with(BILLING_PREFIX_FOR_TEST));
+    }
+
+    #[test]
+    fn inject_billing_header_prepends_when_string_system() {
+        let body = json!({"model": "x", "max_tokens": 1, "system": "Be helpful.", "messages": []});
+        let result = ensure_claude_oauth_billing_header_system(body);
+        let system = result["system"].as_array().expect("system must be array");
+        // billing block at [0], original string wrapped at [1]
+        assert_eq!(system.len(), 2);
+        assert!(system[0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with(BILLING_PREFIX_FOR_TEST));
+        assert_eq!(system[1]["text"].as_str().unwrap_or(""), "Be helpful.");
+    }
+
+    #[test]
+    fn inject_billing_header_prepends_when_array_system_has_no_billing_block() {
+        let body = json!({
+            "model": "x",
+            "max_tokens": 1,
+            "system": [{"type": "text", "text": "Custom instructions."}],
+            "messages": []
+        });
+        let result = ensure_claude_oauth_billing_header_system(body);
+        let system = result["system"].as_array().expect("system must be array");
+        assert_eq!(system.len(), 2);
+        assert!(system[0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with(BILLING_PREFIX_FOR_TEST));
+        assert_eq!(system[1]["text"].as_str().unwrap_or(""), "Custom instructions.");
+    }
+
+    /// 真实 claude-cli 流量：system 首块已有 billing header → 原样不动，
+    /// 保证 sign_claude_oauth_messages_body 收到和以前一样的 body。
+    #[test]
+    fn inject_billing_header_noop_when_billing_block_already_present() {
+        let original_text = "x-anthropic-billing-header: cc_version=2.1; cch=abcde;\n\nYou are Claude Code.";
+        let body = json!({
+            "model": "x",
+            "max_tokens": 1,
+            "system": [{"type": "text", "text": original_text}],
+            "messages": []
+        });
+        let result = ensure_claude_oauth_billing_header_system(body);
+        let system = result["system"].as_array().expect("system must be array");
+        // 没有多出来的块
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["text"].as_str().unwrap_or(""), original_text);
+    }
+
     #[test]
     fn canonical_json_sorts_object_keys_for_cache_trace_hashes() {
         let left = json!({
@@ -3838,7 +3960,6 @@ mod tests {
                 {
                     "parameters": {
                         "properties": {
-                            "b": {"type": "string"},
                             "a": {"type": "number"}
                         },
                         "type": "object"

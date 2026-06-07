@@ -1817,7 +1817,11 @@ async fn managed_auth_command(
     let cursor = required_state::<CursorOAuthState>(state, "cursor oauth")?;
     let auth_provider = string_arg(&args, "authProvider")?;
     if command == "auth_start_login" && is_local_callback_auth_provider(&auth_provider) {
-        return Err(WebError::bad_request(local_callback_auth_blocked_message()));
+        let flow_mode = optional_string_arg(&args, "oauthFlowMode");
+        let web_paste = flow_mode.as_deref() == Some("web_paste");
+        if !(web_paste && supports_web_paste_flow(&auth_provider)) {
+            return Err(WebError::bad_request(local_callback_auth_blocked_message()));
+        }
     }
 
     match command {
@@ -1939,6 +1943,12 @@ fn is_local_callback_auth_provider(auth_provider: &str) -> bool {
         auth_provider,
         "claude_oauth" | "google_gemini_oauth" | "antigravity_oauth"
     )
+}
+
+/// 是否支持 web-paste 流程（手动从 platform 复制授权码）。
+/// 与前端 `WEB_PASTE_CAPABLE_PROVIDERS` 必须保持一致。
+fn supports_web_paste_flow(auth_provider: &str) -> bool {
+    matches!(auth_provider, "claude_oauth")
 }
 
 fn local_callback_auth_blocked_message() -> &'static str {

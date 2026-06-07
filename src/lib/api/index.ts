@@ -63,3 +63,10 @@ export type {
   DeepSeekAccount,
   DeepSeekAccountStatus,
 } from "./auth";
+export {
+  isLocalCallbackAuthProvider,
+  isRemoteWebMode,
+  shouldBlockLocalCallbackAuthInClientWeb,
+  supportsWebPasteFlow,
+  localCallbackAuthBlockedMessage,
+} from "./auth";

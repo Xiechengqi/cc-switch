@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { useClaudeOauth } from "./hooks/useClaudeOauth";
 import { copyText } from "@/lib/clipboard";
+import { Input } from "@/components/ui/input";
 
 interface ClaudeOAuthSectionProps {
   className?: string;
@@ -56,16 +57,26 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
     deviceCode,
     error,
     isWaitingBrowser,
+    isWaitingPaste,
+    isSubmittingPaste,
     isAddingAccount,
     isRemovingAccount,
     isSettingDefaultAccount,
     defaultAccountId,
     addAccount,
     cancelAuth,
+    submitPasteCode,
     logout,
     removeAccount,
     setDefaultAccount,
   } = useClaudeOauth();
+  const [pasteCode, setPasteCode] = React.useState("");
+  React.useEffect(() => {
+    // Reset paste input when a new flow starts or when we leave the paste state.
+    if (!isWaitingPaste) {
+      setPasteCode("");
+    }
+  }, [isWaitingPaste]);
 
   const copyVerificationUrl = async () => {
     if (!deviceCode?.verification_uri) {
@@ -291,6 +302,109 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
               variant="ghost"
               size="sm"
               onClick={cancelAuth}
+            >
+              {t("common.cancel", "取消")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Web-paste 模式：用户从 platform.claude.com 复制 code 粘回。 */}
+      {isWaitingPaste && deviceCode && (
+        <div className="space-y-3 p-4 rounded-lg border border-border bg-muted/50">
+          <div className="text-sm text-muted-foreground">
+            {t(
+              "claudeOauth.webPasteHint",
+              "1. 点击下方链接在浏览器中完成 claude.ai 授权。\n2. 授权后会跳到 platform.claude.com 显示一段授权码。\n3. 复制该授权码并粘到下面的输入框，点击「提交」即可完成添加账号。",
+            )}
+          </div>
+
+          <div className="rounded-md border bg-background/80 p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <a
+                href={deviceCode.verification_uri}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="min-w-0 flex-1 truncate text-sm text-blue-500 hover:underline"
+                title={deviceCode.verification_uri}
+              >
+                {deviceCode.verification_uri}
+              </a>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={copyVerificationUrl}
+                title={t("claudeOauth.copyLink", "复制链接")}
+              >
+                {copied ? (
+                  <Check className="h-4 w-4 text-green-500" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+              </Button>
+              <a
+                href={deviceCode.verification_uri}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex"
+              >
+                <Button type="button" variant="outline" size="sm">
+                  {t("claudeOauth.openManually", "打开链接")}
+                  <ExternalLink className="ml-1 h-3 w-3" />
+                </Button>
+              </a>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">
+              {t(
+                "claudeOauth.pasteCodeLabel",
+                "从 platform.claude.com 复制的授权码",
+              )}
+            </Label>
+            <div className="flex items-center gap-2">
+              <Input
+                value={pasteCode}
+                onChange={(e) => setPasteCode(e.target.value)}
+                placeholder={t(
+                  "claudeOauth.pasteCodePlaceholder",
+                  "粘贴授权码 …",
+                )}
+                spellCheck={false}
+                autoComplete="off"
+                disabled={isSubmittingPaste}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && pasteCode.trim() && !isSubmittingPaste) {
+                    e.preventDefault();
+                    submitPasteCode(pasteCode);
+                  }
+                }}
+                className="font-mono"
+              />
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => submitPasteCode(pasteCode)}
+                disabled={!pasteCode.trim() || isSubmittingPaste}
+              >
+                {isSubmittingPaste ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  t("claudeOauth.submitPasteCode", "提交")
+                )}
+              </Button>
+            </div>
+          </div>
+
+          <div className="text-center">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={cancelAuth}
+              disabled={isSubmittingPaste}
             >
               {t("common.cancel", "取消")}
             </Button>

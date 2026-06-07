@@ -51,6 +51,16 @@ export interface ManagedAuthDeviceCodeResponse {
   interval: number;
 }
 
+/**
+ * `claude_oauth` 在 web 模式（client URL 访问、非桌面 Tauri）下，redirect_uri 改成
+ * `https://platform.claude.com/oauth/code/callback`，用户手动复制授权码后调用
+ * `authSubmitOauthCode` 提交。其它 provider 缺乏对应的 out-of-band 回调端点，
+ * 维持原来的"web 模式禁用"行为。
+ */
+const WEB_PASTE_CAPABLE_PROVIDERS = new Set<ManagedAuthProvider>([
+  "claude_oauth",
+]);
+
 const LOCAL_CALLBACK_AUTH_PROVIDERS = new Set<ManagedAuthProvider>([
   "claude_oauth",
   "google_gemini_oauth",
@@ -75,6 +85,27 @@ export function isLocalCallbackAuthProvider(
   return LOCAL_CALLBACK_AUTH_PROVIDERS.has(authProvider);
 }
 
+/**
+ * 判断当前会话是否处于"远程 web 模式"——即通过 client URL 访问，cc-switch 进程
+ * 的本机 localhost 端口不可达。用来决定 OAuth 流程要不要走 web-paste 分支。
+ */
+export function isRemoteWebMode(): boolean {
+  if (isTauriRuntime()) return false;
+  if (typeof window === "undefined") return false;
+  return !isLoopbackHostname(window.location.hostname);
+}
+
+/**
+ * Provider 是否支持 web-paste 流程（手动粘贴 platform.claude.com 上的授权码）。
+ * 不支持的 provider 在 web 模式下继续被 `shouldBlockLocalCallbackAuthInClientWeb`
+ * 拦截。
+ */
+export function supportsWebPasteFlow(
+  authProvider: ManagedAuthProvider,
+): boolean {
+  return WEB_PASTE_CAPABLE_PROVIDERS.has(authProvider);
+}
+
 export function shouldBlockLocalCallbackAuthInClientWeb(
   authProvider: ManagedAuthProvider,
 ): boolean {
@@ -84,7 +115,11 @@ export function shouldBlockLocalCallbackAuthInClientWeb(
   if (typeof window === "undefined") {
     return false;
   }
-  return !isLoopbackHostname(window.location.hostname);
+  if (!isRemoteWebMode()) {
+    return false;
+  }
+  // claude_oauth 在 web 模式下走 web-paste 流程，不再拦截。
+  return !supportsWebPasteFlow(authProvider);
 }
 
 export function localCallbackAuthBlockedMessage(): string {
@@ -94,6 +129,12 @@ export function localCallbackAuthBlockedMessage(): string {
 export async function authStartLogin(
   authProvider: ManagedAuthProvider,
   githubDomain?: string,
+  /**
+   * `"web_paste"` only meaningful for `claude_oauth` and only in remote web mode.
+   * Backend treats anything else (including undefined) as the classic localhost
+   * callback flow.
+   */
+  oauthFlowMode?: "web_paste" | "localhost",
 ): Promise<ManagedAuthDeviceCodeResponse> {
   if (shouldBlockLocalCallbackAuthInClientWeb(authProvider)) {
     throw new Error(localCallbackAuthBlockedMessage());
@@ -101,6 +142,23 @@ export async function authStartLogin(
   return invokeCommand<ManagedAuthDeviceCodeResponse>("auth_start_login", {
     authProvider,
     githubDomain: githubDomain || null,
+    oauthFlowMode: oauthFlowMode || null,
+  });
+}
+
+/**
+ * Web-paste 模式专用：用户在 platform.claude.com 上复制 authorization code 后
+ * 调用此函数完成 token 换取。`deviceCode` 即 `authStartLogin` 返回的 state。
+ */
+export async function authSubmitOauthCode(
+  authProvider: ManagedAuthProvider,
+  deviceCode: string,
+  code: string,
+): Promise<ManagedAuthAccount> {
+  return invokeCommand<ManagedAuthAccount>("auth_submit_oauth_code", {
+    authProvider,
+    deviceCode,
+    code,
   });
 }
 
@@ -192,6 +250,7 @@ export async function deepseekAccountSetDefault(
 
 export const authApi = {
   authStartLogin,
+  authSubmitOauthCode,
   authPollForAccount,
   authListAccounts,
   authGetStatus,

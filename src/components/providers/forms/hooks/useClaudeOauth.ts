@@ -1,18 +1,24 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { authApi } from "@/lib/api";
+import { authApi, isRemoteWebMode } from "@/lib/api";
 import type {
   ManagedAuthStatus,
   ManagedAuthDeviceCodeResponse,
 } from "@/lib/api";
 
-type AuthState = "idle" | "waiting_browser" | "success" | "error";
+type AuthState = "idle" | "waiting_browser" | "waiting_paste" | "success" | "error";
 
 export function useClaudeOauth() {
   const queryClient = useQueryClient();
   const queryKey = ["managed-auth-status", "claude_oauth"];
 
   const [authState, setAuthState] = useState<AuthState>("idle");
+  // authStateRef 给 setTimeout 闭包用：里面拿不到最新的 authState 值（闭包捕获的是
+  // 触发 timer 那一刻的值）。waiting_paste 的超时回调要根据当时状态决定是否报错。
+  const authStateRef = useRef<AuthState>("idle");
+  useEffect(() => {
+    authStateRef.current = authState;
+  }, [authState]);
   const [deviceCode, setDeviceCode] =
     useState<ManagedAuthDeviceCodeResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,14 +49,35 @@ export function useClaudeOauth() {
   }, [stopPolling]);
 
   const startLoginMutation = useMutation({
-    mutationFn: () => authApi.authStartLogin("claude_oauth"),
+    mutationFn: () =>
+      authApi.authStartLogin(
+        "claude_oauth",
+        undefined,
+        // 远程 web 模式（通过 client URL 访问）走 platform.claude.com out-of-band
+        // 回调；桌面 Tauri 模式继续走 127.0.0.1:54545。
+        isRemoteWebMode() ? "web_paste" : undefined,
+      ),
     onSuccess: async (response) => {
       setDeviceCode(response);
-      setAuthState("waiting_browser");
       setError(null);
 
-      // 后端回调任务在后台异步等待，这里用 setTimeout 链式轮询（非 setInterval），
-      // 保证每次只有一个轮询请求在飞行中（P1 修复：避免并发 bind 同一端口）
+      if (isRemoteWebMode()) {
+        // Web-paste 模式：等用户从 platform.claude.com 复制 code 后调
+        // submitPasteCode，没有自动轮询；只设个超时清掉 deviceCode。
+        setAuthState("waiting_paste");
+        const expiresMs = response.expires_in * 1000;
+        pollingTimeoutRef.current = setTimeout(() => {
+          // 超时只复位状态，不报错——用户可能正在 claude.ai 上慢慢操作。
+          if (authStateRef.current === "waiting_paste") {
+            setAuthState("error");
+            setError("授权超时，请重试。");
+          }
+        }, expiresMs);
+        return;
+      }
+
+      // 桌面模式：原有的本机回调 + 轮询。
+      setAuthState("waiting_browser");
       const interval = (response.interval || 3) * 1000;
       const expiresAt = Date.now() + response.expires_in * 1000;
 
@@ -99,6 +126,24 @@ export function useClaudeOauth() {
     },
     onError: (e) => {
       setAuthState("error");
+      setError(e instanceof Error ? e.message : String(e));
+    },
+  });
+
+  const submitPasteCodeMutation = useMutation({
+    mutationFn: async ({ deviceCode: dc, code }: { deviceCode: string; code: string }) =>
+      authApi.authSubmitOauthCode("claude_oauth", dc, code),
+    onSuccess: async () => {
+      stopPolling();
+      setAuthState("success");
+      await refetchStatus();
+      await queryClient.invalidateQueries({ queryKey });
+      setAuthState("idle");
+      setDeviceCode(null);
+      setError(null);
+    },
+    onError: (e) => {
+      // 失败时让用户能重试粘贴，不复位 deviceCode。
       setError(e instanceof Error ? e.message : String(e));
     },
   });
@@ -186,6 +231,24 @@ export function useClaudeOauth() {
     [setDefaultAccountMutation],
   );
 
+  const submitPasteCode = useCallback(
+    (code: string) => {
+      const dc = deviceCode?.device_code;
+      if (!dc) {
+        setError("授权流程未启动或已过期，请重新点击登录。");
+        return;
+      }
+      const trimmed = code.trim();
+      if (!trimmed) {
+        setError("请粘贴 platform.claude.com 上显示的授权码。");
+        return;
+      }
+      setError(null);
+      submitPasteCodeMutation.mutate({ deviceCode: dc, code: trimmed });
+    },
+    [deviceCode, submitPasteCodeMutation],
+  );
+
   const accounts = authStatus?.accounts ?? [];
 
   return {
@@ -199,13 +262,18 @@ export function useClaudeOauth() {
     deviceCode,
     error,
     isWaitingBrowser: authState === "waiting_browser",
+    isWaitingPaste: authState === "waiting_paste",
+    isSubmittingPaste: submitPasteCodeMutation.isPending,
     isAddingAccount:
-      startLoginMutation.isPending || authState === "waiting_browser",
+      startLoginMutation.isPending ||
+      authState === "waiting_browser" ||
+      authState === "waiting_paste",
     isRemovingAccount: removeAccountMutation.isPending,
     isSettingDefaultAccount: setDefaultAccountMutation.isPending,
     startAuth,
     addAccount: startAuth,
     cancelAuth,
+    submitPasteCode,
     logout,
     removeAccount,
     setDefaultAccount,

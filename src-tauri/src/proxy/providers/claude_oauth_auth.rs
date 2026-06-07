@@ -45,6 +45,11 @@ const CALLBACK_PORT: u16 = 54545;
 /// 回调路径
 const CALLBACK_PATH: &str = "/callback";
 
+/// Web 浏览器模式回退 redirect_uri（Anthropic 自家的 out-of-band 授权码展示页）。
+/// 当 cc-switch 通过 client URL 在远程浏览器里访问、本机 listener 不可达时使用——
+/// 用户在 platform.claude.com 上看到授权码后手动粘回 cc-switch。
+const WEB_PASTE_REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
+
 /// OAuth Scopes
 const CLAUDE_SCOPES: &str =
     "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
@@ -151,8 +156,26 @@ impl CachedAccessToken {
 #[derive(Debug, Clone)]
 struct PendingOAuthFlow {
     code_verifier: String,
+    /// 当前流程使用的 redirect_uri。token 换取时必须和 authorize 步骤严格一致，
+    /// localhost 模式 = `http://localhost:54545/callback`，
+    /// web-paste 模式 = `https://platform.claude.com/oauth/code/callback`。
+    redirect_uri: String,
     /// Unix 毫秒时间戳，超时后可清理
     expires_at_ms: i64,
+}
+
+/// OAuth 浏览器流程的运行模式。
+///
+/// - `Localhost`：cc-switch 进程在本机起 TCP listener 接收 claude.ai 重定向回来的 code，
+///   桌面 Tauri app 用户体验最好（点开链接、授权、自动完成）。
+/// - `WebPaste`：远程浏览器访问 client URL 时（cc-switch 进程的 localhost 不可达），
+///   `redirect_uri` 用 Anthropic 自家的 out-of-band 页面 `platform.claude.com/oauth/code/callback`。
+///   用户在那里复制授权码，粘回 cc-switch web UI；前端调 `submit_pasted_code(state, code)`
+///   触发 token 换取。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthFlowMode {
+    Localhost,
+    WebPaste,
 }
 
 /// 后台回调任务的结果状态（由前端轮询消费）
@@ -279,29 +302,30 @@ impl ClaudeOAuthManager {
 
     // ==================== OAuth 浏览器流程 ====================
 
-    /// 启动 OAuth 浏览器登录流程
+    /// 启动 OAuth 浏览器登录流程。
     ///
-    /// 1. 先 abort 任何旧的回调任务（释放端口）
-    /// 2. **立即** 绑定本地回调端口（listener 就绪后才返回 URL）
-    /// 3. 在后台 spawn 任务等待浏览器回调
-    /// 4. 返回授权 URL 供前端打开浏览器
+    /// `mode` 控制 redirect_uri 选择 + 是否绑定本机回调端口：
+    /// - [`OAuthFlowMode::Localhost`]（桌面 Tauri 默认）：在 127.0.0.1:54545 绑定
+    ///   listener，redirect_uri 用 `http://localhost:54545/callback`。授权后浏览器
+    ///   自动回调，前端轮询 `poll_callback_result(state)` 拿结果。
+    /// - [`OAuthFlowMode::WebPaste`]（通过 client URL 远程访问 cc-switch 时）：
+    ///   redirect_uri 用 Anthropic 自家的 `platform.claude.com/oauth/code/callback`，
+    ///   不绑端口、不 spawn 后台任务；用户在那个页面看到授权码后手动复制粘回
+    ///   cc-switch UI，前端调 `submit_pasted_code(state, code)` 完成 token 换取。
     ///
-    /// 前端随后通过 `poll_callback_result(state)` 非阻塞轮询结果。
-    pub async fn start_browser_flow(&self) -> Result<ClaudeOAuthStartResponse, ClaudeOAuthError> {
+    /// 两种模式共享 PKCE / state / pending_flows / flow_results 机制——`submit_pasted_code`
+    /// 成功后也会把 `FlowResult::Ready` 写进 `flow_results`，所以既有的轮询代码
+    /// 完全不需要改也能感知到结果。
+    pub async fn start_browser_flow(
+        &self,
+        mode: OAuthFlowMode,
+    ) -> Result<ClaudeOAuthStartResponse, ClaudeOAuthError> {
         use tokio::net::TcpListener;
 
         let code_verifier = Self::generate_code_verifier();
         let code_challenge = Self::generate_code_challenge(&code_verifier);
         let state = Self::generate_state();
-        let redirect_uri = format!("http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}");
-
-        let auth_url = format!(
-            "{CLAUDE_AUTHORIZE_URL}?code=true&client_id={CLAUDE_CLIENT_ID}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
-            urlencoding::encode(&redirect_uri),
-            urlencoding::encode(CLAUDE_SCOPES),
-            urlencoding::encode(&code_challenge),
-            urlencoding::encode(&state),
-        );
+        let (redirect_uri, auth_url) = build_authorize_url(mode, &code_challenge, &state);
 
         // ── 1. abort 旧的回调任务以释放端口 ──
         {
@@ -317,17 +341,10 @@ impl ClaudeOAuthManager {
             results.clear();
         }
 
-        // ── 2. 绑定回调端口（在返回 URL 之前！） ──
-        let addr = format!("127.0.0.1:{CALLBACK_PORT}");
-        let listener = TcpListener::bind(&addr).await.map_err(|e| {
-            ClaudeOAuthError::CallbackServerError(format!("无法绑定回调端口 {CALLBACK_PORT}: {e}"))
-        })?;
-        log::info!("[ClaudeOAuth] 回调服务器启动于 {addr}");
-
         let expires_at_ms =
             chrono::Utc::now().timestamp_millis() + (CALLBACK_TIMEOUT_SECS as i64) * 1000;
 
-        // ── 3. 记录进行中的流程 ──
+        // ── 2. 记录进行中的流程（在端口绑定之前确保 state 已可被消费） ──
         {
             let mut pending = self.pending_flows.write().await;
             let now_ms = chrono::Utc::now().timestamp_millis();
@@ -336,42 +353,90 @@ impl ClaudeOAuthManager {
                 state.clone(),
                 PendingOAuthFlow {
                     code_verifier,
+                    redirect_uri: redirect_uri.clone(),
                     expires_at_ms,
                 },
             );
         }
 
-        // 标记为 Pending
+        // 标记为 Pending（两种模式都标 Pending；WebPaste 由 submit_pasted_code 翻成 Ready）
         {
             let mut results = self.flow_results.write().await;
             results.insert(state.clone(), FlowResult::Pending);
         }
 
-        // ── 4. spawn 后台任务等待回调 ──
-        let manager = self.clone();
-        let state_clone = state.clone();
-        let handle = tokio::spawn(async move {
-            let result = manager
-                .run_callback_on_listener(listener, &state_clone)
-                .await;
-            let mut results = manager.flow_results.write().await;
-            results.insert(
-                state_clone,
-                FlowResult::Ready(result.map_err(|e| e.to_string())),
-            );
-        });
-        {
-            let mut handle_guard = self.active_flow_handle.lock().await;
-            *handle_guard = Some(handle);
-        }
+        let callback_port = match mode {
+            OAuthFlowMode::Localhost => {
+                // ── 3a. localhost 模式：绑回调端口 + spawn 等待任务 ──
+                let addr = format!("127.0.0.1:{CALLBACK_PORT}");
+                let listener = TcpListener::bind(&addr).await.map_err(|e| {
+                    ClaudeOAuthError::CallbackServerError(format!(
+                        "无法绑定回调端口 {CALLBACK_PORT}: {e}"
+                    ))
+                })?;
+                log::info!("[ClaudeOAuth] 回调服务器启动于 {addr}");
 
-        log::info!("[ClaudeOAuth] 启动浏览器 OAuth 流程，state: {state}");
+                let manager = self.clone();
+                let state_clone = state.clone();
+                let handle = tokio::spawn(async move {
+                    let result = manager
+                        .run_callback_on_listener(listener, &state_clone)
+                        .await;
+                    let mut results = manager.flow_results.write().await;
+                    results.insert(
+                        state_clone,
+                        FlowResult::Ready(result.map_err(|e| e.to_string())),
+                    );
+                });
+                {
+                    let mut handle_guard = self.active_flow_handle.lock().await;
+                    *handle_guard = Some(handle);
+                }
+                CALLBACK_PORT
+            }
+            OAuthFlowMode::WebPaste => {
+                // ── 3b. web-paste 模式：跳过端口绑定，等待 submit_pasted_code 触发 ──
+                log::info!("[ClaudeOAuth] web-paste 模式：等待用户粘贴授权码");
+                0
+            }
+        };
+
+        log::info!(
+            "[ClaudeOAuth] 启动浏览器 OAuth 流程，mode={mode:?}, state: {state}"
+        );
 
         Ok(ClaudeOAuthStartResponse {
             auth_url,
             state,
-            callback_port: CALLBACK_PORT,
+            callback_port,
         })
+    }
+
+    /// Web-paste 模式专用：用户从 platform.claude.com 复制 code 后调用。
+    ///
+    /// 把 (state, code) 喂回与 [`handle_callback`] 相同的 token 换取链路，
+    /// 结果同时写入 `flow_results`——既有的 `poll_callback_result` 调用方
+    /// （比如 commands/auth.rs:auth_poll_for_account）能继续以无差别方式拿到结果。
+    pub async fn submit_pasted_code(
+        &self,
+        code: &str,
+        state: &str,
+    ) -> Result<GitHubAccount, ClaudeOAuthError> {
+        let result = self.handle_callback(code, state).await;
+        // 镜像 localhost 模式后台任务的行为：把结果写入 flow_results 让 poll 可见。
+        {
+            let mut results = self.flow_results.write().await;
+            results.insert(
+                state.to_string(),
+                FlowResult::Ready(
+                    result
+                        .as_ref()
+                        .map(|account| account.clone())
+                        .map_err(|e| e.to_string()),
+                ),
+            );
+        }
+        result
     }
 
     /// 处理 OAuth 回调（收到 authorization_code 后调用）
@@ -400,7 +465,7 @@ impl ClaudeOAuthManager {
 
         // 用 authorization_code + code_verifier 换 token
         let tokens = self
-            .exchange_code_for_tokens(code, state, &flow.code_verifier)
+            .exchange_code_for_tokens(code, state, &flow.code_verifier, &flow.redirect_uri)
             .await?;
 
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
@@ -529,15 +594,19 @@ impl ClaudeOAuthManager {
         Ok((code, state))
     }
 
-    /// 用 authorization_code + code_verifier 换取 tokens
+    /// 用 authorization_code + code_verifier 换取 tokens。
+    ///
+    /// `redirect_uri` 必须和 authorize 步骤里的字字相符（OAuth 2.0 RFC 6749 §4.1.3），
+    /// 由调用方按 [`PendingOAuthFlow::redirect_uri`] 传进来——localhost 模式是
+    /// `http://localhost:54545/callback`，web-paste 模式是
+    /// `https://platform.claude.com/oauth/code/callback`。
     async fn exchange_code_for_tokens(
         &self,
         code: &str,
         state: &str,
         code_verifier: &str,
+        redirect_uri: &str,
     ) -> Result<OAuthTokenResponse, ClaudeOAuthError> {
-        let redirect_uri = format!("http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}");
-
         let body = serde_json::json!({
             "code": code,
             "state": state,
@@ -1074,6 +1143,28 @@ fn compute_expires_at_ms(expires_in: Option<i64>) -> i64 {
     chrono::Utc::now().timestamp_millis() + expires_in * 1000
 }
 
+/// 构造 (redirect_uri, auth_url) 二元组。纯函数，便于单测。
+///
+/// 见 [`OAuthFlowMode`] 对两种模式的差异。
+fn build_authorize_url(
+    mode: OAuthFlowMode,
+    code_challenge: &str,
+    state: &str,
+) -> (String, String) {
+    let redirect_uri = match mode {
+        OAuthFlowMode::Localhost => format!("http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}"),
+        OAuthFlowMode::WebPaste => WEB_PASTE_REDIRECT_URI.to_string(),
+    };
+    let auth_url = format!(
+        "{CLAUDE_AUTHORIZE_URL}?code=true&client_id={CLAUDE_CLIENT_ID}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        urlencoding::encode(&redirect_uri),
+        urlencoding::encode(CLAUDE_SCOPES),
+        urlencoding::encode(code_challenge),
+        urlencoding::encode(state),
+    );
+    (redirect_uri, auth_url)
+}
+
 /// 解析 HTTP 回调请求中的 code 和 state
 fn parse_callback_request(request: &str) -> Result<(String, String), ClaudeOAuthError> {
     // 解析 GET /callback?code=xxx&state=yyy HTTP/1.1
@@ -1129,5 +1220,60 @@ fn parse_callback_request(request: &str) -> Result<(String, String), ClaudeOAuth
         Err(ClaudeOAuthError::CallbackServerError(
             "回调请求缺少查询参数".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE_CHALLENGE: &str = "ltDIXwTqQFLmXcVs2j5J5n-ZQ5_KeMmxpEvMVPKIj90";
+    const SAMPLE_STATE: &str = "RaZZE1uDqXE78bwEnJxRx9itnWHUeGxm0jy1BQD8q90";
+
+    #[test]
+    fn localhost_mode_uses_loopback_redirect() {
+        let (redirect, url) =
+            build_authorize_url(OAuthFlowMode::Localhost, SAMPLE_CHALLENGE, SAMPLE_STATE);
+        assert_eq!(redirect, "http://localhost:54545/callback");
+        assert!(url.starts_with("https://claude.ai/oauth/authorize?"));
+        assert!(url.contains("client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A54545%2Fcallback"));
+        // 标识 web-paste 的占位符不应出现
+        assert!(!url.contains("platform.claude.com"));
+    }
+
+    #[test]
+    fn web_paste_mode_uses_platform_redirect() {
+        let (redirect, url) =
+            build_authorize_url(OAuthFlowMode::WebPaste, SAMPLE_CHALLENGE, SAMPLE_STATE);
+        assert_eq!(redirect, "https://platform.claude.com/oauth/code/callback");
+        assert!(url.contains(
+            "redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback"
+        ));
+        // 不应再带 localhost
+        assert!(!url.contains("localhost"));
+    }
+
+    #[test]
+    fn auth_url_includes_pkce_and_state_intact() {
+        let (_, url) =
+            build_authorize_url(OAuthFlowMode::WebPaste, SAMPLE_CHALLENGE, SAMPLE_STATE);
+        // PKCE challenge 和 state 是 URL-safe base64，不需要 percent-encode 之外再做处理。
+        assert!(url.contains(&format!(
+            "code_challenge={}",
+            urlencoding::encode(SAMPLE_CHALLENGE)
+        )));
+        assert!(url.contains(&format!("state={}", urlencoding::encode(SAMPLE_STATE))));
+    }
+
+    /// 两种模式的 redirect_uri 必须完全不同——这就是整个 web 模式的关键不变量。
+    #[test]
+    fn modes_produce_distinct_redirects() {
+        let (loopback, _) =
+            build_authorize_url(OAuthFlowMode::Localhost, SAMPLE_CHALLENGE, SAMPLE_STATE);
+        let (web, _) =
+            build_authorize_url(OAuthFlowMode::WebPaste, SAMPLE_CHALLENGE, SAMPLE_STATE);
+        assert_ne!(loopback, web);
     }
 }

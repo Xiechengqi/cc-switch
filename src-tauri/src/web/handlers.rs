@@ -1009,6 +1009,7 @@ async fn invoke_local_admin_scoped(
         "auth_list_accounts" => managed_auth_command(state, command, args).await,
         "auth_get_status" => managed_auth_command(state, command, args).await,
         "auth_start_login" => managed_auth_command(state, command, args).await,
+        "auth_submit_oauth_code" => managed_auth_command(state, command, args).await,
         "auth_poll_for_account" => managed_auth_command(state, command, args).await,
         "auth_remove_account" => managed_auth_command(state, command, args).await,
         "auth_set_default_account" => managed_auth_command(state, command, args).await,
@@ -1847,6 +1848,7 @@ async fn managed_auth_command(
         "auth_start_login" => Ok(json!(crate::commands::auth_start_login(
             auth_provider,
             optional_string_arg(&args, "githubDomain"),
+            optional_string_arg(&args, "oauthFlowMode"),
             copilot,
             codex,
             claude,
@@ -1868,6 +1870,14 @@ async fn managed_auth_command(
             antigravity,
             kiro,
             cursor,
+        )
+        .await
+        .map_err(WebError::internal)?)),
+        "auth_submit_oauth_code" => Ok(json!(crate::commands::auth_submit_oauth_code(
+            auth_provider,
+            string_arg(&args, "deviceCode")?,
+            string_arg(&args, "code")?,
+            claude,
         )
         .await
         .map_err(WebError::internal)?)),
@@ -2294,6 +2304,7 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "set_common_config_snippet"
             | "extract_common_config_snippet"
             | "auth_start_login"
+            | "auth_submit_oauth_code"
             | "auth_poll_for_account"
             | "auth_list_accounts"
             | "auth_get_status"

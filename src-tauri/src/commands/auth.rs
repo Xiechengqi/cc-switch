@@ -11,6 +11,7 @@ use crate::proxy::providers::codex_oauth_auth::CodexOAuthError;
 use crate::proxy::providers::copilot_auth::{
     CopilotAuthError, GitHubAccount, GitHubDeviceCodeResponse,
 };
+use crate::proxy::providers::claude_oauth_auth::OAuthFlowMode;
 
 const AUTH_PROVIDER_GITHUB_COPILOT: &str = "github_copilot";
 const AUTH_PROVIDER_CODEX_OAUTH: &str = "codex_oauth";
@@ -95,10 +96,15 @@ fn map_device_code_response(
     }
 }
 
+// `oauth_flow_mode` is Claude OAuth-only. `"web_paste"` → redirect_uri uses
+// platform.claude.com (suitable for remote browsers accessing cc-switch via
+// client URL). Anything else / missing → desktop localhost callback flow.
+// Other providers ignore the field.
 #[tauri::command(rename_all = "camelCase")]
 pub async fn auth_start_login(
     auth_provider: String,
     github_domain: Option<String>,
+    oauth_flow_mode: Option<String>,
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
@@ -108,6 +114,10 @@ pub async fn auth_start_login(
     cursor_oauth_state: State<'_, CursorOAuthState>,
 ) -> Result<ManagedAuthDeviceCodeResponse, String> {
     let auth_provider = ensure_auth_provider(&auth_provider)?;
+    let claude_oauth_mode = match oauth_flow_mode.as_deref() {
+        Some("web_paste") | Some("webPaste") => OAuthFlowMode::WebPaste,
+        _ => OAuthFlowMode::Localhost,
+    };
     match auth_provider {
         AUTH_PROVIDER_GITHUB_COPILOT => {
             let auth_manager = copilot_state.0.read().await;
@@ -128,7 +138,7 @@ pub async fn auth_start_login(
         AUTH_PROVIDER_CLAUDE_OAUTH => {
             let auth_manager = claude_oauth_state.0.read().await;
             let response = auth_manager
-                .start_browser_flow()
+                .start_browser_flow(claude_oauth_mode)
                 .await
                 .map_err(|e| e.to_string())?;
             // 复用 ManagedAuthDeviceCodeResponse 结构：
@@ -200,6 +210,39 @@ pub async fn auth_start_login(
         _ => unreachable!(),
     }
 }
+
+/// Web-paste 模式专用：用户从 platform.claude.com 复制 authorization code 后
+/// 调用此命令完成 token 换取。`device_code` 字段沿用 `auth_start_login` 返回的
+/// state 字符串（claude_oauth_auth.rs 里把 state 复用为 device_code）。
+///
+/// 仅 `claude_oauth` provider 走这条路径——其它 provider 调用会返回错误，
+/// 它们继续用各自现有的设备流 / poll 模式。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn auth_submit_oauth_code(
+    auth_provider: String,
+    device_code: String,
+    code: String,
+    claude_oauth_state: State<'_, ClaudeOAuthState>,
+) -> Result<ManagedAuthAccount, String> {
+    let auth_provider = ensure_auth_provider(&auth_provider)?;
+    if auth_provider != AUTH_PROVIDER_CLAUDE_OAUTH {
+        return Err(format!(
+            "auth_submit_oauth_code 仅支持 claude_oauth，收到 {auth_provider}"
+        ));
+    }
+    let auth_manager = claude_oauth_state.0.read().await;
+    let account = auth_manager
+        .submit_pasted_code(code.trim(), device_code.trim())
+        .await
+        .map_err(|e| e.to_string())?;
+    let default_account_id = auth_manager.get_status().await.default_account_id;
+    Ok(map_account(
+        auth_provider,
+        account,
+        default_account_id.as_deref(),
+    ))
+}
+
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn auth_poll_for_account(

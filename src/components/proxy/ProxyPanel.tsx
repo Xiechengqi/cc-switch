@@ -7,14 +7,12 @@ import {
   ListOrdered,
   Save,
   Loader2,
-  Zap,
   Power,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { ToggleRow } from "@/components/ui/toggle-row";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { toast } from "sonner";
 import { useFailoverQueue } from "@/lib/query/failover";
@@ -22,34 +20,19 @@ import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge"
 import { useProviderHealth } from "@/lib/query/failover";
 import {
   useProxyTakeoverStatus,
-  useSetProxyTakeoverForApp,
   useGlobalProxyConfig,
   useUpdateGlobalProxyConfig,
 } from "@/lib/query/proxy";
 import type { ProxyStatus } from "@/types/proxy";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
-import { extractErrorMessage } from "@/utils/errorUtils";
 
-interface ProxyPanelProps {
-  enableLocalProxy: boolean;
-  onEnableLocalProxyChange: (checked: boolean) => void;
-  onToggleProxy: (checked: boolean) => Promise<void>;
-  isProxyPending: boolean;
-}
-
-export function ProxyPanel({
-  enableLocalProxy,
-  onEnableLocalProxyChange,
-  onToggleProxy,
-  isProxyPending,
-}: ProxyPanelProps) {
+export function ProxyPanel() {
   const { t } = useTranslation();
   const { status, isRunning } = useProxyStatus();
 
   // 获取应用接管状态
   const { data: takeoverStatus } = useProxyTakeoverStatus();
-  const setTakeoverForApp = useSetProxyTakeoverForApp();
 
   // 获取全局代理配置
   const { data: globalConfig } = useGlobalProxyConfig();
@@ -72,34 +55,6 @@ export function ProxyPanel({
   const { data: claudeQueue = [] } = useFailoverQueue("claude");
   const { data: codexQueue = [] } = useFailoverQueue("codex");
   const { data: geminiQueue = [] } = useFailoverQueue("gemini");
-
-  const handleTakeoverChange = async (appType: string, enabled: boolean) => {
-    try {
-      await setTakeoverForApp.mutateAsync({ appType, enabled });
-      toast.success(
-        enabled
-          ? t("proxy.takeover.enabled", {
-              app: appType,
-              defaultValue: `${appType} 接管已启用`,
-            })
-          : t("proxy.takeover.disabled", {
-              app: appType,
-              defaultValue: `${appType} 接管已关闭`,
-            }),
-        { closeButton: true },
-      );
-    } catch (error) {
-      const detail =
-        extractErrorMessage(error) ||
-        t("common.unknown", { defaultValue: "未知错误" });
-      toast.error(
-        t("proxy.takeover.failed", {
-          detail,
-          defaultValue: "切换接管状态失败",
-        }),
-      );
-    }
-  };
 
   const handleLoggingChange = async (enabled: boolean) => {
     if (!globalConfig) return;
@@ -219,16 +174,7 @@ export function ProxyPanel({
   return (
     <>
       <section className="space-y-4">
-        {/* [1] Enable proxy button on main page — always visible */}
-        <ToggleRow
-          icon={<Zap className="h-4 w-4 text-green-500" />}
-          title={t("settings.advanced.proxy.enableFeature")}
-          description={t("settings.advanced.proxy.enableFeatureDescription")}
-          checked={enableLocalProxy}
-          onCheckedChange={onEnableLocalProxyChange}
-        />
-
-        {/* [2] Proxy service toggle — always visible */}
+        {/* [1] Local routing service state — always on */}
         <div className="flex items-center justify-between rounded-xl border border-border bg-card/50 p-4 transition-colors hover:bg-muted/50">
           <div className="flex items-center gap-3">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-background ring-1 ring-border">
@@ -247,16 +193,14 @@ export function ProxyPanel({
               </p>
             </div>
           </div>
-          <Switch
-            checked={isRunning}
-            onCheckedChange={onToggleProxy}
-            disabled={isProxyPending}
-          />
+          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+            {t("proxy.alwaysOn", { defaultValue: "始终开启" })}
+          </span>
         </div>
 
-        {/* [3] App takeover switches — animated, visible only when proxy is running */}
+        {/* [2] App takeover state — always enabled for supported apps */}
         <AnimatePresence>
-          {isRunning && (
+          {(isRunning || takeoverStatus) && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
@@ -284,13 +228,21 @@ export function ProxyPanel({
                         <span className="text-sm font-medium capitalize">
                           {appType}
                         </span>
-                        <Switch
-                          checked={isEnabled}
-                          onCheckedChange={(checked) =>
-                            handleTakeoverChange(appType, checked)
-                          }
-                          disabled={setTakeoverForApp.isPending}
-                        />
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            isEnabled
+                              ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                              : "bg-yellow-500/10 text-yellow-700 dark:text-yellow-300"
+                          }`}
+                        >
+                          {isEnabled
+                            ? t("proxy.takeover.alwaysEnabled", {
+                                defaultValue: "已启用",
+                              })
+                            : t("proxy.takeover.recovering", {
+                                defaultValue: "恢复中",
+                              })}
+                        </span>
                       </div>
                     );
                   })}
@@ -298,7 +250,7 @@ export function ProxyPanel({
                 <p className="text-xs text-muted-foreground">
                   {t("proxy.takeover.hint", {
                     defaultValue:
-                      "选择要接管的应用，启用后该应用的请求将通过本地代理转发",
+                      "Claude、Codex、Gemini 的请求默认通过本地路由转发，并由系统保持启用",
                   })}
                 </p>
               </div>

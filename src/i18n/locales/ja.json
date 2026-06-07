@@ -2358,6 +2358,7 @@
       "tooltip": "フェイルオーバー優先度 {{priority}}"
     },
     "tooltip": {
+      "routingRequired": "ローカルルーティングの起動後に {{app}} フェイルオーバーを有効化できます",
       "enabled": "{{app}} フェイルオーバーが有効\nキューの優先度（P1→P2→...）で使用します",
       "disabled": "{{app}} フェイルオーバーを有効にする\nキューの P1 に即時切替し、失敗時は次を順に試行します"
     }
@@ -2460,11 +2461,14 @@
       "restartRequired": "アドレスまたはポートの変更を反映するにはルーティングサービスの再起動が必要です"
     },
     "switchFailed": "切り替えに失敗しました: {{error}}",
+    "alwaysOn": "常にオン",
     "takeover": {
-      "hint": "ルーティングするアプリを選択します。有効にすると、そのアプリのリクエストはローカルルーティング経由で転送されます",
+      "hint": "Claude、Codex、Gemini のリクエストは既定でローカルルーティングを使用し、システムにより有効に保たれます",
       "enabled": "{{app}} ルーティング有効",
       "disabled": "{{app}} ルーティング無効",
       "failed": "ルーティングの切り替えに失敗しました: {{detail}}",
+      "alwaysEnabled": "有効",
+      "recovering": "復旧中",
       "tooltip": {
         "active": "{{appLabel}} がルーティング中 - {{address}}:{{port}}\nホットスイッチングのためプロバイダを切り替え",
         "broken": "{{appLabel}} がルーティング中ですが、ルーティングサービスが実行されていません",
@@ -2574,8 +2578,8 @@
     }
   },
   "proxyConfig": {
-    "proxyEnabled": "ルーティング総スイッチ",
-    "appTakeover": "ルーティング有効",
+    "proxyEnabled": "ローカルルーティング",
+    "appTakeover": "アプリルーティング",
     "perAppConfig": "アプリ別設定",
     "circuitBreaker": "サーキットブレーカー",
     "circuitBreakerSettings": "サーキットブレーカー設定",

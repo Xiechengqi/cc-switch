@@ -2357,6 +2357,7 @@
       "tooltip": "Failover priority {{priority}}"
     },
     "tooltip": {
+      "routingRequired": "Local routing must be running before {{app}} failover can be enabled",
       "enabled": "{{app}} failover enabled\nRequests follow queue priority (P1→P2→...)",
       "disabled": "Enable {{app}} failover\nSwitches to queue P1 immediately, then falls back on failures"
     }
@@ -2459,11 +2460,14 @@
       "restartRequired": "Restart routing service for address or port changes to take effect"
     },
     "switchFailed": "Switch failed: {{error}}",
+    "alwaysOn": "Always on",
     "takeover": {
-      "hint": "Select apps to route — once enabled, requests from that app will go through local routing",
+      "hint": "Claude, Codex, and Gemini requests use local routing by default and are kept enabled by the system",
       "enabled": "{{app}} routing enabled",
       "disabled": "{{app}} routing disabled",
       "failed": "Failed to toggle routing: {{detail}}",
+      "alwaysEnabled": "Enabled",
+      "recovering": "Recovering",
       "tooltip": {
         "active": "{{appLabel}} is routing - {{address}}:{{port}}\nSwitch provider for hot switching",
         "broken": "{{appLabel}} is routing, but routing service is not running",
@@ -2573,8 +2577,8 @@
     }
   },
   "proxyConfig": {
-    "proxyEnabled": "Routing Master Switch",
-    "appTakeover": "Routing Enabled",
+    "proxyEnabled": "Local Routing",
+    "appTakeover": "App Routing",
     "perAppConfig": "Per-App Config",
     "circuitBreaker": "Circuit Breaker",
     "circuitBreakerSettings": "Circuit Breaker Settings",

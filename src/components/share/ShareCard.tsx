@@ -17,7 +17,6 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { useProviderHealth } from "@/lib/query/failover";
-import { useProxyTakeoverStatus } from "@/lib/query/proxy";
 import { copyText } from "@/lib/clipboard";
 import { toast } from "sonner";
 import { SHARE_REGIONS } from "@/config/shareRegions";
@@ -197,8 +196,6 @@ export function ShareCard({
     tunnelConfigured,
     tunnelStatus,
   );
-  const { data: takeoverStatus } = useProxyTakeoverStatus();
-
   const marketEmailSet = new Set(
     markets.map((market) => market.email.toLowerCase()),
   );
@@ -281,23 +278,6 @@ export function ShareCard({
                     ) : null}
                     <span className="uppercase mr-1">{app}</span>
                     {name}
-                  </Badge>
-                );
-              })}
-              {(["claude", "codex", "gemini"] as const).map((app) => {
-                const active = takeoverStatus?.[app] ?? false;
-                return (
-                  <Badge
-                    key={app}
-                    variant="outline"
-                    className={cn(
-                      "rounded-full px-2.5 py-1 text-[11px] font-medium capitalize",
-                      active
-                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                        : "border-muted bg-muted/50 text-muted-foreground",
-                    )}
-                  >
-                    {app.charAt(0).toUpperCase() + app.slice(1)}
                   </Badge>
                 );
               })}

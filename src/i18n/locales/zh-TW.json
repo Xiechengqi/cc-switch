@@ -2311,6 +2311,7 @@
       "tooltip": "故障轉移優先順序 {{priority}}"
     },
     "tooltip": {
+      "routingRequired": "本地路由啟動後才能啟用 {{app}} 故障轉移",
       "enabled": "{{app}} 故障轉移已啟用\n按佇列優先順序（P1→P2→...）選擇供應商",
       "disabled": "啟用 {{app}} 故障轉移\n將立即切換至佇列 P1，並在失敗時自動切換至下一個"
     }
@@ -2413,11 +2414,14 @@
       "restartRequired": "修改位址或連接埠後需要重新啟動路由服務才能生效"
     },
     "switchFailed": "切換失敗：{{error}}",
+    "alwaysOn": "始終開啟",
     "takeover": {
-      "hint": "選擇要路由的應用程式，啟用後該應用程式的請求將透過本地路由轉發",
+      "hint": "Claude、Codex、Gemini 的請求預設透過本地路由轉發，並由系統保持啟用",
       "enabled": "{{app}} 路由已啟用",
       "disabled": "{{app}} 路由已關閉",
       "failed": "切換路由狀態失敗：{{detail}}",
+      "alwaysEnabled": "已啟用",
+      "recovering": "恢復中",
       "tooltip": {
         "active": "{{appLabel}} 路由中 - {{address}}:{{port}}\n切換該應用程式供應商為熱切換",
         "broken": "{{appLabel}} 路由中，但路由服務未執行",
@@ -2527,8 +2531,8 @@
     }
   },
   "proxyConfig": {
-    "proxyEnabled": "路由總開關",
-    "appTakeover": "路由啟用",
+    "proxyEnabled": "本地路由",
+    "appTakeover": "應用路由",
     "perAppConfig": "應用程式設定",
     "circuitBreaker": "斷路器設定",
     "circuitBreakerSettings": "斷路器設定",

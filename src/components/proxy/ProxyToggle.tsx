@@ -1,8 +1,8 @@
 /**
  * Header share switch.
  *
- * This keeps the existing proxy takeover implementation underneath, but the
- * user-facing flow is framed as enabling or disabling share access.
+ * The local routing proxy is managed as always-on infrastructure. This switch
+ * only controls whether the current app has an active share tunnel.
  */
 
 import { useMemo, useState } from "react";
@@ -24,16 +24,11 @@ import {
   useCreateShareMutation,
   useProvidersQuery,
   useSettingsQuery,
+  useSharesQuery,
   useUpdateShareAclMutation,
 } from "@/lib/query";
 import type { Provider } from "@/types";
 import { shareKeys } from "@/lib/query/share";
-import {
-  useProxyStatus,
-  useProxyTakeoverStatus,
-  useSetProxyTakeoverForApp,
-  useStartProxyServer,
-} from "@/lib/query/proxy";
 import { cn } from "@/lib/utils";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { getTunnelConfigFromSettings } from "@/utils/shareUtils";
@@ -49,9 +44,7 @@ type ShareToggleStage =
   | "creating-share"
   | "confirm-start-share"
   | "starting-share"
-  | "starting-proxy"
-  | "enabling-takeover"
-  | "disabling-takeover";
+  | "disabling-share";
 
 type PendingIntent =
   | { type: "create-and-enable" }
@@ -61,13 +54,10 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: settings } = useSettingsQuery();
-  const { data: proxyStatus } = useProxyStatus();
-  const { data: takeoverStatus } = useProxyTakeoverStatus();
+  const { data: shares = [] } = useSharesQuery();
   const createShareMutation = useCreateShareMutation();
   const updateAclMutation = useUpdateShareAclMutation();
   const configureTunnelMutation = useConfigureTunnelMutation();
-  const startProxyMutation = useStartProxyServer();
-  const setTakeoverMutation = useSetProxyTakeoverForApp();
   const [stage, setStage] = useState<ShareToggleStage>("idle");
   const [createOpen, setCreateOpen] = useState(false);
   const [startTarget, setStartTarget] = useState<ShareRecord | null>(null);
@@ -79,7 +69,11 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     () => getTunnelConfigFromSettings(settings),
     [settings],
   );
-  const takeoverEnabled = Boolean(takeoverStatus?.[activeApp]);
+  const selectedShare = useMemo(
+    () => selectBestShare(shares, activeApp),
+    [shares, activeApp],
+  );
+  const shareEnabled = Boolean(selectedShare && isShareRunning(selectedShare));
   const appLabel = getAppLabel(activeApp);
   const providersQuery = useProvidersQuery(activeApp);
 
@@ -111,8 +105,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     stage !== "idle" ||
     createShareMutation.isPending ||
     configureTunnelMutation.isPending ||
-    startProxyMutation.isPending ||
-    setTakeoverMutation.isPending;
+    updateAclMutation.isPending;
 
   const fetchShares = async () =>
     queryClient.fetchQuery({
@@ -136,52 +129,24 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
             queryKey: shareKeys.connectInfo(shareId),
           })
         : Promise.resolve(),
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] }),
-      queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] }),
     ]);
   };
 
-  const ensureProxyRunning = async () => {
-    if (proxyStatus?.running) return;
-    setStage("starting-proxy");
-    await startProxyMutation.mutateAsync();
-  };
-
-  const enableTakeover = async () => {
-    setStage("enabling-takeover");
-    await setTakeoverMutation.mutateAsync({
-      appType: activeApp,
-      enabled: true,
-    });
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] }),
-      queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] }),
-    ]);
-    toast.success(
-      t("share.toggle.enabled", {
-        defaultValue: "分享已开启",
-      }),
-      { closeButton: true },
-    );
-  };
-
-  const disableTakeover = async () => {
-    setStage("disabling-takeover");
-    await setTakeoverMutation.mutateAsync({
-      appType: activeApp,
-      enabled: false,
-    });
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] }),
-      queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] }),
-    ]);
-    toast.success(
-      t("share.toggle.disabled", {
-        defaultValue: "分享已关闭",
-      }),
-      { closeButton: true },
-    );
-    setStage("idle");
+  const disableShare = async () => {
+    if (!selectedShare) return;
+    try {
+      setStage("disabling-share");
+      await shareApi.disable(selectedShare.id);
+      await invalidateShareState(selectedShare.id);
+      toast.success(
+        t("share.toggle.disabled", {
+          defaultValue: "分享已关闭",
+        }),
+        { closeButton: true },
+      );
+    } finally {
+      setStage("idle");
+    }
   };
 
   const startShareAndEnable = async (share: ShareRecord) => {
@@ -189,9 +154,13 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
       setStage("starting-share");
       await shareApi.enable(share.id);
       await invalidateShareState(share.id);
-      await ensureProxyRunning();
-      await enableTakeover();
       setPendingIntent(null);
+      toast.success(
+        t("share.toggle.enabled", {
+          defaultValue: "分享已开启",
+        }),
+        { closeButton: true },
+      );
       setStage("idle");
     } catch (error) {
       toast.error(
@@ -234,8 +203,8 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     let flowContinuesInDialog = false;
     setStage("checking");
     try {
-      const shares = await fetchShares();
-      const share = selectBestShare(shares, activeApp);
+      const latestShares = await fetchShares();
+      const share = selectBestShare(latestShares, activeApp);
       if (!share) {
         flowContinuesInDialog = true;
         setPendingIntent({ type: "create-and-enable" });
@@ -252,8 +221,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         return;
       }
 
-      await ensureProxyRunning();
-      await enableTakeover();
+      await startShareAndEnable(share);
       setStage("idle");
     } catch (error) {
       toast.error(
@@ -273,7 +241,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     if (pending) return;
     try {
       if (!checked) {
-        await disableTakeover();
+        await disableShare();
         return;
       }
       await handleEnable();
@@ -292,7 +260,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     }
   };
 
-  const tooltipText = takeoverEnabled
+  const tooltipText = shareEnabled
     ? t("share.toggle.tooltipActive", {
         app: appLabel,
         defaultValue: "{{app}} 分享已开启，点击关闭",
@@ -311,7 +279,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         )}
         title={tooltipText}
         aria-label={
-          takeoverEnabled
+          shareEnabled
             ? t("share.toggle.disable", { defaultValue: "关闭分享" })
             : t("share.toggle.enable", { defaultValue: "开启分享" })
         }
@@ -322,7 +290,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
           <Share2
             className={cn(
               "h-4 w-4 transition-colors",
-              takeoverEnabled
+              shareEnabled
                 ? "text-emerald-500 animate-pulse"
                 : "text-muted-foreground",
             )}
@@ -330,11 +298,11 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         )}
         <Switch
           aria-label={
-            takeoverEnabled
+            shareEnabled
               ? t("share.toggle.disable", { defaultValue: "关闭分享" })
               : t("share.toggle.enable", { defaultValue: "开启分享" })
           }
-          checked={takeoverEnabled}
+          checked={shareEnabled}
           onCheckedChange={(checked) => void handleToggle(checked)}
           disabled={pending}
         />
@@ -416,9 +384,7 @@ function selectBestShare(shares: ShareRecord[], activeApp: AppId) {
     );
   return (
     shares.find((share) => hasBinding(share) && isShareRunning(share)) ??
-    shares.find((share) => isShareRunning(share)) ??
     shares.find(hasBinding) ??
-    shares[0] ??
     null
   );
 }

@@ -1942,39 +1942,37 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
 // 启动时恢复代理状态
 // ============================================================
 
-/// 启动时根据 proxy_config 表中的代理状态自动恢复代理服务
+/// 启动时确保本地路由基础设施可用。
 ///
-/// 检查 `proxy_config.enabled` 字段，如果有任一应用的状态为 `true`，
-/// 则自动启动代理服务并接管对应应用的 Live 配置。
+/// Claude / Codex / Gemini 的本地路由默认常开：启动代理服务，并确保
+/// 三个应用的 Live 配置指向本地代理。分享功能只决定是否对外暴露 share，
+/// 不再承担代理/接管开关语义。
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
-    // 收集需要恢复接管的应用列表（从 proxy_config.enabled 读取）
-    let mut apps_to_restore = Vec::new();
-    for app_type in ["claude", "codex", "gemini"] {
-        if let Ok(config) = state.db.get_proxy_config_for_app(app_type).await {
-            if config.enabled {
-                apps_to_restore.push(app_type);
+    if let Ok(mut global_config) = state.db.get_global_proxy_config().await {
+        if !global_config.proxy_enabled {
+            global_config.proxy_enabled = true;
+            if let Err(e) = state.db.update_global_proxy_config(global_config).await {
+                log::warn!("修正本地路由全局开关失败: {e}");
             }
         }
     }
 
-    if apps_to_restore.is_empty() {
-        // 无接管需求时，若 global proxy_enabled 仍为 true（用户上次退出时
-        // 开着路由总开关，或首次启动时数据库默认值为 1），则直接启动代理
-        // 服务，使 "路由总开关" 默认处于开启状态。
-        if let Ok(global_config) = state.db.get_global_proxy_config().await {
-            if global_config.proxy_enabled {
-                match state.proxy_service.start().await {
-                    Ok(_) => log::info!("✓ 已根据 global proxy_enabled 自动启动代理服务"),
-                    Err(e) => log::warn!("✗ 自动启动代理服务失败: {e}"),
+    let apps_to_restore = ["claude", "codex", "gemini"];
+    for app_type in apps_to_restore {
+        match state.db.get_proxy_config_for_app(app_type).await {
+            Ok(mut config) => {
+                if !config.enabled {
+                    config.enabled = true;
+                    if let Err(e) = state.db.update_proxy_config_for_app(config).await {
+                        log::warn!("修正 {app_type} 本地路由状态失败: {e}");
+                    }
                 }
-                return;
             }
+            Err(e) => log::warn!("读取 {app_type} 本地路由配置失败: {e}"),
         }
-        log::debug!("启动时无需恢复代理状态");
-        return;
     }
 
-    log::info!("检测到上次代理状态需要恢复，应用列表: {apps_to_restore:?}");
+    log::info!("正在确保本地路由常开，应用列表: {apps_to_restore:?}");
 
     // 逐个恢复接管状态
     for app_type in apps_to_restore {
@@ -1988,14 +1986,6 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
             }
             Err(e) => {
                 log::error!("✗ 恢复 {app_type} 的代理接管状态失败: {e}");
-                // 失败时清除该应用的状态，避免下次启动再次尝试
-                if let Err(clear_err) = state
-                    .proxy_service
-                    .set_takeover_for_app(app_type, false)
-                    .await
-                {
-                    log::error!("清除 {app_type} 代理状态失败: {clear_err}");
-                }
             }
         }
     }

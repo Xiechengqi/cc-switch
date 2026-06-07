@@ -15,10 +15,10 @@ import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPa
 import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
 import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
 import { GlobalProxySettings } from "@/components/settings/GlobalProxySettings";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import type { SettingsFormState } from "@/hooks/useSettings";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface ProxyTabContentProps {
   settings: SettingsFormState;
@@ -30,40 +30,9 @@ export function ProxyTabContent({
   onAutoSave,
 }: ProxyTabContentProps) {
   const { t } = useTranslation();
-  const [showProxyConfirm, setShowProxyConfirm] = useState(false);
   const [showFailoverConfirm, setShowFailoverConfirm] = useState(false);
 
-  const {
-    isRunning,
-    takeoverStatus,
-    startProxyServer,
-    stopWithRestore,
-    isPending: isProxyPending,
-  } = useProxyStatus();
-
-  const handleToggleProxy = async (checked: boolean) => {
-    try {
-      if (!checked) {
-        await stopWithRestore();
-      } else if (!settings?.proxyConfirmed) {
-        setShowProxyConfirm(true);
-      } else {
-        await startProxyServer();
-      }
-    } catch (error) {
-      console.error("Toggle proxy failed:", error);
-    }
-  };
-
-  const handleProxyConfirm = async () => {
-    setShowProxyConfirm(false);
-    try {
-      await onAutoSave({ proxyConfirmed: true });
-      await startProxyServer();
-    } catch (error) {
-      console.error("Proxy confirm failed:", error);
-    }
-  };
+  const { isRunning } = useProxyStatus();
 
   const handleFailoverToggleChange = (checked: boolean) => {
     if (checked && !settings?.failoverConfirmed) {
@@ -120,14 +89,7 @@ export function ProxyTabContent({
             </div>
           </AccordionTrigger>
           <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-            <ProxyPanel
-              enableLocalProxy={settings?.enableLocalProxy ?? true}
-              onEnableLocalProxyChange={(checked) =>
-                onAutoSave({ enableLocalProxy: checked })
-              }
-              onToggleProxy={handleToggleProxy}
-              isProxyPending={isProxyPending}
-            />
+            <ProxyPanel />
           </AccordionContent>
         </AccordionItem>
 
@@ -178,8 +140,7 @@ export function ProxyTabContent({
                   <TabsTrigger value="gemini">Gemini</TabsTrigger>
                 </TabsList>
                 {(["claude", "codex", "gemini"] as const).map((appType) => {
-                  const failoverDisabled =
-                    !isRunning || !(takeoverStatus?.[appType] ?? false);
+                  const failoverDisabled = !isRunning;
                   return (
                     <TabsContent
                       key={appType}
@@ -260,16 +221,6 @@ export function ProxyTabContent({
           </AccordionContent>
         </AccordionItem>
       </Accordion>
-
-      <ConfirmDialog
-        isOpen={showProxyConfirm}
-        variant="info"
-        title={t("confirm.proxy.title")}
-        message={t("confirm.proxy.message")}
-        confirmText={t("confirm.proxy.confirm")}
-        onConfirm={() => void handleProxyConfirm()}
-        onCancel={() => setShowProxyConfirm(false)}
-      />
 
       <ConfirmDialog
         isOpen={showFailoverConfirm}

@@ -2357,6 +2357,7 @@
       "tooltip": "故障转移优先级 {{priority}}"
     },
     "tooltip": {
+      "routingRequired": "本地路由启动后才能启用 {{app}} 故障转移",
       "enabled": "{{app}} 故障转移已启用\n按队列优先级（P1→P2→...）选择供应商",
       "disabled": "启用 {{app}} 故障转移\n将立即切换到队列 P1，并在失败时自动切换到下一个"
     }
@@ -2459,11 +2460,14 @@
       "restartRequired": "修改地址或端口后需要重启路由服务才能生效"
     },
     "switchFailed": "切换失败: {{error}}",
+    "alwaysOn": "始终开启",
     "takeover": {
-      "hint": "选择要路由的应用，启用后该应用的请求将通过本地路由转发",
+      "hint": "Claude、Codex、Gemini 的请求默认通过本地路由转发，并由系统保持启用",
       "enabled": "{{app}} 路由已启用",
       "disabled": "{{app}} 路由已关闭",
       "failed": "切换路由状态失败: {{detail}}",
+      "alwaysEnabled": "已启用",
+      "recovering": "恢复中",
       "tooltip": {
         "active": "{{appLabel}} 路由中 - {{address}}:{{port}}\n切换该应用供应商为热切换",
         "broken": "{{appLabel}} 路由中，但路由服务未运行",
@@ -2573,8 +2577,8 @@
     }
   },
   "proxyConfig": {
-    "proxyEnabled": "路由总开关",
-    "appTakeover": "路由启用",
+    "proxyEnabled": "本地路由",
+    "appTakeover": "应用路由",
     "perAppConfig": "应用配置",
     "circuitBreaker": "熔断器配置",
     "circuitBreakerSettings": "熔断器设置",

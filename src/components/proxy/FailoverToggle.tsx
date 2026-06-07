@@ -25,11 +25,10 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
   const { data: isEnabled = false, isLoading } =
     useAutoFailoverEnabled(activeApp);
   const setEnabled = useSetAutoFailoverEnabled();
-  const { takeoverStatus } = useProxyStatus();
-  const takeoverEnabled = takeoverStatus?.[activeApp] ?? false;
+  const { isRunning } = useProxyStatus();
 
   const handleToggle = (checked: boolean) => {
-    if (checked && !takeoverEnabled) return;
+    if (checked && !isRunning) return;
     setEnabled.mutate({ appType: activeApp, enabled: checked });
   };
 
@@ -40,10 +39,10 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
         ? "Codex"
         : "Gemini";
 
-  const tooltipText = !takeoverEnabled
-    ? t("failover.tooltip.takeoverRequired", {
+  const tooltipText = !isRunning
+    ? t("failover.tooltip.routingRequired", {
         app: appLabel,
-        defaultValue: `请先接管 ${appLabel}，再启用故障转移`,
+        defaultValue: `本地路由启动后才能启用 ${appLabel} 故障转移`,
       })
     : isEnabled
       ? t("failover.tooltip.enabled", {
@@ -78,7 +77,7 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
       <Switch
         checked={isEnabled}
         onCheckedChange={handleToggle}
-        disabled={setEnabled.isPending || isLoading || !takeoverEnabled}
+        disabled={setEnabled.isPending || isLoading || !isRunning}
       />
     </div>
   );

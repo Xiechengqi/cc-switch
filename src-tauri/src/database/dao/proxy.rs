@@ -338,7 +338,7 @@ impl Database {
                 self.init_proxy_config_rows().await?;
                 Ok(AppProxyConfig {
                     app_type: app_type_owned,
-                    enabled: false,
+                    enabled: true,
                     auto_failover_enabled: false,
                     max_retries: 3,
                     streaming_first_byte_timeout: 60,
@@ -417,11 +417,11 @@ impl Database {
 
         conn.execute(
             "INSERT OR IGNORE INTO proxy_config (
-                app_type, max_retries,
+                app_type, enabled, max_retries,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests
-            ) VALUES (?1, ?2, ?3, ?4, 600, ?5, ?6, ?7, ?8, ?9)",
+            ) VALUES (?1, 1, ?2, ?3, ?4, 600, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 app_type,
                 retries,
@@ -449,11 +449,11 @@ impl Database {
         // claude: 更激进的重试和超时配置
         conn.execute(
             "INSERT OR IGNORE INTO proxy_config (
-                app_type, max_retries,
+                app_type, enabled, max_retries,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests
-            ) VALUES ('claude', 6, 90, 180, 600, 8, 3, 90, 0.7, 15)",
+            ) VALUES ('claude', 1, 6, 90, 180, 600, 8, 3, 90, 0.7, 15)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -461,11 +461,11 @@ impl Database {
         // codex: 默认配置
         conn.execute(
             "INSERT OR IGNORE INTO proxy_config (
-                app_type, max_retries,
+                app_type, enabled, max_retries,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests
-            ) VALUES ('codex', 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+            ) VALUES ('codex', 1, 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -473,11 +473,11 @@ impl Database {
         // gemini: 稍高的重试次数
         conn.execute(
             "INSERT OR IGNORE INTO proxy_config (
-                app_type, max_retries,
+                app_type, enabled, max_retries,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests
-            ) VALUES ('gemini', 5, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+            ) VALUES ('gemini', 1, 5, 60, 120, 600, 4, 2, 60, 0.6, 10)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;

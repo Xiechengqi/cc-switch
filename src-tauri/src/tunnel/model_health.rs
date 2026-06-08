@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 
 const FIRST_HEALTH_CHECK_DELAY: Duration = Duration::from_secs(120);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const QUOTA_BLOCK_HEALTH_REPEAT_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const RECENT_RESULT_LIMIT: usize = 3;
 
 /// `(share_id, app_type)` → 该 share 在该 app slot 上最近一次的 stream check 结果。
@@ -309,15 +310,55 @@ fn result_to_health_entry(
 async fn record_health_result(share_id: &str, result: ShareModelHealthResult) {
     let key = (share_id.to_string(), result.app_type.clone());
     let mut store = health_store().write().await;
-    let entry = store.entry(key).or_insert_with(|| HealthEntry {
-        result: result.clone(),
-        recent_results: VecDeque::new(),
-    });
-    entry.recent_results.push_front(result.status.clone());
+    let status = result.status.clone();
+    let entry = match store.get_mut(&key) {
+        Some(entry) => {
+            if should_throttle_repeated_quota_block(&entry.result, &result) {
+                return;
+            }
+            entry
+        }
+        None => {
+            store.insert(
+                key.clone(),
+                HealthEntry {
+                    result: result.clone(),
+                    recent_results: VecDeque::new(),
+                },
+            );
+            store
+                .get_mut(&key)
+                .expect("inserted health entry must exist")
+        }
+    };
+    entry.recent_results.push_front(status);
     while entry.recent_results.len() > RECENT_RESULT_LIMIT {
         entry.recent_results.pop_back();
     }
     entry.result = result;
+}
+
+fn should_throttle_repeated_quota_block(
+    previous: &ShareModelHealthResult,
+    next: &ShareModelHealthResult,
+) -> bool {
+    if !is_quota_block_result(previous) || !is_quota_block_result(next) {
+        return false;
+    }
+    if previous.error_message != next.error_message
+        || previous.provider_id != next.provider_id
+        || previous.requested_model != next.requested_model
+        || previous.actual_model != next.actual_model
+    {
+        return false;
+    }
+    let min_next_checked_at =
+        previous.checked_at + QUOTA_BLOCK_HEALTH_REPEAT_INTERVAL.as_secs() as i64;
+    next.checked_at < min_next_checked_at
+}
+
+fn is_quota_block_result(result: &ShareModelHealthResult) -> bool {
+    result.status == "quota_blocked" && result.source == "cc-switch-quota"
 }
 
 fn health_store() -> &'static RwLock<HealthMap> {
@@ -344,6 +385,25 @@ mod tests {
             error_message: None,
             checked_at: 0,
             source: "test".to_string(),
+            provider_id: Some("p".to_string()),
+            provider_name: Some("P".to_string()),
+        }
+    }
+
+    fn make_quota_block_result(app: &str, checked_at: i64) -> ShareModelHealthResult {
+        ShareModelHealthResult {
+            app_type: app.to_string(),
+            requested_model: app.to_string(),
+            actual_model: app.to_string(),
+            status: "quota_blocked".to_string(),
+            recent_results: Vec::new(),
+            status_code: None,
+            latency_ms: 0,
+            error_message: Some(
+                "long window quota exhausted until 2026-07-08T04:25:06+00:00".to_string(),
+            ),
+            checked_at,
+            source: "cc-switch-quota".to_string(),
             provider_id: Some("p".to_string()),
             provider_name: Some("P".to_string()),
         }
@@ -414,5 +474,41 @@ mod tests {
             "claude must remain after codex purge"
         );
         assert!(summary.codex.is_empty(), "codex slot was just purged");
+    }
+
+    #[tokio::test]
+    async fn repeated_quota_block_health_is_throttled_until_repeat_interval() {
+        let _guard = STORE_LOCK.lock().unwrap();
+        reset_store().await;
+
+        record_health_result("share-1", make_quota_block_result("codex", 100)).await;
+        record_health_result("share-1", make_quota_block_result("codex", 100 + 30 * 60)).await;
+
+        let mut bound = HashSet::new();
+        bound.insert("codex".to_string());
+        let summary = current_share_model_health_summary_for_share("share-1", &bound).await;
+        let result = summary.codex.first().expect("codex quota block");
+        assert_eq!(result.checked_at, 100);
+        assert_eq!(result.recent_results.len(), 1);
+
+        record_health_result(
+            "share-1",
+            make_quota_block_result(
+                "codex",
+                100 + QUOTA_BLOCK_HEALTH_REPEAT_INTERVAL.as_secs() as i64,
+            ),
+        )
+        .await;
+
+        let summary = current_share_model_health_summary_for_share("share-1", &bound).await;
+        let result = summary
+            .codex
+            .first()
+            .expect("codex quota block after interval");
+        assert_eq!(
+            result.checked_at,
+            100 + QUOTA_BLOCK_HEALTH_REPEAT_INTERVAL.as_secs() as i64
+        );
+        assert_eq!(result.recent_results.len(), 2);
     }
 }

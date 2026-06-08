@@ -32,6 +32,8 @@ const STARTUP_REFRESH_DELAY_SECS: u64 = 10;
 const SWITCH_REFRESH_COOLDOWN_SECS: i64 = 60;
 const QUOTA_EXHAUSTED_UTILIZATION: f64 = 99.5;
 const QUOTA_RESET_GRACE_MS: i64 = 60_000;
+const LONG_WINDOW_BLOCK_DISCOVERY_SECS: u64 = 6 * 60 * 60;
+const LONG_WINDOW_BLOCK_UNKNOWN_REFRESH_SECS: i64 = 6 * 60 * 60;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct OauthQuotaKey {
@@ -417,6 +419,8 @@ impl OauthQuotaService {
         let now = now_millis();
         let cooldown_ms = match source {
             "switch" => SWITCH_REFRESH_COOLDOWN_SECS * 1000,
+            "background" => background_refresh_cooldown_ms(&cached, now)
+                .unwrap_or_else(|| read_refresh_interval().as_secs() as i64 * 1000),
             _ => {
                 interval_secs_override.unwrap_or_else(|| read_refresh_interval().as_secs() as i64)
                     * 1000
@@ -429,17 +433,17 @@ impl OauthQuotaService {
         }
     }
 
-    async fn next_blocked_refresh_delay(&self) -> Option<Duration> {
+    async fn next_background_refresh_delay(&self) -> Duration {
         let now = now_millis();
         let cache = self.cache.read().await;
-        cache
+        let next_due = cache
             .values()
-            .filter_map(|cached| quota_block_status(&cached.quota))
-            .filter_map(|block| block.blocked_until_ms)
-            .filter(|until| *until > now)
-            .map(|until| (until - now) as u64)
-            .min()
-            .map(Duration::from_millis)
+            .map(|cached| background_refresh_due_at_ms(cached))
+            .min();
+        let delay = next_due
+            .map(|due| Duration::from_millis(due.saturating_sub(now) as u64))
+            .unwrap_or_else(read_refresh_interval);
+        delay.min(Duration::from_secs(LONG_WINDOW_BLOCK_DISCOVERY_SECS))
     }
 }
 
@@ -494,11 +498,7 @@ pub fn spawn_oauth_quota_refresher(
                     app_type,
                 );
             }
-            let delay = service
-                .next_blocked_refresh_delay()
-                .await
-                .map(|blocked_delay| blocked_delay.min(read_refresh_interval()))
-                .unwrap_or_else(read_refresh_interval);
+            let delay = service.next_background_refresh_delay().await;
             tokio::time::sleep(delay).await;
         }
     });
@@ -935,6 +935,41 @@ pub fn quota_block_is_active(block: &QuotaBlockStatus) -> bool {
         .unwrap_or(true)
 }
 
+fn background_refresh_cooldown_ms(cached: &CachedOauthQuota, now_ms: i64) -> Option<i64> {
+    let block = quota_block_status(&cached.quota)?;
+    if !quota_block_is_active(&block) {
+        return None;
+    }
+    let due_at = background_block_refresh_due_at_ms(cached, &block, now_ms);
+    Some((due_at - cached.refreshed_at).max(0))
+}
+
+fn background_refresh_due_at_ms(cached: &CachedOauthQuota) -> i64 {
+    let now_ms = now_millis();
+    if let Some(block) = quota_block_status(&cached.quota) {
+        if quota_block_is_active(&block) {
+            return background_block_refresh_due_at_ms(cached, &block, now_ms);
+        }
+    }
+    cached.refreshed_at + read_refresh_interval().as_millis() as i64
+}
+
+fn background_block_refresh_due_at_ms(
+    cached: &CachedOauthQuota,
+    block: &QuotaBlockStatus,
+    now_ms: i64,
+) -> i64 {
+    if block.availability == "long_window_exhausted" {
+        return block.blocked_until_ms.unwrap_or_else(|| {
+            cached.refreshed_at + LONG_WINDOW_BLOCK_UNKNOWN_REFRESH_SECS * 1000
+        });
+    }
+    block
+        .blocked_until_ms
+        .filter(|until| *until > now_ms)
+        .unwrap_or_else(|| cached.refreshed_at + read_refresh_interval().as_millis() as i64)
+}
+
 fn pick_block(
     current: Option<QuotaBlockStatus>,
     next: QuotaBlockStatus,
@@ -1084,6 +1119,43 @@ mod tests {
         assert!(timestamp_to_rfc3339(0.0).is_none());
     }
 
+    fn blocked_quota(tool: &str, tier_name: &str, reset_ms: Option<i64>) -> SubscriptionQuota {
+        SubscriptionQuota {
+            tool: tool.to_string(),
+            credential_status: CredentialStatus::Valid,
+            credential_message: None,
+            success: true,
+            tiers: vec![QuotaTier {
+                name: tier_name.to_string(),
+                utilization: 100.0,
+                resets_at: reset_ms.and_then(timestamp_millis_to_rfc3339),
+                used: None,
+                limit: None,
+                unit: None,
+                used_value_usd: None,
+                max_value_usd: None,
+            }],
+            extra_usage: None,
+            error: None,
+            queried_at: Some(now_millis()),
+            failure: None,
+        }
+    }
+
+    fn cached_quota(refreshed_at: i64, quota: SubscriptionQuota) -> CachedOauthQuota {
+        CachedOauthQuota {
+            auth_provider: quota.tool.clone(),
+            account_id: "acct-1".to_string(),
+            provider_id: Some("provider-1".to_string()),
+            provider_name: Some("Provider".to_string()),
+            app_type: Some("codex".to_string()),
+            quota,
+            refreshed_at,
+            next_refresh_at: None,
+            source: "test".to_string(),
+        }
+    }
+
     #[test]
     fn quota_block_status_detects_five_hour_exhaustion() {
         let reset = timestamp_millis_to_rfc3339(now_millis() + 2 * 60 * 60 * 1000).unwrap();
@@ -1147,5 +1219,66 @@ mod tests {
         let block = quota_block_status(&quota).expect("quota should be blocked");
         assert_eq!(block.availability, "long_window_exhausted");
         assert_eq!(block.blocked_scope, "monthly");
+    }
+
+    #[tokio::test]
+    async fn background_cache_hit_keeps_long_window_block_until_reset() {
+        let service = OauthQuotaService::new();
+        let now = now_millis();
+        let reset_ms = now + 30 * 24 * 60 * 60 * 1000;
+        let cached = cached_quota(
+            now - 24 * 60 * 60 * 1000,
+            blocked_quota("codex_oauth", "long_window", Some(reset_ms)),
+        );
+        let key = OauthQuotaKey {
+            auth_provider: cached.auth_provider.clone(),
+            account_id: cached.account_id.clone(),
+        };
+        service.cache.write().await.insert(key.clone(), cached);
+
+        let hit = service
+            .cache_hit_for_cooldown(&key, "background", None)
+            .await;
+
+        assert!(
+            hit.is_some(),
+            "long-window block should skip background refresh before reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_delay_for_long_window_is_capped_for_discovery() {
+        let service = OauthQuotaService::new();
+        let now = now_millis();
+        let reset_ms = now + 30 * 24 * 60 * 60 * 1000;
+        let cached = cached_quota(
+            now,
+            blocked_quota("codex_oauth", "long_window", Some(reset_ms)),
+        );
+        let key = OauthQuotaKey {
+            auth_provider: cached.auth_provider.clone(),
+            account_id: cached.account_id.clone(),
+        };
+        service.cache.write().await.insert(key, cached);
+
+        let delay = service.next_background_refresh_delay().await;
+
+        assert_eq!(delay, Duration::from_secs(LONG_WINDOW_BLOCK_DISCOVERY_SECS));
+    }
+
+    #[test]
+    fn short_window_background_due_tracks_reset_instead_of_default_interval() {
+        let now = now_millis();
+        let reset_ms = now + 2 * 60 * 60 * 1000;
+        let cached = cached_quota(
+            now,
+            blocked_quota("codex_oauth", "five_hour", Some(reset_ms)),
+        );
+
+        let due_at = background_refresh_due_at_ms(&cached);
+
+        let expected_due_at = reset_ms + QUOTA_RESET_GRACE_MS;
+        assert!(due_at >= expected_due_at - 5_000);
+        assert!(due_at <= expected_due_at + 5_000);
     }
 }

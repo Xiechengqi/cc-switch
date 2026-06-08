@@ -173,6 +173,10 @@ pub async fn serve_favicon(State(state): State<ProxyState>, headers: HeaderMap) 
     serve_dist_file(&state, &headers, Path::new("favicon.ico")).await
 }
 
+pub async fn serve_favicon_png(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
+    serve_dist_file(&state, &headers, Path::new("favicon.png")).await
+}
+
 pub async fn serve_asset(
     State(state): State<ProxyState>,
     headers: HeaderMap,

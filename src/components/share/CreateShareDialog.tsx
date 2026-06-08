@@ -7,6 +7,7 @@ import type {
   AppId,
   CreateShareParams,
   PublicMarket,
+  ShareAccessByApp,
   ShareBindings,
   TunnelConfig,
 } from "@/lib/api";
@@ -37,6 +38,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { EmailTagsInput } from "@/components/ui/tags-input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SHARE_REGIONS } from "@/config/shareRegions";
 import {
@@ -51,8 +53,16 @@ import {
 import { cn } from "@/lib/utils";
 
 export interface CreateShareExtras {
+  /**
+   * 兼容老 API 字段：所有 per-app sharedWithEmails 取并集后回填这里。
+   * 后端 UpdateShareAclParams 仍要求传入。新前端真正的数据源是 `accessByApp`。
+   */
   sharedWithEmails: string[];
   marketAccessMode: "selected" | "all";
+  /**
+   * 按 app 区分的可访问邮箱。空对象 = 没有 per-app 自定义，仍走 `sharedWithEmails` 兼容路径。
+   */
+  accessByApp?: ShareAccessByApp;
 }
 
 /**
@@ -185,6 +195,17 @@ export function CreateShareDialog({
   const [lastFiniteParallelLimit, setLastFiniteParallelLimit] = useState(
     DEFAULT_PARALLEL_LIMIT,
   );
+  // 按 app 区分的「Share To」邮箱列表。与 EditShareDialog 行为对齐：用本地 state
+  // 而不是 react-hook-form schema 字段，避免每个字段都要走 zod 校验。submit 时
+  // 才汇总成 ShareAccessByApp。
+  const emptyShareToByApp = (): Record<keyof ShareBindings, string[]> => ({
+    claude: [],
+    codex: [],
+    gemini: [],
+  });
+  const [shareToEmailsByApp, setShareToEmailsByApp] = useState<
+    Record<keyof ShareBindings, string[]>
+  >(emptyShareToByApp);
   const subdomainManualRef = useRef(false);
 
   const form = useForm<CreateShareFormInput, unknown, CreateShareFormValues>({
@@ -209,6 +230,7 @@ export function CreateShareDialog({
     setAdvancedExpanded(false);
     setAdvancedOpened(false);
     setDefaultsConfirmOpen(false);
+    setShareToEmailsByApp(emptyShareToByApp());
     subdomainManualRef.current = false;
     // providersByApp 引用变化（fetch 完成）时也重置一次，确保默认 slot 能选上 provider。
   }, [form, open, ownerEmail, tunnelConfig.domain, defaultApp, providersByApp]);
@@ -238,6 +260,30 @@ export function CreateShareDialog({
   const ownerEmailInvalid =
     !normalizedOwnerEmail ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedOwnerEmail);
+
+  // Share To 校验：任一 app 列表里若有不合法 email，整体置 invalid，阻断 submit。
+  const shareToInvalid = useMemo(
+    () =>
+      Object.values(shareToEmailsByApp).some((emails) =>
+        emails.some((email) => email && !isValidEmail(email)),
+      ),
+    [shareToEmailsByApp],
+  );
+
+  // 当前 advanced 里已经选了 provider 的 app 列表——只为这些 app 渲染 Share To 输入框，
+  // 与 EditShareDialog 的 shareAccessApps 行为对齐：未绑定的 app 不参与共享 ACL。
+  // 用 watch 让 bindings 变化时实时响应。
+  const watchedBindings = form.watch("bindings") as
+    | Record<keyof ShareBindings, string>
+    | undefined;
+  const boundShareApps = useMemo<Array<keyof ShareBindings>>(() => {
+    const bound = SHARE_APP_TYPES.filter((app) => {
+      const pid = watchedBindings?.[app];
+      return typeof pid === "string" && pid.length > 0;
+    });
+    return bound.length > 0 ? bound : [...SHARE_APP_TYPES];
+  }, [watchedBindings]);
+
   const defaultShareApp = toShareAppType(defaultApp);
   const defaultProviderId =
     (form.watch(`bindings.${defaultShareApp}` as const) as
@@ -264,6 +310,9 @@ export function CreateShareDialog({
     if (ownerEmailInvalid) {
       return;
     }
+    if (shareToInvalid) {
+      return;
+    }
     const nextRouterDomain = routerDomain.trim();
     if (nextRouterDomain && nextRouterDomain !== tunnelConfig.domain) {
       await onSaveTunnelConfig({ domain: nextRouterDomain });
@@ -283,6 +332,33 @@ export function CreateShareDialog({
     const dynamicApps = allEntries
       .filter(([, pid]) => pid === DYNAMIC_BINDING_VALUE)
       .map(([app]) => app as string);
+
+    // 仅给「会被本 share 用到的 app」（fixed 绑定 + dynamic 占位）建 accessByApp。
+    // 没绑 provider 的 app 不应该有 sharedWithEmails 项，否则 router 那边的 ACL
+    // 也用不上还要回传。
+    const usedApps = new Set<keyof ShareBindings>([
+      ...(Object.keys(fixedBindings) as Array<keyof ShareBindings>),
+      ...(dynamicApps as Array<keyof ShareBindings>),
+    ]);
+    const accessByApp: ShareAccessByApp = {};
+    for (const app of SHARE_APP_TYPES) {
+      if (!usedApps.has(app)) continue;
+      const emails = normalizeEmails(shareToEmailsByApp[app] ?? []);
+      if (emails.length === 0) continue;
+      accessByApp[app] = {
+        sharedWithEmails: emails,
+        marketAccessMode: values.marketAccessMode,
+      };
+    }
+    const accessByAppOrUndef =
+      Object.keys(accessByApp).length > 0 ? accessByApp : undefined;
+    // sharedWithEmails 保留作为「全 app 并集」回传，兼容 UpdateShareAclParams 现状。
+    const flatSharedWithEmails = uniqueSortedEmails(
+      Object.values(accessByApp).flatMap(
+        (entry) => entry?.sharedWithEmails ?? [],
+      ),
+    );
+
     await onSubmit(
       {
         ownerEmail: normalizedOwnerEmail,
@@ -297,8 +373,9 @@ export function CreateShareDialog({
         autoStart: values.autoStart,
       },
       {
-        sharedWithEmails: [],
+        sharedWithEmails: flatSharedWithEmails,
         marketAccessMode: values.marketAccessMode,
+        accessByApp: accessByAppOrUndef,
       },
     );
   });
@@ -730,6 +807,55 @@ export function CreateShareDialog({
                   ) : null}
                 </div>
 
+                {/* Share To：与 EditShareDialog 风格一致，按 app 分别输入；只为
+                    已经绑了 provider 的 app 渲染，避免对未绑定 app 写入空 ACL。 */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label>
+                    {t("share.sharedWithEmails", { defaultValue: "Share To" })}
+                  </Label>
+                  <div className="text-xs text-muted-foreground">
+                    {t("share.createDialog.shareToHint", {
+                      defaultValue:
+                        "每个 App 独立配置可访问邮箱；登录 cc-switch-router 后即可看到对应 share。留空 = 仅 owner 可见。",
+                    })}
+                  </div>
+                  <div className="grid gap-2 pt-1">
+                    {boundShareApps.map((app) => (
+                      <div key={app} className="space-y-1.5">
+                        <Label className="text-xs uppercase text-muted-foreground">
+                          {shareAppDisplayLabel(app)}
+                        </Label>
+                        <EmailTagsInput
+                          value={shareToEmailsByApp[app] ?? []}
+                          invalid={
+                            shareToInvalid &&
+                            (shareToEmailsByApp[app] ?? []).some(
+                              (email) => email && !isValidEmail(email),
+                            )
+                          }
+                          onChange={(emails) =>
+                            setShareToEmailsByApp((current) => ({
+                              ...current,
+                              [app]: emails,
+                            }))
+                          }
+                          placeholder={t("share.sharedWithEmailsPlaceholder", {
+                            defaultValue:
+                              "friend@example.com, teammate@example.com",
+                          })}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {shareToInvalid ? (
+                    <p className="text-xs text-destructive">
+                      {t("share.validation.invalidEmail", {
+                        defaultValue: "存在无效邮箱，请检查后再创建",
+                      })}
+                    </p>
+                  ) : null}
+                </div>
+
                 <div className="space-y-1.5">
                   <Label htmlFor="share-expires">{t("share.expiresIn")}</Label>
                   <Input
@@ -1032,6 +1158,30 @@ export function CreateShareDialog({
 function toShareAppType(app?: AppId): "claude" | "codex" | "gemini" {
   if (app === "codex" || app === "gemini") return app;
   return "claude";
+}
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function isValidEmail(value: string): boolean {
+  return EMAIL_PATTERN.test(value);
+}
+
+function normalizeEmails(emails: string[]): string[] {
+  return uniqueSortedEmails(
+    emails
+      .map((email) => email.trim().toLowerCase())
+      .filter((email) => email.length > 0 && isValidEmail(email)),
+  );
+}
+
+function uniqueSortedEmails(emails: string[]): string[] {
+  return Array.from(new Set(emails)).sort();
+}
+
+function shareAppDisplayLabel(app: keyof ShareBindings): string {
+  if (app === "claude") return "Claude";
+  if (app === "codex") return "Codex";
+  return "Gemini";
 }
 
 function FieldError({ error }: { error?: string }) {

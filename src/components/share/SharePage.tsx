@@ -6,6 +6,7 @@ import { useTauriEvent } from "@/hooks/useTauriEvent";
 import {
   shareApi,
   type AppId,
+  type ShareAccessByApp,
   type ShareRecord,
   type ShareTunnelStatus,
 } from "@/lib/api";
@@ -394,17 +395,22 @@ export function SharePage({
     extras: {
       sharedWithEmails: string[];
       marketAccessMode: "selected" | "all";
+      accessByApp?: ShareAccessByApp;
     },
   ) => {
     const created = await createMutation.mutateAsync(params);
+    const hasPerAppAccess =
+      !!extras.accessByApp && Object.keys(extras.accessByApp).length > 0;
     if (
       extras.marketAccessMode === "all" ||
-      extras.sharedWithEmails.length > 0
+      extras.sharedWithEmails.length > 0 ||
+      hasPerAppAccess
     ) {
       await updateAclMutation.mutateAsync({
         shareId: created.id,
         sharedWithEmails: extras.sharedWithEmails,
         marketAccessMode: extras.marketAccessMode,
+        accessByApp: extras.accessByApp,
       });
     }
     setCreateOpen(false);

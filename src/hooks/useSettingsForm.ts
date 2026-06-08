@@ -91,6 +91,16 @@ export function useSettingsForm(): UseSettingsFormResult {
 
   const syncLanguage = useCallback(
     (lang: Language) => {
+      // 持久化到 localStorage：i18n 启动时 getInitialLanguage 只读 localStorage，
+      // 不读后端 settings JSON，所以这里必须双写——否则用户重启后会回退到 navigator
+      // 默认语言（多数系统是英语），要进设置页让 useSettingsForm 副作用触发才会切回。
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem("language", lang);
+        } catch (error) {
+          console.warn("[i18n] Failed to persist language preference", error);
+        }
+      }
       const current = normalizeLanguage(i18n.language);
       if (current !== lang) {
         void i18n.changeLanguage(lang);

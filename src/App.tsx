@@ -45,6 +45,7 @@ import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useAutoCompact } from "@/hooks/useAutoCompact";
 import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { useSyncLanguageOnBoot } from "@/hooks/useSyncLanguageOnBoot";
 import {
   getWebRuntimeContext,
   invokeCommand,
@@ -398,6 +399,7 @@ function ClientWebLoginPage({
 
 function DesktopApp() {
   const { t } = useTranslation();
+  useSyncLanguageOnBoot();
   const queryClient = useQueryClient();
   const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
   const sharedFeatureApp: AppId =

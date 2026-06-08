@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
+use chrono::{Datelike, TimeZone};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{broadcast, RwLock};
@@ -29,6 +30,8 @@ use crate::services::subscription::{
 
 const STARTUP_REFRESH_DELAY_SECS: u64 = 10;
 const SWITCH_REFRESH_COOLDOWN_SECS: i64 = 60;
+const QUOTA_EXHAUSTED_UTILIZATION: f64 = 99.5;
+const QUOTA_RESET_GRACE_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct OauthQuotaKey {
@@ -68,6 +71,15 @@ pub struct OauthQuotaUpdatedEvent {
     pub app_type: Option<String>,
     pub refreshed_at: i64,
     pub success: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaBlockStatus {
+    pub availability: String,
+    pub blocked_until: Option<String>,
+    pub blocked_until_ms: Option<i64>,
+    pub blocked_reason: String,
+    pub blocked_scope: String,
 }
 
 /// Per-key broadcast channel; 缓存未命中时首胜者建立 channel，
@@ -416,6 +428,19 @@ impl OauthQuotaService {
             None
         }
     }
+
+    async fn next_blocked_refresh_delay(&self) -> Option<Duration> {
+        let now = now_millis();
+        let cache = self.cache.read().await;
+        cache
+            .values()
+            .filter_map(|cached| quota_block_status(&cached.quota))
+            .filter_map(|block| block.blocked_until_ms)
+            .filter(|until| *until > now)
+            .map(|until| (until - now) as u64)
+            .min()
+            .map(Duration::from_millis)
+    }
 }
 
 #[derive(Clone)]
@@ -463,7 +488,18 @@ pub fn spawn_oauth_quota_refresher(
             service
                 .refresh_all_targets(Some(&app), &db, &managers, "background")
                 .await;
-            tokio::time::sleep(read_refresh_interval()).await;
+            for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+                crate::tunnel::sync::schedule_share_runtime_refresh_after_provider_switch(
+                    Arc::clone(&db),
+                    app_type,
+                );
+            }
+            let delay = service
+                .next_blocked_refresh_delay()
+                .await
+                .map(|blocked_delay| blocked_delay.min(read_refresh_interval()))
+                .unwrap_or_else(read_refresh_interval);
+            tokio::time::sleep(delay).await;
         }
     });
 }
@@ -749,8 +785,8 @@ fn kiro_usage_to_subscription_quota(usage: KiroUsageLimitsResponse) -> Subscript
             used: Some(current_usage),
             limit: Some(usage_limit),
             unit: Some("credits".to_string()),
-    used_value_usd: None,
-    max_value_usd: None,
+            used_value_usd: None,
+            max_value_usd: None,
         }],
         extra_usage,
         error: None,
@@ -800,8 +836,8 @@ fn copilot_usage_to_subscription_quota(usage: CopilotUsageResponse) -> Subscript
             used: None,
             limit: None,
             unit: None,
-    used_value_usd: None,
-    max_value_usd: None,
+            used_value_usd: None,
+            max_value_usd: None,
         }],
         extra_usage: None,
         error: None,
@@ -827,6 +863,144 @@ fn read_refresh_interval() -> Duration {
         .oauth_quota_refresh_interval_minutes
         .max(1);
     Duration::from_secs(minutes as u64 * 60)
+}
+
+pub fn quota_block_status(quota: &SubscriptionQuota) -> Option<QuotaBlockStatus> {
+    if !quota.success {
+        return None;
+    }
+
+    let now_ms = now_millis();
+    let mut short_block: Option<QuotaBlockStatus> = None;
+    let mut long_block: Option<QuotaBlockStatus> = None;
+
+    for tier in &quota.tiers {
+        if tier.utilization < QUOTA_EXHAUSTED_UTILIZATION {
+            continue;
+        }
+        let scope = quota_tier_scope(&tier.name);
+        let blocked_until_ms = tier
+            .resets_at
+            .as_deref()
+            .and_then(parse_rfc3339_millis)
+            .map(|value| value + QUOTA_RESET_GRACE_MS);
+        let blocked_until = blocked_until_ms.and_then(timestamp_millis_to_rfc3339);
+        let status = QuotaBlockStatus {
+            availability: if scope == "five_hour" {
+                "short_window_exhausted".to_string()
+            } else {
+                "long_window_exhausted".to_string()
+            },
+            blocked_until,
+            blocked_until_ms,
+            blocked_reason: format!("{} quota exhausted", scope.replace('_', " ")),
+            blocked_scope: scope.to_string(),
+        };
+        if scope == "five_hour" {
+            short_block = pick_block(short_block, status, false);
+        } else {
+            long_block = pick_block(long_block, status, true);
+        }
+    }
+
+    if let Some(extra) = quota.extra_usage.as_ref() {
+        let exhausted_by_utilization = extra
+            .utilization
+            .map(|value| value >= QUOTA_EXHAUSTED_UTILIZATION)
+            .unwrap_or(false);
+        let exhausted_by_cap = match (extra.used_credits, extra.monthly_limit) {
+            (Some(used), Some(limit)) if limit > 0.0 => used >= limit,
+            _ => false,
+        };
+        if exhausted_by_utilization || exhausted_by_cap {
+            let blocked_until_ms = Some(next_month_start_millis(now_ms) + QUOTA_RESET_GRACE_MS);
+            let status = QuotaBlockStatus {
+                availability: "long_window_exhausted".to_string(),
+                blocked_until: blocked_until_ms.and_then(timestamp_millis_to_rfc3339),
+                blocked_until_ms,
+                blocked_reason: "monthly quota exhausted".to_string(),
+                blocked_scope: "monthly".to_string(),
+            };
+            long_block = pick_block(long_block, status, true);
+        }
+    }
+
+    long_block.or(short_block)
+}
+
+pub fn quota_block_is_active(block: &QuotaBlockStatus) -> bool {
+    block
+        .blocked_until_ms
+        .map(|until| until > now_millis())
+        .unwrap_or(true)
+}
+
+fn pick_block(
+    current: Option<QuotaBlockStatus>,
+    next: QuotaBlockStatus,
+    prefer_later_until: bool,
+) -> Option<QuotaBlockStatus> {
+    let Some(current) = current else {
+        return Some(next);
+    };
+    let current_until = current.blocked_until_ms.unwrap_or(i64::MAX);
+    let next_until = next.blocked_until_ms.unwrap_or(i64::MAX);
+    if prefer_later_until {
+        if next_until > current_until {
+            Some(next)
+        } else {
+            Some(current)
+        }
+    } else if next_until < current_until {
+        Some(next)
+    } else {
+        Some(current)
+    }
+}
+
+fn quota_tier_scope(name: &str) -> &'static str {
+    let normalized = name.trim().to_ascii_lowercase();
+    if normalized.contains("five")
+        || normalized.contains("5h")
+        || normalized.contains("5_hour")
+        || normalized.contains("5-hour")
+    {
+        "five_hour"
+    } else if normalized.contains("month") {
+        "monthly"
+    } else if normalized.contains("week")
+        || normalized.contains("seven")
+        || normalized.contains("7d")
+    {
+        "weekly"
+    } else {
+        "long_window"
+    }
+}
+
+fn parse_rfc3339_millis(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
+}
+
+fn timestamp_millis_to_rfc3339(value: i64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value).map(|dt| dt.to_rfc3339())
+}
+
+fn next_month_start_millis(now_ms: i64) -> i64 {
+    let now = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now_ms)
+        .unwrap_or_else(chrono::Utc::now);
+    let (year, month) = if now.month() == 12 {
+        (now.year() + 1, 1)
+    } else {
+        (now.year(), now.month() + 1)
+    };
+    chrono::Utc
+        .with_ymd_and_hms(year, month, 1, 0, 0, 0)
+        .single()
+        .unwrap_or(now)
+        .timestamp_millis()
 }
 
 fn now_millis() -> i64 {
@@ -908,5 +1082,70 @@ mod tests {
             timestamp_to_rfc3339(1_774_000_000_000.0)
         );
         assert!(timestamp_to_rfc3339(0.0).is_none());
+    }
+
+    #[test]
+    fn quota_block_status_detects_five_hour_exhaustion() {
+        let reset = timestamp_millis_to_rfc3339(now_millis() + 2 * 60 * 60 * 1000).unwrap();
+        let quota = SubscriptionQuota {
+            tool: "codex_oauth".to_string(),
+            credential_status: CredentialStatus::Valid,
+            credential_message: None,
+            success: true,
+            tiers: vec![QuotaTier {
+                name: "five_hour".to_string(),
+                utilization: 100.0,
+                resets_at: Some(reset),
+                used: None,
+                limit: None,
+                unit: None,
+                used_value_usd: None,
+                max_value_usd: None,
+            }],
+            extra_usage: None,
+            error: None,
+            queried_at: Some(now_millis()),
+            failure: None,
+        };
+
+        let block = quota_block_status(&quota).expect("quota should be blocked");
+        assert_eq!(block.availability, "short_window_exhausted");
+        assert_eq!(block.blocked_scope, "five_hour");
+        assert!(quota_block_is_active(&block));
+    }
+
+    #[test]
+    fn quota_block_status_prefers_monthly_over_five_hour() {
+        let reset = timestamp_millis_to_rfc3339(now_millis() + 2 * 60 * 60 * 1000).unwrap();
+        let quota = SubscriptionQuota {
+            tool: "cursor_oauth".to_string(),
+            credential_status: CredentialStatus::Valid,
+            credential_message: None,
+            success: true,
+            tiers: vec![QuotaTier {
+                name: "five_hour".to_string(),
+                utilization: 100.0,
+                resets_at: Some(reset),
+                used: None,
+                limit: None,
+                unit: None,
+                used_value_usd: None,
+                max_value_usd: None,
+            }],
+            extra_usage: Some(crate::services::subscription::ExtraUsage {
+                is_enabled: true,
+                monthly_limit: Some(100.0),
+                used_credits: Some(100.0),
+                utilization: Some(100.0),
+                currency: Some("USD".to_string()),
+            }),
+            error: None,
+            queried_at: Some(now_millis()),
+            failure: None,
+        };
+
+        let block = quota_block_status(&quota).expect("quota should be blocked");
+        assert_eq!(block.availability, "long_window_exhausted");
+        assert_eq!(block.blocked_scope, "monthly");
     }
 }

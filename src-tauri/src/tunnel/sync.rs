@@ -1339,6 +1339,7 @@ async fn cached_upstream_quota(
 fn subscription_quota_to_upstream(
     quota: crate::services::subscription::SubscriptionQuota,
 ) -> ShareUpstreamQuota {
+    let block = crate::services::oauth_quota::quota_block_status(&quota);
     let status = if quota.success {
         "ok"
     } else if matches!(
@@ -1353,6 +1354,15 @@ fn subscription_quota_to_upstream(
         status: status.to_string(),
         plan: quota.credential_message,
         queried_at: quota.queried_at,
+        availability: Some(
+            block
+                .as_ref()
+                .map(|item| item.availability.clone())
+                .unwrap_or_else(|| "available".to_string()),
+        ),
+        blocked_until: block.as_ref().and_then(|item| item.blocked_until.clone()),
+        blocked_reason: block.as_ref().map(|item| item.blocked_reason.clone()),
+        blocked_scope: block.as_ref().map(|item| item.blocked_scope.clone()),
         tiers: quota
             .tiers
             .into_iter()

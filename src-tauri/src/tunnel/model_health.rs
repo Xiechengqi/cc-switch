@@ -1,6 +1,7 @@
 use crate::app_config::AppType;
 use crate::database::{Database, ShareRecord};
 use crate::error::AppError;
+use crate::provider::Provider;
 use crate::services::share::ShareService;
 use crate::services::stream_check::StreamCheckResult;
 use crate::tunnel::config::{ShareModelHealthResult, ShareModelHealthSummary};
@@ -173,6 +174,32 @@ async fn check_app(
         }
     };
 
+    if let Some(block) = active_quota_block_for_provider(app_type, &provider).await {
+        record_health_result(
+            &share.id,
+            ShareModelHealthResult {
+                app_type: app_type.as_str().to_string(),
+                requested_model: app_type.as_str().to_string(),
+                actual_model: app_type.as_str().to_string(),
+                status: "quota_blocked".to_string(),
+                recent_results: Vec::new(),
+                status_code: None,
+                latency_ms: 0,
+                error_message: Some(format!(
+                    "{} until {}",
+                    block.blocked_reason,
+                    block.blocked_until.as_deref().unwrap_or("quota reset")
+                )),
+                checked_at: chrono::Utc::now().timestamp(),
+                source: "cc-switch-quota".to_string(),
+                provider_id: Some(provider.id),
+                provider_name: Some(provider.name),
+            },
+        )
+        .await;
+        return Ok(());
+    }
+
     let started = Instant::now();
     let result = crate::commands::run_stream_check_for_provider(
         db.as_ref(),
@@ -203,6 +230,53 @@ async fn check_app(
     };
     record_health_result(&share.id, entry).await;
     Ok(())
+}
+
+async fn active_quota_block_for_provider(
+    app_type: &AppType,
+    provider: &Provider,
+) -> Option<crate::services::oauth_quota::QuotaBlockStatus> {
+    let auth_provider = auth_provider_for_model_health(app_type, provider)?;
+    let service = crate::services::oauth_quota::global_oauth_quota_service()?;
+    let cached = match provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for(auth_provider))
+    {
+        Some(account_id) => service.get(auth_provider, &account_id).await?,
+        None => service.get_first_for_provider(auth_provider).await?,
+    };
+    let block = crate::services::oauth_quota::quota_block_status(&cached.quota)?;
+    crate::services::oauth_quota::quota_block_is_active(&block).then_some(block)
+}
+
+fn auth_provider_for_model_health(app_type: &AppType, provider: &Provider) -> Option<&'static str> {
+    let provider_type = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.provider_type.as_deref());
+    match app_type {
+        AppType::Claude if provider_type == Some("claude_oauth") => Some("claude_oauth"),
+        AppType::Claude if provider_type == Some("kiro_oauth") => Some("kiro_oauth"),
+        AppType::Claude if provider_type == Some("github_copilot") => Some("github_copilot"),
+        AppType::Claude if provider_type == Some("antigravity_oauth") => Some("antigravity_oauth"),
+        AppType::Claude if provider_type == Some("cursor_oauth") => Some("cursor_oauth"),
+        AppType::Codex
+            if provider_type == Some("codex_oauth")
+                || provider.is_codex_official_with_managed_auth() =>
+        {
+            Some("codex_oauth")
+        }
+        AppType::Codex if provider_type == Some("cursor_oauth") => Some("cursor_oauth"),
+        AppType::Gemini
+            if provider_type == Some("google_gemini_oauth")
+                || provider.is_google_gemini_official_with_managed_auth() =>
+        {
+            Some("google_gemini_oauth")
+        }
+        AppType::Gemini if provider_type == Some("antigravity_oauth") => Some("antigravity_oauth"),
+        _ => None,
+    }
 }
 
 fn result_to_health_entry(

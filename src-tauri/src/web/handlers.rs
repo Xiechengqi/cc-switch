@@ -2109,8 +2109,10 @@ async fn oauth_quota_command(
         .await
         .map_err(WebError::internal)?)),
         "refresh_oauth_quota" => Ok(json!(crate::commands::refresh_oauth_quota(
+            required_app_handle(state)?.clone(),
             string_arg(&args, "authProvider")?,
             optional_string_arg(&args, "accountId"),
+            required_app_state(state)?,
             quota,
             codex,
             claude,

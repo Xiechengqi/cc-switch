@@ -216,10 +216,34 @@ export function ProxyPanel() {
                 </p>
                 <div className="grid gap-2 sm:grid-cols-3">
                   {(["claude", "codex", "gemini"] as const).map((appType) => {
-                    const isEnabled =
+                    const isActive =
                       takeoverStatus?.[
                         appType as keyof typeof takeoverStatus
                       ] ?? false;
+                    const pendingKey =
+                      `${appType}_pending` as keyof typeof takeoverStatus;
+                    const isPending =
+                      !isActive &&
+                      ((takeoverStatus?.[pendingKey] as
+                        | boolean
+                        | undefined) ??
+                        false);
+                    const badgeClass = isActive
+                      ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                      : isPending
+                        ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                        : "bg-yellow-500/10 text-yellow-700 dark:text-yellow-300";
+                    const label = isActive
+                      ? t("proxy.takeover.alwaysEnabled", {
+                          defaultValue: "已启用",
+                        })
+                      : isPending
+                        ? t("proxy.takeover.pendingProvider", {
+                            defaultValue: "待 provider",
+                          })
+                        : t("proxy.takeover.recovering", {
+                            defaultValue: "恢复中",
+                          });
                     return (
                       <div
                         key={appType}
@@ -229,19 +253,9 @@ export function ProxyPanel() {
                           {appType}
                         </span>
                         <span
-                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                            isEnabled
-                              ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                              : "bg-yellow-500/10 text-yellow-700 dark:text-yellow-300"
-                          }`}
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${badgeClass}`}
                         >
-                          {isEnabled
-                            ? t("proxy.takeover.alwaysEnabled", {
-                                defaultValue: "已启用",
-                              })
-                            : t("proxy.takeover.recovering", {
-                                defaultValue: "恢复中",
-                              })}
+                          {label}
                         </span>
                       </div>
                     );
@@ -253,6 +267,16 @@ export function ProxyPanel() {
                       "Claude、Codex、Gemini 的请求默认通过本地路由转发，并由系统保持启用",
                   })}
                 </p>
+                {(takeoverStatus?.claude_pending ||
+                  takeoverStatus?.codex_pending ||
+                  takeoverStatus?.gemini_pending) && (
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                    {t("proxy.takeover.pendingHint", {
+                      defaultValue:
+                        "代理已就绪，但部分应用还没有 provider。添加 provider 后会自动启用接管。",
+                    })}
+                  </p>
+                )}
               </div>
             </motion.div>
           )}

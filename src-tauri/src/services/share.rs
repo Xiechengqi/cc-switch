@@ -1,4 +1,6 @@
-use crate::database::{Database, ShareRecord};
+use crate::database::{
+    derive_access_by_app, legacy_acl_from_access_by_app, Database, ShareAppAccess, ShareRecord,
+};
 use crate::error::AppError;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -100,8 +102,7 @@ impl ShareService {
                     "{app_type} 同时出现在固定 bindings 和 dynamic_apps 里，请只选一种"
                 )));
             }
-            let app = std::str::FromStr::from_str(app_type.as_str())
-                .map_err(|e: AppError| e)?;
+            let app = std::str::FromStr::from_str(app_type.as_str()).map_err(|e: AppError| e)?;
             let current = crate::settings::get_effective_current_provider(db, &app)?
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| {
@@ -125,6 +126,7 @@ impl ShareService {
             owner_email,
             shared_with_emails: Vec::new(),
             market_access_mode: "selected".to_string(),
+            access_by_app: derive_access_by_app(&bindings, &[], "selected"),
             for_sale_official_price_percent_by_app: HashMap::new(),
             description,
             for_sale,
@@ -527,13 +529,16 @@ impl ShareService {
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
         let owner_email = normalize_email(owner_email)?;
-        let shared_with_emails = normalize_email_list(share.shared_with_emails, &owner_email)?;
+        let shared_with_emails =
+            normalize_email_list(share.shared_with_emails.clone(), &owner_email)?;
         let market_access_mode = normalize_market_access_mode(&share.market_access_mode)?;
+        let access_by_app = normalize_access_by_app(share.effective_access_by_app(), &owner_email)?;
         db.update_share_acl(
             share_id,
             &owner_email,
             &shared_with_emails,
             &market_access_mode,
+            &access_by_app,
         )?;
         let updated = db
             .get_share_by_id(share_id)?
@@ -557,7 +562,8 @@ impl ShareService {
                 "新 owner 邮箱必须不同于当前 owner 邮箱".to_string(),
             ));
         }
-        let current_shared_with = normalize_email_list(share.shared_with_emails, &old_owner_email)?;
+        let current_shared_with =
+            normalize_email_list(share.shared_with_emails.clone(), &old_owner_email)?;
         if !current_shared_with
             .iter()
             .any(|email| email == &target_email)
@@ -574,15 +580,32 @@ impl ShareService {
             .iter()
             .any(|email| email == &old_owner_email)
         {
-            next_shared_with.push(old_owner_email);
+            next_shared_with.push(old_owner_email.clone());
         }
         let next_shared_with = normalize_email_list(next_shared_with, &target_email)?;
         let market_access_mode = normalize_market_access_mode(&share.market_access_mode)?;
+        let mut access_by_app =
+            normalize_access_by_app(share.effective_access_by_app(), &target_email)?;
+        for access in access_by_app.values_mut() {
+            access
+                .shared_with_emails
+                .retain(|email| email != &target_email);
+            if !access
+                .shared_with_emails
+                .iter()
+                .any(|email| email == &old_owner_email)
+            {
+                access.shared_with_emails.push(old_owner_email.clone());
+            }
+            access.shared_with_emails =
+                normalize_email_list(access.shared_with_emails.clone(), &target_email)?;
+        }
         db.update_share_acl(
             share_id,
             &target_email,
             &next_shared_with,
             &market_access_mode,
+            &access_by_app,
         )?;
         let updated = db
             .get_share_by_id(share_id)?
@@ -597,15 +620,28 @@ impl ShareService {
         owner_email: &str,
         shared_with_emails: Vec<String>,
         market_access_mode: &str,
+        access_by_app: Option<HashMap<String, ShareAppAccess>>,
     ) -> Result<ShareRecord, AppError> {
+        let share = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
         let owner_email = normalize_email(owner_email)?;
-        let shared_with_emails = normalize_email_list(shared_with_emails, &owner_email)?;
-        let market_access_mode = normalize_market_access_mode(market_access_mode)?;
+        let access_by_app = match access_by_app {
+            Some(value) => normalize_access_by_app(value, &owner_email)?,
+            None => {
+                let shared_with_emails = normalize_email_list(shared_with_emails, &owner_email)?;
+                let market_access_mode = normalize_market_access_mode(market_access_mode)?;
+                derive_access_by_app(&share.bindings, &shared_with_emails, &market_access_mode)
+            }
+        };
+        let (shared_with_emails, market_access_mode) =
+            legacy_acl_from_access_by_app(&access_by_app);
         db.update_share_acl(
             share_id,
             &owner_email,
             &shared_with_emails,
             &market_access_mode,
+            &access_by_app,
         )?;
         let updated = db
             .get_share_by_id(share_id)?
@@ -776,6 +812,26 @@ fn normalize_for_sale_official_price_percent_by_app(
     Ok(normalized)
 }
 
+fn normalize_access_by_app(
+    access_by_app: HashMap<String, ShareAppAccess>,
+    owner_email: &str,
+) -> Result<HashMap<String, ShareAppAccess>, AppError> {
+    let mut normalized = HashMap::new();
+    for (app, access) in access_by_app {
+        let app = normalize_share_app_type(&app)?;
+        let shared_with_emails = normalize_email_list(access.shared_with_emails, owner_email)?;
+        let market_access_mode = normalize_market_access_mode(&access.market_access_mode)?;
+        normalized.insert(
+            app,
+            ShareAppAccess {
+                shared_with_emails,
+                market_access_mode,
+            },
+        );
+    }
+    Ok(normalized)
+}
+
 fn normalize_email(value: &str) -> Result<String, AppError> {
     let value = value.trim().to_ascii_lowercase();
     if value.is_empty() || !value.contains('@') {
@@ -850,6 +906,7 @@ mod tests {
             owner_email: "user@example.com".to_string(),
             shared_with_emails: Vec::new(),
             market_access_mode: "selected".to_string(),
+            access_by_app: HashMap::new(),
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),

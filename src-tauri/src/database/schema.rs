@@ -383,6 +383,7 @@ impl Database {
                 owner_email TEXT NOT NULL DEFAULT '',
                 shared_with_emails_json TEXT NOT NULL DEFAULT '[]',
                 market_access_mode TEXT NOT NULL DEFAULT 'selected',
+                access_by_app_json TEXT NOT NULL DEFAULT '{}',
                 for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
@@ -614,6 +615,11 @@ impl Database {
                         );
                         Self::migrate_v23_to_v24(conn)?;
                         Self::set_user_version(conn, 24)?;
+                    }
+                    24 => {
+                        log::info!("迁移数据库从 v24 到 v25（Share ACL 按 app 分支拆分）");
+                        Self::migrate_v24_to_v25(conn)?;
+                        Self::set_user_version(conn, 25)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1872,7 +1878,9 @@ impl Database {
     /// 时就会 hit UNIQUE 约束失败。partial unique 保留固定绑定的全局唯一性、豁免动态绑定。
     fn migrate_v23_to_v24(conn: &Connection) -> Result<(), AppError> {
         if !Self::table_exists(conn, "share_provider_bindings")? {
-            log::info!("v23 -> v24 跳过：share_provider_bindings 不存在（fresh schema 或未启用 share）");
+            log::info!(
+                "v23 -> v24 跳过：share_provider_bindings 不存在（fresh schema 或未启用 share）"
+            );
             return Ok(());
         }
         if !Self::has_column(conn, "share_provider_bindings", "dynamic")? {
@@ -1883,21 +1891,36 @@ impl Database {
             .map_err(|e| AppError::Database(format!("v23→v24 add dynamic 列失败: {e}")))?;
         }
         // 旧的 idx_share_bindings_provider_unique 是全局 UNIQUE；替换成 partial unique。
-        conn.execute("DROP INDEX IF EXISTS idx_share_bindings_provider_unique", [])
-            .map_err(|e| {
-                AppError::Database(format!(
-                    "v23→v24 drop 旧 idx_share_bindings_provider_unique 失败: {e}"
-                ))
-            })?;
+        conn.execute(
+            "DROP INDEX IF EXISTS idx_share_bindings_provider_unique",
+            [],
+        )
+        .map_err(|e| {
+            AppError::Database(format!(
+                "v23→v24 drop 旧 idx_share_bindings_provider_unique 失败: {e}"
+            ))
+        })?;
         conn.execute(
             "CREATE UNIQUE INDEX idx_share_bindings_provider_unique
              ON share_provider_bindings(provider_id) WHERE dynamic = 0",
             [],
         )
-        .map_err(|e| {
-            AppError::Database(format!("v23→v24 create partial UNIQUE 失败: {e}"))
-        })?;
+        .map_err(|e| AppError::Database(format!("v23→v24 create partial UNIQUE 失败: {e}")))?;
         log::info!("v23 -> v24 迁移完成：share_provider_bindings 加 dynamic 列 + partial UNIQUE");
+        Ok(())
+    }
+
+    /// v24 → v25：share ACL 从全局 shareto 拆成 per-app access map。
+    fn migrate_v24_to_v25(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(
+                conn,
+                "shares",
+                "access_by_app_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )?;
+        }
+        log::info!("v24 -> v25 迁移完成：shares 增加 access_by_app_json");
         Ok(())
     }
 

@@ -673,11 +673,19 @@ export function useUpdateShareAclMutation() {
       shareId,
       sharedWithEmails,
       marketAccessMode,
+      accessByApp,
     }: {
       shareId: string;
       sharedWithEmails: string[];
       marketAccessMode: "selected" | "all";
-    }) => shareApi.updateAcl({ shareId, sharedWithEmails, marketAccessMode }),
+      accessByApp?: import("@/lib/api").ShareAccessByApp;
+    }) =>
+      shareApi.updateAcl({
+        shareId,
+        sharedWithEmails,
+        marketAccessMode,
+        accessByApp,
+      }),
     {
       successKey: "share.toast.updateAclSuccess",
       successDefault: "分享名单已更新",

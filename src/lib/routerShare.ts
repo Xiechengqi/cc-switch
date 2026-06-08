@@ -6,6 +6,7 @@ export interface RouterShareSettingsPatch {
   forSale?: "Yes" | "No" | "Free";
   marketAccessMode?: "selected" | "all";
   sharedWithEmails?: string[];
+  accessByApp?: import("@/lib/api").ShareAccessByApp;
   forSaleOfficialPricePercentByApp?: Record<string, number>;
   tokenLimit?: number;
   parallelLimit?: number;

@@ -49,6 +49,12 @@ export interface ProxyTakeoverStatus {
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
+  // 「意图位已开启 但当前还没 current provider」的待接管态。
+  // 后端 derive 计算：enabled && !has_current_provider。
+  // 前端可据此显示「代理已就绪，添加 provider 后自动启用接管」类提示。
+  claude_pending?: boolean;
+  codex_pending?: boolean;
+  gemini_pending?: boolean;
 }
 
 export interface ProviderHealth {

@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::app_config::AppType;
-use crate::database::{Database, ShareRecord};
+use crate::database::{Database, ShareAppAccess, ShareRecord};
 use crate::provider::Provider;
 use crate::settings;
 use crate::tunnel::config::{
@@ -34,6 +34,8 @@ pub struct ShareSettingsPatch {
     pub market_access_mode: Option<String>,
     #[serde(default)]
     pub shared_with_emails: Option<Vec<String>>,
+    #[serde(default)]
+    pub access_by_app: Option<HashMap<String, ShareAppAccess>>,
     #[serde(default)]
     pub for_sale_official_price_percent_by_app: Option<HashMap<String, u16>>,
     #[serde(default)]
@@ -321,6 +323,7 @@ pub(crate) fn apply_share_settings_patch(
             &next_owner,
             next_shared,
             next_mode,
+            patch.access_by_app.clone(),
         )?;
     }
     if let Some(description) = patch.description {
@@ -1839,6 +1842,7 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         owner_email: share.owner_email.clone(),
         shared_with_emails: share.shared_with_emails.clone(),
         market_access_mode: share.market_access_mode.clone(),
+        access_by_app: share.effective_access_by_app(),
         for_sale_official_price_percent_by_app: for_sale_pricing,
         description: share.description.clone(),
         for_sale: share.for_sale.clone(),
@@ -1989,6 +1993,7 @@ mod tests {
                 owner_email: "u@example.com".to_string(),
                 shared_with_emails: Vec::new(),
                 market_access_mode: "selected".to_string(),
+                access_by_app: HashMap::new(),
                 for_sale_official_price_percent_by_app: HashMap::new(),
                 description: None,
                 for_sale: "No".to_string(),
@@ -2078,6 +2083,7 @@ mod tests {
             owner_email: "u@example.com".to_string(),
             shared_with_emails: Vec::new(),
             market_access_mode: "all".to_string(),
+            access_by_app: HashMap::new(),
             for_sale_official_price_percent_by_app: pricing,
             description: None,
             for_sale: "Yes".to_string(),

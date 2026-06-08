@@ -1225,6 +1225,19 @@ impl ProviderService {
             write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
         }
 
+        // 0→1 provider 时，若代理意图位已开启但接管尚未生效，补一次接管。
+        // 非 claude/codex/gemini app 在 ProxyService 内部短路。
+        if let Err(e) = futures::executor::block_on(
+            state
+                .proxy_service
+                .auto_takeover_if_pending(app_type.as_str()),
+        ) {
+            log::warn!(
+                "[{}] add provider 后 auto_takeover_if_pending 失败: {e}",
+                app_type.as_str()
+            );
+        }
+
         Ok(true)
     }
 
@@ -1520,7 +1533,22 @@ impl ProviderService {
             ));
         }
 
-        state.db.delete_provider(app_type.as_str(), id)
+        state.db.delete_provider(app_type.as_str(), id)?;
+
+        // 删完后若该 app 已无 current provider，把代理接管回收，避免 placeholder
+        // 永远停留在用户 Live 配置里。意图位 enabled=true 保留，下次 add provider 时
+        // auto_takeover_if_pending 会再触发接管。非 claude/codex/gemini app 内部短路。
+        if let Err(e) = futures::executor::block_on(
+            state
+                .proxy_service
+                .auto_release_if_no_provider(app_type.as_str()),
+        ) {
+            log::warn!(
+                "[{}] delete provider 后 auto_release_if_no_provider 失败: {e}",
+                app_type.as_str()
+            );
+        }
+        Ok(())
     }
 
     /// Remove provider from live config only (for additive mode apps like OpenCode, OpenClaw)

@@ -108,6 +108,14 @@ pub struct ProxyServerInfo {
 }
 
 /// 各应用的接管状态（是否改写该应用的 Live 配置指向本地代理）
+///
+/// 字段语义说明：
+/// - `claude/codex/gemini` = **derive 后的实际接管态**：意图位 enabled=true
+///   且当前 app 存在 current provider 时才为 true。零 provider 的「代理已就绪」
+///   场景下这些字段为 false，避免 UI 显示「已接管」却实际没接管。
+/// - `*_pending` = 「意图位 已开启 但当前没 provider」的待接管态。前端用来
+///   显示「代理已就绪，添加 provider 后自动启用接管」类提示。
+/// - `opencode/openclaw` 不在代理范围内，恒为 false / 不写 pending。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProxyTakeoverStatus {
     pub claude: bool,
@@ -115,6 +123,12 @@ pub struct ProxyTakeoverStatus {
     pub gemini: bool,
     pub opencode: bool,
     pub openclaw: bool,
+    #[serde(default)]
+    pub claude_pending: bool,
+    #[serde(default)]
+    pub codex_pending: bool,
+    #[serde(default)]
+    pub gemini_pending: bool,
 }
 
 /// API 格式类型（预留，当前不需要格式转换）

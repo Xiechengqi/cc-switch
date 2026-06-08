@@ -1,4 +1,4 @@
-use crate::database::ShareRecord;
+use crate::database::{ShareAppAccess, ShareRecord};
 use crate::error::AppError;
 use crate::proxy::ProxyConfig;
 use crate::services::share::{PrepareShareParams, ShareService};
@@ -129,6 +129,8 @@ pub struct UpdateShareAclParams {
     pub shared_with_emails: Vec<String>,
     #[serde(default = "default_market_access_mode")]
     pub market_access_mode: String,
+    #[serde(default)]
+    pub access_by_app: Option<std::collections::HashMap<String, ShareAppAccess>>,
 }
 
 fn default_market_access_mode() -> String {
@@ -268,6 +270,7 @@ pub fn authorize_share_market(
         &owner_email,
         emails,
         &share.market_access_mode,
+        None,
     )
     .map_err(|e: AppError| e.to_string())
 }
@@ -287,6 +290,7 @@ pub fn update_share_acl(
         &owner_email,
         params.shared_with_emails,
         &params.market_access_mode,
+        params.access_by_app,
     )
     .map_err(|e: AppError| e.to_string())
 }

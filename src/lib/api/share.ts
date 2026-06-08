@@ -7,12 +7,22 @@ import { invokeCommand } from "@/lib/runtime";
  */
 export type ShareBindings = Partial<Record<"claude" | "codex" | "gemini", string>>;
 
+export type ShareAppAccess = {
+  sharedWithEmails: string[];
+  marketAccessMode: "selected" | "all";
+};
+
+export type ShareAccessByApp = Partial<
+  Record<keyof ShareBindings, ShareAppAccess>
+>;
+
 export interface ShareRecord {
   id: string;
   name: string;
   ownerEmail: string;
   sharedWithEmails: string[];
   marketAccessMode: "selected" | "all";
+  accessByApp?: ShareAccessByApp;
   forSaleOfficialPricePercentByApp: Record<string, number>;
   description?: string | null;
   forSale: "Yes" | "No" | "Free";
@@ -129,6 +139,7 @@ export interface UpdateShareAclParams {
   shareId: string;
   sharedWithEmails: string[];
   marketAccessMode: "selected" | "all";
+  accessByApp?: ShareAccessByApp;
 }
 
 export interface UpdateShareTokenLimitParams {

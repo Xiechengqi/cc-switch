@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Copy, Edit3, Play, Power, RotateCcw, Trash2 } from "lucide-react";
 import type {
   PublicMarket,
+  ShareAccessByApp,
   ShareRecord,
   TunnelConfig,
   TunnelInfo,
@@ -111,6 +112,7 @@ interface ShareCardProps {
     share: ShareRecord,
     sharedWithEmails: string[],
     marketAccessMode: "selected" | "all",
+    accessByApp?: ShareAccessByApp,
   ) => Promise<void> | void;
   /**
    * 当前 app 下可绑定的 provider 列表（同 CreateShareDialog 的形态）。
@@ -199,13 +201,6 @@ export function ShareCard({
   const marketEmailSet = new Set(
     markets.map((market) => market.email.toLowerCase()),
   );
-  const currentNonMarketEmails = Array.from(
-    new Set(
-      (share.sharedWithEmails ?? [])
-        .map((email) => email.trim().toLowerCase())
-        .filter((email) => email && !marketEmailSet.has(email)),
-    ),
-  ).sort();
   const currentMarketEmails = Array.from(
     new Set(
       (share.sharedWithEmails ?? [])
@@ -214,6 +209,7 @@ export function ShareCard({
     ),
   ).sort();
   const currentMarketAccessMode = share.marketAccessMode ?? "selected";
+  const shareToSummary = shareAccessSummary(share, marketEmailSet);
 
   const canDisable = isShareActionAllowed(
     share,
@@ -432,11 +428,7 @@ export function ShareCard({
             />
             <SummaryLine
               label={t("share.sharedWithEmails", { defaultValue: "Share To" })}
-              value={
-                currentNonMarketEmails.length
-                  ? currentNonMarketEmails.join(", ")
-                  : "-"
-              }
+              value={shareToSummary || "-"}
             />
             <SummaryLine
               label={t("share.forSale")}
@@ -576,6 +568,51 @@ function MarketSummary({
       </div>
     </div>
   );
+}
+
+function shareAccessSummary(share: ShareRecord, marketEmailSet: Set<string>) {
+  const accessByApp = share.accessByApp ?? {};
+  const apps = shareSupportedApps(share);
+  const accessApps =
+    Object.keys(accessByApp).length > 0
+      ? apps.length
+        ? apps
+        : Object.keys(accessByApp)
+      : [];
+  if (accessApps.length === 0) {
+    return Array.from(
+      new Set(
+        (share.sharedWithEmails ?? [])
+          .map((email) => email.trim().toLowerCase())
+          .filter((email) => email && !marketEmailSet.has(email)),
+      ),
+    )
+      .sort()
+      .join(", ");
+  }
+
+  return accessApps
+    .map((app) => {
+      const access = (accessByApp as Record<string, { sharedWithEmails?: string[] }>)[app];
+      const emails = Array.from(
+        new Set(
+          (access?.sharedWithEmails ?? [])
+            .map((email) => email.trim().toLowerCase())
+            .filter((email) => email && !marketEmailSet.has(email)),
+        ),
+      ).sort();
+      if (emails.length === 0) return null;
+      return `${shareAppLabel(app)}: ${emails.join(", ")}`;
+    })
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function shareAppLabel(app: string) {
+  if (app === "claude") return "Claude";
+  if (app === "codex") return "Codex";
+  if (app === "gemini") return "Gemini";
+  return app;
 }
 
 function ConnectInlineValue({

@@ -1974,8 +1974,36 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
 
     log::info!("正在确保本地路由常开，应用列表: {apps_to_restore:?}");
 
-    // 逐个恢复接管状态
+    // 逐个恢复接管状态。
+    //
+    // 守卫：只有 app 真的存在 current provider 时才接管 Live，否则只保留
+    // proxy_config.enabled=true 的意图位，把 server 撑起来但不污染 Live。
+    // 之后用户添加首个 provider 时会通过 ProviderService::add → auto_takeover_if_pending
+    // 触发接管。这样可以让「0 预设供应商」与「默认启用代理」共存。
     for app_type in apps_to_restore {
+        let app_enum = match app_type {
+            "claude" => AppType::Claude,
+            "codex" => AppType::Codex,
+            "gemini" => AppType::Gemini,
+            _ => continue,
+        };
+        let has_current = crate::settings::get_effective_current_provider(&state.db, &app_enum)
+            .ok()
+            .flatten()
+            .and_then(|id| {
+                state
+                    .db
+                    .get_provider_by_id(&id, app_type)
+                    .ok()
+                    .flatten()
+                    .map(|_| ())
+            })
+            .is_some();
+        if !has_current {
+            log::info!("[{app_type}] 当前无可用 provider，跳过接管；待添加 provider 后自动接管");
+            continue;
+        }
+
         match state
             .proxy_service
             .set_takeover_for_app(app_type, true)

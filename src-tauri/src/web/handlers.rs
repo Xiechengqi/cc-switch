@@ -1081,6 +1081,7 @@ async fn invoke_local_admin_scoped(
                     &owner_email,
                     params.shared_with_emails,
                     &params.market_access_mode,
+                    params.access_by_app,
                 )
                 .map_err(WebError::internal)?,
             )))
@@ -1153,25 +1154,23 @@ async fn invoke_local_admin_scoped(
         "update_share_auto_start" => {
             let app_state = required_app_state(state)?;
             let params: UpdateShareAutoStartParams = value_arg(&args, "params")?;
-            Ok(json!(sanitize_share_for_web(
-                ShareService::update_auto_start(
-                    &app_state.db,
-                    &params.share_id,
-                    params.auto_start,
+            Ok(json!(
+                sanitize_share_for_web(
+                    ShareService::update_auto_start(
+                        &app_state.db,
+                        &params.share_id,
+                        params.auto_start,
+                    )
+                    .map_err(WebError::internal)?,
                 )
-                .map_err(WebError::internal)?,
-            )))
+            ))
         }
         "update_share_for_sale" => {
             let app_state = required_app_state(state)?;
             let params: UpdateShareForSaleParams = value_arg(&args, "params")?;
             Ok(json!(sanitize_share_for_web(
-                ShareService::update_for_sale(
-                    &app_state.db,
-                    &params.share_id,
-                    &params.for_sale,
-                )
-                .map_err(WebError::internal)?,
+                ShareService::update_for_sale(&app_state.db, &params.share_id, &params.for_sale,)
+                    .map_err(WebError::internal)?,
             )))
         }
         "update_share_for_sale_official_price_percent" => {
@@ -1269,9 +1268,8 @@ async fn invoke_local_admin_scoped(
             }
             let share = created.ok_or_else(|| {
                 WebError::internal(crate::email_auth::humanize_remote_owner_binding_error(
-                    &last_claim_error.unwrap_or_else(|| {
-                        "unable to allocate an available subdomain".to_string()
-                    }),
+                    &last_claim_error
+                        .unwrap_or_else(|| "unable to allocate an available subdomain".to_string()),
                 ))
             })?;
             Ok(json!(sanitize_share_for_web(
@@ -1311,8 +1309,7 @@ async fn invoke_local_admin_scoped(
             let share_id = string_arg(&args, "shareId")?;
             ShareService::resume(&app_state.db, &share_id).map_err(WebError::internal)?;
             let info = crate::commands::share::start_share_tunnel_with_error_tracking(
-                &app_state,
-                &share_id,
+                &app_state, &share_id,
             )
             .await
             .map_err(WebError::internal)?;
@@ -1334,7 +1331,9 @@ async fn invoke_local_admin_scoped(
             if let Ok(Some(share)) = app_state.db.get_share_by_id(&share_id) {
                 let metadata = crate::tunnel::sync::share_metadata_from_record(&share);
                 if let Err(err) = crate::tunnel::sync::sync_share_metadata_now(metadata).await {
-                    log::warn!("[Web] immediate remote sync after disable failed for {share_id}: {err}");
+                    log::warn!(
+                        "[Web] immediate remote sync after disable failed for {share_id}: {err}"
+                    );
                 }
             }
             {
@@ -1348,7 +1347,9 @@ async fn invoke_local_admin_scoped(
                     {
                         Ok(Ok(())) => {}
                         Ok(Err(err)) => {
-                            log::warn!("[Web] stop tunnel after disable failed for {share_id}: {err}");
+                            log::warn!(
+                                "[Web] stop tunnel after disable failed for {share_id}: {err}"
+                            );
                         }
                         Err(_) => {
                             log::warn!("[Web] stop tunnel after disable timed out for {share_id}");
@@ -1385,8 +1386,7 @@ async fn invoke_local_admin_scoped(
             let app_state = required_app_state(state)?;
             let share_id = string_arg(&args, "shareId")?;
             let info = crate::commands::share::start_share_tunnel_with_error_tracking(
-                &app_state,
-                &share_id,
+                &app_state, &share_id,
             )
             .await
             .map_err(WebError::internal)?;
@@ -1397,7 +1397,9 @@ async fn invoke_local_admin_scoped(
             let share_id = string_arg(&args, "shareId")?;
             {
                 let mut mgr = app_state.tunnel_manager.write().await;
-                mgr.stop_tunnel(&share_id).await.map_err(WebError::internal)?;
+                mgr.stop_tunnel(&share_id)
+                    .await
+                    .map_err(WebError::internal)?;
             }
             app_state
                 .db
@@ -1489,8 +1491,8 @@ async fn invoke_local_admin_scoped(
         "delete_universal_provider" => {
             let app_state = required_app_state(state)?;
             let id = string_arg(&args, "id")?;
-            let result = ProviderService::delete_universal(&app_state, &id)
-                .map_err(WebError::internal)?;
+            let result =
+                ProviderService::delete_universal(&app_state, &id).map_err(WebError::internal)?;
             if let Ok(handle) = required_app_handle(state) {
                 let _ = handle.emit(
                     "universal-provider-synced",
@@ -1536,11 +1538,9 @@ async fn invoke_local_admin_scoped(
                 .ok_or_else(|| WebError::not_found(format!("Share not found: {share_id}")))?;
             Ok(share_connect_info(&share))
         }
-        "list_share_markets" => Ok(json!(
-            crate::commands::share::list_share_markets()
-                .await
-                .map_err(WebError::internal)?
-        )),
+        "list_share_markets" => Ok(json!(crate::commands::share::list_share_markets()
+            .await
+            .map_err(WebError::internal)?)),
         _ => Err(WebError::not_found(format!(
             "local admin web command is allowlisted but not implemented yet: {command}"
         ))),

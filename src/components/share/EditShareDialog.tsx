@@ -1,7 +1,12 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
-import type { PublicMarket, ShareBindings, ShareRecord } from "@/lib/api";
+import type {
+  PublicMarket,
+  ShareAccessByApp,
+  ShareBindings,
+  ShareRecord,
+} from "@/lib/api";
 import { SHARE_APP_TYPES } from "@/lib/api";
 import type { ProviderOption } from "./CreateShareDialog";
 import { Button } from "@/components/ui/button";
@@ -106,6 +111,7 @@ interface EditShareDialogProps {
     share: ShareRecord,
     sharedWithEmails: string[],
     marketAccessMode: "selected" | "all",
+    accessByApp?: ShareAccessByApp,
   ) => Promise<void> | void;
   /**
    * P8：改绑 / 解绑 share 的某个 app_type slot 的 provider。
@@ -175,7 +181,9 @@ export function EditShareDialog({
   const [providerIdInputs, setProviderIdInputs] = useState<Record<string, string>>({});
   const [descriptionInput, setDescriptionInput] = useState("");
   const [ownerEmailInput, setOwnerEmailInput] = useState("");
-  const [shareToEmails, setShareToEmails] = useState<string[]>([]);
+  const [shareToEmailsByApp, setShareToEmailsByApp] = useState<
+    Record<keyof ShareBindings, string[]>
+  >({ claude: [], codex: [], gemini: [] });
   const [selectedMarketEmails, setSelectedMarketEmails] = useState<string[]>(
     [],
   );
@@ -207,16 +215,36 @@ export function EditShareDialog({
   const marketEmailSet = new Set(
     markets.map((market) => market.email.toLowerCase()),
   );
+  const supportedAccessApps = useMemo(
+    () => shareAccessApps(share),
+    [share.bindings],
+  );
+  const currentAccessByApp = useMemo(
+    () => effectiveAccessByApp(share),
+    [share],
+  );
   const currentMarketEmails = uniqueSorted(
-    (share.sharedWithEmails ?? [])
-      .map((email) => email.trim().toLowerCase())
-      .filter((email) => marketEmailSet.has(email)),
+    Object.values(currentAccessByApp).flatMap((access) =>
+      (access.sharedWithEmails ?? [])
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => marketEmailSet.has(email)),
+    ),
   );
-  const currentNonMarketEmails = uniqueSorted(
-    (share.sharedWithEmails ?? [])
-      .map((email) => email.trim().toLowerCase())
-      .filter((email) => email && !marketEmailSet.has(email)),
-  );
+  const currentNonMarketEmailsByApp = useMemo(() => {
+    const result: Record<keyof ShareBindings, string[]> = {
+      claude: [],
+      codex: [],
+      gemini: [],
+    };
+    for (const app of SHARE_APP_TYPES) {
+      result[app] = uniqueSorted(
+        (currentAccessByApp[app]?.sharedWithEmails ?? [])
+          .map((email) => email.trim().toLowerCase())
+          .filter((email) => email && !marketEmailSet.has(email)),
+      );
+    }
+    return result;
+  }, [currentAccessByApp, marketEmailSet]);
   const currentMarketAccessMode = share.marketAccessMode ?? "selected";
   const currentShareSalePricing = share.forSaleOfficialPricePercentByApp ?? {};
   const wasOpenRef = useRef(false);
@@ -252,7 +280,7 @@ export function EditShareDialog({
     });
     setDescriptionInput(share.description ?? "");
     setOwnerEmailInput(share.ownerEmail ?? "");
-    setShareToEmails(currentNonMarketEmails);
+    setShareToEmailsByApp(currentNonMarketEmailsByApp);
     setSelectedMarketEmails(currentMarketEmails);
     setMarketAccessModeInput(currentMarketAccessMode);
     setForSaleInput(share.forSale);
@@ -324,16 +352,26 @@ export function EditShareDialog({
   const ownerEmailInvalid =
     !normalizedOwnerEmail ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedOwnerEmail);
-  const normalizedShareTo = Array.from(
-    new Set(
-      shareToEmails
-        .map((value) => value.trim().toLowerCase())
-        .filter((value) => value && !marketEmailSet.has(value)),
-    ),
-  ).sort();
-  const shareToDirty =
-    JSON.stringify(normalizedShareTo) !==
-    JSON.stringify(currentNonMarketEmails);
+  const normalizedShareToByApp = useMemo(() => {
+    const result: Record<keyof ShareBindings, string[]> = {
+      claude: [],
+      codex: [],
+      gemini: [],
+    };
+    for (const app of SHARE_APP_TYPES) {
+      result[app] = uniqueSorted(
+        (shareToEmailsByApp[app] ?? [])
+          .map((value) => value.trim().toLowerCase())
+          .filter((value) => value && !marketEmailSet.has(value)),
+      );
+    }
+    return result;
+  }, [shareToEmailsByApp, marketEmailSet]);
+  const shareToDirty = supportedAccessApps.some(
+    (app) =>
+      JSON.stringify(normalizedShareToByApp[app]) !==
+      JSON.stringify(currentNonMarketEmailsByApp[app]),
+  );
   const normalizedSelectedMarketEmails = uniqueSorted(
     marketAccessModeInput === "all"
       ? []
@@ -344,13 +382,34 @@ export function EditShareDialog({
     (marketAccessModeInput === "selected" &&
       JSON.stringify(normalizedSelectedMarketEmails) !==
         JSON.stringify(currentMarketEmails));
-  const nextAclEmails = uniqueSorted([
-    ...normalizedShareTo,
-    ...(marketAccessModeInput === "all" ? [] : normalizedSelectedMarketEmails),
+  const nextAccessByApp = useMemo(() => {
+    const result: ShareAccessByApp = {};
+    for (const app of supportedAccessApps) {
+      result[app] = {
+        sharedWithEmails: uniqueSorted([
+          ...(normalizedShareToByApp[app] ?? []),
+          ...(marketAccessModeInput === "all"
+            ? []
+            : normalizedSelectedMarketEmails),
+        ]),
+        marketAccessMode: marketAccessModeInput,
+      };
+    }
+    return result;
+  }, [
+    marketAccessModeInput,
+    normalizedSelectedMarketEmails,
+    normalizedShareToByApp,
+    supportedAccessApps,
   ]);
+  const nextAclEmails = uniqueSorted(
+    Object.values(nextAccessByApp).flatMap(
+      (access) => access?.sharedWithEmails ?? [],
+    ),
+  );
   const aclDirty = shareToDirty || marketDirty;
-  const shareToInvalid = normalizedShareTo.some(
-    (email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
+  const shareToInvalid = Object.values(normalizedShareToByApp).some((emails) =>
+    emails.some((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)),
   );
   const forSaleDirty = forSaleInput !== share.forSale;
   const salePricingCurrentValues = salePricingInputValues(
@@ -443,7 +502,12 @@ export function EditShareDialog({
     setSaving(true);
     try {
       if (aclDirty)
-        await onUpdateAcl(share, nextAclEmails, marketAccessModeInput);
+        await onUpdateAcl(
+          share,
+          nextAclEmails,
+          marketAccessModeInput,
+          nextAccessByApp,
+        );
       if (forSaleDirty) await onUpdateForSale(share, forSaleInput);
       if (salePricingDirty) {
         await onUpdateShareSalePricing(
@@ -681,24 +745,40 @@ export function EditShareDialog({
               title={t("share.sharedWithEmails", { defaultValue: "Share To" })}
               hint={t("share.sharedWithEmailsHint", {
                 defaultValue:
-                  "配置多个邮箱后，这些邮箱登录 cc-switch-router dashboard 可以查看当前 share 的 API Key 明文。",
+                  "每个分支可单独配置可访问邮箱；这些邮箱登录 cc-switch-router dashboard 后可查看对应 share。",
               })}
               invalid={shareToDirty && shareToInvalid}
             >
-              <EmailTagsInput
-                value={shareToEmails}
-                disabled={busy}
-                invalid={shareToDirty && shareToInvalid}
-                onChange={setShareToEmails}
-                placeholder={t("share.sharedWithEmailsPlaceholder", {
-                  defaultValue: "friend@example.com, teammate@example.com",
-                })}
-                onPromote={(email) => setTransferTargetEmail(email)}
-                promotableEmails={currentNonMarketEmails}
-                promoteLabel={t("share.transferOwner.action", {
-                  defaultValue: "设为 Owner",
-                })}
-              />
+              <div className="space-y-3">
+                {supportedAccessApps.map((app) => (
+                  <div key={app} className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">
+                      {shareAppLabel(app)}
+                    </Label>
+                    <EmailTagsInput
+                      value={shareToEmailsByApp[app] ?? []}
+                      disabled={busy}
+                      invalid={shareToDirty && shareToInvalid}
+                      onChange={(emails) =>
+                        setShareToEmailsByApp((current) => ({
+                          ...current,
+                          [app]: emails,
+                        }))
+                      }
+                      placeholder={t("share.sharedWithEmailsPlaceholder", {
+                        defaultValue: "friend@example.com, teammate@example.com",
+                      })}
+                      onPromote={(email) => setTransferTargetEmail(email)}
+                      promotableEmails={uniqueSorted(
+                        Object.values(currentNonMarketEmailsByApp).flat(),
+                      )}
+                      promoteLabel={t("share.transferOwner.action", {
+                        defaultValue: "设为 Owner",
+                      })}
+                    />
+                  </div>
+                ))}
+              </div>
             </DialogSection>
 
             <DialogSection
@@ -1201,6 +1281,31 @@ function DialogSection({
       ) : null}
     </section>
   );
+}
+
+function shareAccessApps(share: ShareRecord): Array<keyof ShareBindings> {
+  const bound = SHARE_APP_TYPES.filter((app) => Boolean(share.bindings?.[app]));
+  return bound.length > 0 ? bound : [...SHARE_APP_TYPES];
+}
+
+function effectiveAccessByApp(share: ShareRecord): ShareAccessByApp {
+  if (share.accessByApp && Object.keys(share.accessByApp).length > 0) {
+    return share.accessByApp;
+  }
+  const result: ShareAccessByApp = {};
+  for (const app of shareAccessApps(share)) {
+    result[app] = {
+      sharedWithEmails: share.sharedWithEmails ?? [],
+      marketAccessMode: share.marketAccessMode ?? "selected",
+    };
+  }
+  return result;
+}
+
+function shareAppLabel(app: keyof ShareBindings) {
+  if (app === "claude") return "Claude";
+  if (app === "codex") return "Codex";
+  return "Gemini";
 }
 
 function MarketTags({

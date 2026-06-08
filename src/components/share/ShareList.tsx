@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import type {
   PublicMarket,
+  ShareAccessByApp,
   ShareRecord,
   TunnelConfig,
   TunnelInfo,
@@ -82,6 +83,7 @@ interface ShareListProps {
     share: ShareRecord,
     sharedWithEmails: string[],
     marketAccessMode: "selected" | "all",
+    accessByApp?: ShareAccessByApp,
   ) => Promise<void> | void;
   onUpdateProviderBinding: (
     share: ShareRecord,

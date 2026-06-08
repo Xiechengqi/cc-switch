@@ -710,14 +710,19 @@ export function SharePage({
                   }),
             )
           }
-          onUpdateAcl={(share, sharedWithEmails, marketAccessMode) =>
+          onUpdateAcl={(share, sharedWithEmails, marketAccessMode, accessByApp) =>
             runShareAction(share, () =>
               shareScoped
-                ? writeSharePatch(share, { sharedWithEmails, marketAccessMode })
+                ? writeSharePatch(share, {
+                    sharedWithEmails,
+                    marketAccessMode,
+                    accessByApp,
+                  })
                 : updateAclMutation.mutateAsync({
                     shareId: share.id,
                     sharedWithEmails,
                     marketAccessMode,
+                    accessByApp,
                   }),
             )
           }

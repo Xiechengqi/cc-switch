@@ -22,6 +22,8 @@ export type { Prompt } from "./prompts";
 export type {
   ShareRecord,
   ShareBindings,
+  ShareAppAccess,
+  ShareAccessByApp,
   PublicMarket,
   CreateShareParams,
   UpdateShareAclParams,

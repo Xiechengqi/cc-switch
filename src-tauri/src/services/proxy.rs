@@ -505,8 +505,11 @@ impl ProxyService {
     }
 
     /// 获取各应用的接管状态（是否改写该应用的 Live 配置指向本地代理）
+    ///
+    /// 返回 derive 后的实际接管态：意图位 enabled=true 且当前 app 存在 current
+    /// provider 时 bool 为 true；意图位 enabled=true 但 current provider 缺位时
+    /// `*_pending=true`，前端用来显示「代理已就绪，添加 provider 后自动启用接管」。
     pub async fn get_takeover_status(&self) -> Result<ProxyTakeoverStatus, String> {
-        // 从 proxy_config.enabled 读取（优先），兼容旧的 live_backup 备份检测
         let claude_enabled = self
             .db
             .get_proxy_config_for_app("claude")
@@ -529,13 +532,119 @@ impl ProxyService {
         let opencode_enabled = false;
         let openclaw_enabled = false;
 
+        let claude_has_provider = self
+            .get_current_provider_for_app(&AppType::Claude)
+            .ok()
+            .flatten()
+            .is_some();
+        let codex_has_provider = self
+            .get_current_provider_for_app(&AppType::Codex)
+            .ok()
+            .flatten()
+            .is_some();
+        let gemini_has_provider = self
+            .get_current_provider_for_app(&AppType::Gemini)
+            .ok()
+            .flatten()
+            .is_some();
+
         Ok(ProxyTakeoverStatus {
-            claude: claude_enabled,
-            codex: codex_enabled,
-            gemini: gemini_enabled,
+            claude: claude_enabled && claude_has_provider,
+            codex: codex_enabled && codex_has_provider,
+            gemini: gemini_enabled && gemini_has_provider,
             opencode: opencode_enabled,
             openclaw: openclaw_enabled,
+            claude_pending: claude_enabled && !claude_has_provider,
+            codex_pending: codex_enabled && !codex_has_provider,
+            gemini_pending: gemini_enabled && !gemini_has_provider,
         })
+    }
+
+    /// 「意图位 = 已开启」但当前还无 provider 时，零 provider 启动允许把代理 server
+    /// 撑起来而不接管 Live。本方法供 provider CRUD 后调用：当 (enabled=true ∧ 还
+    /// 没接管 ∧ 现在已经有 current provider) 三件事同时成立时，补上接管动作。
+    /// 任一条件不成立都是 no-op。
+    pub async fn auto_takeover_if_pending(&self, app_type: &str) -> Result<(), String> {
+        let app = AppType::from_str(app_type).map_err(|e| format!("无效的应用类型: {e}"))?;
+        let app_type_str = app.as_str();
+
+        if !matches!(app, AppType::Claude | AppType::Codex | AppType::Gemini) {
+            return Ok(());
+        }
+
+        let config = self
+            .db
+            .get_proxy_config_for_app(app_type_str)
+            .await
+            .map_err(|e| format!("获取 {app_type_str} 配置失败: {e}"))?;
+        if !config.enabled {
+            return Ok(());
+        }
+
+        if self.get_current_provider_for_app(&app)?.is_none() {
+            return Ok(());
+        }
+
+        // 已经接管的判定与 set_takeover_for_app 一致：必须 backup 存在且 live 确实指向当前
+        // 代理地址，半接管/旧端口残留视为「未接管」由下游重建。
+        let has_backup = self
+            .db
+            .get_live_backup(app_type_str)
+            .await
+            .map(|v| v.is_some())
+            .unwrap_or(false);
+        let live_matches = self
+            .live_takeover_matches_current_proxy(&app)
+            .await
+            .unwrap_or(false);
+        if has_backup && live_matches {
+            return Ok(());
+        }
+
+        log::info!("[{app_type_str}] auto_takeover_if_pending: 触发延后接管");
+        self.set_takeover_for_app(app_type_str, true).await
+    }
+
+    /// 「意图位 = 已开启」但当前 provider 已全部消失时，把接管收回去并恢复 Live，
+    /// 避免 placeholder 永远留在用户配置里。供 provider 删除路径调用，幂等。
+    pub async fn auto_release_if_no_provider(&self, app_type: &str) -> Result<(), String> {
+        let app = AppType::from_str(app_type).map_err(|e| format!("无效的应用类型: {e}"))?;
+        let app_type_str = app.as_str();
+
+        if !matches!(app, AppType::Claude | AppType::Codex | AppType::Gemini) {
+            return Ok(());
+        }
+
+        let config = self
+            .db
+            .get_proxy_config_for_app(app_type_str)
+            .await
+            .map_err(|e| format!("获取 {app_type_str} 配置失败: {e}"))?;
+        if !config.enabled {
+            return Ok(());
+        }
+        if self.get_current_provider_for_app(&app)?.is_some() {
+            return Ok(());
+        }
+
+        let has_backup = self
+            .db
+            .get_live_backup(app_type_str)
+            .await
+            .map(|v| v.is_some())
+            .unwrap_or(false);
+        let live_taken = self.detect_takeover_in_live_config_for_app(&app);
+        if !has_backup && !live_taken {
+            return Ok(());
+        }
+
+        log::info!("[{app_type_str}] auto_release_if_no_provider: 无 provider，回收接管");
+        // 走 with_fallback 路径还原 Live + 删 backup；保留意图位 enabled=true，
+        // 下次 add provider 时 auto_takeover_if_pending 会再次接管。
+        self.restore_live_config_for_app_with_fallback_inner(&app)
+            .await?;
+        let _ = self.db.delete_live_backup(app_type_str).await;
+        Ok(())
     }
 
     /// 为指定应用开启/关闭 Live 接管
@@ -1298,6 +1407,12 @@ impl ProxyService {
                 log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
             }
             AppType::Gemini => {
+                // 防御性兜底：与 Claude/Codex 一致，无 current provider 时拒绝接管。
+                // 否则 read_gemini_live 在 .env 不存在时返回 Value::Null，下面的写入逻辑
+                // 会用占位符新建一个指向本地代理的 .env——但代理没有 provider，所有
+                // gemini-cli 请求都会 NoProvidersConfigured。Option A 的启动守卫已经
+                // 在 lib.rs 里挡住绝大多数路径，这里只是防御性补一层。
+                self.require_current_provider_for_app(&AppType::Gemini)?;
                 let mut live_config = self.read_gemini_live()?;
                 if live_config.is_null() {
                     live_config = json!({});
@@ -5922,5 +6037,184 @@ experimental_bearer_token = "PROXY_MANAGED"
                 "must not overwrite good backup for {app_type} with proxy placeholder"
             );
         }
+    }
+
+    // ============================================================
+    // 「零预设供应商 + 默认启用代理」共存的回归测试
+    // ============================================================
+
+    /// 把 codex provider 写库 + 设置 current，方便组装测试输入。
+    fn seed_codex_provider(db: &Arc<Database>, id: &str) {
+        let provider = Provider::with_id(
+            id.to_string(),
+            "Test Codex".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "test-key" },
+                "config": format!(
+                    "model_provider = \"{id}\"\n\n[model_providers.{id}]\nname = \"{id}\"\nbase_url = \"https://api.example.com/v1\"\nwire_api = \"responses\"\n"
+                )
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider).expect("save provider");
+        db.set_current_provider("codex", id)
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some(id))
+            .expect("set local current provider");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn auto_takeover_if_pending_no_op_when_no_provider() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        // proxy_config[codex].enabled 默认 true（schema DEFAULT），无 provider。
+        // auto_takeover 应该 Ok(()) 且不写 Live、不创建 backup。
+        state
+            .proxy_service
+            .auto_takeover_if_pending("codex")
+            .await
+            .expect("no-op should succeed");
+
+        assert!(
+            db.get_live_backup("codex")
+                .await
+                .expect("get backup")
+                .is_none(),
+            "no backup should be created when there is no provider"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn auto_takeover_if_pending_engages_after_provider_added() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        seed_codex_model_template();
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        seed_codex_provider(&db, "test-codex");
+
+        state
+            .proxy_service
+            .auto_takeover_if_pending("codex")
+            .await
+            .expect("should engage takeover when provider exists");
+
+        let backup = db.get_live_backup("codex").await.expect("get backup");
+        assert!(
+            backup.is_some(),
+            "backup must be created once takeover engages"
+        );
+        let cfg = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get proxy config");
+        assert!(cfg.enabled, "intent bit must remain enabled");
+
+        crate::settings::update_settings(crate::settings::AppSettings::default())
+            .expect("reset settings");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn auto_release_if_no_provider_skips_when_provider_exists() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        seed_codex_model_template();
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        seed_codex_provider(&db, "test-codex");
+        state
+            .proxy_service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("enable takeover");
+
+        let backup_before = db
+            .get_live_backup("codex")
+            .await
+            .expect("get backup")
+            .expect("backup exists before release attempt");
+
+        state
+            .proxy_service
+            .auto_release_if_no_provider("codex")
+            .await
+            .expect("no-op should succeed");
+
+        let backup_after = db
+            .get_live_backup("codex")
+            .await
+            .expect("get backup")
+            .expect("backup remains because provider still exists");
+        assert_eq!(
+            backup_after.original_config, backup_before.original_config,
+            "release must be no-op when provider still exists"
+        );
+
+        crate::settings::update_settings(crate::settings::AppSettings::default())
+            .expect("reset settings");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn gemini_strict_takeover_rejects_without_provider() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        // 没有 gemini provider。直接 set_takeover_for_app 应该返回 Err，
+        // 且不会留下 .env 文件、不会写 backup。
+        let result = state
+            .proxy_service
+            .set_takeover_for_app("gemini", true)
+            .await;
+        assert!(
+            result.is_err(),
+            "gemini takeover must fail without provider, got {result:?}"
+        );
+
+        let env_path = crate::gemini_config::get_gemini_env_path();
+        assert!(
+            !env_path.exists(),
+            "gemini .env must not be created when takeover refuses without provider"
+        );
+        assert!(
+            db.get_live_backup("gemini")
+                .await
+                .expect("get backup")
+                .is_none(),
+            "no gemini backup should be persisted when strict takeover rejects"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn takeover_status_reports_pending_when_no_provider() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        let status = state
+            .proxy_service
+            .get_takeover_status()
+            .await
+            .expect("get takeover status");
+        assert!(
+            !status.codex,
+            "without provider, derived takeover bool must be false"
+        );
+        assert!(
+            status.codex_pending,
+            "without provider, pending flag must be true (enabled defaults to true)"
+        );
     }
 }

@@ -4,6 +4,21 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+const SHARE_APP_TYPES: &[&str] = &["claude", "codex", "gemini"];
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareAppAccess {
+    #[serde(default)]
+    pub shared_with_emails: Vec<String>,
+    #[serde(default = "default_market_access_mode_string")]
+    pub market_access_mode: String,
+}
+
+fn default_market_access_mode_string() -> String {
+    "selected".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareRecord {
@@ -12,6 +27,8 @@ pub struct ShareRecord {
     pub owner_email: String,
     pub shared_with_emails: Vec<String>,
     pub market_access_mode: String,
+    #[serde(default)]
+    pub access_by_app: HashMap<String, ShareAppAccess>,
     pub for_sale_official_price_percent_by_app: HashMap<String, u16>,
     pub description: Option<String>,
     pub for_sale: String,
@@ -72,6 +89,70 @@ impl ShareRecord {
         self.primary_app()
             .and_then(|app| self.bindings.get(&app).cloned())
     }
+
+    pub fn effective_access_by_app(&self) -> HashMap<String, ShareAppAccess> {
+        if !self.access_by_app.is_empty() {
+            return self.access_by_app.clone();
+        }
+        derive_access_by_app(
+            &self.bindings,
+            &self.shared_with_emails,
+            &self.market_access_mode,
+        )
+    }
+}
+
+pub fn derive_access_by_app(
+    bindings: &HashMap<String, String>,
+    shared_with_emails: &[String],
+    market_access_mode: &str,
+) -> HashMap<String, ShareAppAccess> {
+    let apps: Vec<&str> = if bindings.is_empty() {
+        SHARE_APP_TYPES.to_vec()
+    } else {
+        SHARE_APP_TYPES
+            .iter()
+            .copied()
+            .filter(|app| bindings.contains_key(*app))
+            .collect()
+    };
+    apps.into_iter()
+        .map(|app| {
+            (
+                app.to_string(),
+                ShareAppAccess {
+                    shared_with_emails: shared_with_emails.to_vec(),
+                    market_access_mode: market_access_mode.to_string(),
+                },
+            )
+        })
+        .collect()
+}
+
+pub fn legacy_acl_from_access_by_app(
+    access_by_app: &HashMap<String, ShareAppAccess>,
+) -> (Vec<String>, String) {
+    if access_by_app.is_empty() {
+        return (Vec::new(), "selected".to_string());
+    }
+    let all_apps_open = access_by_app
+        .values()
+        .all(|access| access.market_access_mode == "all");
+    let mut seen = HashSet::new();
+    let mut emails = Vec::new();
+    for access in access_by_app.values() {
+        for email in &access.shared_with_emails {
+            let email = email.trim().to_ascii_lowercase();
+            if !email.is_empty() && seen.insert(email.clone()) {
+                emails.push(email);
+            }
+        }
+    }
+    emails.sort();
+    (
+        emails,
+        if all_apps_open { "all" } else { "selected" }.to_string(),
+    )
 }
 
 /// Share 绑定 provider 的审计历史条目。
@@ -88,7 +169,7 @@ pub struct ShareBindingHistoryEntry {
 }
 
 impl Database {
-    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
+    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, market_access_mode, access_by_app_json, for_sale_official_price_percent_json, description, for_sale, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
 
     pub fn create_share(&self, share: &ShareRecord) -> Result<(), AppError> {
         let mut conn = lock_conn!(self.conn);
@@ -96,10 +177,10 @@ impl Database {
             .transaction()
             .map_err(|e| AppError::Database(e.to_string()))?;
         tx.execute(
-            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, market_access_mode, for_sale_official_price_percent_json, description, for_sale, api_key,
+            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, market_access_mode, access_by_app_json, for_sale_official_price_percent_json, description, for_sale, api_key,
              settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at,
              subdomain, tunnel_url, status, auto_start, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 share.id,
                 share.name,
@@ -107,6 +188,8 @@ impl Database {
                 serde_json::to_string(&share.shared_with_emails)
                     .map_err(|e| AppError::Database(e.to_string()))?,
                 share.market_access_mode,
+                serde_json::to_string(&share.effective_access_by_app())
+                    .map_err(|e| AppError::Database(e.to_string()))?,
                 serde_json::to_string(&share.for_sale_official_price_percent_by_app)
                     .map_err(|e| AppError::Database(e.to_string()))?,
                 share.description,
@@ -159,8 +242,7 @@ impl Database {
         match rows.next().map_err(|e| AppError::Database(e.to_string()))? {
             Some(row) => {
                 let mut share = Self::row_to_share(row)?;
-                let (bindings, dynamic_apps) =
-                    Self::load_share_bindings_on_conn(&conn, &share.id)?;
+                let (bindings, dynamic_apps) = Self::load_share_bindings_on_conn(&conn, &share.id)?;
                 share.bindings = bindings;
                 share.dynamic_apps = dynamic_apps;
                 Ok(Some(share))
@@ -183,8 +265,7 @@ impl Database {
         let mut result = Vec::new();
         while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
             let mut share = Self::row_to_share(row)?;
-            let (bindings, dynamic_apps) =
-                Self::load_share_bindings_on_conn(&conn, &share.id)?;
+            let (bindings, dynamic_apps) = Self::load_share_bindings_on_conn(&conn, &share.id)?;
             share.bindings = bindings;
             share.dynamic_apps = dynamic_apps;
             result.push(share);
@@ -227,8 +308,7 @@ impl Database {
             let app_type: String = row
                 .get::<_, String>(Self::share_column_count())
                 .map_err(|e| AppError::Database(e.to_string()))?;
-            let (bindings, dynamic_apps) =
-                Self::load_share_bindings_on_conn(&conn, &share.id)?;
+            let (bindings, dynamic_apps) = Self::load_share_bindings_on_conn(&conn, &share.id)?;
             share.bindings = bindings;
             share.dynamic_apps = dynamic_apps;
             result.push((share, app_type));
@@ -368,18 +448,28 @@ impl Database {
         owner_email: &str,
         shared_with_emails: &[String],
         market_access_mode: &str,
+        access_by_app: &HashMap<String, ShareAppAccess>,
     ) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         let shared_with_emails_json = serde_json::to_string(shared_with_emails)
             .map_err(|e| AppError::Database(e.to_string()))?;
+        let access_by_app_json =
+            serde_json::to_string(access_by_app).map_err(|e| AppError::Database(e.to_string()))?;
         conn.execute(
             "UPDATE shares
                  SET name = ?2,
                      owner_email = ?2,
                      shared_with_emails_json = ?3,
-                     market_access_mode = ?4
+                     market_access_mode = ?4,
+                     access_by_app_json = ?5
                  WHERE id = ?1",
-            params![id, owner_email, shared_with_emails_json, market_access_mode],
+            params![
+                id,
+                owner_email,
+                shared_with_emails_json,
+                market_access_mode,
+                access_by_app_json
+            ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -613,44 +703,53 @@ impl Database {
         // P8 后字段顺序：见 SHARE_SELECT_COLUMNS。app_type / provider_id 已被剥离到
         // share_provider_bindings 侧表。bindings 字段由调用方在 row_to_share 之后
         // 通过 load_share_bindings_on_conn 填充。
+        let shared_with_emails = serde_json::from_str::<Vec<String>>(
+            &row.get::<_, String>(3)
+                .map_err(|e| AppError::Database(e.to_string()))?,
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        let market_access_mode: String =
+            row.get(4).map_err(|e| AppError::Database(e.to_string()))?;
+        let access_by_app = serde_json::from_str::<HashMap<String, ShareAppAccess>>(
+            &row.get::<_, String>(5)
+                .map_err(|e| AppError::Database(e.to_string()))?,
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(ShareRecord {
             id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
             name: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
             owner_email: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
-            shared_with_emails: serde_json::from_str::<Vec<String>>(
-                &row.get::<_, String>(3)
-                    .map_err(|e| AppError::Database(e.to_string()))?,
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?,
-            market_access_mode: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
+            shared_with_emails,
+            market_access_mode,
+            access_by_app,
             for_sale_official_price_percent_by_app: serde_json::from_str::<HashMap<String, u16>>(
-                &row.get::<_, String>(5)
+                &row.get::<_, String>(6)
                     .map_err(|e| AppError::Database(e.to_string()))?,
             )
             .map_err(|e| AppError::Database(e.to_string()))?,
-            description: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
-            for_sale: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
+            description: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
+            for_sale: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
             bindings: HashMap::new(),
             dynamic_apps: HashSet::new(),
-            api_key: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
-            settings_config: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
-            token_limit: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
-            parallel_limit: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
-            tokens_used: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
-            requests_count: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
-            expires_at: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
-            subdomain: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
-            tunnel_url: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
-            status: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
-            auto_start: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
-            created_at: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
-            last_used_at: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
+            api_key: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
+            settings_config: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
+            token_limit: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
+            parallel_limit: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
+            tokens_used: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
+            requests_count: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
+            expires_at: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
+            subdomain: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
+            tunnel_url: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
+            status: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
+            auto_start: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
+            created_at: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
+            last_used_at: row.get(21).map_err(|e| AppError::Database(e.to_string()))?,
         })
     }
 
     /// SHARE_SELECT_COLUMNS 的列数（用于 JOIN 查询定位附加列下标）。
     const fn share_column_count() -> usize {
-        21
+        22
     }
 
     /// 读侧表中 share_id 对应的所有 binding（app_type → provider_id）。

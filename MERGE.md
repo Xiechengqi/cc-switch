@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-06-09
+
+- **上游分支：** `main`
+- **上游 HEAD：** `4f5250fc`
+- **共同祖先：** `03a9296c`
+- **合并提交数：** 17
+- **主要变更：**
+  - feat(usage): 官方订阅 quota 统一 tier 渲染模板（`TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION`，`autoQueryInterval` 参数化）
+  - feat(proxy): GET /v1/models 端点用于 Codex CLI 可达性探测；ephemeral 监听端口（0）解析为实际端口；localhost 监听地址归一化
+  - feat(proxy): input_file / input_audio content parts 映射到 chat；cache_control 在 OpenAI 格式转换中剥离
+  - fix(proxy): truncated chat streams 与正常完成的区分；custom_tool_call / tool_search_call 跨轮 reasoning 缓存；Anthropic system 消息规范化
+  - fix(providers): 仅在显式 official 时被 proxy takeover 拦截（仍由本仓 `category === "official"` 判定收口）
+  - fix(usage): Claude stream 输入 token 膨胀；Codex VS Code session previews
+  - fix: Windows 退出托盘图标残留；Windows scan_dir_recursive 路径分隔符归一化
+  - chore(presets): SSSAiCode 域名更新；opencode APINebula 切到 OpenAI 兼容 SDK
+- **冲突解决：**
+  - `src/components/providers/ProviderCard.tsx`：保留本仓全部 OAuth quota footers（Claude/Gemini/Antigravity/Cursor/Kiro）与 `isManagedOauth` 派生；并入上游 `TEMPLATE_TYPES`/`supportsOfficialSubscription`/`officialSubscriptionEnabled`/`isOfficialSubscriptionUsage`；`onConfigureUsage` 拦截条件合并为 `(isOfficial && !supportsOfficialSubscription) || isManagedOauth`；剔除上游未在本仓使用的 `isOfficialBlockedByProxy`/`isCopilot` 派生与对应大段注释
+  - `src/components/providers/ProviderActions.tsx`：删除上游 auto-merged 进来但本仓未提供 prop 的 `isOfficialBlockedByProxy` 渲染分支（与上一条同因，本仓 takeover 拦截只在 ProviderCard/useProviderActions 层做）
+  - `src/lib/query/subscription.ts`：采纳上游"按 `autoQueryIntervalMinutes` 参数驱动 refetch"流程（订阅 quota 与 OAuth quota 解耦），移除本仓 `useSettingsQuery`/`getOauthQuotaRefreshIntervalMs` 引用，新增本地 `REFETCH_INTERVAL = 5 min` 常量
+  - `src-tauri/src/services/proxy.rs`：测试中 expected base URL 采纳上游 `running_codex_base_url(&service)` helper（行为等价，避免直读 db）
+  - `src/config/{claude,codex,gemini}ProviderPresets.ts`：按"禁止新添加 API Key 类供应商"全部采纳 HEAD（含丢弃 SSSAiCode 域名/端点节点更新）
+  - `src/i18n/locales/{en,zh,ja}.json`：未引入上游 `provider.blockedByProxyHint`（与上面的拦截分支删除同步）
+- **验证：** `cargo check` exit 0、`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-05
 
 - **上游分支：** `main`

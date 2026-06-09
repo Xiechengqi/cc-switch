@@ -4,8 +4,8 @@ import type { AppId } from "@/lib/api/types";
 import type { ProviderMeta } from "@/types";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
-import { useSettingsQuery } from "./queries";
-import { getOauthQuotaRefreshIntervalMs } from "./oauthQuotaRefresh";
+
+const REFETCH_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
 export const subscriptionKeys = {
   all: ["subscription"] as const,
@@ -36,18 +36,24 @@ export function useSubscriptionQuota(
   appId: AppId,
   enabled: boolean,
   autoQuery = false,
+  autoQueryIntervalMinutes = 5,
 ) {
-  const { data: settings } = useSettingsQuery();
-  const refreshInterval = getOauthQuotaRefreshIntervalMs(settings);
+  const refetchInterval =
+    autoQuery && autoQueryIntervalMinutes > 0
+      ? Math.max(autoQueryIntervalMinutes, 1) * 60 * 1000
+      : false;
 
   return useQuery({
     queryKey: subscriptionKeys.quota(appId),
     queryFn: () => subscriptionApi.getQuota(appId),
     enabled: enabled && ["claude", "codex", "gemini"].includes(appId),
-    refetchInterval: autoQuery ? refreshInterval : false,
-    refetchIntervalInBackground: autoQuery,
-    refetchOnWindowFocus: autoQuery,
-    staleTime: refreshInterval,
+    refetchInterval,
+    refetchIntervalInBackground: Boolean(refetchInterval),
+    refetchOnWindowFocus: Boolean(refetchInterval),
+    staleTime:
+      autoQueryIntervalMinutes > 0
+        ? Math.max(autoQueryIntervalMinutes, 1) * 60 * 1000
+        : REFETCH_INTERVAL,
     retry: 1,
   });
 }

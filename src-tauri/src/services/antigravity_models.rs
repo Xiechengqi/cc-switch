@@ -46,8 +46,33 @@ pub const ANTIGRAVITY_FREE_MODELS: &[AntigravityModelDef] = &[
         owned_by: "google",
     },
     AntigravityModelDef {
-        id: "claude-sonnet-4-6-thinking",
-        display_name: "Claude Sonnet 4.6 (Thinking)",
+        id: "gemini-3-flash",
+        display_name: "Gemini 3 Flash",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-3-flash-agent",
+        display_name: "Gemini 3 Flash Agent",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-3.1-flash-image",
+        display_name: "Gemini 3.1 Flash Image",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-3.1-flash-lite",
+        display_name: "Gemini 3.1 Flash Lite",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-pro-agent",
+        display_name: "Gemini Pro Agent",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "claude-sonnet-4-6",
+        display_name: "Claude Sonnet 4.6",
         owned_by: "anthropic",
     },
     AntigravityModelDef {
@@ -92,11 +117,31 @@ struct FetchAvailableQuotaInfo {
 }
 
 pub fn normalize_antigravity_model_id(model: &str) -> String {
-    match model.trim() {
-        "claude-4.6-sonnet-thinking" => "claude-sonnet-4-6-thinking".to_string(),
+    let trimmed = model.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    match lower.as_str() {
+        "claude-4.6-sonnet-thinking"
+        | "claude-sonnet-4.6-thinking"
+        | "claude-sonnet-4-6-thinking" => "claude-sonnet-4-6".to_string(),
         "claude-4.6-opus-thinking" => "claude-opus-4-6-thinking".to_string(),
+        "claude-opus-4.6-thinking" => "claude-opus-4-6-thinking".to_string(),
+        "claude-opus-4.5"
+        | "claude-opus-4.5-thinking"
+        | "claude-opus-4-5"
+        | "claude-opus-4-5-thinking" => "claude-opus-4-6-thinking".to_string(),
+        "claude-sonnet-4.5"
+        | "claude-sonnet-4.5-thinking"
+        | "claude-sonnet-4-5"
+        | "claude-sonnet-4-5-thinking" => "claude-sonnet-4-6".to_string(),
         "gemini-3-pro-low" => "gemini-3.1-pro-low".to_string(),
-        "gemini-3-pro-high" => "gemini-3.1-pro-high".to_string(),
+        "gemini-3-pro-high"
+        | "gemini-3-pro-preview"
+        | "gemini-3-pro-preview-customtools"
+        | "gemini-3.1-pro-preview"
+        | "gemini-3.1-pro-preview-customtools"
+        | "gemini-3-1-pro-preview"
+        | "gemini-3-1-pro-preview-customtools" => "gemini-3.1-pro-high".to_string(),
         other => other.to_string(),
     }
 }
@@ -153,7 +198,20 @@ pub fn antigravity_models_to_quota_tiers(models: &[AntigravityAvailableModel]) -
     let mut tiers: Vec<QuotaTier> = models
         .iter()
         .filter_map(|model| {
-            let remaining = model.remaining_fraction?.clamp(0.0, 1.0);
+            let remaining = model
+                .remaining_fraction
+                .unwrap_or_else(|| {
+                    if model
+                        .reset_time
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+                    {
+                        0.0
+                    } else {
+                        1.0
+                    }
+                })
+                .clamp(0.0, 1.0);
             let canonical = normalize_antigravity_model_id(&model.id);
             Some(QuotaTier {
                 name: model
@@ -165,8 +223,8 @@ pub fn antigravity_models_to_quota_tiers(models: &[AntigravityAvailableModel]) -
                 used: None,
                 limit: None,
                 unit: None,
-    used_value_usd: None,
-    max_value_usd: None,
+                used_value_usd: None,
+                max_value_usd: None,
             })
         })
         .collect();
@@ -332,7 +390,7 @@ mod tests {
     fn normalizes_plugin_style_claude_aliases() {
         assert_eq!(
             normalize_antigravity_model_id("claude-4.6-sonnet-thinking"),
-            "claude-sonnet-4-6-thinking"
+            "claude-sonnet-4-6"
         );
         assert_eq!(
             normalize_antigravity_model_id("claude-4.6-opus-thinking"),
@@ -351,9 +409,31 @@ mod tests {
         assert!(ids.contains(&"gemini-3.5-flash-low".to_string()));
         assert!(ids.contains(&"gemini-3.1-pro-low".to_string()));
         assert!(ids.contains(&"gemini-3.1-pro-high".to_string()));
-        assert!(ids.contains(&"claude-sonnet-4-6-thinking".to_string()));
+        assert!(ids.contains(&"gemini-3-flash".to_string()));
+        assert!(ids.contains(&"gemini-3.1-flash-lite".to_string()));
+        assert!(ids.contains(&"claude-sonnet-4-6".to_string()));
         assert!(ids.contains(&"claude-opus-4-6-thinking".to_string()));
         assert!(ids.contains(&"gpt-oss-120b-medium".to_string()));
+    }
+
+    #[test]
+    fn normalizes_antigravity_compatibility_aliases() {
+        assert_eq!(
+            normalize_antigravity_model_id("claude-sonnet-4.6-thinking"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            normalize_antigravity_model_id("claude-sonnet-4-5-thinking"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            normalize_antigravity_model_id("claude-opus-4.5"),
+            "claude-opus-4-6-thinking"
+        );
+        assert_eq!(
+            normalize_antigravity_model_id("gemini-3-pro-preview-customtools"),
+            "gemini-3.1-pro-high"
+        );
     }
 
     #[test]
@@ -367,5 +447,18 @@ mod tests {
         assert_eq!(tiers.len(), 1);
         assert_eq!(tiers[0].name, "Gemini 3.5 Flash (Medium)");
         assert_eq!(tiers[0].utilization, 25.0);
+    }
+
+    #[test]
+    fn converts_reset_only_available_models_to_exhausted_tiers() {
+        let tiers = antigravity_models_to_quota_tiers(&[AntigravityAvailableModel {
+            id: "claude-sonnet-4-6-thinking".to_string(),
+            display_name: None,
+            remaining_fraction: None,
+            reset_time: Some("2026-06-05T00:00:00Z".to_string()),
+        }]);
+        assert_eq!(tiers.len(), 1);
+        assert_eq!(tiers[0].name, "Claude Sonnet 4.6");
+        assert_eq!(tiers[0].utilization, 100.0);
     }
 }

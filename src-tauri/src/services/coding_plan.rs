@@ -153,7 +153,7 @@ async fn query_kimi(api_key: &str) -> SubscriptionQuota {
                     used: None,
                     limit: None,
                     unit: None,
-            used_value_usd: None,
+                    used_value_usd: None,
                     max_value_usd: None,
                 });
             }
@@ -244,7 +244,7 @@ fn parse_zhipu_token_tiers(data: &serde_json::Value) -> Vec<QuotaTier> {
                 used: None,
                 limit: None,
                 unit: None,
-            used_value_usd: None,
+                used_value_usd: None,
                 max_value_usd: None,
             })
         })
@@ -506,9 +506,9 @@ async fn query_zenmux(base_url: &str, api_key: &str) -> SubscriptionQuota {
             resets_at,
             used_value_usd: used_usd,
             max_value_usd: max_usd,
-    used: None,
-    limit: None,
-    unit: None,
+            used: None,
+            limit: None,
+            unit: None,
         });
     }
 
@@ -530,9 +530,9 @@ async fn query_zenmux(base_url: &str, api_key: &str) -> SubscriptionQuota {
             resets_at,
             used_value_usd: used_usd,
             max_value_usd: max_usd,
-    used: None,
-    limit: None,
-    unit: None,
+            used: None,
+            limit: None,
+            unit: None,
         });
     }
 
@@ -630,9 +630,9 @@ fn parse_minimax_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
                 utilization: 100.0 - remain_pct,
                 resets_at,
                 used: None,
-            limit: None,
-            unit: None,
-            used_value_usd: None,
+                limit: None,
+                unit: None,
+                used_value_usd: None,
                 max_value_usd: None,
             });
         }

@@ -8,7 +8,7 @@ use crate::commands::{
     GeminiOAuthState, KiroOAuthState,
 };
 use crate::services::oauth_quota::{
-    CachedOauthQuota, OauthQuotaManagers, OauthQuotaService, resolve_account_id_for_auth_provider,
+    resolve_account_id_for_auth_provider, CachedOauthQuota, OauthQuotaManagers, OauthQuotaService,
 };
 use crate::store::AppState;
 

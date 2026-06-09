@@ -345,11 +345,51 @@ fn build_generation_config(body: &Value) -> Option<Value> {
     if let Some(value) = body.get("stop_sequences") {
         config.insert("stopSequences".to_string(), value.clone());
     }
+    if let Some(thinking_config) = build_thinking_config(body) {
+        config.insert("thinkingConfig".to_string(), thinking_config);
+    }
 
     if config.is_empty() {
         None
     } else {
         Some(Value::Object(config))
+    }
+}
+
+fn build_thinking_config(body: &Value) -> Option<Value> {
+    let thinking = body.get("thinking")?.as_object()?;
+    let thinking_type = thinking.get("type").and_then(Value::as_str)?;
+
+    match thinking_type {
+        "enabled" => {
+            let budget = thinking.get("budget_tokens").and_then(Value::as_u64)?;
+            Some(json!({
+                "thinkingBudget": budget,
+                "includeThoughts": true
+            }))
+        }
+        "adaptive" | "auto" => {
+            let effort = body
+                .pointer("/output_config/effort")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("high");
+            Some(json!({
+                "thinkingLevel": normalize_gemini_thinking_level(effort),
+                "includeThoughts": true
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn normalize_gemini_thinking_level(value: &str) -> &'static str {
+    match value.to_ascii_lowercase().as_str() {
+        "minimal" | "low" => "low",
+        "medium" => "medium",
+        "high" | "xhigh" | "max" => "high",
+        _ => "high",
     }
 }
 
@@ -1176,6 +1216,52 @@ mod tests {
         assert_eq!(result["contents"][0]["role"], "user");
         assert_eq!(result["contents"][0]["parts"][0]["text"], "Hello");
         assert_eq!(result["generationConfig"]["maxOutputTokens"], 128);
+    }
+
+    #[test]
+    fn anthropic_to_gemini_maps_enabled_thinking_budget() {
+        let input = json!({
+            "model": "claude-opus-4.6-thinking",
+            "messages": [{ "role": "user", "content": "think" }],
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 4096
+            }
+        });
+
+        let result = anthropic_to_gemini(input).unwrap();
+        assert_eq!(
+            result["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            4096
+        );
+        assert_eq!(
+            result["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
+    }
+
+    #[test]
+    fn anthropic_to_gemini_maps_adaptive_thinking_effort_to_level() {
+        let input = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{ "role": "user", "content": "think" }],
+            "thinking": {
+                "type": "adaptive"
+            },
+            "output_config": {
+                "effort": "max"
+            }
+        });
+
+        let result = anthropic_to_gemini(input).unwrap();
+        assert_eq!(
+            result["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "high"
+        );
+        assert_eq!(
+            result["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
     }
 
     #[test]

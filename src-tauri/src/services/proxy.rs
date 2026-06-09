@@ -3546,6 +3546,14 @@ wire_api = "responses"
             .takeover_live_config_strict(&AppType::Codex)
             .await
             .expect("take over Codex live config");
+        let mut proxy_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get Codex proxy config");
+        proxy_config.enabled = false;
+        db.update_proxy_config_for_app(proxy_config)
+            .await
+            .expect("simulate activation window before takeover is marked enabled");
         assert!(
             !db.get_proxy_config_for_app("codex")
                 .await
@@ -3686,8 +3694,10 @@ wire_api = "responses"
 
         let live_config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
             .expect("read live config");
+        let proxy_config = db.get_proxy_config().await.expect("get proxy config");
+        let expected_codex_base_url = format!("http://127.0.0.1:{}/v1", proxy_config.listen_port);
         assert!(
-            live_config.contains("http://127.0.0.1:15721/v1"),
+            live_config.contains(&expected_codex_base_url),
             "stale enabled takeover must be rebuilt to the current proxy base_url"
         );
         assert!(
@@ -5071,6 +5081,8 @@ requires_openai_auth = true
             .and_then(|v| v.as_str())
             .expect("live config string");
         let parsed_live: toml::Value = toml::from_str(live_config).expect("parse live config");
+        let proxy_config = db.get_proxy_config().await.expect("get proxy config");
+        let expected_codex_base_url = format!("http://127.0.0.1:{}/v1", proxy_config.listen_port);
         assert_eq!(
             parsed_live.get("model_provider").and_then(|v| v.as_str()),
             Some("aihubmix"),
@@ -5091,7 +5103,7 @@ requires_openai_auth = true
                 .and_then(|v| v.get("aihubmix"))
                 .and_then(|v| v.get("base_url"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721/v1"),
+            Some(expected_codex_base_url.as_str()),
             "taken-over live config should stay pointed at the local proxy"
         );
 
@@ -5214,6 +5226,8 @@ requires_openai_auth = true
             .and_then(|v| v.as_str())
             .expect("live config string");
         let parsed_live: toml::Value = toml::from_str(live_config).expect("parse live config");
+        let proxy_config = db.get_proxy_config().await.expect("get proxy config");
+        let expected_codex_base_url = format!("http://127.0.0.1:{}/v1", proxy_config.listen_port);
 
         assert_eq!(
             parsed_live.get("model_provider").and_then(|v| v.as_str()),
@@ -5233,7 +5247,7 @@ requires_openai_auth = true
                 .and_then(|v| v.get("deepseek"))
                 .and_then(|v| v.get("base_url"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721/v1")
+            Some(expected_codex_base_url.as_str())
         );
         assert_eq!(
             parsed_live.get("model").and_then(|v| v.as_str()),

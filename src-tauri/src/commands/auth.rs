@@ -7,11 +7,11 @@ use crate::commands::copilot::CopilotAuthState;
 use crate::commands::cursor_oauth::CursorOAuthState;
 use crate::commands::gemini_oauth::GeminiOAuthState;
 use crate::commands::kiro_oauth::KiroOAuthState;
+use crate::proxy::providers::claude_oauth_auth::OAuthFlowMode;
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthError;
 use crate::proxy::providers::copilot_auth::{
     CopilotAuthError, GitHubAccount, GitHubDeviceCodeResponse,
 };
-use crate::proxy::providers::claude_oauth_auth::OAuthFlowMode;
 
 const AUTH_PROVIDER_GITHUB_COPILOT: &str = "github_copilot";
 const AUTH_PROVIDER_CODEX_OAUTH: &str = "codex_oauth";
@@ -242,7 +242,6 @@ pub async fn auth_submit_oauth_code(
         default_account_id.as_deref(),
     ))
 }
-
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn auth_poll_for_account(

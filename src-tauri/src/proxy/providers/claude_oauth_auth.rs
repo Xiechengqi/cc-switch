@@ -401,9 +401,7 @@ impl ClaudeOAuthManager {
             }
         };
 
-        log::info!(
-            "[ClaudeOAuth] 启动浏览器 OAuth 流程，mode={mode:?}, state: {state}"
-        );
+        log::info!("[ClaudeOAuth] 启动浏览器 OAuth 流程，mode={mode:?}, state: {state}");
 
         Ok(ClaudeOAuthStartResponse {
             auth_url,
@@ -1146,11 +1144,7 @@ fn compute_expires_at_ms(expires_in: Option<i64>) -> i64 {
 /// 构造 (redirect_uri, auth_url) 二元组。纯函数，便于单测。
 ///
 /// 见 [`OAuthFlowMode`] 对两种模式的差异。
-fn build_authorize_url(
-    mode: OAuthFlowMode,
-    code_challenge: &str,
-    state: &str,
-) -> (String, String) {
+fn build_authorize_url(mode: OAuthFlowMode, code_challenge: &str, state: &str) -> (String, String) {
     let redirect_uri = match mode {
         OAuthFlowMode::Localhost => format!("http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}"),
         OAuthFlowMode::WebPaste => WEB_PASTE_REDIRECT_URI.to_string(),
@@ -1248,17 +1242,15 @@ mod tests {
         let (redirect, url) =
             build_authorize_url(OAuthFlowMode::WebPaste, SAMPLE_CHALLENGE, SAMPLE_STATE);
         assert_eq!(redirect, "https://platform.claude.com/oauth/code/callback");
-        assert!(url.contains(
-            "redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback"
-        ));
+        assert!(url
+            .contains("redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback"));
         // 不应再带 localhost
         assert!(!url.contains("localhost"));
     }
 
     #[test]
     fn auth_url_includes_pkce_and_state_intact() {
-        let (_, url) =
-            build_authorize_url(OAuthFlowMode::WebPaste, SAMPLE_CHALLENGE, SAMPLE_STATE);
+        let (_, url) = build_authorize_url(OAuthFlowMode::WebPaste, SAMPLE_CHALLENGE, SAMPLE_STATE);
         // PKCE challenge 和 state 是 URL-safe base64，不需要 percent-encode 之外再做处理。
         assert!(url.contains(&format!(
             "code_challenge={}",
@@ -1272,8 +1264,7 @@ mod tests {
     fn modes_produce_distinct_redirects() {
         let (loopback, _) =
             build_authorize_url(OAuthFlowMode::Localhost, SAMPLE_CHALLENGE, SAMPLE_STATE);
-        let (web, _) =
-            build_authorize_url(OAuthFlowMode::WebPaste, SAMPLE_CHALLENGE, SAMPLE_STATE);
+        let (web, _) = build_authorize_url(OAuthFlowMode::WebPaste, SAMPLE_CHALLENGE, SAMPLE_STATE);
         assert_ne!(loopback, web);
     }
 }

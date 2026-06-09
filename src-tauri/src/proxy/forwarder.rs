@@ -32,6 +32,7 @@ use http::Extensions;
 use regex::Regex;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{hash::Hasher, sync::OnceLock};
 use tauri::Manager;
 use tokio::sync::RwLock;
@@ -39,6 +40,11 @@ use twox_hash::XxHash64;
 
 const GEMINI_CODE_ASSIST_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
+const ANTIGRAVITY_BASE_URLS: &[&str] = &[
+    "https://daily-cloudcode-pa.googleapis.com",
+    "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    "https://cloudcode-pa.googleapis.com",
+];
 const GEMINI_CLI_VERSION: &str = "0.31.0";
 const GEMINI_CLI_API_CLIENT_HEADER: &str = "google-genai-sdk/1.41.0 gl-node/v22.19.0";
 const ANTIGRAVITY_MAX_OUTPUT_TOKENS: i64 = 16_384;
@@ -1473,12 +1479,18 @@ impl RequestForwarder {
             None
         };
         let mut antigravity_project_id: Option<String>;
+        let mut antigravity_url_candidates: Option<Vec<String>> = None;
+        let mut antigravity_url_index = 0usize;
         if is_antigravity_oauth_provider(app_type, provider) {
             let (antigravity_url, antigravity_body) = build_antigravity_forward_request(
                 &effective_endpoint,
                 &filtered_body,
                 self.session_id.as_str(),
             )?;
+            antigravity_url_candidates = Some(build_antigravity_forward_url_candidates(
+                &effective_endpoint,
+                &filtered_body,
+            ));
             url = antigravity_url;
             filtered_body = antigravity_body;
         }
@@ -2177,11 +2189,17 @@ impl RequestForwarder {
                 .map(|u| u.starts_with("socks5"))
                 .unwrap_or(false);
 
+            if let Some(candidates) = antigravity_url_candidates.as_ref() {
+                if let Some(candidate) = candidates.get(antigravity_url_index) {
+                    url = candidate.clone();
+                }
+            }
+
             let uri: http::Uri = url
                 .parse()
                 .map_err(|e| ProxyError::ForwardFailed(format!("Invalid URL '{url}': {e}")))?;
             // 发送请求
-            let response = if is_socks_proxy {
+            let response_result: Result<ProxyResponse, ProxyError> = if is_socks_proxy {
                 // SOCKS5 代理：只能走 reqwest（不支持 header case 保留）
                 log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
                 let client = super::http_client::get();
@@ -2196,8 +2214,8 @@ impl RequestForwarder {
                     .body(body_bytes)
                     .send()
                     .await
-                    .map_err(map_reqwest_send_error)?;
-                ProxyResponse::Reqwest(reqwest_resp)
+                    .map_err(map_reqwest_send_error);
+                reqwest_resp.map(ProxyResponse::Reqwest)
             } else {
                 // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
                 // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
@@ -2210,7 +2228,23 @@ impl RequestForwarder {
                     timeout,
                     upstream_proxy_url.as_deref(),
                 )
-                .await?
+                .await
+            };
+            let response = match response_result {
+                Ok(response) => response,
+                Err(err) => {
+                    if antigravity_advance_base_url(
+                        &mut antigravity_url_index,
+                        antigravity_url_candidates.as_ref(),
+                        "network",
+                    ) {
+                        log::warn!(
+                            "[Antigravity] base URL failed ({err}); retrying fallback endpoint"
+                        );
+                        continue;
+                    }
+                    return Err(err);
+                }
             };
 
             // 检查响应状态
@@ -2283,6 +2317,18 @@ impl RequestForwarder {
                         continue;
                     }
                 }
+            }
+
+            if should_retry_antigravity_base_url(status_code)
+                && antigravity_advance_base_url(
+                    &mut antigravity_url_index,
+                    antigravity_url_candidates.as_ref(),
+                    "http",
+                )
+            {
+                log::warn!("[Antigravity] upstream HTTP {status_code}; retrying fallback endpoint");
+                let _ = response.bytes().await;
+                continue;
             }
 
             let body_text = String::from_utf8(response.bytes().await?.to_vec()).ok();
@@ -2606,12 +2652,25 @@ fn summarize_proxy_error(error: &ProxyError) -> String {
 
 fn summarize_upstream_body(body: &str) -> String {
     if let Ok(json_body) = serde_json::from_str::<Value>(body) {
+        let google_quota_summary = summarize_google_resource_exhausted(&json_body);
         if let Some(message) = extract_json_error_message(&json_body) {
-            return summarize_text_for_log(&message, 180);
+            let mut summary = summarize_text_for_log(&message, 180);
+            if let Some(detail) = google_quota_summary {
+                summary.push_str(" (");
+                summary.push_str(&detail);
+                summary.push(')');
+            }
+            return summary;
         }
 
         if let Ok(compact_json) = serde_json::to_string(&json_body) {
-            return summarize_text_for_log(&compact_json, 180);
+            let mut summary = summarize_text_for_log(&compact_json, 180);
+            if let Some(detail) = google_quota_summary {
+                summary.push_str(" (");
+                summary.push_str(&detail);
+                summary.push(')');
+            }
+            return summary;
         }
     }
 
@@ -2630,6 +2689,194 @@ fn extract_json_error_message(body: &Value) -> Option<String> {
         .into_iter()
         .flatten()
         .find_map(|value| value.as_str().map(ToString::to_string))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoogleResourceExhaustedKind {
+    SoftRateLimit,
+    InstantRetry,
+    ShortCooldown,
+    QuotaExhausted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoogleResourceExhaustedDecision {
+    kind: GoogleResourceExhaustedKind,
+    reason: Option<String>,
+    retry_after: Option<Duration>,
+}
+
+fn summarize_google_resource_exhausted(body: &Value) -> Option<String> {
+    let decision = decide_google_resource_exhausted(body)?;
+    let kind = match decision.kind {
+        GoogleResourceExhaustedKind::SoftRateLimit => "soft_rate_limit",
+        GoogleResourceExhaustedKind::InstantRetry => "instant_retry",
+        GoogleResourceExhaustedKind::ShortCooldown => "short_cooldown",
+        GoogleResourceExhaustedKind::QuotaExhausted => "quota_exhausted",
+    };
+    let mut parts = vec![format!("google_resource_exhausted={kind}")];
+    if let Some(reason) = decision.reason.filter(|reason| !reason.is_empty()) {
+        parts.push(format!("reason={reason}"));
+    }
+    if let Some(retry_after) = decision.retry_after {
+        parts.push(format!(
+            "retry_after={}",
+            format_google_retry_duration(retry_after)
+        ));
+    }
+    Some(parts.join(", "))
+}
+
+fn decide_google_resource_exhausted(body: &Value) -> Option<GoogleResourceExhaustedDecision> {
+    let error = body.get("error")?;
+    let status = error.get("status").and_then(Value::as_str).unwrap_or("");
+    if !status.eq_ignore_ascii_case("RESOURCE_EXHAUSTED") {
+        return None;
+    }
+
+    let mut reason = None;
+    let mut retry_after = None;
+
+    if let Some(details) = error.get("details").and_then(Value::as_array) {
+        for detail in details {
+            if detail.get("@type").and_then(Value::as_str)
+                == Some("type.googleapis.com/google.rpc.RetryInfo")
+            {
+                retry_after = detail
+                    .get("retryDelay")
+                    .and_then(Value::as_str)
+                    .and_then(parse_google_retry_duration);
+            }
+        }
+
+        for detail in details {
+            if detail.get("@type").and_then(Value::as_str)
+                != Some("type.googleapis.com/google.rpc.ErrorInfo")
+            {
+                continue;
+            }
+            if let Some(value) = detail.get("reason").and_then(Value::as_str) {
+                reason = Some(value.to_string());
+            }
+            if retry_after.is_none() {
+                retry_after = detail
+                    .pointer("/metadata/quotaResetDelay")
+                    .and_then(Value::as_str)
+                    .and_then(parse_google_retry_duration);
+            }
+        }
+    }
+
+    if retry_after.is_none() {
+        retry_after = error
+            .get("message")
+            .and_then(Value::as_str)
+            .and_then(parse_google_retry_duration_from_message);
+    }
+
+    let kind = match reason.as_deref() {
+        Some(reason) if reason.eq_ignore_ascii_case("QUOTA_EXHAUSTED") => {
+            GoogleResourceExhaustedKind::QuotaExhausted
+        }
+        Some(reason) if reason.eq_ignore_ascii_case("RATE_LIMIT_EXCEEDED") => match retry_after {
+            Some(duration) if duration < Duration::from_secs(3) => {
+                GoogleResourceExhaustedKind::InstantRetry
+            }
+            Some(duration) if duration < Duration::from_secs(5 * 60) => {
+                GoogleResourceExhaustedKind::ShortCooldown
+            }
+            Some(_) => GoogleResourceExhaustedKind::QuotaExhausted,
+            None => GoogleResourceExhaustedKind::SoftRateLimit,
+        },
+        _ => GoogleResourceExhaustedKind::SoftRateLimit,
+    };
+
+    Some(GoogleResourceExhaustedDecision {
+        kind,
+        reason,
+        retry_after,
+    })
+}
+
+fn parse_google_retry_duration(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Some(ms) = value.strip_suffix("ms") {
+        let ms = ms.parse::<f64>().ok()?;
+        if ms.is_sign_negative() {
+            return None;
+        }
+        return Some(Duration::from_secs_f64(ms / 1000.0));
+    }
+
+    if let Some(seconds) = value.strip_suffix('s') {
+        let seconds = seconds.parse::<f64>().ok()?;
+        if seconds.is_sign_negative() {
+            return None;
+        }
+        return Some(Duration::from_secs_f64(seconds));
+    }
+
+    parse_google_human_duration(value)
+}
+
+fn parse_google_retry_duration_from_message(message: &str) -> Option<Duration> {
+    static AFTER_DURATION_RE: OnceLock<Regex> = OnceLock::new();
+    let re = AFTER_DURATION_RE.get_or_init(|| {
+        Regex::new(r"(?i)after\s+((?:\d+h)?(?:\d+m)?(?:\d+s)?)\.?").expect("valid regex")
+    });
+    let duration = re
+        .captures(message)
+        .and_then(|captures| captures.get(1))
+        .map(|matched| matched.as_str())
+        .filter(|value| !value.trim().is_empty())?;
+    parse_google_human_duration(duration)
+}
+
+fn parse_google_human_duration(value: &str) -> Option<Duration> {
+    static HUMAN_DURATION_RE: OnceLock<Regex> = OnceLock::new();
+    let re = HUMAN_DURATION_RE.get_or_init(|| {
+        Regex::new(r"(?i)^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$").expect("valid regex")
+    });
+    let captures = re.captures(value.trim())?;
+    let hours = captures
+        .get(1)
+        .and_then(|matched| matched.as_str().parse::<u64>().ok())
+        .unwrap_or(0);
+    let minutes = captures
+        .get(2)
+        .and_then(|matched| matched.as_str().parse::<u64>().ok())
+        .unwrap_or(0);
+    let seconds = captures
+        .get(3)
+        .and_then(|matched| matched.as_str().parse::<u64>().ok())
+        .unwrap_or(0);
+    let total = hours
+        .saturating_mul(3600)
+        .saturating_add(minutes.saturating_mul(60))
+        .saturating_add(seconds);
+    (total > 0).then(|| Duration::from_secs(total))
+}
+
+fn format_google_retry_duration(duration: Duration) -> String {
+    let mut seconds = duration.as_secs();
+    if seconds == 0 && duration.subsec_nanos() > 0 {
+        return format!("{:.3}s", duration.as_secs_f64());
+    }
+    let hours = seconds / 3600;
+    seconds %= 3600;
+    let minutes = seconds / 60;
+    seconds %= 60;
+    if hours > 0 {
+        format!("{hours}h{minutes}m{seconds}s")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds}s")
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 fn is_gemini_code_assist_provider(app_type: &AppType, provider: &Provider) -> bool {
@@ -2731,22 +2978,7 @@ pub(crate) fn build_antigravity_forward_request(
             ProxyError::ConfigError("Antigravity OAuth 反代缺少模型名，无法构造请求".to_string())
         })?;
 
-    let is_stream = endpoint.contains("streamGenerateContent")
-        || endpoint.contains("alt=sse")
-        || request_body
-            .get("stream")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-    let action = if is_stream {
-        "streamGenerateContent"
-    } else {
-        "generateContent"
-    };
-    let url = if is_stream {
-        format!("{ANTIGRAVITY_BASE_URL}/v1internal:{action}?alt=sse")
-    } else {
-        format!("{ANTIGRAVITY_BASE_URL}/v1internal:{action}")
-    };
+    let url = build_antigravity_forward_url(ANTIGRAVITY_BASE_URL, endpoint, request_body);
 
     let mut inner_request = sanitize_antigravity_request(request_body.clone());
     if let Some(obj) = inner_request.as_object_mut() {
@@ -2768,6 +3000,52 @@ pub(crate) fn build_antigravity_forward_request(
     });
 
     Ok((url, body))
+}
+
+fn build_antigravity_forward_url(base_url: &str, endpoint: &str, request_body: &Value) -> String {
+    let is_stream = endpoint.contains("streamGenerateContent")
+        || endpoint.contains("alt=sse")
+        || request_body
+            .get("stream")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+    let action = if is_stream {
+        "streamGenerateContent"
+    } else {
+        "generateContent"
+    };
+    let base_url = base_url.trim_end_matches('/');
+    if is_stream {
+        format!("{base_url}/v1internal:{action}?alt=sse")
+    } else {
+        format!("{base_url}/v1internal:{action}")
+    }
+}
+
+fn build_antigravity_forward_url_candidates(endpoint: &str, request_body: &Value) -> Vec<String> {
+    ANTIGRAVITY_BASE_URLS
+        .iter()
+        .map(|base_url| build_antigravity_forward_url(base_url, endpoint, request_body))
+        .collect()
+}
+
+fn antigravity_advance_base_url(
+    index: &mut usize,
+    candidates: Option<&Vec<String>>,
+    _reason: &str,
+) -> bool {
+    let Some(candidates) = candidates else {
+        return false;
+    };
+    if *index + 1 >= candidates.len() {
+        return false;
+    }
+    *index += 1;
+    true
+}
+
+fn should_retry_antigravity_base_url(status_code: u16) -> bool {
+    matches!(status_code, 403 | 404 | 500..=599)
 }
 
 fn sanitize_antigravity_request(mut request: Value) -> Value {
@@ -2867,17 +3145,20 @@ fn sanitize_antigravity_tools(request: &mut Value) {
             {
                 function["name"] = serde_json::json!(sanitize_antigravity_function_name(&name));
             }
+            let aliased_schema = function.as_object_mut().and_then(|obj| {
+                obj.remove("parametersJsonSchema")
+                    .or_else(|| obj.remove("parameters_json_schema"))
+            });
             if function.get("parameters").is_none() {
-                function["parameters"] = serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "reason": {
-                            "type": "string",
-                            "description": "Brief explanation"
-                        }
-                    },
-                    "required": ["reason"]
-                });
+                if let Some(schema) = aliased_schema {
+                    function["parameters"] = sanitize_antigravity_tool_schema(schema);
+                }
+            }
+            if let Some(parameters) = function.get_mut("parameters") {
+                *parameters = sanitize_antigravity_tool_schema(parameters.take());
+            }
+            if function.get("parameters").is_none() {
+                function["parameters"] = antigravity_placeholder_schema();
             }
             declarations.push(function.clone());
         }
@@ -2892,6 +3173,198 @@ fn sanitize_antigravity_tools(request: &mut Value) {
     request["toolConfig"] = serde_json::json!({
         "functionCallingConfig": { "mode": "VALIDATED" }
     });
+}
+
+fn sanitize_antigravity_tool_schema(schema: Value) -> Value {
+    let cleaned = clean_antigravity_schema_value(schema);
+    ensure_antigravity_object_schema(cleaned)
+}
+
+fn clean_antigravity_schema_value(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut obj) => {
+            if let Some(value) = obj.remove("const") {
+                obj.entry("enum".to_string())
+                    .or_insert_with(|| Value::Array(vec![value]));
+            }
+
+            for key in [
+                "$schema",
+                "$id",
+                "$ref",
+                "$defs",
+                "definitions",
+                "additionalProperties",
+                "unevaluatedProperties",
+                "patternProperties",
+                "dependentRequired",
+                "dependentSchemas",
+                "contains",
+                "minContains",
+                "maxContains",
+                "prefixItems",
+                "exclusiveMinimum",
+                "exclusiveMaximum",
+                "multipleOf",
+                "format",
+                "default",
+                "examples",
+                "example",
+                "pattern",
+                "minLength",
+                "maxLength",
+                "minItems",
+                "maxItems",
+                "uniqueItems",
+                "minimum",
+                "maximum",
+            ] {
+                obj.remove(key);
+            }
+
+            if let Some(values) = obj
+                .remove("allOf")
+                .and_then(|value| value.as_array().cloned())
+            {
+                for value in values {
+                    merge_antigravity_schema_object(
+                        &mut obj,
+                        clean_antigravity_schema_value(value),
+                    );
+                }
+            }
+
+            for key in ["oneOf", "anyOf"] {
+                if let Some(values) = obj.remove(key).and_then(|value| value.as_array().cloned()) {
+                    if let Some(first) = values.into_iter().next() {
+                        let replacement = clean_antigravity_schema_value(first);
+                        if obj.is_empty() {
+                            return replacement;
+                        }
+                        merge_antigravity_schema_object(&mut obj, replacement);
+                    }
+                }
+            }
+
+            if let Some(value) = obj.get_mut("type") {
+                if let Some(values) = value.as_array() {
+                    if let Some(kind) = values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .find(|kind| *kind != "null")
+                    {
+                        *value = Value::String(kind.to_string());
+                    }
+                }
+            }
+
+            if let Some(values) = obj.get_mut("enum").and_then(Value::as_array_mut) {
+                for value in values {
+                    if !value.is_string() {
+                        *value = Value::String(value.to_string());
+                    }
+                }
+                obj.insert("type".to_string(), Value::String("string".to_string()));
+            }
+
+            if let Some(properties) = obj.get_mut("properties").and_then(Value::as_object_mut) {
+                for value in properties.values_mut() {
+                    *value = clean_antigravity_schema_value(value.take());
+                }
+            }
+            if let Some(items) = obj.get_mut("items") {
+                *items = clean_antigravity_schema_value(items.take());
+            }
+
+            Value::Object(obj)
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(clean_antigravity_schema_value)
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn merge_antigravity_schema_object(target: &mut serde_json::Map<String, Value>, source: Value) {
+    let Value::Object(source) = source else {
+        return;
+    };
+
+    for (key, value) in source {
+        if key == "properties" {
+            if let Value::Object(source_properties) = value {
+                let target_properties = target
+                    .entry(key)
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if let Some(target_properties) = target_properties.as_object_mut() {
+                    for (property_name, property_schema) in source_properties {
+                        target_properties
+                            .entry(property_name)
+                            .or_insert(property_schema);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if key == "required" {
+            if let Value::Array(source_required) = value {
+                let target_required = target
+                    .entry(key)
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                if let Some(target_required) = target_required.as_array_mut() {
+                    for required in source_required {
+                        if !target_required.contains(&required) {
+                            target_required.push(required);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        target.entry(key).or_insert(value);
+    }
+}
+
+fn ensure_antigravity_object_schema(schema: Value) -> Value {
+    let Value::Object(mut obj) = schema else {
+        return antigravity_placeholder_schema();
+    };
+
+    obj.entry("type".to_string())
+        .or_insert_with(|| Value::String("object".to_string()));
+    if obj.get("type").and_then(Value::as_str) != Some("object") {
+        return Value::Object(obj);
+    }
+    obj.entry("properties".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+
+    let is_empty = obj
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_none_or(|properties| properties.is_empty());
+    if is_empty {
+        return antigravity_placeholder_schema();
+    }
+
+    Value::Object(obj)
+}
+
+fn antigravity_placeholder_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Brief explanation"
+            }
+        },
+        "required": ["reason"]
+    })
 }
 
 fn sanitize_antigravity_function_name(name: &str) -> String {
@@ -3270,9 +3743,7 @@ fn ensure_claude_oauth_billing_header_system(mut body: Value) -> Value {
 
     let billing_block = serde_json::json!({"type": "text", "text": BILLING_BLOCK_TEXT});
 
-    let existing_system = body
-        .as_object_mut()
-        .and_then(|o| o.remove("system"));
+    let existing_system = body.as_object_mut().and_then(|o| o.remove("system"));
 
     let mut blocks: Vec<Value> = match existing_system {
         // 情形 2：旧式字符串 system → 转成 array block
@@ -3932,14 +4403,18 @@ mod tests {
             .as_str()
             .unwrap_or("")
             .starts_with(BILLING_PREFIX_FOR_TEST));
-        assert_eq!(system[1]["text"].as_str().unwrap_or(""), "Custom instructions.");
+        assert_eq!(
+            system[1]["text"].as_str().unwrap_or(""),
+            "Custom instructions."
+        );
     }
 
     /// 真实 claude-cli 流量：system 首块已有 billing header → 原样不动，
     /// 保证 sign_claude_oauth_messages_body 收到和以前一样的 body。
     #[test]
     fn inject_billing_header_noop_when_billing_block_already_present() {
-        let original_text = "x-anthropic-billing-header: cc_version=2.1; cch=abcde;\n\nYou are Claude Code.";
+        let original_text =
+            "x-anthropic-billing-header: cc_version=2.1; cch=abcde;\n\nYou are Claude Code.";
         let body = json!({
             "model": "x",
             "max_tokens": 1,
@@ -3975,8 +4450,7 @@ mod tests {
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "a": {"type": "number"},
-                            "b": {"type": "string"}
+                            "a": {"type": "number"}
                         }
                     }
                 }
@@ -4425,7 +4899,7 @@ mod tests {
             url,
             "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
         );
-        assert_eq!(body["model"], "gemini-3-pro-preview");
+        assert_eq!(body["model"], "gemini-3.1-pro-high");
         assert_eq!(body["userAgent"], "antigravity");
         assert_eq!(body["requestType"], "agent");
         assert!(body["requestId"]
@@ -4448,6 +4922,9 @@ mod tests {
             body["request"]["tools"][0]["functionDeclarations"][0]["name"],
             "_1_bad_name_"
         );
+        assert!(body["request"]["tools"][0]["functionDeclarations"][0]
+            .get("parametersJsonSchema")
+            .is_none());
         assert_eq!(
             body["request"]["toolConfig"]["functionCallingConfig"]["mode"],
             "VALIDATED"
@@ -4465,7 +4942,181 @@ mod tests {
         )
         .expect("build antigravity request");
 
-        assert_eq!(body["model"], "claude-sonnet-4-6-thinking");
+        assert_eq!(body["model"], "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn antigravity_url_candidates_include_daily_sandbox_and_prod() {
+        let candidates = build_antigravity_forward_url_candidates(
+            "/v1beta/models/gemini-3-flash:streamGenerateContent?alt=sse",
+            &json!({ "contents": [], "stream": true }),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+                "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+                "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+            ]
+        );
+    }
+
+    #[test]
+    fn antigravity_schema_sanitizer_renames_and_cleans_json_schema() {
+        let (_, body) = build_antigravity_forward_request(
+            "/v1beta/models/claude-opus-4.6-thinking:generateContent",
+            &json!({
+                "contents": [],
+                "tools": [{
+                    "functionDeclarations": [{
+                        "name": "lookup",
+                        "parametersJsonSchema": {
+                            "$schema": "https://json-schema.org/draft/2020-12/schema",
+                            "type": "object",
+                            "properties": {
+                                "mode": {
+                                    "type": ["string", "null"],
+                                    "enum": [1, true, "auto"],
+                                    "default": "auto"
+                                },
+                                "target": {
+                                    "description": "target url",
+                                    "oneOf": [
+                                        { "type": "string", "format": "uri" },
+                                        { "type": "integer" }
+                                    ]
+                                },
+                                "merged": {
+                                    "allOf": [
+                                        {
+                                            "type": "object",
+                                            "properties": { "a": { "type": "string" } },
+                                            "required": ["a"]
+                                        },
+                                        {
+                                            "properties": { "b": { "type": "number" } },
+                                            "required": ["b"]
+                                        }
+                                    ]
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    }, {
+                        "name": "already_has_parameters",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": { "type": "string" }
+                            }
+                        },
+                        "parametersJsonSchema": {
+                            "type": "object",
+                            "properties": {
+                                "ignored": { "type": "string" }
+                            }
+                        }
+                    }]
+                }]
+            }),
+            "session-1",
+        )
+        .expect("build antigravity request");
+
+        let declaration = &body["request"]["tools"][0]["functionDeclarations"][0];
+        assert!(declaration.get("parametersJsonSchema").is_none());
+        assert!(declaration["parameters"].get("$schema").is_none());
+        assert!(declaration["parameters"]
+            .get("additionalProperties")
+            .is_none());
+        assert_eq!(
+            declaration["parameters"]["properties"]["mode"]["type"],
+            "string"
+        );
+        assert_eq!(
+            declaration["parameters"]["properties"]["mode"]["enum"][0],
+            "1"
+        );
+        assert_eq!(
+            declaration["parameters"]["properties"]["target"]["type"],
+            "string"
+        );
+        assert_eq!(
+            declaration["parameters"]["properties"]["target"]["description"],
+            "target url"
+        );
+        assert_eq!(
+            declaration["parameters"]["properties"]["merged"]["properties"]["a"]["type"],
+            "string"
+        );
+        assert_eq!(
+            declaration["parameters"]["properties"]["merged"]["properties"]["b"]["type"],
+            "number"
+        );
+        assert_eq!(
+            declaration["parameters"]["properties"]["merged"]["required"],
+            json!(["a", "b"])
+        );
+
+        let declaration = &body["request"]["tools"][0]["functionDeclarations"][1];
+        assert!(declaration.get("parametersJsonSchema").is_none());
+        assert_eq!(
+            declaration["parameters"]["properties"]["query"]["type"],
+            "string"
+        );
+        assert!(declaration["parameters"]["properties"]
+            .get("ignored")
+            .is_none());
+    }
+
+    #[test]
+    fn google_resource_exhausted_summary_parses_retry_info() {
+        let body = json!({
+            "error": {
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "Quota exhausted",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "23h54m"
+                    },
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "QUOTA_EXHAUSTED"
+                    }
+                ]
+            }
+        });
+
+        let summary = summarize_google_resource_exhausted(&body).expect("summary");
+        assert!(summary.contains("google_resource_exhausted=quota_exhausted"));
+        assert!(summary.contains("reason=QUOTA_EXHAUSTED"));
+        assert!(summary.contains("retry_after=23h54m0s"));
+    }
+
+    #[test]
+    fn google_resource_exhausted_summary_classifies_short_rate_limit() {
+        let body = json!({
+            "error": {
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "Rate limited",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "12s"
+                    },
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "RATE_LIMIT_EXCEEDED"
+                    }
+                ]
+            }
+        });
+
+        let summary = summarize_google_resource_exhausted(&body).expect("summary");
+        assert!(summary.contains("google_resource_exhausted=short_cooldown"));
+        assert!(summary.contains("retry_after=12s"));
     }
 
     #[test]

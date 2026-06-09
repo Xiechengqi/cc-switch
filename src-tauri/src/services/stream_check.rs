@@ -2258,7 +2258,7 @@ mod tests {
 
         assert_eq!(
             config.normalize_legacy_defaults().gemini_model,
-            "gemini-2.5-flash"
+            GEMINI_DEFAULT_TEST_MODEL
         );
     }
 

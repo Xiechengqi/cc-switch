@@ -689,8 +689,8 @@ fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
             used: Some(used / 100.0),
             limit: Some(limit / 100.0),
             unit: Some("USD".to_string()),
-    used_value_usd: None,
-    max_value_usd: None,
+            used_value_usd: None,
+            max_value_usd: None,
         }];
     }
 
@@ -704,8 +704,8 @@ fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
             used: None,
             limit: None,
             unit: None,
-    used_value_usd: None,
-    max_value_usd: None,
+            used_value_usd: None,
+            max_value_usd: None,
         }];
     }
 

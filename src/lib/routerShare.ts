@@ -4,6 +4,7 @@ export interface RouterShareSettingsPatch {
   ownerEmail?: string;
   description?: string | null;
   forSale?: "Yes" | "No" | "Free";
+  saleMarketKind?: "token" | "share";
   marketAccessMode?: "selected" | "all";
   sharedWithEmails?: string[];
   accessByApp?: import("@/lib/api").ShareAccessByApp;

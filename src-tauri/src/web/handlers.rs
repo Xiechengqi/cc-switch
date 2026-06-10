@@ -1086,6 +1086,7 @@ async fn invoke_local_admin_scoped(
                     params.shared_with_emails,
                     &params.market_access_mode,
                     params.access_by_app,
+                    params.sale_market_kind.as_deref(),
                 )
                 .map_err(WebError::internal)?,
             )))
@@ -1243,6 +1244,7 @@ async fn invoke_local_admin_scoped(
                         dynamic_apps: params.dynamic_apps.iter().cloned().collect(),
                         description: params.description.clone(),
                         for_sale: params.for_sale.clone(),
+                        sale_market_kind: params.sale_market_kind.clone(),
                         token_limit: params.token_limit,
                         parallel_limit: params.parallel_limit,
                         expires_in_secs: params.expires_in_secs,

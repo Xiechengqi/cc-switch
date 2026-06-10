@@ -16,6 +16,8 @@ export type ShareAccessByApp = Partial<
   Record<keyof ShareBindings, ShareAppAccess>
 >;
 
+export type ShareSaleMarketKind = "token" | "share";
+
 export interface ShareRecord {
   id: string;
   name: string;
@@ -26,6 +28,7 @@ export interface ShareRecord {
   forSaleOfficialPricePercentByApp: Record<string, number>;
   description?: string | null;
   forSale: "Yes" | "No" | "Free";
+  saleMarketKind?: ShareSaleMarketKind;
   /** P8: 每个 app_type 的 provider 绑定。三个 slot 各自独立，0..3 个 entry。 */
   bindings: ShareBindings;
   /**
@@ -63,6 +66,7 @@ export interface CreateShareParams {
   dynamicApps?: string[];
   description?: string;
   forSale: "Yes" | "No" | "Free";
+  saleMarketKind?: ShareSaleMarketKind;
   tokenLimit: number;
   parallelLimit: number;
   expiresInSecs: number;
@@ -141,6 +145,7 @@ export interface UpdateShareAclParams {
   sharedWithEmails: string[];
   marketAccessMode: "selected" | "all";
   accessByApp?: ShareAccessByApp;
+  saleMarketKind?: ShareSaleMarketKind;
 }
 
 export interface UpdateShareTokenLimitParams {

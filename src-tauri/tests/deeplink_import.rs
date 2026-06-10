@@ -6,8 +6,8 @@ use cc_switch_lib::{import_provider_from_deeplink, parse_deeplink_url, AppState,
 mod support;
 use support::{ensure_test_home, reset_test_fs, test_mutex};
 
-#[test]
-fn deeplink_import_claude_provider_persists_to_db() {
+#[tokio::test]
+async fn deeplink_import_claude_provider_persists_to_db() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
@@ -42,8 +42,8 @@ fn deeplink_import_claude_provider_persists_to_db() {
     assert_eq!(base_url, request.endpoint.as_deref());
 }
 
-#[test]
-fn deeplink_import_codex_provider_builds_auth_and_config() {
+#[tokio::test]
+async fn deeplink_import_codex_provider_builds_auth_and_config() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();

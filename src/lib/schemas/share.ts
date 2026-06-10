@@ -31,6 +31,7 @@ export const createShareSchema = z
         "share.validation.descriptionTooLong",
       ),
     forSale: z.enum(["Yes", "No", "Free"]),
+    saleMarketKind: z.enum(["token", "share"]).default("token"),
     autoStart: z.boolean(),
     tokenLimit: z.coerce
       .number()

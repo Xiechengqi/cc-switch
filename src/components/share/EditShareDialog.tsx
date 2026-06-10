@@ -112,10 +112,7 @@ interface EditShareDialogProps {
     sharedWithEmails: string[],
     marketAccessMode: "selected" | "all",
     accessByApp?: ShareAccessByApp,
-  ) => Promise<void> | void;
-  onAuthorizeShareMarket: (
-    share: ShareRecord,
-    marketEmail: string,
+    saleMarketKind?: "token" | "share",
   ) => Promise<void> | void;
   /**
    * P8：改绑 / 解绑 share 的某个 app_type slot 的 provider。
@@ -163,7 +160,6 @@ export function EditShareDialog({
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
-  onAuthorizeShareMarket,
   onUpdateProviderBinding,
   onRebindAtomic,
 }: EditShareDialogProps) {
@@ -195,6 +191,10 @@ export function EditShareDialog({
   const [marketAccessModeInput, setMarketAccessModeInput] = useState<
     "selected" | "all"
   >("selected");
+  const [saleMarketKindInput, setSaleMarketKindInput] = useState<
+    "token" | "share"
+  >("token");
+  const [selectedShareMarketEmail, setSelectedShareMarketEmail] = useState("");
   const [marketSelectKey, setMarketSelectKey] = useState(0);
   const [forSaleInput, setForSaleInput] = useState<"Yes" | "No" | "Free">("No");
   const [salePricingInputs, setSalePricingInputs] = useState<
@@ -275,6 +275,10 @@ export function EditShareDialog({
     return result;
   }, [currentAccessByApp, publicMarketEmailSet]);
   const currentMarketAccessMode = share.marketAccessMode ?? "selected";
+  const currentSaleMarketKind =
+    share.saleMarketKind === "share" || share.saleMarketKind === "token"
+      ? share.saleMarketKind
+      : "token";
   const currentShareSalePricing = share.forSaleOfficialPricePercentByApp ?? {};
   const wasOpenRef = useRef(false);
   useEffect(() => {
@@ -311,7 +315,9 @@ export function EditShareDialog({
     setOwnerEmailInput(share.ownerEmail ?? "");
     setShareToEmailsByApp(currentNonMarketEmailsByApp);
     setSelectedMarketEmails(currentMarketEmails);
+    setSelectedShareMarketEmail(currentShareMarketEmails[0] ?? "");
     setMarketAccessModeInput(currentMarketAccessMode);
+    setSaleMarketKindInput(currentSaleMarketKind);
     setForSaleInput(share.forSale);
     setSalePricingInputs(
       salePricingInputValues(effectiveProviderSalePricing, currentShareSalePricing),
@@ -406,29 +412,45 @@ export function EditShareDialog({
       ? []
       : selectedMarketEmails.filter((email) => usageMarketEmailSet.has(email)),
   );
+  const normalizedSelectedShareMarketEmail = shareMarketEmailSet.has(
+    selectedShareMarketEmail.trim().toLowerCase(),
+  )
+    ? selectedShareMarketEmail.trim().toLowerCase()
+    : "";
   const marketDirty =
-    marketAccessModeInput !== currentMarketAccessMode ||
-    (marketAccessModeInput === "selected" &&
-      JSON.stringify(normalizedSelectedMarketEmails) !==
-        JSON.stringify(currentMarketEmails));
+    saleMarketKindInput !== currentSaleMarketKind ||
+    (saleMarketKindInput === "token" &&
+      (marketAccessModeInput !== currentMarketAccessMode ||
+        (marketAccessModeInput === "selected" &&
+          JSON.stringify(normalizedSelectedMarketEmails) !==
+            JSON.stringify(currentMarketEmails)))) ||
+    (saleMarketKindInput === "share" &&
+      normalizedSelectedShareMarketEmail !== (currentShareMarketEmails[0] ?? ""));
   const nextAccessByApp = useMemo(() => {
     const result: ShareAccessByApp = {};
     for (const app of supportedAccessApps) {
       result[app] = {
         sharedWithEmails: uniqueSorted([
           ...(normalizedShareToByApp[app] ?? []),
-          ...(marketAccessModeInput === "all"
-            ? []
-            : normalizedSelectedMarketEmails),
+          ...(saleMarketKindInput === "share"
+            ? normalizedSelectedShareMarketEmail
+              ? [normalizedSelectedShareMarketEmail]
+              : []
+            : marketAccessModeInput === "all"
+              ? []
+              : normalizedSelectedMarketEmails),
         ]),
-        marketAccessMode: marketAccessModeInput,
+        marketAccessMode:
+          saleMarketKindInput === "share" ? "selected" : marketAccessModeInput,
       };
     }
     return result;
   }, [
     marketAccessModeInput,
     normalizedSelectedMarketEmails,
+    normalizedSelectedShareMarketEmail,
     normalizedShareToByApp,
+    saleMarketKindInput,
     supportedAccessApps,
   ]);
   const nextAclEmails = uniqueSorted(
@@ -445,18 +467,23 @@ export function EditShareDialog({
     effectiveProviderSalePricing,
     currentShareSalePricing,
   );
-  const salePricingDirty = effectiveProviderSalePricing.some(
-    (item) =>
-      (salePricingInputs[item.app] ?? "") !==
-      (salePricingCurrentValues[item.app] ?? ""),
-  );
-  const salePricingInvalid = effectiveProviderSalePricing.some((item) => {
-    const value = (salePricingInputs[item.app] ?? "").trim();
-    if (value === "") return false;
-    if (!/^\d+$/.test(value)) return true;
-    const parsed = Number.parseInt(value, 10);
-    return parsed < 1 || parsed > 100;
-  });
+  const salePricingDirty =
+    saleMarketKindInput === "share"
+      ? Object.keys(currentShareSalePricing).length > 0
+      : effectiveProviderSalePricing.some(
+          (item) =>
+            (salePricingInputs[item.app] ?? "") !==
+            (salePricingCurrentValues[item.app] ?? ""),
+        );
+  const salePricingInvalid =
+    saleMarketKindInput === "token" &&
+    effectiveProviderSalePricing.some((item) => {
+      const value = (salePricingInputs[item.app] ?? "").trim();
+      if (value === "") return false;
+      if (!/^\d+$/.test(value)) return true;
+      const parsed = Number.parseInt(value, 10);
+      return parsed < 1 || parsed > 100;
+    });
   const autoStartDirty = autoStartInput !== share.autoStart;
   const parsedExpiryHour = Number.parseInt(expiryHourInput, 10);
   const parsedExpiryMinute = Number.parseInt(expiryMinuteInput, 10);
@@ -500,6 +527,10 @@ export function EditShareDialog({
       parsedExpiryMinute > 59 ||
       Number.isNaN(new Date(expiryIso).getTime()) ||
       new Date(expiryIso).getTime() <= Date.now();
+  const marketInvalid =
+    forSaleInput === "Yes" &&
+    saleMarketKindInput === "share" &&
+    normalizedSelectedShareMarketEmail.length === 0;
   const hasChanges =
     aclDirty ||
     forSaleDirty ||
@@ -514,6 +545,7 @@ export function EditShareDialog({
     parallelLimitDirty;
   const hasInvalidChanges =
     (aclDirty && shareToInvalid) ||
+    marketInvalid ||
     salePricingInvalid ||
     (ownerEmailDirty && ownerEmailInvalid) ||
     (descriptionDirty && descriptionInvalid) ||
@@ -524,7 +556,7 @@ export function EditShareDialog({
 
   const busy = isBusy || saving || readOnly;
   const marketDisabled = forSaleInput !== "Yes";
-  const pricingDisabled = forSaleInput !== "Yes";
+  const pricingDisabled = forSaleInput !== "Yes" || saleMarketKindInput !== "token";
 
   const handleSave = async () => {
     if (!hasChanges || hasInvalidChanges || busy) return;
@@ -534,14 +566,17 @@ export function EditShareDialog({
         await onUpdateAcl(
           share,
           nextAclEmails,
-          marketAccessModeInput,
+          saleMarketKindInput === "share" ? "selected" : marketAccessModeInput,
           nextAccessByApp,
+          saleMarketKindInput,
         );
       if (forSaleDirty) await onUpdateForSale(share, forSaleInput);
       if (salePricingDirty) {
         await onUpdateShareSalePricing(
           share,
-          parseSalePricingInputs(salePricingInputs),
+          saleMarketKindInput === "share"
+            ? {}
+            : parseSalePricingInputs(salePricingInputs),
         );
       }
       if (autoStartDirty) await onUpdateAutoStart(share, autoStartInput);
@@ -852,18 +887,77 @@ export function EditShareDialog({
             </DialogSection>
 
             <DialogSection
-              title={t("share.market.title", { defaultValue: "Market" })}
+              title={t("share.saleMarketKind.title", {
+                defaultValue: "Market Type",
+              })}
               hint={
                 marketDisabled
                   ? t("share.market.forSaleRequired", {
                       defaultValue:
                         "Set ForSale to Yes before choosing a market.",
                     })
-                  : t("share.market.description", {
-                      defaultValue: "Choose one or more markets.",
+                  : t("share.saleMarketKind.description", {
+                      defaultValue:
+                        "Choose Token Market for token usage sale or Share Market for account rental.",
                     })
               }
             >
+              <div className="flex flex-wrap items-center gap-5">
+                {(["token", "share"] as const).map((value) => {
+                  const id = `edit-share-sale-market-kind-${share.id}-${value}`;
+                  return (
+                    <label
+                      key={value}
+                      htmlFor={id}
+                      className="flex cursor-pointer items-center gap-2 text-sm"
+                    >
+                      <input
+                        id={id}
+                        type="radio"
+                        name={`edit-share-sale-market-kind-${share.id}`}
+                        value={value}
+                        checked={saleMarketKindInput === value}
+                        disabled={busy || marketDisabled}
+                        onChange={() => {
+                          setSaleMarketKindInput(value);
+                          if (value === "token") {
+                            setMarketAccessModeInput("all");
+                            setSelectedMarketEmails([]);
+                          } else {
+                            setMarketAccessModeInput("selected");
+                          }
+                        }}
+                        className="h-4 w-4 accent-primary"
+                      />
+                      <span>
+                        {value === "token"
+                          ? t("share.saleMarketKind.token", {
+                              defaultValue: "Token Market",
+                            })
+                          : t("share.saleMarketKind.share", {
+                              defaultValue: "Share Market",
+                            })}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </DialogSection>
+
+            {saleMarketKindInput === "token" ? (
+              <DialogSection
+                title={t("share.market.title", { defaultValue: "Token Market" })}
+                hint={
+                  marketDisabled
+                    ? t("share.market.forSaleRequired", {
+                        defaultValue:
+                          "Set ForSale to Yes before choosing a market.",
+                      })
+                    : t("share.market.description", {
+                        defaultValue: "Choose all or selected token markets.",
+                      })
+                }
+              >
               <div className="space-y-3">
                 <div className="flex gap-2">
                   <Select
@@ -956,11 +1050,13 @@ export function EditShareDialog({
                   </button>
                 ) : null}
               </div>
-            </DialogSection>
+              </DialogSection>
+            ) : null}
 
-            <DialogSection
+            {saleMarketKindInput === "share" ? (
+              <DialogSection
               title={t("share.accountMarket.title", {
-                defaultValue: "账号市场委托",
+                defaultValue: "Share Market",
               })}
               hint={
                 marketDisabled
@@ -976,9 +1072,10 @@ export function EditShareDialog({
             >
               <div className="space-y-3">
                 <Select
-                  key={`share-market-${currentShareMarketEmails[0] ?? "none"}`}
+                  key={`share-market-${selectedShareMarketEmail || "none"}`}
+                  value={selectedShareMarketEmail || undefined}
                   onValueChange={(value) => {
-                    void onAuthorizeShareMarket(share, value.toLowerCase());
+                    setSelectedShareMarketEmail(value.toLowerCase());
                   }}
                   disabled={
                     busy ||
@@ -1012,8 +1109,19 @@ export function EditShareDialog({
                 </Select>
                 <MarketTags
                   markets={shareMarkets}
-                  selectedMarketEmails={currentShareMarketEmails}
+                  selectedMarketEmails={
+                    normalizedSelectedShareMarketEmail
+                      ? [normalizedSelectedShareMarketEmail]
+                      : []
+                  }
                 />
+                {marketInvalid ? (
+                  <div className="text-sm text-destructive">
+                    {t("share.accountMarket.required", {
+                      defaultValue: "请选择一个 Share Market",
+                    })}
+                  </div>
+                ) : null}
                 {shareMarkets.length === 0 && !marketsLoading ? (
                   <div className="text-sm text-muted-foreground">
                     {t("share.accountMarket.empty", {
@@ -1022,9 +1130,10 @@ export function EditShareDialog({
                   </div>
                 ) : null}
               </div>
-            </DialogSection>
+              </DialogSection>
+            ) : null}
 
-            {effectiveProviderSalePricing.length > 0 ? (
+            {saleMarketKindInput === "token" && effectiveProviderSalePricing.length > 0 ? (
               <DialogSection
                 title={t("share.modelPricingPercentTitle", {
                   defaultValue: "模型定价（Share 默认；供应商非空时优先）",

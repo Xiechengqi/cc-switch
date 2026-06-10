@@ -113,10 +113,7 @@ interface ShareCardProps {
     sharedWithEmails: string[],
     marketAccessMode: "selected" | "all",
     accessByApp?: ShareAccessByApp,
-  ) => Promise<void> | void;
-  onAuthorizeShareMarket?: (
-    share: ShareRecord,
-    marketEmail: string,
+    saleMarketKind?: "token" | "share",
   ) => Promise<void> | void;
   /**
    * 当前 app 下可绑定的 provider 列表（同 CreateShareDialog 的形态）。
@@ -171,7 +168,6 @@ export function ShareCard({
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
-  onAuthorizeShareMarket = () => undefined,
   providersByAppForEdit,
   onUpdateProviderBinding,
   onRebindAtomic,
@@ -512,7 +508,6 @@ export function ShareCard({
         onUpdateOwnerEmail={onUpdateOwnerEmail}
         onTransferOwner={onTransferOwner}
         onUpdateAcl={onUpdateAcl}
-        onAuthorizeShareMarket={onAuthorizeShareMarket}
         providersByApp={
           providersByAppForEdit ?? { claude: [], codex: [], gemini: [] }
         }

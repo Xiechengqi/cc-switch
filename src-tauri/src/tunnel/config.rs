@@ -350,6 +350,8 @@ pub struct ShareTunnelMetadata {
     pub shared_with_emails: Vec<String>,
     #[serde(default = "default_market_access_mode")]
     pub market_access_mode: String,
+    #[serde(default = "default_sale_market_kind")]
+    pub sale_market_kind: String,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub access_by_app: HashMap<String, ShareAppAccess>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -406,6 +408,10 @@ impl ShareTunnelMetadata {
 
 fn default_market_access_mode() -> String {
     "selected".to_string()
+}
+
+fn default_sale_market_kind() -> String {
+    "token".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -486,6 +492,7 @@ mod tests {
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),
+            sale_market_kind: "token".to_string(),
             subdomain: "demo".to_string(),
             app_type: "codex".to_string(),
             provider_id: None,
@@ -513,6 +520,7 @@ mod tests {
                 "sharedWithEmails": ["friend@example.com"],
                 "marketAccessMode": "selected",
                 "forSale": "No",
+                "saleMarketKind": "token",
                 "subdomain": "demo",
                 "appType": "codex",
                 "tokenLimit": 100,
@@ -546,6 +554,7 @@ mod tests {
             for_sale_official_price_percent_by_app: pricing,
             description: Some("not signed by claim".to_string()),
             for_sale: "Yes".to_string(),
+            sale_market_kind: "token".to_string(),
             subdomain: "demo".to_string(),
             app_type: "codex".to_string(),
             provider_id: Some("provider-1".to_string()),

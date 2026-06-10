@@ -27,6 +27,8 @@ pub struct CreateShareParams {
     pub dynamic_apps: Vec<String>,
     pub description: Option<String>,
     pub for_sale: String,
+    #[serde(default = "default_sale_market_kind")]
+    pub sale_market_kind: String,
     pub token_limit: i64,
     pub parallel_limit: i64,
     pub expires_in_secs: i64,
@@ -50,6 +52,10 @@ pub struct PublicMarket {
 
 fn default_market_kind() -> String {
     "usage".to_string()
+}
+
+fn default_sale_market_kind() -> String {
+    "token".to_string()
 }
 
 #[derive(Deserialize)]
@@ -137,6 +143,8 @@ pub struct UpdateShareAclParams {
     pub market_access_mode: String,
     #[serde(default)]
     pub access_by_app: Option<std::collections::HashMap<String, ShareAppAccess>>,
+    #[serde(default)]
+    pub sale_market_kind: Option<String>,
 }
 
 fn default_market_access_mode() -> String {
@@ -204,6 +212,7 @@ pub async fn create_share(
                 dynamic_apps: params.dynamic_apps.iter().cloned().collect(),
                 description: params.description.clone(),
                 for_sale: params.for_sale.clone(),
+                sale_market_kind: params.sale_market_kind.clone(),
                 token_limit: params.token_limit,
                 parallel_limit: params.parallel_limit,
                 expires_in_secs: params.expires_in_secs,
@@ -298,6 +307,7 @@ pub async fn authorize_share_market(
         Vec::new(),
         "selected",
         Some(access_by_app),
+        Some("share"),
     )
     .map_err(|e: AppError| e.to_string())
 }
@@ -347,6 +357,7 @@ pub fn update_share_acl(
         params.shared_with_emails,
         &params.market_access_mode,
         params.access_by_app,
+        params.sale_market_kind.as_deref(),
     )
     .map_err(|e: AppError| e.to_string())
 }

@@ -387,6 +387,7 @@ impl Database {
                 for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
+                sale_market_kind TEXT NOT NULL DEFAULT 'token',
                 api_key TEXT NOT NULL,
                 settings_config TEXT,
                 token_limit INTEGER NOT NULL,
@@ -620,6 +621,11 @@ impl Database {
                         log::info!("迁移数据库从 v24 到 v25（Share ACL 按 app 分支拆分）");
                         Self::migrate_v24_to_v25(conn)?;
                         Self::set_user_version(conn, 25)?;
+                    }
+                    25 => {
+                        log::info!("迁移数据库从 v25 到 v26（Share 出售 Market 类型）");
+                        Self::migrate_v25_to_v26(conn)?;
+                        Self::set_user_version(conn, 26)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1411,6 +1417,7 @@ impl Database {
                 for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
+                sale_market_kind TEXT NOT NULL DEFAULT 'token',
                 share_token TEXT NOT NULL UNIQUE,
                 app_type TEXT NOT NULL,
                 provider_id TEXT,
@@ -1808,6 +1815,7 @@ impl Database {
                 for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
+                sale_market_kind TEXT NOT NULL DEFAULT 'token',
                 api_key TEXT NOT NULL DEFAULT '',
                 settings_config TEXT,
                 token_limit INTEGER NOT NULL DEFAULT -1,
@@ -1921,6 +1929,20 @@ impl Database {
             )?;
         }
         log::info!("v24 -> v25 迁移完成：shares 增加 access_by_app_json");
+        Ok(())
+    }
+
+    /// v25 → v26：share 显式区分出售给 token market 还是 share market。
+    fn migrate_v25_to_v26(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(
+                conn,
+                "shares",
+                "sale_market_kind",
+                "TEXT NOT NULL DEFAULT 'token'",
+            )?;
+        }
+        log::info!("v25 -> v26 迁移完成：shares 增加 sale_market_kind");
         Ok(())
     }
 

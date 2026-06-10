@@ -985,6 +985,7 @@ mod provider_catalog_prune_tests {
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),
+            sale_market_kind: "token".to_string(),
             bindings,
             dynamic_apps: std::collections::HashSet::new(),
             api_key: "key".to_string(),

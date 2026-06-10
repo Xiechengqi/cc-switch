@@ -59,6 +59,7 @@ export interface CreateShareExtras {
    */
   sharedWithEmails: string[];
   marketAccessMode: "selected" | "all";
+  saleMarketKind?: "token" | "share";
   /**
    * 按 app 区分的可访问邮箱。空对象 = 没有 per-app 自定义，仍走 `sharedWithEmails` 兼容路径。
    */
@@ -158,6 +159,7 @@ function buildDefaultValues(
     bindings: initialBindings,
     description: "",
     forSale: "Yes",
+    saleMarketKind: "token",
     autoStart: true,
     tokenLimit: UNLIMITED_TOKEN_LIMIT,
     parallelLimit: UNLIMITED_PARALLEL_LIMIT,
@@ -370,6 +372,7 @@ export function CreateShareDialog({
         dynamicApps: dynamicApps.length > 0 ? dynamicApps : undefined,
         description: values.description || undefined,
         forSale: values.forSale,
+        saleMarketKind: values.saleMarketKind,
         tokenLimit: values.tokenLimit,
         parallelLimit: values.parallelLimit,
         expiresInSecs: values.expiresInSecs,
@@ -380,6 +383,7 @@ export function CreateShareDialog({
         sharedWithEmails: flatSharedWithEmails,
         marketAccessMode: values.marketAccessMode,
         accessByApp: accessByAppOrUndef,
+        saleMarketKind: values.saleMarketKind,
       },
     );
   });

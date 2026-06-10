@@ -16,7 +16,6 @@ import { useProxyStatus } from "@/lib/query/proxy";
 import {
   useConfigureTunnelMutation,
   useClaimClientTunnelMutation,
-  useAuthorizeShareMarketMutation,
   useClientTunnelQuery,
   useCreateShareMutation,
   useDeleteShareMutation,
@@ -160,7 +159,6 @@ export function SharePage({
   const updateOwnerEmailMutation = useUpdateShareOwnerEmailMutation();
   const transferOwnerMutation = useTransferShareOwnerMutation();
   const updateAclMutation = useUpdateShareAclMutation();
-  const authorizeShareMarketMutation = useAuthorizeShareMarketMutation();
   const updateParallelLimitMutation = useUpdateShareParallelLimitMutation();
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
   const updateProviderBindingMutation = useUpdateShareProviderBindingMutation();
@@ -397,6 +395,7 @@ export function SharePage({
     extras: {
       sharedWithEmails: string[];
       marketAccessMode: "selected" | "all";
+      saleMarketKind?: "token" | "share";
       accessByApp?: ShareAccessByApp;
     },
   ) => {
@@ -413,6 +412,7 @@ export function SharePage({
         sharedWithEmails: extras.sharedWithEmails,
         marketAccessMode: extras.marketAccessMode,
         accessByApp: extras.accessByApp,
+        saleMarketKind: extras.saleMarketKind ?? "token",
       });
     }
     setCreateOpen(false);
@@ -718,29 +718,21 @@ export function SharePage({
                   }),
             )
           }
-          onUpdateAcl={(share, sharedWithEmails, marketAccessMode, accessByApp) =>
+          onUpdateAcl={(share, sharedWithEmails, marketAccessMode, accessByApp, saleMarketKind) =>
             runShareAction(share, () =>
               shareScoped
                 ? writeSharePatch(share, {
                     sharedWithEmails,
                     marketAccessMode,
                     accessByApp,
+                    saleMarketKind: saleMarketKind ?? share.saleMarketKind ?? "token",
                   })
                 : updateAclMutation.mutateAsync({
                     shareId: share.id,
                     sharedWithEmails,
                     marketAccessMode,
                     accessByApp,
-                  }),
-            )
-          }
-          onAuthorizeShareMarket={(share, marketEmail) =>
-            runShareAction(share, () =>
-              shareScoped
-                ? Promise.resolve()
-                : authorizeShareMarketMutation.mutateAsync({
-                    shareId: share.id,
-                    marketEmail,
+                    saleMarketKind: saleMarketKind ?? share.saleMarketKind ?? "token",
                   }),
             )
           }

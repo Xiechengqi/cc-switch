@@ -17,6 +17,7 @@ import {
   shareApi,
   type AppId,
   type CreateShareParams,
+  type ShareAccessByApp,
   type ShareRecord,
 } from "@/lib/api";
 import {
@@ -177,19 +178,27 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
 
   const createAndEnable = async (
     params: CreateShareParams,
-    extras: { sharedWithEmails: string[]; marketAccessMode: "selected" | "all" },
+    extras: {
+      sharedWithEmails: string[];
+      marketAccessMode: "selected" | "all";
+      saleMarketKind?: "token" | "share";
+      accessByApp?: ShareAccessByApp;
+    },
   ) => {
     try {
       setStage("creating-share");
       const created = await createShareMutation.mutateAsync(params);
       if (
         extras.marketAccessMode === "all" ||
-        extras.sharedWithEmails.length > 0
+        extras.sharedWithEmails.length > 0 ||
+        (!!extras.accessByApp && Object.keys(extras.accessByApp).length > 0)
       ) {
         await updateAclMutation.mutateAsync({
           shareId: created.id,
           sharedWithEmails: extras.sharedWithEmails,
           marketAccessMode: extras.marketAccessMode,
+          saleMarketKind: extras.saleMarketKind ?? "token",
+          accessByApp: extras.accessByApp,
         });
       }
       setCreateOpen(false);

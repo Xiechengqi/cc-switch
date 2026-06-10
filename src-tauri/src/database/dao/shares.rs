@@ -19,6 +19,10 @@ fn default_market_access_mode_string() -> String {
     "selected".to_string()
 }
 
+fn default_sale_market_kind_string() -> String {
+    "token".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareRecord {
@@ -32,6 +36,8 @@ pub struct ShareRecord {
     pub for_sale_official_price_percent_by_app: HashMap<String, u16>,
     pub description: Option<String>,
     pub for_sale: String,
+    #[serde(default = "default_sale_market_kind_string")]
+    pub sale_market_kind: String,
     /// P8: 多 app share。一个 share 可同时给 claude / codex / gemini 分别绑定 0/1 个
     /// provider。键为 app_type，值为该 slot 当前绑定的 provider id。slot 为空 = 该
     /// app 不可用，请求路径会拒绝并 emit share-needs-rebind。
@@ -169,7 +175,7 @@ pub struct ShareBindingHistoryEntry {
 }
 
 impl Database {
-    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, market_access_mode, access_by_app_json, for_sale_official_price_percent_json, description, for_sale, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
+    const SHARE_SELECT_COLUMNS: &str = "id, name, owner_email, shared_with_emails_json, market_access_mode, access_by_app_json, for_sale_official_price_percent_json, description, for_sale, sale_market_kind, api_key, settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at, subdomain, tunnel_url, status, auto_start, created_at, last_used_at";
 
     pub fn create_share(&self, share: &ShareRecord) -> Result<(), AppError> {
         let mut conn = lock_conn!(self.conn);
@@ -177,10 +183,10 @@ impl Database {
             .transaction()
             .map_err(|e| AppError::Database(e.to_string()))?;
         tx.execute(
-            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, market_access_mode, access_by_app_json, for_sale_official_price_percent_json, description, for_sale, api_key,
+            "INSERT INTO shares (id, name, owner_email, shared_with_emails_json, market_access_mode, access_by_app_json, for_sale_official_price_percent_json, description, for_sale, sale_market_kind, api_key,
              settings_config, token_limit, parallel_limit, tokens_used, requests_count, expires_at,
              subdomain, tunnel_url, status, auto_start, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 share.id,
                 share.name,
@@ -194,6 +200,7 @@ impl Database {
                     .map_err(|e| AppError::Database(e.to_string()))?,
                 share.description,
                 share.for_sale,
+                share.sale_market_kind,
                 share.api_key,
                 share.settings_config,
                 share.token_limit,
@@ -449,6 +456,7 @@ impl Database {
         shared_with_emails: &[String],
         market_access_mode: &str,
         access_by_app: &HashMap<String, ShareAppAccess>,
+        sale_market_kind: &str,
     ) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         let shared_with_emails_json = serde_json::to_string(shared_with_emails)
@@ -461,14 +469,16 @@ impl Database {
                      owner_email = ?2,
                      shared_with_emails_json = ?3,
                      market_access_mode = ?4,
-                     access_by_app_json = ?5
+                     access_by_app_json = ?5,
+                     sale_market_kind = ?6
                  WHERE id = ?1",
             params![
                 id,
                 owner_email,
                 shared_with_emails_json,
                 market_access_mode,
-                access_by_app_json
+                access_by_app_json,
+                sale_market_kind
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -729,21 +739,22 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?,
             description: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
             for_sale: row.get(8).map_err(|e| AppError::Database(e.to_string()))?,
+            sale_market_kind: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
             bindings: HashMap::new(),
             dynamic_apps: HashSet::new(),
-            api_key: row.get(9).map_err(|e| AppError::Database(e.to_string()))?,
-            settings_config: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
-            token_limit: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
-            parallel_limit: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
-            tokens_used: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
-            requests_count: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
-            expires_at: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
-            subdomain: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
-            tunnel_url: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
-            status: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
-            auto_start: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
-            created_at: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
-            last_used_at: row.get(21).map_err(|e| AppError::Database(e.to_string()))?,
+            api_key: row.get(10).map_err(|e| AppError::Database(e.to_string()))?,
+            settings_config: row.get(11).map_err(|e| AppError::Database(e.to_string()))?,
+            token_limit: row.get(12).map_err(|e| AppError::Database(e.to_string()))?,
+            parallel_limit: row.get(13).map_err(|e| AppError::Database(e.to_string()))?,
+            tokens_used: row.get(14).map_err(|e| AppError::Database(e.to_string()))?,
+            requests_count: row.get(15).map_err(|e| AppError::Database(e.to_string()))?,
+            expires_at: row.get(16).map_err(|e| AppError::Database(e.to_string()))?,
+            subdomain: row.get(17).map_err(|e| AppError::Database(e.to_string()))?,
+            tunnel_url: row.get(18).map_err(|e| AppError::Database(e.to_string()))?,
+            status: row.get(19).map_err(|e| AppError::Database(e.to_string()))?,
+            auto_start: row.get(20).map_err(|e| AppError::Database(e.to_string()))?,
+            created_at: row.get(21).map_err(|e| AppError::Database(e.to_string()))?,
+            last_used_at: row.get(22).map_err(|e| AppError::Database(e.to_string()))?,
         })
     }
 

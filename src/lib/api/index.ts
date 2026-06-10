@@ -24,6 +24,7 @@ export type {
   ShareBindings,
   ShareAppAccess,
   ShareAccessByApp,
+  ShareSaleMarketKind,
   PublicMarket,
   CreateShareParams,
   UpdateShareAclParams,

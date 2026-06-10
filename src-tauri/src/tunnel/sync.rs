@@ -31,6 +31,8 @@ pub struct ShareSettingsPatch {
     #[serde(default)]
     pub for_sale: Option<String>,
     #[serde(default)]
+    pub sale_market_kind: Option<String>,
+    #[serde(default)]
     pub market_access_mode: Option<String>,
     #[serde(default)]
     pub shared_with_emails: Option<Vec<String>>,
@@ -293,6 +295,7 @@ pub(crate) fn apply_share_settings_patch(
     if patch.owner_email.is_some()
         || patch.shared_with_emails.is_some()
         || patch.market_access_mode.is_some()
+        || patch.sale_market_kind.is_some()
     {
         let old_owner = current.owner_email.trim().to_ascii_lowercase();
         let next_owner = match &patch.owner_email {
@@ -324,6 +327,7 @@ pub(crate) fn apply_share_settings_patch(
             next_shared,
             next_mode,
             patch.access_by_app.clone(),
+            patch.sale_market_kind.as_deref(),
         )?;
     }
     if let Some(description) = patch.description {
@@ -1856,6 +1860,7 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         for_sale_official_price_percent_by_app: for_sale_pricing,
         description: share.description.clone(),
         for_sale: share.for_sale.clone(),
+        sale_market_kind: share.sale_market_kind.clone(),
         subdomain: share.subdomain.clone().unwrap_or_default(),
         app_type: primary_app,
         provider_id: primary_pid,
@@ -2007,6 +2012,7 @@ mod tests {
                 for_sale_official_price_percent_by_app: HashMap::new(),
                 description: None,
                 for_sale: "No".to_string(),
+                sale_market_kind: "token".to_string(),
                 bindings,
                 dynamic_apps: std::collections::HashSet::new(),
                 api_key: String::new(),
@@ -2097,6 +2103,7 @@ mod tests {
             for_sale_official_price_percent_by_app: pricing,
             description: None,
             for_sale: "Yes".to_string(),
+            sale_market_kind: "token".to_string(),
             bindings,
             dynamic_apps: std::collections::HashSet::new(),
             api_key: String::new(),

@@ -674,17 +674,20 @@ export function useUpdateShareAclMutation() {
       sharedWithEmails,
       marketAccessMode,
       accessByApp,
+      saleMarketKind,
     }: {
       shareId: string;
       sharedWithEmails: string[];
       marketAccessMode: "selected" | "all";
       accessByApp?: import("@/lib/api").ShareAccessByApp;
+      saleMarketKind?: import("@/lib/api").ShareSaleMarketKind;
     }) =>
       shareApi.updateAcl({
         shareId,
         sharedWithEmails,
         marketAccessMode,
         accessByApp,
+        saleMarketKind,
       }),
     {
       successKey: "share.toast.updateAclSuccess",

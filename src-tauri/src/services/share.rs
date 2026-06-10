@@ -70,6 +70,7 @@ impl ShareService {
         let expires_at = now + chrono::Duration::seconds(params.expires_in_secs);
         let description = normalize_description(params.description)?;
         let for_sale = normalize_for_sale(&params.for_sale)?;
+        let sale_market_kind = normalize_sale_market_kind(&params.sale_market_kind)?;
         let parallel_limit = normalize_parallel_limit(params.parallel_limit)?;
         let owner_email = normalize_email(&params.owner_email)?;
         let token_limit = params.token_limit;
@@ -130,6 +131,7 @@ impl ShareService {
             for_sale_official_price_percent_by_app: HashMap::new(),
             description,
             for_sale,
+            sale_market_kind,
             bindings,
             dynamic_apps,
             api_key: String::new(),
@@ -539,6 +541,7 @@ impl ShareService {
             &shared_with_emails,
             &market_access_mode,
             &access_by_app,
+            &share.sale_market_kind,
         )?;
         let updated = db
             .get_share_by_id(share_id)?
@@ -606,6 +609,7 @@ impl ShareService {
             &next_shared_with,
             &market_access_mode,
             &access_by_app,
+            &share.sale_market_kind,
         )?;
         let updated = db
             .get_share_by_id(share_id)?
@@ -621,6 +625,7 @@ impl ShareService {
         shared_with_emails: Vec<String>,
         market_access_mode: &str,
         access_by_app: Option<HashMap<String, ShareAppAccess>>,
+        sale_market_kind: Option<&str>,
     ) -> Result<ShareRecord, AppError> {
         let share = db
             .get_share_by_id(share_id)?
@@ -636,12 +641,15 @@ impl ShareService {
         };
         let (shared_with_emails, market_access_mode) =
             legacy_acl_from_access_by_app(&access_by_app);
+        let sale_market_kind =
+            normalize_sale_market_kind(sale_market_kind.unwrap_or(&share.sale_market_kind))?;
         db.update_share_acl(
             share_id,
             &owner_email,
             &shared_with_emails,
             &market_access_mode,
             &access_by_app,
+            &sale_market_kind,
         )?;
         let updated = db
             .get_share_by_id(share_id)?
@@ -687,6 +695,7 @@ pub struct PrepareShareParams {
     pub dynamic_apps: HashSet<String>,
     pub description: Option<String>,
     pub for_sale: String,
+    pub sale_market_kind: String,
     pub token_limit: i64,
     pub parallel_limit: i64,
     pub expires_in_secs: i64,
@@ -777,6 +786,16 @@ fn normalize_for_sale(value: &str) -> Result<String, AppError> {
         ShareService::FOR_SALE_FREE => Ok(ShareService::FOR_SALE_FREE.to_string()),
         _ => Err(AppError::Message(
             "For Sale 只能是 Yes、No 或 Free".to_string(),
+        )),
+    }
+}
+
+fn normalize_sale_market_kind(value: &str) -> Result<String, AppError> {
+    match value.trim() {
+        "token" => Ok("token".to_string()),
+        "share" => Ok("share".to_string()),
+        _ => Err(AppError::Message(
+            "出售 Market 类型只能是 token 或 share".to_string(),
         )),
     }
 }
@@ -889,6 +908,7 @@ mod tests {
             dynamic_apps: HashSet::new(),
             description: None,
             for_sale: "No".to_string(),
+            sale_market_kind: "token".to_string(),
             token_limit: ShareService::UNLIMITED_TOKEN_LIMIT,
             parallel_limit: ShareService::MIN_PARALLEL_LIMIT,
             expires_in_secs: 3600,
@@ -910,6 +930,7 @@ mod tests {
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),
+            sale_market_kind: "token".to_string(),
             bindings,
             dynamic_apps: HashSet::new(),
             api_key: String::new(),

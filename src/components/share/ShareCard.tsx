@@ -114,6 +114,10 @@ interface ShareCardProps {
     marketAccessMode: "selected" | "all",
     accessByApp?: ShareAccessByApp,
   ) => Promise<void> | void;
+  onAuthorizeShareMarket?: (
+    share: ShareRecord,
+    marketEmail: string,
+  ) => Promise<void> | void;
   /**
    * 当前 app 下可绑定的 provider 列表（同 CreateShareDialog 的形态）。
    * 由 ShareList 透传，传给 EditShareDialog 的 Provider Select。
@@ -167,6 +171,7 @@ export function ShareCard({
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
+  onAuthorizeShareMarket = () => undefined,
   providersByAppForEdit,
   onUpdateProviderBinding,
   onRebindAtomic,
@@ -198,8 +203,11 @@ export function ShareCard({
     tunnelConfigured,
     tunnelStatus,
   );
+  const usageMarkets = markets.filter(
+    (market) => (market.marketKind ?? "usage") !== "share",
+  );
   const marketEmailSet = new Set(
-    markets.map((market) => market.email.toLowerCase()),
+    usageMarkets.map((market) => market.email.toLowerCase()),
   );
   const currentMarketEmails = Array.from(
     new Set(
@@ -435,7 +443,7 @@ export function ShareCard({
               value={t(`share.forSaleOptions.${share.forSale.toLowerCase()}`)}
             />
             <MarketSummary
-              markets={markets}
+              markets={usageMarkets}
               marketAccessMode={currentMarketAccessMode}
               selectedMarketEmails={currentMarketEmails}
             />
@@ -504,6 +512,7 @@ export function ShareCard({
         onUpdateOwnerEmail={onUpdateOwnerEmail}
         onTransferOwner={onTransferOwner}
         onUpdateAcl={onUpdateAcl}
+        onAuthorizeShareMarket={onAuthorizeShareMarket}
         providersByApp={
           providersByAppForEdit ?? { claude: [], codex: [], gemini: [] }
         }

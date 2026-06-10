@@ -7,7 +7,7 @@ use crate::tunnel::config::{
     ShareTunnelStatus, TunnelConfig, TunnelInfo, TunnelRequest, TunnelType,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tauri::State;
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
@@ -43,7 +43,13 @@ pub struct PublicMarket {
     pub email: String,
     pub subdomain: String,
     pub public_base_url: String,
+    #[serde(default = "default_market_kind")]
+    pub market_kind: String,
     pub status: String,
+}
+
+fn default_market_kind() -> String {
+    "usage".to_string()
 }
 
 #[derive(Deserialize)]
@@ -235,6 +241,10 @@ pub async fn create_share(
 
 #[tauri::command]
 pub async fn list_share_markets() -> Result<Vec<PublicMarket>, String> {
+    fetch_public_markets().await
+}
+
+async fn fetch_public_markets() -> Result<Vec<PublicMarket>, String> {
     let config = current_tunnel_config();
     let url = format!("{}/v1/markets", config.get_server_addr());
     let response = reqwest::Client::new()
@@ -253,26 +263,72 @@ pub async fn list_share_markets() -> Result<Vec<PublicMarket>, String> {
 }
 
 #[tauri::command]
-pub fn authorize_share_market(
+pub async fn authorize_share_market(
     state: State<'_, AppState>,
     share_id: String,
     market_email: String,
 ) -> Result<ShareRecord, String> {
+    let market_email = market_email.trim().to_ascii_lowercase();
+    let markets = fetch_public_markets().await?;
+    let public_market_emails = markets
+        .iter()
+        .map(|market| market.email.trim().to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let share_market_emails = markets
+        .iter()
+        .filter(|market| market.market_kind == "share")
+        .map(|market| market.email.trim().to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    if !share_market_emails.contains(&market_email) {
+        return Err("只能委托给已注册的 share market".to_string());
+    }
     let share = ShareService::get_detail(&state.db, &share_id)
         .map_err(|e: AppError| e.to_string())?
         .ok_or_else(|| format!("Share not found: {share_id}"))?;
     let owner_email = share.owner_email.clone();
-    let mut emails = share.shared_with_emails;
-    emails.push(market_email);
+    let access_by_app = replace_public_market_acl_with_share_market(
+        share.effective_access_by_app(),
+        &market_email,
+        &public_market_emails,
+    );
     ShareService::update_acl(
         &state.db,
         &share_id,
         &owner_email,
-        emails,
-        &share.market_access_mode,
-        None,
+        Vec::new(),
+        "selected",
+        Some(access_by_app),
     )
     .map_err(|e: AppError| e.to_string())
+}
+
+fn replace_public_market_acl_with_share_market(
+    mut access_by_app: HashMap<String, ShareAppAccess>,
+    market_email: &str,
+    public_market_emails: &HashSet<String>,
+) -> HashMap<String, ShareAppAccess> {
+    for access in access_by_app.values_mut() {
+        access
+            .shared_with_emails
+            .retain(|email| !public_market_emails.contains(&email.trim().to_ascii_lowercase()));
+        if !access
+            .shared_with_emails
+            .iter()
+            .any(|email| email.eq_ignore_ascii_case(market_email))
+        {
+            access.shared_with_emails.push(market_email.to_string());
+        }
+    }
+    if access_by_app.is_empty() {
+        access_by_app.insert(
+            "claude".to_string(),
+            ShareAppAccess {
+                shared_with_emails: vec![market_email.to_string()],
+                market_access_mode: "selected".to_string(),
+            },
+        );
+    }
+    access_by_app
 }
 
 #[tauri::command]
@@ -1185,4 +1241,60 @@ fn proxy_local_addr_from_config(config: &ProxyConfig) -> String {
         _ => config.listen_address.as_str(),
     };
     format!("{connect_host}:{}", config.listen_port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn share_market_delegation_preserves_per_app_shareto() {
+        let mut access_by_app = HashMap::new();
+        access_by_app.insert(
+            "claude".to_string(),
+            ShareAppAccess {
+                shared_with_emails: vec![
+                    "friend@example.com".to_string(),
+                    "usage-market@example.com".to_string(),
+                ],
+                market_access_mode: "selected".to_string(),
+            },
+        );
+        access_by_app.insert(
+            "codex".to_string(),
+            ShareAppAccess {
+                shared_with_emails: vec![
+                    "coder@example.com".to_string(),
+                    "old-share-market@example.com".to_string(),
+                ],
+                market_access_mode: "selected".to_string(),
+            },
+        );
+        let public_market_emails = HashSet::from([
+            "usage-market@example.com".to_string(),
+            "old-share-market@example.com".to_string(),
+            "new-share-market@example.com".to_string(),
+        ]);
+
+        let next = replace_public_market_acl_with_share_market(
+            access_by_app,
+            "new-share-market@example.com",
+            &public_market_emails,
+        );
+
+        assert_eq!(
+            next["claude"].shared_with_emails,
+            vec![
+                "friend@example.com".to_string(),
+                "new-share-market@example.com".to_string()
+            ]
+        );
+        assert_eq!(
+            next["codex"].shared_with_emails,
+            vec![
+                "coder@example.com".to_string(),
+                "new-share-market@example.com".to_string()
+            ]
+        );
+    }
 }

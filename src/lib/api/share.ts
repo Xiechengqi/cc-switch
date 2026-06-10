@@ -132,6 +132,7 @@ export interface PublicMarket {
   email: string;
   subdomain: string;
   publicBaseUrl: string;
+  marketKind?: "usage" | "share" | string;
   status: string;
 }
 

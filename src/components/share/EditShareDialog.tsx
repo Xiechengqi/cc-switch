@@ -113,6 +113,10 @@ interface EditShareDialogProps {
     marketAccessMode: "selected" | "all",
     accessByApp?: ShareAccessByApp,
   ) => Promise<void> | void;
+  onAuthorizeShareMarket: (
+    share: ShareRecord,
+    marketEmail: string,
+  ) => Promise<void> | void;
   /**
    * P8：改绑 / 解绑 share 的某个 app_type slot 的 provider。
    * `providerId = null` 表示清空该 slot（解绑）。后端约束：share 必须先 paused。
@@ -159,6 +163,7 @@ export function EditShareDialog({
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
+  onAuthorizeShareMarket,
   onUpdateProviderBinding,
   onRebindAtomic,
 }: EditShareDialogProps) {
@@ -212,8 +217,21 @@ export function EditShareDialog({
     [providerSalePricing, share.bindings],
   );
 
-  const marketEmailSet = new Set(
-    markets.map((market) => market.email.toLowerCase()),
+  const usageMarkets = useMemo(
+    () => markets.filter((market) => (market.marketKind ?? "usage") !== "share"),
+    [markets],
+  );
+  const shareMarkets = useMemo(
+    () => markets.filter((market) => market.marketKind === "share"),
+    [markets],
+  );
+  const publicMarketEmailSet = useMemo(
+    () => new Set(markets.map((market) => market.email.toLowerCase())),
+    [markets],
+  );
+  const usageMarketEmailSet = useMemo(
+    () => new Set(usageMarkets.map((market) => market.email.toLowerCase())),
+    [usageMarkets],
   );
   const supportedAccessApps = useMemo(
     () => shareAccessApps(share),
@@ -227,7 +245,18 @@ export function EditShareDialog({
     Object.values(currentAccessByApp).flatMap((access) =>
       (access.sharedWithEmails ?? [])
         .map((email) => email.trim().toLowerCase())
-        .filter((email) => marketEmailSet.has(email)),
+        .filter((email) => usageMarketEmailSet.has(email)),
+    ),
+  );
+  const shareMarketEmailSet = useMemo(
+    () => new Set(shareMarkets.map((market) => market.email.toLowerCase())),
+    [shareMarkets],
+  );
+  const currentShareMarketEmails = uniqueSorted(
+    Object.values(currentAccessByApp).flatMap((access) =>
+      (access.sharedWithEmails ?? [])
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => shareMarketEmailSet.has(email)),
     ),
   );
   const currentNonMarketEmailsByApp = useMemo(() => {
@@ -240,11 +269,11 @@ export function EditShareDialog({
       result[app] = uniqueSorted(
         (currentAccessByApp[app]?.sharedWithEmails ?? [])
           .map((email) => email.trim().toLowerCase())
-          .filter((email) => email && !marketEmailSet.has(email)),
+          .filter((email) => email && !publicMarketEmailSet.has(email)),
       );
     }
     return result;
-  }, [currentAccessByApp, marketEmailSet]);
+  }, [currentAccessByApp, publicMarketEmailSet]);
   const currentMarketAccessMode = share.marketAccessMode ?? "selected";
   const currentShareSalePricing = share.forSaleOfficialPricePercentByApp ?? {};
   const wasOpenRef = useRef(false);
@@ -362,11 +391,11 @@ export function EditShareDialog({
       result[app] = uniqueSorted(
         (shareToEmailsByApp[app] ?? [])
           .map((value) => value.trim().toLowerCase())
-          .filter((value) => value && !marketEmailSet.has(value)),
+          .filter((value) => value && !publicMarketEmailSet.has(value)),
       );
     }
     return result;
-  }, [shareToEmailsByApp, marketEmailSet]);
+  }, [shareToEmailsByApp, publicMarketEmailSet]);
   const shareToDirty = supportedAccessApps.some(
     (app) =>
       JSON.stringify(normalizedShareToByApp[app]) !==
@@ -375,7 +404,7 @@ export function EditShareDialog({
   const normalizedSelectedMarketEmails = uniqueSorted(
     marketAccessModeInput === "all"
       ? []
-      : selectedMarketEmails.filter((email) => marketEmailSet.has(email)),
+      : selectedMarketEmails.filter((email) => usageMarketEmailSet.has(email)),
   );
   const marketDirty =
     marketAccessModeInput !== currentMarketAccessMode ||
@@ -873,7 +902,7 @@ export function EditShareDialog({
                       <SelectItem value="__all__">
                         {t("share.market.all", { defaultValue: "All" })}
                       </SelectItem>
-                      {markets.map((market) => (
+                      {usageMarkets.map((market) => (
                         <SelectItem key={market.id} value={market.email}>
                           {market.displayName}
                         </SelectItem>
@@ -898,7 +927,7 @@ export function EditShareDialog({
                   </Button>
                 </div>
                 <MarketTags
-                  markets={markets}
+                  markets={usageMarkets}
                   marketAccessMode={marketAccessModeInput}
                   selectedMarketEmails={normalizedSelectedMarketEmails}
                   removable
@@ -925,6 +954,72 @@ export function EditShareDialog({
                   >
                     {marketsError}
                   </button>
+                ) : null}
+              </div>
+            </DialogSection>
+
+            <DialogSection
+              title={t("share.accountMarket.title", {
+                defaultValue: "账号市场委托",
+              })}
+              hint={
+                marketDisabled
+                  ? t("share.accountMarket.forSaleRequired", {
+                      defaultValue:
+                        "Set ForSale to Yes before delegating an account market.",
+                    })
+                  : t("share.accountMarket.description", {
+                      defaultValue:
+                        "Choose one share market for account-hosted sale.",
+                    })
+              }
+            >
+              <div className="space-y-3">
+                <Select
+                  key={`share-market-${currentShareMarketEmails[0] ?? "none"}`}
+                  onValueChange={(value) => {
+                    void onAuthorizeShareMarket(share, value.toLowerCase());
+                  }}
+                  disabled={
+                    busy ||
+                    marketDisabled ||
+                    marketsLoading ||
+                    shareMarkets.length === 0
+                  }
+                >
+                  <SelectTrigger
+                    aria-label={t("share.accountMarket.select", {
+                      defaultValue: "Select share market",
+                    })}
+                  >
+                    <SelectValue
+                      placeholder={
+                        marketsLoading
+                          ? t("common.loading", { defaultValue: "Loading" })
+                          : t("share.accountMarket.select", {
+                              defaultValue: "Select share market",
+                            })
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {shareMarkets.map((market) => (
+                      <SelectItem key={market.id} value={market.email}>
+                        {market.displayName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <MarketTags
+                  markets={shareMarkets}
+                  selectedMarketEmails={currentShareMarketEmails}
+                />
+                {shareMarkets.length === 0 && !marketsLoading ? (
+                  <div className="text-sm text-muted-foreground">
+                    {t("share.accountMarket.empty", {
+                      defaultValue: "暂无可委托的 share market",
+                    })}
+                  </div>
                 ) : null}
               </div>
             </DialogSection>

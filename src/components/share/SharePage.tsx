@@ -16,6 +16,7 @@ import { useProxyStatus } from "@/lib/query/proxy";
 import {
   useConfigureTunnelMutation,
   useClaimClientTunnelMutation,
+  useAuthorizeShareMarketMutation,
   useClientTunnelQuery,
   useCreateShareMutation,
   useDeleteShareMutation,
@@ -159,6 +160,7 @@ export function SharePage({
   const updateOwnerEmailMutation = useUpdateShareOwnerEmailMutation();
   const transferOwnerMutation = useTransferShareOwnerMutation();
   const updateAclMutation = useUpdateShareAclMutation();
+  const authorizeShareMarketMutation = useAuthorizeShareMarketMutation();
   const updateParallelLimitMutation = useUpdateShareParallelLimitMutation();
   const updateSubdomainMutation = useUpdateShareSubdomainMutation();
   const updateProviderBindingMutation = useUpdateShareProviderBindingMutation();
@@ -729,6 +731,16 @@ export function SharePage({
                     sharedWithEmails,
                     marketAccessMode,
                     accessByApp,
+                  }),
+            )
+          }
+          onAuthorizeShareMarket={(share, marketEmail) =>
+            runShareAction(share, () =>
+              shareScoped
+                ? Promise.resolve()
+                : authorizeShareMarketMutation.mutateAsync({
+                    shareId: share.id,
+                    marketEmail,
                   }),
             )
           }

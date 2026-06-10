@@ -195,6 +195,10 @@ export function CreateShareDialog({
   const [lastFiniteParallelLimit, setLastFiniteParallelLimit] = useState(
     DEFAULT_PARALLEL_LIMIT,
   );
+  const usageMarkets = useMemo(
+    () => markets.filter((market) => (market.marketKind ?? "usage") !== "share"),
+    [markets],
+  );
   // 按 app 区分的「Share To」邮箱列表。与 EditShareDialog 行为对齐：用本地 state
   // 而不是 react-hook-form schema 字段，避免每个字段都要走 zod 校验。submit 时
   // 才汇总成 ShareAccessByApp。
@@ -797,7 +801,7 @@ export function CreateShareDialog({
                       </span>
                     )}
                   </div>
-                  {markets.length > 0 ? (
+                  {usageMarkets.length > 0 ? (
                     <div className="text-xs text-muted-foreground">
                       {t("share.createDialog.marketHint", {
                         defaultValue:

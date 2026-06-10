@@ -696,6 +696,20 @@ export function useUpdateShareAclMutation() {
   );
 }
 
+export function useAuthorizeShareMarketMutation() {
+  return useShareActionMutation(
+    ({ shareId, marketEmail }: { shareId: string; marketEmail: string }) =>
+      shareApi.authorizeMarket(shareId, marketEmail),
+    {
+      successKey: "share.toast.authorizeShareMarketSuccess",
+      successDefault: "账号市场委托已更新",
+      errorKey: "share.toast.authorizeShareMarketError",
+      errorDefault: "更新账号市场委托失败: {{error}}",
+    },
+    ({ shareId }) => shareId,
+  );
+}
+
 export function useStartShareTunnelMutation() {
   return useShareActionMutation(
     (shareId: string) => shareApi.startTunnel(shareId),

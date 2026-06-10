@@ -85,6 +85,10 @@ interface ShareListProps {
     marketAccessMode: "selected" | "all",
     accessByApp?: ShareAccessByApp,
   ) => Promise<void> | void;
+  onAuthorizeShareMarket: (
+    share: ShareRecord,
+    marketEmail: string,
+  ) => Promise<void> | void;
   onUpdateProviderBinding: (
     share: ShareRecord,
     appType: "claude" | "codex" | "gemini",
@@ -139,6 +143,7 @@ export function ShareList({
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
+  onAuthorizeShareMarket,
   onUpdateProviderBinding,
   onRebindAtomic,
   providersByApp,
@@ -246,6 +251,7 @@ export function ShareList({
           onUpdateOwnerEmail={onUpdateOwnerEmail}
           onTransferOwner={onTransferOwner}
           onUpdateAcl={onUpdateAcl}
+          onAuthorizeShareMarket={onAuthorizeShareMarket}
           onUpdateProviderBinding={onUpdateProviderBinding}
           onRebindAtomic={onRebindAtomic}
           providersByAppForEdit={(() => {

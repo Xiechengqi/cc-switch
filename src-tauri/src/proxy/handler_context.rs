@@ -54,6 +54,11 @@ pub struct RequestContext {
     /// 部分官方/反代端点会返回 SSE 文本但遗漏 `content-type:
     /// text/event-stream`，因此响应处理不能只依赖响应头判断流式。
     pub request_is_streaming: bool,
+    /// 实际发往上游的模型名（路由接管/模型映射后的真值，forward 成功后回填）。
+    ///
+    /// usage 归因的兜底顺序：上游响应回显 → outbound_model → request_model。
+    /// 不能直接用 request_model 兜底：接管场景下它是映射前的客户端别名。
+    pub outbound_model: Option<String>,
     /// 日志标签（如 "Claude"、"Codex"、"Gemini"）
     pub tag: &'static str,
     /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
@@ -228,6 +233,7 @@ impl RequestContext {
             current_provider_id,
             request_model,
             request_is_streaming,
+            outbound_model: None,
             tag,
             app_type_str,
             app_type,

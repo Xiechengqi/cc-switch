@@ -53,6 +53,7 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { CustomUserAgentField } from "./CustomUserAgentField";
 import type {
   ProviderCategory,
   ClaudeApiFormat,
@@ -170,6 +171,10 @@ interface ClaudeFormFieldsProps {
   // Full URL mode
   isFullUrl: boolean;
   onFullUrlChange: (value: boolean) => void;
+
+  // Local proxy User-Agent override
+  customUserAgent: string;
+  onCustomUserAgentChange: (value: string) => void;
 }
 
 export function ClaudeFormFields({
@@ -237,6 +242,8 @@ export function ClaudeFormFields({
   onApiKeyFieldChange,
   isFullUrl,
   onFullUrlChange,
+  customUserAgent,
+  onCustomUserAgentChange,
 }: ClaudeFormFieldsProps) {
   const { t } = useTranslation();
   const hasAnyAdvancedValue = !!(
@@ -245,7 +252,8 @@ export function ClaudeFormFields({
     defaultSonnetModel ||
     defaultOpusModel ||
     apiFormat !== "anthropic" ||
-    apiKeyField !== "ANTHROPIC_AUTH_TOKEN"
+    apiKeyField !== "ANTHROPIC_AUTH_TOKEN" ||
+    customUserAgent
   );
   const [advancedExpanded, setAdvancedExpanded] = useState(hasAnyAdvancedValue);
 
@@ -306,7 +314,7 @@ export function ClaudeFormFields({
     const modelsUrl = matchedPreset?.modelsUrl;
 
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey, isFullUrl, modelsUrl)
+    fetchModelsForConfig(baseUrl, apiKey, isFullUrl, modelsUrl, customUserAgent)
       .then((models) => {
         setFetchedModels(models);
         showModelFetchResult(models.length);
@@ -316,7 +324,7 @@ export function ClaudeFormFields({
         showFetchModelsError(err, t);
       })
       .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, isFullUrl, showModelFetchResult, t]);
+  }, [baseUrl, apiKey, isFullUrl, customUserAgent, showModelFetchResult, t]);
 
   const handleFetchCopilotModels = useCallback(() => {
     if (!isCopilotAuthenticated) {
@@ -801,7 +809,6 @@ export function ClaudeFormFields({
         />
       )}
 
-      {/* 高级选项（API 格式 + 认证字段 + 模型映射） */}
       {shouldShowModelSelector && (
         <Collapsible open={advancedExpanded} onOpenChange={setAdvancedExpanded}>
           <CollapsibleTrigger asChild>
@@ -1069,6 +1076,12 @@ export function ClaudeFormFields({
                 })}
               </p>
             </div>
+
+            <CustomUserAgentField
+              id="claude-custom-user-agent"
+              value={customUserAgent}
+              onChange={onCustomUserAgentChange}
+            />
           </CollapsibleContent>
         </Collapsible>
       )}

@@ -20,6 +20,11 @@ pub struct RequestLog {
     pub requested_model: String,
     pub actual_model: String,
     pub actual_model_source: String,
+    /// 写入时实际用于计价的模型名（pricing_model_source 解析后的结果）。
+    /// 落库供回填使用：缺价行补价后必须按写入时的基准重算，而不是
+    /// 用 model/request_model 猜——路由接管下三者可能各不相同。
+    /// 错误行（未计价）为空字符串。
+    pub pricing_model: String,
     pub usage: TokenUsage,
     pub cost: Option<CostBreakdown>,
     pub latency_ms: u64,
@@ -77,12 +82,13 @@ impl<'a> UsageLogger<'a> {
             "INSERT OR REPLACE INTO proxy_request_logs (
                 request_id, provider_id, app_type, model, request_model,
                 request_agent, requested_model, actual_model, actual_model_source,
+                pricing_model,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
                 provider_type, is_streaming, cost_multiplier, created_at,
                 share_id, share_name, user_email
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
             rusqlite::params![
                 log.request_id,
                 log.provider_id,
@@ -93,6 +99,7 @@ impl<'a> UsageLogger<'a> {
                 log.requested_model,
                 log.actual_model,
                 log.actual_model_source,
+                log.pricing_model,
                 log.usage.input_tokens,
                 log.usage.output_tokens,
                 log.usage.cache_read_tokens,
@@ -149,6 +156,8 @@ impl<'a> UsageLogger<'a> {
             actual_model_source: actual_model_source(&request_model, &model),
             actual_model: model.clone(),
             request_model,
+            // 错误行未经过计价，留空（回填的 has_usage 闸门也不会碰全 0 行）
+            pricing_model: String::new(),
             usage: TokenUsage::default(),
             cost: None,
             latency_ms,
@@ -195,6 +204,8 @@ impl<'a> UsageLogger<'a> {
             actual_model_source: actual_model_source(&request_model, &model),
             actual_model: model.clone(),
             request_model,
+            // 错误行未经过计价，留空（回填的 has_usage 闸门也不会碰全 0 行）
+            pricing_model: String::new(),
             usage: TokenUsage::default(),
             cost: None,
             latency_ms,
@@ -233,13 +244,22 @@ impl<'a> UsageLogger<'a> {
         provider_id: &str,
         app_type: &str,
     ) -> (Decimal, String) {
-        let default_multiplier_raw = match self.db.get_default_cost_multiplier(app_type).await {
-            Ok(value) => value,
-            Err(e) => {
-                log::warn!("[USG-003] 获取默认倍率失败 (app_type={app_type}): {e}");
-                "1".to_string()
-            }
+        // Claude Desktop 网关没有独立的全局计费配置（proxy_config 的 CHECK 仅
+        // 允许 claude/codex/gemini，前端也只暴露三项），全局默认继承 claude；
+        // 供应商级 meta 覆盖仍按 claude-desktop 查找（providers 表按该 app_type 存）。
+        let default_app_type = if app_type == "claude-desktop" {
+            "claude"
+        } else {
+            app_type
         };
+        let default_multiplier_raw =
+            match self.db.get_default_cost_multiplier(default_app_type).await {
+                Ok(value) => value,
+                Err(e) => {
+                    log::warn!("[USG-003] 获取默认倍率失败 (app_type={app_type}): {e}");
+                    "1".to_string()
+                }
+            };
         let default_multiplier = match Decimal::from_str(&default_multiplier_raw) {
             Ok(value) => value,
             Err(e) => {
@@ -250,13 +270,14 @@ impl<'a> UsageLogger<'a> {
             }
         };
 
-        let default_pricing_source_raw = match self.db.get_pricing_model_source(app_type).await {
-            Ok(value) => value,
-            Err(e) => {
-                log::warn!("[USG-003] 获取默认计费模式失败 (app_type={app_type}): {e}");
-                PRICING_SOURCE_RESPONSE.to_string()
-            }
-        };
+        let default_pricing_source_raw =
+            match self.db.get_pricing_model_source(default_app_type).await {
+                Ok(value) => value,
+                Err(e) => {
+                    log::warn!("[USG-003] 获取默认计费模式失败 (app_type={app_type}): {e}");
+                    PRICING_SOURCE_RESPONSE.to_string()
+                }
+            };
         let default_pricing_source = if default_pricing_source_raw == PRICING_SOURCE_RESPONSE
             || default_pricing_source_raw == PRICING_SOURCE_REQUEST
         {
@@ -362,6 +383,7 @@ impl<'a> UsageLogger<'a> {
             actual_model_source: actual_model_source(&request_model, &model),
             actual_model: model.clone(),
             request_model,
+            pricing_model,
             usage,
             cost,
             latency_ms,

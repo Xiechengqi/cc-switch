@@ -55,6 +55,11 @@ pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
     pub claude_api_format: Option<String>,
+    /// 实际发往上游的模型名（路由接管/模型映射后的真值）。
+    ///
+    /// usage 归因不能依赖 ctx.request_model（映射前的客户端别名）：上游响应
+    /// 缺失 model 或回显别名时，接管流量会被记成 claude-* 并按其定价计费。
+    pub outbound_model: Option<String>,
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
@@ -189,7 +194,7 @@ impl RequestForwarder {
         provider_body: &Value,
         error: &ProxyError,
     ) -> bool {
-        adapter_name == "Claude"
+        matches!(adapter_name, "Claude" | "Codex")
             && self.rectifier_config.enabled
             && self.rectifier_config.request_media_fallback
             && !already_retried
@@ -546,7 +551,7 @@ impl RequestForwarder {
                 )
                 .await
             {
-                Ok((response, claude_api_format)) => {
+                Ok((response, claude_api_format, outbound_model)) => {
                     // 成功：普通闭合熔断状态异步记录，避免阻塞流式首包返回；
                     // HalfOpen 探测仍同步等待，保证 permit 与熔断状态及时释放。
                     self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
@@ -575,6 +580,7 @@ impl RequestForwarder {
                         response,
                         provider: provider.clone(),
                         claude_api_format,
+                        outbound_model,
                         connection_guard: None,
                     });
                 }
@@ -625,7 +631,7 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format)) => {
+                                Ok((response, claude_api_format, outbound_model)) => {
                                     log::info!(
                                         "[{app_type_str}] [Media] Unsupported-image retry succeeded"
                                     );
@@ -677,6 +683,7 @@ impl RequestForwarder {
                                         response,
                                         provider: provider.clone(),
                                         claude_api_format,
+                                        outbound_model,
                                         connection_guard: None,
                                     });
                                 }
@@ -770,7 +777,7 @@ impl RequestForwarder {
                                     )
                                     .await
                                 {
-                                    Ok((response, claude_api_format)) => {
+                                    Ok((response, claude_api_format, outbound_model)) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                         self.record_success_result(
                                             &provider.id,
@@ -806,6 +813,7 @@ impl RequestForwarder {
                                             response,
                                             provider: provider.clone(),
                                             claude_api_format,
+                                            outbound_model,
                                             connection_guard: None,
                                         });
                                     }
@@ -916,7 +924,7 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format)) => {
+                                Ok((response, claude_api_format, outbound_model)) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
                                     self.record_success_result(
                                         &provider.id,
@@ -949,6 +957,7 @@ impl RequestForwarder {
                                         response,
                                         provider: provider.clone(),
                                         claude_api_format,
+                                        outbound_model,
                                         connection_guard: None,
                                     });
                                 }
@@ -1106,6 +1115,9 @@ impl RequestForwarder {
     }
 
     /// 转发单个请求（使用适配器）
+    ///
+    /// 成功时返回 `(response, claude_api_format, outbound_model)`，其中
+    /// `outbound_model` 是最终发往上游的模型名（所有映射/改写之后）。
     #[allow(clippy::too_many_arguments)]
     async fn forward(
         &self,
@@ -1117,7 +1129,7 @@ impl RequestForwarder {
         headers: &axum::http::HeaderMap,
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
-    ) -> Result<(ProxyResponse, Option<String>), ProxyError> {
+    ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
         if matches!(app_type, AppType::Claude) && provider.is_deepseek_account_provider() {
             let response = super::providers::deepseek_claude::forward_deepseek_claude(
                 self.app_handle.as_ref(),
@@ -1125,7 +1137,7 @@ impl RequestForwarder {
                 body,
             )
             .await?;
-            return Ok((response, Some("anthropic".to_string())));
+            return Ok((response, Some("anthropic".to_string()), None));
         }
 
         if matches!(app_type, AppType::Claude) && provider.is_kiro_oauth_provider() {
@@ -1135,7 +1147,7 @@ impl RequestForwarder {
                 body,
             )
             .await?;
-            return Ok((response, Some("anthropic".to_string())));
+            return Ok((response, Some("anthropic".to_string()), None));
         }
 
         if matches!(app_type, AppType::Claude) && provider.is_cursor_oauth_provider() {
@@ -1145,7 +1157,7 @@ impl RequestForwarder {
                 body,
             )
             .await?;
-            return Ok((response, Some("anthropic".to_string())));
+            return Ok((response, Some("anthropic".to_string()), None));
         }
 
         if matches!(app_type, AppType::Codex) && provider.is_cursor_oauth_provider() {
@@ -1156,7 +1168,7 @@ impl RequestForwarder {
                 body,
             )
             .await?;
-            return Ok((response, Some("openai".to_string())));
+            return Ok((response, Some("openai".to_string()), None));
         }
 
         // Gemini Official/OAuth 对齐 Claude/Codex official：本地代理不要求用户配置
@@ -1400,8 +1412,17 @@ impl RequestForwarder {
             url = ensure_claude_oauth_beta_query(&url);
         }
 
+        // 记录映射后的出站模型名（此时 mapped_body 已完成接管映射 / [1m] 剥离 /
+        // Copilot 归一化）。格式转换后若 body 仍带 model 字段会在下方刷新覆盖；
+        // gemini_native 等模型在 URL 中的格式则保留此处的转换前真值。
+        let mut outbound_model = mapped_body
+            .get("model")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+            .map(str::to_string);
+
         // 转换请求体（如果需要）
-        let request_body = if codex_responses_to_chat {
+        let mut request_body = if codex_responses_to_chat {
             let mut mapped_body = mapped_body;
             let restored = self
                 .codex_chat_history
@@ -1439,6 +1460,10 @@ impl RequestForwarder {
             mapped_body
         };
 
+        if matches!(app_type, AppType::Codex) {
+            self.apply_media_prevention(&mut request_body, provider);
+        }
+
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
         let mut filtered_body = prepare_upstream_request_body(request_body);
@@ -1455,6 +1480,14 @@ impl RequestForwarder {
         if is_claude_oauth_provider {
             filtered_body = ensure_claude_oauth_billing_header_system(filtered_body);
             filtered_body = sign_claude_oauth_messages_body(filtered_body);
+        }
+        // 出站 body 定稿后刷新真值（覆盖 Codex chat 上游模型覆写、转换层模型改写）
+        if let Some(m) = filtered_body
+            .get("model")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+        {
+            outbound_model = Some(m.to_string());
         }
         log_prompt_cache_trace(
             app_type,
@@ -1863,6 +1896,18 @@ impl RequestForwarder {
                 Vec::new()
             };
 
+            // 自定义 User-Agent：与 stream_check / model_fetch 共用 parse_custom_user_agent，
+            // 运行时静默忽略非法值（前端在输入处给非阻断提示，不在保存时阻断）。
+            // Copilot 指纹 UA 不可覆盖。
+            let custom_user_agent = if is_copilot {
+                None
+            } else {
+                provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.custom_user_agent_header().ok().flatten())
+            };
+
             // --- Copilot 优化器：动态 header 注入 ---
             if let Some((ref classification, ref det_request_id, ref interaction_id)) =
                 copilot_optimization
@@ -1901,448 +1946,480 @@ impl RequestForwarder {
                 }
             }
 
+
             // Copilot 指纹头名（由 get_auth_headers 注入，需在原始头中去重）
-            let copilot_fingerprint_headers: &[&str] = if is_copilot {
-                &[
-                    "user-agent",
-                    "editor-version",
-                    "editor-plugin-version",
-                    "copilot-integration-id",
-                    "x-github-api-version",
-                    "openai-intent",
-                    // 新增 headers
-                    "x-initiator",
-                    "x-interaction-type",
-                    "x-interaction-id",
-                    "x-vscode-user-agent-library-version",
-                    "x-request-id",
-                    "x-agent-task-id",
-                ]
+        let copilot_fingerprint_headers: &[&str] = if is_copilot {
+            &[
+                "user-agent",
+                "editor-version",
+                "editor-plugin-version",
+                "copilot-integration-id",
+                "x-github-api-version",
+                "openai-intent",
+                // 新增 headers
+                "x-initiator",
+                "x-interaction-type",
+                "x-interaction-id",
+                "x-vscode-user-agent-library-version",
+                "x-request-id",
+                "x-agent-task-id",
+            ]
+        } else {
+            &[]
+        };
+
+        // 预计算上游 host 值（用于在原位替换 host header）
+        let upstream_host = url
+            .parse::<http::Uri>()
+            .ok()
+            .and_then(|u| u.authority().map(|a| a.to_string()));
+
+        let should_send_anthropic_headers = adapter.name() == "Claude"
+            && matches!(resolved_claude_api_format.as_deref(), Some("anthropic"));
+
+        // 预计算 anthropic-beta 值（仅 Claude）
+        let anthropic_beta_value = if should_send_anthropic_headers {
+            const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
+            Some(if let Some(beta) = headers.get("anthropic-beta") {
+                if let Ok(beta_str) = beta.to_str() {
+                    if beta_str.contains(CLAUDE_CODE_BETA) {
+                        beta_str.to_string()
+                    } else {
+                        format!("{CLAUDE_CODE_BETA},{beta_str}")
+                    }
+                } else {
+                    CLAUDE_CODE_BETA.to_string()
+                }
             } else {
-                &[]
-            };
+                CLAUDE_CODE_BETA.to_string()
+            })
+        } else {
+            None
+        };
 
-            // 预计算上游 host 值（用于在原位替换 host header）
-            let upstream_host = url
-                .parse::<http::Uri>()
-                .ok()
-                .and_then(|u| u.authority().map(|a| a.to_string()));
+        // ============================================================
+        // 构建有序 HeaderMap — 内联替换，保持客户端原始顺序
+        // ============================================================
+        let mut ordered_headers = http::HeaderMap::new();
+        let mut saw_auth = false;
+        let mut saw_accept_encoding = false;
+        let mut saw_user_agent = false;
+        let mut saw_anthropic_beta = false;
+        let mut saw_anthropic_version = false;
 
-            let should_send_anthropic_headers = adapter.name() == "Claude"
-                && matches!(resolved_claude_api_format.as_deref(), Some("anthropic"));
+        for (key, value) in headers {
+            let key_str = key.as_str();
 
-            // 预计算 anthropic-beta 值（仅 Claude）
-            let anthropic_beta_value = if should_send_anthropic_headers {
-                Some(build_anthropic_beta_value(
-                    headers,
-                    is_claude_oauth_provider,
-                ))
-            } else {
-                None
-            };
-
-            // ============================================================
-            // 构建有序 HeaderMap — 内联替换，保持客户端原始顺序
-            // ============================================================
-            let mut ordered_headers = http::HeaderMap::new();
-            let mut saw_auth = false;
-            let mut saw_accept_encoding = false;
-            let mut saw_anthropic_beta = false;
-            let mut saw_anthropic_version = false;
-
-            for (key, value) in headers {
-                let key_str = key.as_str();
-
-                // --- host — 原位替换为上游 host（保持客户端原始位置） ---
-                if key_str.eq_ignore_ascii_case("host") {
-                    if let Some(ref host_val) = upstream_host {
-                        if let Ok(hv) = http::HeaderValue::from_str(host_val) {
-                            ordered_headers.append(key.clone(), hv);
-                        }
+            // --- host — 原位替换为上游 host（保持客户端原始位置） ---
+            if key_str.eq_ignore_ascii_case("host") {
+                if let Some(ref host_val) = upstream_host {
+                    if let Ok(hv) = http::HeaderValue::from_str(host_val) {
+                        ordered_headers.append(key.clone(), hv);
                     }
-                    continue;
                 }
+                continue;
+            }
 
-                // --- 连接 / 追踪 / CDN 类 — 无条件跳过 ---
-                if matches!(
-                    key_str,
-                    "content-length"
-                        | "transfer-encoding"
-                        | "x-forwarded-host"
-                        | "x-forwarded-port"
-                        | "x-forwarded-proto"
-                        | "forwarded"
-                        | "cf-connecting-ip"
-                        | "cf-ipcountry"
-                        | "cf-ray"
-                        | "cf-visitor"
-                        | "true-client-ip"
-                        | "fastly-client-ip"
-                        | "x-azure-clientip"
-                        | "x-azure-fdid"
-                        | "x-azure-ref"
-                        | "akamai-origin-hop"
-                        | "x-akamai-config-log-detail"
-                        | "x-request-id"
-                        | "x-correlation-id"
-                        | "x-trace-id"
-                        | "x-amzn-trace-id"
-                        | "x-b3-traceid"
-                        | "x-b3-spanid"
-                        | "x-b3-parentspanid"
-                        | "x-b3-sampled"
-                        | "traceparent"
-                        | "tracestate"
-                ) {
-                    continue;
-                }
+            // --- 连接 / 追踪 / CDN 类 — 无条件跳过 ---
+            if matches!(
+                key_str,
+                "content-length"
+                    | "transfer-encoding"
+                    | "x-forwarded-host"
+                    | "x-forwarded-port"
+                    | "x-forwarded-proto"
+                    | "forwarded"
+                    | "cf-connecting-ip"
+                    | "cf-ipcountry"
+                    | "cf-ray"
+                    | "cf-visitor"
+                    | "true-client-ip"
+                    | "fastly-client-ip"
+                    | "x-azure-clientip"
+                    | "x-azure-fdid"
+                    | "x-azure-ref"
+                    | "akamai-origin-hop"
+                    | "x-akamai-config-log-detail"
+                    | "x-request-id"
+                    | "x-correlation-id"
+                    | "x-trace-id"
+                    | "x-amzn-trace-id"
+                    | "x-b3-traceid"
+                    | "x-b3-spanid"
+                    | "x-b3-parentspanid"
+                    | "x-b3-sampled"
+                    | "traceparent"
+                    | "tracestate"
+            ) {
+                continue;
+            }
 
-                // --- 认证类 — 用 adapter 提供的认证头替换（在原始位置） ---
-                if key_str.eq_ignore_ascii_case("authorization")
-                    || key_str.eq_ignore_ascii_case("x-api-key")
-                    || key_str.eq_ignore_ascii_case("x-goog-api-key")
-                    || key_str.eq_ignore_ascii_case("x-cc-switch-user-email")
-                {
-                    if !saw_auth {
-                        saw_auth = true;
-                        for (ah_name, ah_value) in &auth_headers {
-                            ordered_headers.append(ah_name.clone(), ah_value.clone());
-                        }
+            // --- 认证类 — 用 adapter 提供的认证头替换（在原始位置） ---
+            if key_str.eq_ignore_ascii_case("authorization")
+                || key_str.eq_ignore_ascii_case("x-api-key")
+                || key_str.eq_ignore_ascii_case("x-goog-api-key")
+            {
+                if !saw_auth {
+                    saw_auth = true;
+                    for (ah_name, ah_value) in &auth_headers {
+                        ordered_headers.append(ah_name.clone(), ah_value.clone());
                     }
-                    continue;
                 }
+                continue;
+            }
 
-                // --- accept-encoding — transform / SSE 路径强制 identity，其余保留原值 ---
-                if key_str.eq_ignore_ascii_case("accept-encoding") {
-                    if !saw_accept_encoding {
-                        saw_accept_encoding = true;
-                        if force_identity_encoding {
-                            ordered_headers.append(
-                                http::header::ACCEPT_ENCODING,
-                                http::HeaderValue::from_static("identity"),
-                            );
-                        } else {
-                            ordered_headers.append(key.clone(), value.clone());
-                        }
-                    }
-                    continue;
-                }
-
-                // --- anthropic-beta — 用重建值替换（确保含 claude-code 标记） ---
-                if key_str.eq_ignore_ascii_case("anthropic-beta") {
-                    if !saw_anthropic_beta {
-                        saw_anthropic_beta = true;
-                        if let Some(ref beta_val) = anthropic_beta_value {
-                            if let Ok(hv) = http::HeaderValue::from_str(beta_val) {
-                                ordered_headers.append("anthropic-beta", hv);
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                // --- anthropic-version — 透传客户端值 ---
-                if key_str.eq_ignore_ascii_case("anthropic-version") {
-                    if should_send_anthropic_headers {
-                        saw_anthropic_version = true;
+            // --- accept-encoding — transform / SSE 路径强制 identity，其余保留原值 ---
+            if key_str.eq_ignore_ascii_case("accept-encoding") {
+                if !saw_accept_encoding {
+                    saw_accept_encoding = true;
+                    if force_identity_encoding {
+                        ordered_headers.append(
+                            http::header::ACCEPT_ENCODING,
+                            http::HeaderValue::from_static("identity"),
+                        );
+                    } else {
                         ordered_headers.append(key.clone(), value.clone());
                     }
                     continue;
                 }
+            }
 
-                // --- Copilot 指纹头 — 跳过（由 auth_headers 提供） ---
-                if copilot_fingerprint_headers
-                    .iter()
-                    .any(|h| key_str.eq_ignore_ascii_case(h))
-                {
-                    continue;
+            // --- user-agent: provider-level override for local proxy routing ---
+            if !is_copilot && key_str.eq_ignore_ascii_case("user-agent") {
+                if !saw_user_agent {
+                    saw_user_agent = true;
+                    if let Some(ref ua) = custom_user_agent {
+                        ordered_headers.append(http::header::USER_AGENT, ua.clone());
+                    } else {
+                        ordered_headers.append(key.clone(), value.clone());
+                    }
+                }
+                continue;
+            }
+
+            // --- anthropic-beta — 用重建值替换（确保含 claude-code 标记） ---
+            if key_str.eq_ignore_ascii_case("anthropic-beta") {
+                if !saw_anthropic_beta {
+                    saw_anthropic_beta = true;
+                    if let Some(ref beta_val) = anthropic_beta_value {
+                        if let Ok(hv) = http::HeaderValue::from_str(beta_val) {
+                            ordered_headers.append("anthropic-beta", hv);
+                        }
+                    }
                 }
 
                 // --- 默认：透传 ---
                 ordered_headers.append(key.clone(), value.clone());
             }
 
-            // 如果原始请求中没有认证头，在末尾追加
-            if !saw_auth && !auth_headers.is_empty() {
-                for (ah_name, ah_value) in &auth_headers {
-                    ordered_headers.append(ah_name.clone(), ah_value.clone());
+            // --- anthropic-version — 透传客户端值 ---
+            if key_str.eq_ignore_ascii_case("anthropic-version") {
+                if should_send_anthropic_headers {
+                    saw_anthropic_version = true;
+                    ordered_headers.append(key.clone(), value.clone());
                 }
-            }
-
-            // transform / SSE 路径在缺失时补 identity；普通透传不主动补 accept-encoding
-            if !saw_accept_encoding && force_identity_encoding {
-                ordered_headers.append(
-                    http::header::ACCEPT_ENCODING,
-                    http::HeaderValue::from_static("identity"),
-                );
-            }
-
-            // 如果原始请求中没有 anthropic-beta 且有值需要添加，追加
-            if !saw_anthropic_beta {
-                if let Some(ref beta_val) = anthropic_beta_value {
-                    if let Ok(hv) = http::HeaderValue::from_str(beta_val) {
-                        ordered_headers.append("anthropic-beta", hv);
-                    }
-                }
-            }
-
-            // anthropic-version：仅在缺失时补充默认值
-            if should_send_anthropic_headers && !saw_anthropic_version {
-                ordered_headers.append(
-                    "anthropic-version",
-                    http::HeaderValue::from_static("2023-06-01"),
-                );
-            }
-
-            // Codex OAuth 反代尽量对齐官方 Codex CLI 的会话路由信号。
-            // 只发送客户端提供的 session_id；生成的 UUID 每次不同，反而会破坏前缀缓存。
-            for (name, value) in codex_oauth_session_headers {
-                ordered_headers.insert(name, value);
-            }
-
-            let mut outbound_body = filtered_body.clone();
-            if is_gemini_code_assist_provider(app_type, provider)
-                && outbound_body.get("project").is_none()
-            {
-                let token = gemini_oauth_access_token.as_deref().ok_or_else(|| {
-                    ProxyError::AuthError(
-                        "Google Gemini OAuth 认证失败: 未获取到 access token".to_string(),
-                    )
-                })?;
-                if let Some(project_id) = load_gemini_code_assist_project_for_forward(token).await?
-                {
-                    outbound_body["project"] = serde_json::json!(project_id);
-                }
-            }
-            if is_antigravity_oauth_provider(app_type, provider) {
-                if antigravity_oauth_access_token.is_none() {
-                    return Err(ProxyError::AuthError(
-                        "Antigravity OAuth 认证失败: 未获取到 access token".to_string(),
-                    ));
-                }
-                let project_id = antigravity_project_id.as_deref().ok_or_else(|| {
-                    ProxyError::AuthError(
-                        "Antigravity OAuth 认证失败: 未获取到 project id".to_string(),
-                    )
-                })?;
-                outbound_body["project"] = serde_json::json!(project_id);
-                if outbound_body
-                    .get("model")
-                    .and_then(|value| value.as_str())
-                    .map(|model| model.to_ascii_lowercase().contains("claude"))
-                    .unwrap_or(false)
-                {
-                    ordered_headers.insert(
-                        "anthropic-beta",
-                        http::HeaderValue::from_static(
-                            "claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
-                        ),
-                    );
-                }
-            }
-
-            // 序列化请求体
-            let body_bytes = serde_json::to_vec(&outbound_body).map_err(|e| {
-                ProxyError::Internal(format!("Failed to serialize request body: {e}"))
-            })?;
-
-            // 确保 content-type 存在
-            if !ordered_headers.contains_key(http::header::CONTENT_TYPE) {
-                ordered_headers.insert(
-                    http::header::CONTENT_TYPE,
-                    http::HeaderValue::from_static("application/json"),
-                );
-            }
-
-            reject_proxy_placeholder_for_managed_account_upstream(&url, &ordered_headers)?;
-
-            // 输出请求信息日志
-            let tag = adapter.name();
-            let request_model = outbound_body
-                .get("model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("<none>");
-            log::info!("[{tag}] >>> 请求 URL: {url} (model={request_model})");
-            if log::log_enabled!(log::Level::Debug) {
-                if let Ok(body_str) = serde_json::to_string(&outbound_body) {
-                    log::debug!(
-                        "[{tag}] >>> 请求体内容 ({}字节): {}",
-                        body_str.len(),
-                        body_str
-                    );
-                }
-            }
-
-            // 确定超时
-            let timeout = if self.non_streaming_timeout.is_zero() {
-                std::time::Duration::from_secs(600) // 默认 600 秒
-            } else {
-                self.non_streaming_timeout
-            };
-
-            // 获取全局代理 URL
-            let upstream_proxy_url: Option<String> = super::http_client::get_current_proxy_url();
-
-            // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
-            let is_socks_proxy = upstream_proxy_url
-                .as_deref()
-                .map(|u| u.starts_with("socks5"))
-                .unwrap_or(false);
-
-            if let Some(candidates) = antigravity_url_candidates.as_ref() {
-                if let Some(candidate) = candidates.get(antigravity_url_index) {
-                    url = candidate.clone();
-                }
-            }
-
-            let uri: http::Uri = url
-                .parse()
-                .map_err(|e| ProxyError::ForwardFailed(format!("Invalid URL '{url}': {e}")))?;
-            // 发送请求
-            let response_result: Result<ProxyResponse, ProxyError> = if is_socks_proxy {
-                // SOCKS5 代理：只能走 reqwest（不支持 header case 保留）
-                log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
-                let client = super::http_client::get();
-                let mut request = client.post(&url);
-                if !self.non_streaming_timeout.is_zero() {
-                    request = request.timeout(self.non_streaming_timeout);
-                }
-                for (key, value) in &ordered_headers {
-                    request = request.header(key, value);
-                }
-                let reqwest_resp = request
-                    .body(body_bytes)
-                    .send()
-                    .await
-                    .map_err(map_reqwest_send_error);
-                reqwest_resp.map(ProxyResponse::Reqwest)
-            } else {
-                // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
-                // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
-                super::hyper_client::send_request(
-                    uri,
-                    http::Method::POST,
-                    ordered_headers,
-                    extensions.clone(),
-                    body_bytes,
-                    timeout,
-                    upstream_proxy_url.as_deref(),
-                )
-                .await
-            };
-            let response = match response_result {
-                Ok(response) => response,
-                Err(err) => {
-                    if antigravity_advance_base_url(
-                        &mut antigravity_url_index,
-                        antigravity_url_candidates.as_ref(),
-                        "network",
-                    ) {
-                        log::warn!(
-                            "[Antigravity] base URL failed ({err}); retrying fallback endpoint"
-                        );
-                        continue;
-                    }
-                    return Err(err);
-                }
-            };
-
-            // 检查响应状态
-            let status = response.status();
-
-            if status.is_success() {
-                break response;
-            }
-
-            let status_code = status.as_u16();
-
-            // OAuth 401 单次重试：作废缓存 token 并重新走完整认证注入流程
-            if status_code == 401 && !oauth_retried {
-                if let Some((kind, account_id)) = oauth_kind_used.clone() {
-                    if let Some(app_handle) = &self.app_handle {
-                        log::warn!(
-                        "[OAuthRetry] 上游返回 401 (kind={:?}, account={account_id})，作废缓存 token 后重试一次",
-                        kind
-                    );
-                        match kind {
-                            OAuthKind::Claude => {
-                                let state = app_handle.state::<ClaudeOAuthState>();
-                                state
-                                    .0
-                                    .read()
-                                    .await
-                                    .invalidate_cached_token(&account_id)
-                                    .await;
-                            }
-                            OAuthKind::Codex => {
-                                let state = app_handle.state::<CodexOAuthState>();
-                                state
-                                    .0
-                                    .read()
-                                    .await
-                                    .invalidate_cached_token(&account_id)
-                                    .await;
-                            }
-                            OAuthKind::Copilot => {
-                                let state = app_handle.state::<CopilotAuthState>();
-                                state
-                                    .0
-                                    .read()
-                                    .await
-                                    .invalidate_cached_token(&account_id)
-                                    .await;
-                            }
-                            OAuthKind::Gemini => {
-                                let state = app_handle.state::<GeminiOAuthState>();
-                                state
-                                    .0
-                                    .read()
-                                    .await
-                                    .invalidate_cached_token(&account_id)
-                                    .await;
-                            }
-                            OAuthKind::Antigravity => {
-                                let state = app_handle.state::<AntigravityOAuthState>();
-                                state
-                                    .0
-                                    .read()
-                                    .await
-                                    .invalidate_cached_token(&account_id)
-                                    .await;
-                            }
-                        }
-                        oauth_retried = true;
-                        // 消费响应体，释放底层连接
-                        let _ = response.bytes().await;
-                        continue;
-                    }
-                }
-            }
-
-            if should_retry_antigravity_base_url(status_code)
-                && antigravity_advance_base_url(
-                    &mut antigravity_url_index,
-                    antigravity_url_candidates.as_ref(),
-                    "http",
-                )
-            {
-                log::warn!("[Antigravity] upstream HTTP {status_code}; retrying fallback endpoint");
-                let _ = response.bytes().await;
                 continue;
             }
 
-            let body_text = String::from_utf8(response.bytes().await?.to_vec()).ok();
-            return Err(ProxyError::UpstreamError {
-                status: status_code,
-                body: body_text,
-            });
+            // --- Copilot 指纹头 — 跳过（由 auth_headers 提供） ---
+            if copilot_fingerprint_headers
+                .iter()
+                .any(|h| key_str.eq_ignore_ascii_case(h))
+            {
+                continue;
+            }
+
+            // --- 默认：透传 ---
+            ordered_headers.append(key.clone(), value.clone());
+        }
+
+        // 如果原始请求中没有认证头，在末尾追加
+        if !saw_auth && !auth_headers.is_empty() {
+            for (ah_name, ah_value) in &auth_headers {
+                ordered_headers.append(ah_name.clone(), ah_value.clone());
+            }
+        }
+
+        // transform / SSE 路径在缺失时补 identity；普通透传不主动补 accept-encoding
+        if !saw_accept_encoding && force_identity_encoding {
+            ordered_headers.append(
+                http::header::ACCEPT_ENCODING,
+                http::HeaderValue::from_static("identity"),
+            );
+        }
+
+        if !saw_user_agent {
+            if let Some(ref ua) = custom_user_agent {
+                ordered_headers.append(http::header::USER_AGENT, ua.clone());
+            }
+        }
+
+        // 如果原始请求中没有 anthropic-beta 且有值需要添加，追加
+        if !saw_anthropic_beta {
+            if let Some(ref beta_val) = anthropic_beta_value {
+                if let Ok(hv) = http::HeaderValue::from_str(beta_val) {
+                    ordered_headers.append("anthropic-beta", hv);
+                }
+            }
+        }
+
+        // anthropic-version：仅在缺失时补充默认值
+        if should_send_anthropic_headers && !saw_anthropic_version {
+            ordered_headers.append(
+                "anthropic-version",
+                http::HeaderValue::from_static("2023-06-01"),
+            );
+        }
+
+        // Codex OAuth 反代尽量对齐官方 Codex CLI 的会话路由信号。
+        // 只发送客户端提供的 session_id；生成的 UUID 每次不同，反而会破坏前缀缓存。
+        for (name, value) in codex_oauth_session_headers {
+            ordered_headers.insert(name, value);
+        }
+
+        let mut outbound_body = filtered_body.clone();
+        if is_gemini_code_assist_provider(app_type, provider)
+            && outbound_body.get("project").is_none()
+        {
+            let token = gemini_oauth_access_token.as_deref().ok_or_else(|| {
+                ProxyError::AuthError(
+                    "Google Gemini OAuth 认证失败: 未获取到 access token".to_string(),
+                )
+            })?;
+            if let Some(project_id) = load_gemini_code_assist_project_for_forward(token).await?
+            {
+                outbound_body["project"] = serde_json::json!(project_id);
+            }
+        }
+        if is_antigravity_oauth_provider(app_type, provider) {
+            if antigravity_oauth_access_token.is_none() {
+                return Err(ProxyError::AuthError(
+                    "Antigravity OAuth 认证失败: 未获取到 access token".to_string(),
+                ));
+            }
+            let project_id = antigravity_project_id.as_deref().ok_or_else(|| {
+                ProxyError::AuthError(
+                    "Antigravity OAuth 认证失败: 未获取到 project id".to_string(),
+                )
+            })?;
+            outbound_body["project"] = serde_json::json!(project_id);
+            if outbound_body
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(|model| model.to_ascii_lowercase().contains("claude"))
+                .unwrap_or(false)
+            {
+                ordered_headers.insert(
+                    "anthropic-beta",
+                    http::HeaderValue::from_static(
+                        "claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+                    ),
+                );
+            }
+        }
+
+        // 序列化请求体
+        let body_bytes = serde_json::to_vec(&outbound_body).map_err(|e| {
+            ProxyError::Internal(format!("Failed to serialize request body: {e}"))
+        })?;
+
+        // 确保 content-type 存在
+        if !ordered_headers.contains_key(http::header::CONTENT_TYPE) {
+            ordered_headers.insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("application/json"),
+            );
+        }
+
+        reject_proxy_placeholder_for_managed_account_upstream(&url, &ordered_headers)?;
+
+        // 输出请求信息日志
+        let tag = adapter.name();
+        let request_model = outbound_body
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<none>");
+        log::info!("[{tag}] >>> 请求 URL: {url} (model={request_model})");
+        if log::log_enabled!(log::Level::Debug) {
+            if let Ok(body_str) = serde_json::to_string(&outbound_body) {
+                log::debug!(
+                    "[{tag}] >>> 请求体内容 ({}字节): {}",
+                    body_str.len(),
+                    body_str
+                );
+            }
+        }
+
+        // 确定超时
+        let timeout = if self.non_streaming_timeout.is_zero() {
+            std::time::Duration::from_secs(600) // 默认 600 秒
+        } else {
+            self.non_streaming_timeout
+        };
+
+        // 获取全局代理 URL
+        let upstream_proxy_url: Option<String> = super::http_client::get_current_proxy_url();
+
+        // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
+        let is_socks_proxy = upstream_proxy_url
+            .as_deref()
+            .map(|u| u.starts_with("socks5"))
+            .unwrap_or(false);
+
+        if let Some(candidates) = antigravity_url_candidates.as_ref() {
+            if let Some(candidate) = candidates.get(antigravity_url_index) {
+                url = candidate.clone();
+            }
+        }
+
+        let uri: http::Uri = url
+            .parse()
+            .map_err(|e| ProxyError::ForwardFailed(format!("Invalid URL '{url}': {e}")))?;
+        // 发送请求
+        let response_result: Result<ProxyResponse, ProxyError> = if is_socks_proxy {
+            // SOCKS5 代理：只能走 reqwest（不支持 header case 保留）
+            log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
+            let client = super::http_client::get();
+            let mut request = client.post(&url);
+            if !self.non_streaming_timeout.is_zero() {
+                request = request.timeout(self.non_streaming_timeout);
+            }
+            for (key, value) in &ordered_headers {
+                request = request.header(key, value);
+            }
+            let reqwest_resp = request
+                .body(body_bytes)
+                .send()
+                .await
+                .map_err(map_reqwest_send_error);
+            reqwest_resp.map(ProxyResponse::Reqwest)
+        } else {
+            // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
+            // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
+            super::hyper_client::send_request(
+                uri,
+                http::Method::POST,
+                ordered_headers,
+                extensions.clone(),
+                body_bytes,
+                timeout,
+                upstream_proxy_url.as_deref(),
+            )
+            .await
+        };
+        let response = match response_result {
+            Ok(response) => response,
+            Err(err) => {
+                if antigravity_advance_base_url(
+                    &mut antigravity_url_index,
+                    antigravity_url_candidates.as_ref(),
+                    "network",
+                ) {
+                    log::warn!(
+                        "[Antigravity] base URL failed ({err}); retrying fallback endpoint"
+                    );
+                    continue;
+                }
+                return Err(err);
+            }
+        };
+
+        // 检查响应状态
+        let status = response.status();
+
+        if status.is_success() {
+            break response;
+        }
+
+        let status_code = status.as_u16();
+
+        // OAuth 401 单次重试：作废缓存 token 并重新走完整认证注入流程
+        if status_code == 401 && !oauth_retried {
+            if let Some((kind, account_id)) = oauth_kind_used.clone() {
+                if let Some(app_handle) = &self.app_handle {
+                    log::warn!(
+                    "[OAuthRetry] 上游返回 401 (kind={:?}, account={account_id})，作废缓存 token 后重试一次",
+                    kind
+                );
+                    match kind {
+                        OAuthKind::Claude => {
+                            let state = app_handle.state::<ClaudeOAuthState>();
+                            state
+                                .0
+                                .read()
+                                .await
+                                .invalidate_cached_token(&account_id)
+                                .await;
+                        }
+                        OAuthKind::Codex => {
+                            let state = app_handle.state::<CodexOAuthState>();
+                            state
+                                .0
+                                .read()
+                                .await
+                                .invalidate_cached_token(&account_id)
+                                .await;
+                        }
+                        OAuthKind::Copilot => {
+                            let state = app_handle.state::<CopilotAuthState>();
+                            state
+                                .0
+                                .read()
+                                .await
+                                .invalidate_cached_token(&account_id)
+                                .await;
+                        }
+                        OAuthKind::Gemini => {
+                            let state = app_handle.state::<GeminiOAuthState>();
+                            state
+                                .0
+                                .read()
+                                .await
+                                .invalidate_cached_token(&account_id)
+                                .await;
+                        }
+                        OAuthKind::Antigravity => {
+                            let state = app_handle.state::<AntigravityOAuthState>();
+                            state
+                                .0
+                                .read()
+                                .await
+                                .invalidate_cached_token(&account_id)
+                                .await;
+                        }
+                    }
+                    oauth_retried = true;
+                    // 消费响应体，释放底层连接
+                    let _ = response.bytes().await;
+                    continue;
+                }
+            }
+        }
+
+        if should_retry_antigravity_base_url(status_code)
+            && antigravity_advance_base_url(
+                &mut antigravity_url_index,
+                antigravity_url_candidates.as_ref(),
+                "http",
+            )
+        {
+            log::warn!("[Antigravity] upstream HTTP {status_code}; retrying fallback endpoint");
+            let _ = response.bytes().await;
+            continue;
+        }
+
+        let body_text = String::from_utf8(response.bytes().await?.to_vec()).ok();
+        return Err(ProxyError::UpstreamError {
+            status: status_code,
+            body: body_text,
+        });
         };
 
         let response = self
             .prepare_success_response_for_failover(response, request_is_streaming)
             .await?;
 
-        Ok((response, resolved_claude_api_format))
+        Ok((response, resolved_claude_api_format, outbound_model))
     }
 
     /// 故障转移开启时，成功不能只看上游响应头。
@@ -5559,6 +5636,18 @@ mod tests {
         })
     }
 
+    fn body_with_codex_input_image(model: &str) -> Value {
+        json!({
+            "model": model,
+            "input": [{
+                "role": "user",
+                "content": [
+                    { "type": "input_image", "image_url": "data:image/png;base64,abc" }
+                ]
+            }]
+        })
+    }
+
     fn image_unsupported_error() -> ProxyError {
         ProxyError::UpstreamError {
             status: 400,
@@ -5644,6 +5733,21 @@ mod tests {
         let fwd = forwarder_with_rectifier(RectifierConfig::default());
         let body = body_with_image("any-model");
         assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
+    }
+
+    #[test]
+    fn reactive_triggers_for_codex_image_url_deserialize_errors() {
+        let fwd = forwarder_with_rectifier(RectifierConfig::default());
+        let body = body_with_codex_input_image("deepseek-v4-flash");
+        let error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[11]: unknown variant image_url, expected text"}}"#
+                    .to_string(),
+            ),
+        };
+
+        assert!(fwd.media_retry_should_trigger("Codex", false, &body, &error));
     }
 
     #[test]

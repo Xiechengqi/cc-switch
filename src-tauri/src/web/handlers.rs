@@ -700,6 +700,7 @@ async fn invoke_local_admin_scoped(
             string_arg(&args, "apiKey")?,
             args.get("isFullUrl").and_then(Value::as_bool),
             optional_string_arg(&args, "modelsUrl"),
+            optional_string_arg(&args, "customUserAgent"),
         )
         .await
         .map_err(WebError::internal)?)),

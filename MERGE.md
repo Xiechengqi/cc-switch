@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-06-11
+
+- **上游分支：** `main`
+- **上游 HEAD：** `daa5595f`
+- **共同祖先：** `4f5250fc`
+- **合并提交数：** 27
+- **主要变更：**
+  - feat(provider-form): Codex 表单整合进高级选项；自定义 User-Agent presets 下拉；provider 级 user agent override（与 stream check / model fetch 共用 `parse_custom_user_agent`）
+  - feat(usage): pricing_model 维度入主键 + claude-desktop filter + pricing-model audit display；路由接管流量按真实上游模型计价（schema v11，本仓在 v26→v27 链上追加）
+  - fix(proxy): aggregate mislabeled SSE bodies in transform fallback；image rectifier extend to Codex /responses；exclude cache_read/cache_creation from input on Claude←OpenAI；usage accounting on format-conversion paths；strip cache_control from OpenAI format conversion
+  - fix(usage): 导入无 stop_reason 的 billable session messages；统计 sub-agent token；coding_plan zhipu 按 `unit` 字段分类
+  - feat(usage): Fable 5 + 8 模型定价 seed 刷新；app-aware hero icon
+  - chore(presets): 新增 Unity2.ai / CCSub 合作伙伴 preset（按规则丢弃）
+- **冲突解决：**
+  - `src-tauri/src/database/mod.rs` / `schema.rs`：本仓 SCHEMA_VERSION 升到 27，将上游 v10→v11（pricing_model 入主键）重命名为本仓 v26→v27 migration，附加到本仓 v10→v26（share 维度）的链尾
+  - `src-tauri/src/proxy/usage/logger.rs`：INSERT 列同时含本仓 `request_agent/requested_model/actual_model/actual_model_source/share_id/share_name/user_email` 与上游 `pricing_model`，共 31 列
+  - `src-tauri/src/services/usage_stats.rs`：`row_to_request_log_detail` 总列数升到 32（本仓 share/actual 字段在前 + 上游 pricing_model 在末），BASE_SQL / detail_sql / list_sql 同步补 `l.pricing_model`
+  - `src-tauri/src/proxy/{forwarder,handler_context,handlers,response_processor}.rs`：采纳上游 forward 返回的 `outbound_model: Option<String>`（保留 share/OAuth 分支返回 `None`），`RequestContext.outbound_model` + body 定稿后刷新；`log_usage` / `log_usage_internal` 同时含本仓 `incoming_request_id/share_*` 与上游 `outbound_model`，所有调用点同步更新
+  - `src-tauri/src/proxy/forwarder.rs`：header 构造采纳上游 saw_user_agent + `parse_custom_user_agent` provider 级 UA override（Copilot 指纹 UA 不可被覆盖），保留本仓 share/codex_oauth/gemini code assist/antigravity/Copilot fingerprint header 全部逻辑
+  - `src-tauri/src/services/stream_check.rs` / `model_fetch.rs`：保留本仓 `maybe_add_share_api_key_header` / `X-API-Key` 注入；并入上游 provider 级 `user_agent` 注入路径
+  - `src-tauri/src/provider.rs`：保留本仓 `codex_image_generation_enabled` helper；并入上游 `custom_user_agent_header()` + `parse_custom_user_agent`
+  - `src/components/providers/ProviderCard.tsx`：保留本仓 5 个 OAuth quota footer（Claude/Gemini/Antigravity/Cursor/Kiro）+ `isManagedOauth`；并入上游 `TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION` / `officialSubscriptionEnabled` / `supportsOfficialSubscription` 路径；剔除上游 `isOfficialBlockedByProxy` / `isCopilot`（本仓未使用）
+  - `src/components/providers/ProviderActions.tsx`：删除上游引入但本仓未提供的 `isOfficialBlockedByProxy` 渲染分支
+  - `src/lib/query/subscription.ts`：采纳上游 `autoQueryIntervalMinutes` 参数驱动 refetch，移除本仓 `useSettingsQuery`/`getOauthQuotaRefreshIntervalMs` 引用，定义本地 `REFETCH_INTERVAL`
+  - `src/types/usage.ts`、`src/types/subscription.ts`：本仓 `requestAgent/requestedModel/actualModel/actualModelSource` 与上游 `pricingModel` 并存
+  - **`src/config/{claude,codex,gemini,hermes,claudeDesktop,opencode,openclaw}ProviderPresets.ts`、`src/icons/extracted/{index,metadata}.ts`、`src/icons/extracted/{ccsub.svg,unity2.png}`：按"禁止新添加 API Key 类供应商"指令，所有冲突采纳 HEAD，并主动删除上游 auto-merged 进 hermes/claudeDesktop/opencode/openclaw 的 CCSub & Unity2.ai preset 与对应 icon/metadata 资源**
+  - `src-tauri/src/web/handlers.rs`：`fetch_models_for_config` 调用补齐新增的 `customUserAgent` 第 5 形参（保持本仓 web runtime 调用兼容）
+  - `tests/config/providerPresetOrder.test.ts`：modify/delete 冲突保留本仓修改（上游已删除）
+- **验证：** `cargo check` exit 0（4 条 dead-code warning，含 `codex_stream_user_agent`/`build_anthropic_beta_value` 等遗留）；`cargo check --tests` exit 0；`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-09
 
 - **上游分支：** `main`

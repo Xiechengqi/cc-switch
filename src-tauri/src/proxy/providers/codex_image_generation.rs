@@ -1,3 +1,4 @@
+use crate::proxy::codex_identity::{codex_cli_user_agent, CODEX_CLI_VERSION};
 use crate::proxy::sse::{append_utf8_safe, strip_sse_field, take_sse_block};
 use crate::proxy::{http_client, ProxyError};
 use base64::Engine;
@@ -9,8 +10,6 @@ use std::time::Duration;
 const CODEX_IMAGE_BACKEND_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_IMAGE_MODEL_DEFAULT: &str = "gpt-5.5";
 const CODEX_IMAGE_OUTPUT_FORMAT_DEFAULT: &str = "png";
-const CODEX_IMAGEGEN_USER_AGENT: &str = "codex_cli_rs/0.63.0 (cc-switch image generation)";
-const CODEX_IMAGEGEN_VERSION: &str = "0.63.0";
 const CODEX_IMAGEGEN_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,8 +82,8 @@ pub async fn generate_image_with_codex_oauth(
         .header(reqwest::header::ACCEPT, "text/event-stream")
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::CONNECTION, "Keep-Alive")
-        .header(reqwest::header::USER_AGENT, CODEX_IMAGEGEN_USER_AGENT)
-        .header("version", CODEX_IMAGEGEN_VERSION)
+        .header(reqwest::header::USER_AGENT, codex_imagegen_user_agent())
+        .header("version", CODEX_CLI_VERSION)
         .header("originator", "codex_cli_rs")
         .header("session_id", &session_id)
         .header("x-client-request-id", &session_id)
@@ -113,6 +112,14 @@ pub async fn generate_image_with_codex_oauth(
     }
 
     collect_image_generation_result(response).await
+}
+
+fn codex_imagegen_user_agent() -> String {
+    codex_cli_user_agent(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        "cc-switch image generation",
+    )
 }
 
 fn validate_image_request(
@@ -381,6 +388,14 @@ fn truncate_for_error(mut value: String, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_generation_uses_current_codex_cli_identity() {
+        assert_eq!(CODEX_CLI_VERSION, "0.139.0");
+        let user_agent = codex_imagegen_user_agent();
+        assert!(user_agent.starts_with("codex_cli_rs/0.139.0"));
+        assert!(user_agent.contains("cc-switch image generation"));
+    }
 
     #[test]
     fn validate_request_defaults_to_b64_png_single_image() {

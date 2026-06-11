@@ -11,6 +11,7 @@ use std::time::Instant;
 use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::provider::Provider;
+use crate::proxy::codex_identity::{codex_cli_terminal_user_agent, CODEX_CLI_VERSION};
 use crate::proxy::gemini_url::{normalize_gemini_model_id, resolve_gemini_native_url};
 use crate::proxy::providers::copilot_auth;
 use crate::proxy::providers::transform::anthropic_to_openai;
@@ -737,10 +738,13 @@ impl StreamCheckService {
         // Provider 级自定义 User-Agent（meta.customUserAgent）覆盖默认 codex UA，与 forwarder
         // 转发路径口径一致——否则 Stream Check 会用与真实流量不同的 UA 探测（如 Kimi UA 白名单）。
         let user_agent = Self::custom_user_agent(provider).unwrap_or_else(|| {
-            reqwest::header::HeaderValue::from_str(&format!(
-                "codex_cli_rs/0.80.0 ({os_name} 15.7.2; {arch_name}) Terminal"
+            reqwest::header::HeaderValue::from_str(&codex_cli_terminal_user_agent(
+                &os_name, &arch_name,
             ))
-            .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("codex_cli_rs/0.80.0"))
+            .unwrap_or_else(|_| {
+                reqwest::header::HeaderValue::from_str(&format!("codex_cli_rs/{CODEX_CLI_VERSION}"))
+                    .expect("fallback Codex CLI user-agent is valid")
+            })
         });
 
         let mut body = if uses_chat {
@@ -1882,7 +1886,7 @@ impl StreamCheckService {
                 env!("CARGO_PKG_VERSION")
             )
         } else {
-            format!("codex_cli_rs/0.80.0 ({os_name} 15.7.2; {arch_name}) Terminal")
+            codex_cli_terminal_user_agent(os_name, arch_name)
         }
     }
 
@@ -2453,7 +2457,7 @@ mod tests {
             "codex_cli_rs"
         );
         let ua = StreamCheckService::codex_stream_user_agent(false, "macOS", "arm64");
-        assert!(ua.starts_with("codex_cli_rs/0.80.0"));
+        assert!(ua.starts_with("codex_cli_rs/0.139.0"));
         assert!(ua.contains("(macOS 15.7.2; arm64) Terminal"));
     }
 

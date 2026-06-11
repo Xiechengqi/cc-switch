@@ -218,14 +218,6 @@ export interface TunnelConfig {
 export interface ConnectInfo {
   tunnelUrl: string;
   subdomain: string;
-  examples: ShareConnectExample[];
-}
-
-export interface ShareConnectExample {
-  id: "text" | "image" | string;
-  method: "POST" | string;
-  path: string;
-  curl: string;
 }
 
 export interface ClientTunnelConfig {

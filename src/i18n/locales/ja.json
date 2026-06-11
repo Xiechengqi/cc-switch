@@ -2972,10 +2972,6 @@
     "detailDescription": "デバイス単位 share の全情報、状態、クォータを確認します。",
     "editDescription": "share のサブドメイン、クォータ、使用量設定を編集します。",
     "connectInfo": "接続情報",
-    "connectExamples": {
-      "text": "テキスト生成 API 呼び出し",
-      "image": "画像生成 API 呼び出し"
-    },
     "connectDescription": "tunnel されたローカルプロキシサービスへアクセスするための tunnel URL、apiKey、curl 例をコピーします。",
     "confirmResetUsageMessage": "現在の share の Token カウント、リクエスト数、最終使用時刻をクリアします。続行しますか？",
     "copyApiKey": "API Key をコピー",

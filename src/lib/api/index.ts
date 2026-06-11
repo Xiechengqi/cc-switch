@@ -38,7 +38,6 @@ export type {
   ShareTunnelStatus,
   TunnelConfig,
   ConnectInfo,
-  ShareConnectExample,
   ClientTunnelConfig,
   ClientTunnelState,
   ClientTunnelUpdateParams,

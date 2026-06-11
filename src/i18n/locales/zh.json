@@ -2971,10 +2971,6 @@
     "detailDescription": "查看设备级 share 的完整信息、状态和配额。",
     "editDescription": "编辑 share 的子域名、配额和用量设置。",
     "connectInfo": "连接信息",
-    "connectExamples": {
-      "text": "生成文字 API 调用",
-      "image": "生成图片 API 调用"
-    },
     "connectDescription": "复制 tunnel URL、apiKey 和 curl 示例，直接访问穿透后的本地代理服务。",
     "confirmResetUsageMessage": "这会清空当前 share 的 Token 计数、请求数和最后使用时间。是否继续？",
     "copyApiKey": "复制 API Key",

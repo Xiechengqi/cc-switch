@@ -1,15 +1,11 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
 import { createElement, type ReactNode } from "react";
 import { beforeAll, describe, it, expect, vi } from "vitest";
 import { ShareCard } from "@/components/share/ShareCard";
 import type { PublicMarket, ShareRecord } from "@/lib/api";
-import { server } from "../../msw/server";
 import { createTestQueryClient } from "../../utils/testQueryClient";
-
-const TAURI_ENDPOINT = "http://tauri.local";
 
 vi.mock("@/components/share/ShareRequestLogTable", () => ({
   ShareRequestLogTable: () => null,
@@ -113,77 +109,6 @@ describe("ShareCard", () => {
     );
 
     expect(screen.getByRole("button", { name: "share.disable" })).toBeEnabled();
-  });
-
-  it("shows text and image API calls from share connect info", async () => {
-    server.use(
-      http.post(`${TAURI_ENDPOINT}/get_share_connect_info`, () =>
-        HttpResponse.json({
-          tunnelUrl: "https://demo.example.com",
-          subdomain: "demo",
-          examples: [
-            {
-              id: "text",
-              method: "POST",
-              path: "/v1/responses",
-              curl: "curl -X POST 'https://demo.example.com/v1/responses'",
-            },
-            {
-              id: "image",
-              method: "POST",
-              path: "/v1/images/generations",
-              curl: "curl -X POST 'https://demo.example.com/v1/images/generations'",
-            },
-          ],
-        }),
-      ),
-    );
-
-    renderShareCard(
-      <ShareCard
-        share={{ ...baseShare, bindings: { codex: "codex-1" } }}
-        tunnelConfig={tunnelConfig}
-        tunnelConfigured={true}
-        {...createHandlers()}
-      />,
-    );
-
-    expect(await screen.findByText("生成文字 API 调用")).toBeInTheDocument();
-    expect(screen.getByText("生成图片 API 调用")).toBeInTheDocument();
-    expect(screen.getByText("/v1/responses")).toBeInTheDocument();
-    expect(screen.getByText("/v1/images/generations")).toBeInTheDocument();
-  });
-
-  it("does not show image API call when connect info omits it", async () => {
-    server.use(
-      http.post(`${TAURI_ENDPOINT}/get_share_connect_info`, () =>
-        HttpResponse.json({
-          tunnelUrl: "https://demo.example.com",
-          subdomain: "demo",
-          examples: [
-            {
-              id: "text",
-              method: "POST",
-              path: "/v1/responses",
-              curl: "curl -X POST 'https://demo.example.com/v1/responses'",
-            },
-          ],
-        }),
-      ),
-    );
-
-    renderShareCard(
-      <ShareCard
-        share={{ ...baseShare, bindings: { codex: "codex-1" } }}
-        tunnelConfig={tunnelConfig}
-        tunnelConfigured={true}
-        {...createHandlers()}
-      />,
-    );
-
-    expect(await screen.findByText("生成文字 API 调用")).toBeInTheDocument();
-    expect(screen.queryByText("生成图片 API 调用")).not.toBeInTheDocument();
-    expect(screen.queryByText("/v1/images/generations")).not.toBeInTheDocument();
   });
 
   it("shows disable when share is active but tunnel is offline", () => {

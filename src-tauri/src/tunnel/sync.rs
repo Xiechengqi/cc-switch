@@ -710,6 +710,10 @@ async fn build_app_provider_snapshot(
         }
     }
 
+    let codex_image_generation_enabled = matches!(app, AppType::Codex)
+        && provider.is_codex_official_with_managed_auth()
+        && provider.codex_image_generation_enabled();
+
     ShareAppProvider {
         id: provider.id,
         name: provider.name,
@@ -718,6 +722,7 @@ async fn build_app_provider_snapshot(
         provider_type,
         is_current,
         enabled,
+        codex_image_generation_enabled,
         for_sale_official_price_percent,
         account_email,
         api_url,

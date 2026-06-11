@@ -1,4 +1,4 @@
-use crate::database::{Database, ShareAppAccess, ShareRecord};
+use crate::database::{ShareAppAccess, ShareRecord};
 use crate::error::AppError;
 use crate::proxy::ProxyConfig;
 use crate::services::share::{PrepareShareParams, ShareService};
@@ -156,16 +156,6 @@ fn default_market_access_mode() -> String {
 pub struct ConnectInfo {
     pub tunnel_url: String,
     pub subdomain: String,
-    pub examples: Vec<ShareConnectExample>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ShareConnectExample {
-    pub id: String,
-    pub method: String,
-    pub path: String,
-    pub curl: String,
 }
 
 const CLIENT_TUNNEL_ID: &str = "__client_web__";
@@ -1184,13 +1174,6 @@ pub fn get_share_connect_info(
     let share = ShareService::get_detail(&state.db, &share_id)
         .map_err(|e: AppError| e.to_string())?
         .ok_or_else(|| format!("Share not found: {share_id}"))?;
-    build_share_connect_info(&state.db, &share).map_err(|e: AppError| e.to_string())
-}
-
-pub(crate) fn build_share_connect_info(
-    db: &Database,
-    share: &ShareRecord,
-) -> Result<ConnectInfo, AppError> {
     let config = current_tunnel_config();
     let subdomain = share
         .subdomain
@@ -1201,59 +1184,10 @@ pub(crate) fn build_share_connect_info(
         .clone()
         .unwrap_or_else(|| config.get_tunnel_addr(&subdomain));
 
-    let mut examples = Vec::new();
-    if share.bindings.get("codex").is_some() {
-        examples.push(share_connect_example(
-            "text",
-            "POST",
-            "/v1/responses",
-            &openai_text_curl(&tunnel_url),
-        ));
-    }
-
-    if let Some(provider_id) = share.bindings.get("codex") {
-        if let Some(provider) = db.get_provider_by_id(provider_id, "codex")? {
-            if provider.is_codex_official_with_managed_auth()
-                && provider.codex_image_generation_enabled()
-            {
-                examples.push(share_connect_example(
-                    "image",
-                    "POST",
-                    "/v1/images/generations",
-                    &openai_image_curl(&tunnel_url),
-                ));
-            }
-        }
-    }
-
     Ok(ConnectInfo {
         tunnel_url,
         subdomain,
-        examples,
     })
-}
-
-fn share_connect_example(id: &str, method: &str, path: &str, curl: &str) -> ShareConnectExample {
-    ShareConnectExample {
-        id: id.to_string(),
-        method: method.to_string(),
-        path: path.to_string(),
-        curl: curl.to_string(),
-    }
-}
-
-fn openai_text_curl(base_url: &str) -> String {
-    format!(
-        "curl -X POST '{}/v1/responses' \\\n  -H 'Authorization: Bearer <router-api-key>' \\\n  -H 'Content-Type: application/json' \\\n  -d '{{\"model\":\"gpt-5.5\",\"input\":\"Say hello from cc-switch share.\"}}'",
-        base_url.trim_end_matches('/')
-    )
-}
-
-fn openai_image_curl(base_url: &str) -> String {
-    format!(
-        "curl -X POST '{}/v1/images/generations' \\\n  -H 'Authorization: Bearer <router-api-key>' \\\n  -H 'Content-Type: application/json' \\\n  -d '{{\"model\":\"gpt-5.5\",\"prompt\":\"A small robot painting a sunrise\",\"size\":\"1024x1024\",\"response_format\":\"b64_json\"}}'",
-        base_url.trim_end_matches('/')
-    )
 }
 
 fn normalize_owner_email(email: &str) -> Result<String, String> {
@@ -1323,8 +1257,6 @@ fn proxy_local_addr_from_config(config: &ProxyConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{AuthBinding, AuthBindingSource, Provider, ProviderMeta};
-    use serde_json::json;
 
     #[test]
     fn share_market_delegation_preserves_per_app_shareto() {
@@ -1375,111 +1307,5 @@ mod tests {
                 "new-share-market@example.com".to_string()
             ]
         );
-    }
-
-    fn codex_managed_provider(id: &str, image_enabled: bool) -> Provider {
-        let mut provider = Provider::with_id(
-            id.to_string(),
-            "OpenAI Official".to_string(),
-            json!({ "env": {} }),
-            None,
-        );
-        provider.category = Some("official".to_string());
-        provider.meta = Some(ProviderMeta {
-            auth_binding: Some(AuthBinding {
-                source: AuthBindingSource::ManagedAccount,
-                auth_provider: Some("codex_oauth".to_string()),
-                account_id: Some("account-1".to_string()),
-            }),
-            codex_image_generation_enabled: Some(image_enabled),
-            ..ProviderMeta::default()
-        });
-        provider
-    }
-
-    fn connect_info_share(bindings: HashMap<String, String>) -> ShareRecord {
-        ShareRecord {
-            id: "share-12345678".to_string(),
-            name: "Demo Share".to_string(),
-            owner_email: "owner@example.com".to_string(),
-            shared_with_emails: Vec::new(),
-            market_access_mode: "selected".to_string(),
-            access_by_app: HashMap::new(),
-            for_sale_official_price_percent_by_app: HashMap::new(),
-            description: None,
-            for_sale: "No".to_string(),
-            sale_market_kind: "token".to_string(),
-            bindings,
-            dynamic_apps: HashSet::new(),
-            api_key: String::new(),
-            settings_config: None,
-            token_limit: ShareService::UNLIMITED_TOKEN_LIMIT,
-            parallel_limit: ShareService::MIN_PARALLEL_LIMIT,
-            tokens_used: 0,
-            requests_count: 0,
-            expires_at: "2100-01-01T00:00:00Z".to_string(),
-            subdomain: Some("demo".to_string()),
-            tunnel_url: Some("https://demo.example.com".to_string()),
-            status: "active".to_string(),
-            auto_start: false,
-            created_at: "2025-01-01T00:00:00Z".to_string(),
-            last_used_at: None,
-        }
-    }
-
-    #[test]
-    fn connect_info_includes_image_example_for_enabled_codex_provider() {
-        let db = Database::memory().expect("memory db");
-        db.save_provider("codex", &codex_managed_provider("codex-1", true))
-            .expect("save provider");
-        let share = connect_info_share(HashMap::from([(
-            "codex".to_string(),
-            "codex-1".to_string(),
-        )]));
-
-        let info = build_share_connect_info(&db, &share).expect("connect info");
-        let ids: Vec<_> = info
-            .examples
-            .iter()
-            .map(|example| example.id.as_str())
-            .collect();
-
-        assert_eq!(ids, vec!["text", "image"]);
-        assert!(info.examples[1].curl.contains("/v1/images/generations"));
-    }
-
-    #[test]
-    fn connect_info_omits_image_example_when_codex_switch_is_disabled() {
-        let db = Database::memory().expect("memory db");
-        db.save_provider("codex", &codex_managed_provider("codex-1", false))
-            .expect("save provider");
-        let share = connect_info_share(HashMap::from([(
-            "codex".to_string(),
-            "codex-1".to_string(),
-        )]));
-
-        let info = build_share_connect_info(&db, &share).expect("connect info");
-        let ids: Vec<_> = info
-            .examples
-            .iter()
-            .map(|example| example.id.as_str())
-            .collect();
-
-        assert_eq!(ids, vec!["text"]);
-    }
-
-    #[test]
-    fn connect_info_does_not_use_claude_binding_for_image_example() {
-        let db = Database::memory().expect("memory db");
-        db.save_provider("claude", &codex_managed_provider("codex-1", true))
-            .expect("save provider");
-        let share = connect_info_share(HashMap::from([(
-            "claude".to_string(),
-            "codex-1".to_string(),
-        )]));
-
-        let info = build_share_connect_info(&db, &share).expect("connect info");
-
-        assert!(info.examples.is_empty());
     }
 }

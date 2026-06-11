@@ -2971,10 +2971,6 @@
     "detailDescription": "Inspect the full device-level share record, status, and quota.",
     "editDescription": "Edit the share subdomain, quota, and usage settings.",
     "connectInfo": "Connect Info",
-    "connectExamples": {
-      "text": "Text Generation API Call",
-      "image": "Image Generation API Call"
-    },
     "connectDescription": "Copy the tunnel URL, apiKey, and curl example to access the tunneled local proxy service.",
     "confirmResetUsageMessage": "This clears token count, request count, and last-used time for the current share. Continue?",
     "copyApiKey": "Copy API Key",

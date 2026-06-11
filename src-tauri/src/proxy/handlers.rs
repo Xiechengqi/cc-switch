@@ -20,7 +20,7 @@ use super::{
         codex_chat_history::record_responses_sse_stream,
         codex_image_generation::{
             build_openai_images_response, generate_image_with_codex_oauth,
-            OpenAiImageGenerationRequest,
+            stream_image_with_codex_oauth, OpenAiImageGenerationRequest,
         },
         get_adapter, get_claude_api_format,
         streaming::create_anthropic_sse_stream,
@@ -1151,6 +1151,7 @@ pub async fn handle_images_generations(
         ));
     };
 
+    let is_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let image_request: OpenAiImageGenerationRequest = serde_json::from_value(body)
         .map_err(|e| ProxyError::InvalidRequest(format!("Invalid image request: {e}")))?;
     let account_id = ctx
@@ -1171,6 +1172,27 @@ pub async fn handle_images_generations(
     };
 
     drop(codex_auth);
+
+    if is_stream {
+        let stream =
+            stream_image_with_codex_oauth(&token, resolved_account_id.as_deref(), image_request)
+                .await?;
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/event-stream"),
+        );
+        headers.insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-cache, no-transform"),
+        );
+        headers.insert(
+            "X-Accel-Buffering",
+            axum::http::HeaderValue::from_static("no"),
+        );
+        let body = axum::body::Body::from_stream(stream);
+        return Ok((headers, body).into_response());
+    }
 
     let image =
         generate_image_with_codex_oauth(&token, resolved_account_id.as_deref(), image_request)

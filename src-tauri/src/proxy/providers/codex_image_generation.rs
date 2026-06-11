@@ -2,9 +2,12 @@ use crate::proxy::codex_identity::{codex_cli_user_agent, CODEX_CLI_VERSION};
 use crate::proxy::sse::{append_utf8_safe, strip_sse_field, take_sse_block};
 use crate::proxy::{http_client, ProxyError};
 use base64::Engine;
+use bytes::Bytes;
+use futures::stream::Stream;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::pin::Pin;
 use std::time::Duration;
 
 const CODEX_IMAGE_BACKEND_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
@@ -23,6 +26,8 @@ pub struct OpenAiImageGenerationRequest {
     pub quality: Option<String>,
     pub style: Option<String>,
     pub background: Option<String>,
+    pub stream: Option<bool>,
+    pub partial_images: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +75,24 @@ pub async fn generate_image_with_codex_oauth(
     account_id: Option<&str>,
     request: OpenAiImageGenerationRequest,
 ) -> Result<GeneratedImage, ProxyError> {
+    let response = send_codex_image_request(token, account_id, request).await?;
+    collect_image_generation_result(response).await
+}
+
+pub async fn stream_image_with_codex_oauth(
+    token: &str,
+    account_id: Option<&str>,
+    request: OpenAiImageGenerationRequest,
+) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>, ProxyError> {
+    let response = send_codex_image_request(token, account_id, request).await?;
+    Ok(Box::pin(normalized_image_generation_sse_stream(response)))
+}
+
+async fn send_codex_image_request(
+    token: &str,
+    account_id: Option<&str>,
+    request: OpenAiImageGenerationRequest,
+) -> Result<reqwest::Response, ProxyError> {
     let parsed = validate_image_request(request)?;
     let payload = build_codex_image_payload(&parsed);
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -111,7 +134,7 @@ pub async fn generate_image_with_codex_oauth(
         });
     }
 
-    collect_image_generation_result(response).await
+    Ok(response)
 }
 
 fn codex_imagegen_user_agent() -> String {
@@ -165,6 +188,8 @@ fn validate_image_request(
         .filter(|value| !value.is_empty() && *value != "auto")
         .map(validate_size)
         .transpose()?;
+    let _stream_requested = request.stream.unwrap_or(false);
+    let _partial_images = request.partial_images.unwrap_or(0);
 
     Ok(ParsedImageGenerationRequest {
         model: request
@@ -241,6 +266,100 @@ fn build_codex_image_payload(request: &ParsedImageGenerationRequest) -> Value {
     })
 }
 
+fn normalized_image_generation_sse_stream(
+    response: reqwest::Response,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    async_stream::stream! {
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut utf8_remainder = Vec::new();
+        let mut event_types = Vec::new();
+
+        yield Ok(sse_event_bytes(
+            "image_generation.started",
+            json!({ "type": "image_generation.started" }),
+        ));
+
+        while let Some(chunk) = stream.next().await {
+            let bytes = match chunk {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    yield Ok(sse_error_event_bytes(&format!("Failed to read Codex image SSE: {err}")));
+                    return;
+                }
+            };
+            append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
+
+            while let Some(block) = take_sse_block(&mut buffer) {
+                match image_generation_stream_event_from_block(&block, &mut event_types) {
+                    Ok(Some(ImageGenerationStreamEvent::Progress(event_type))) => {
+                        yield Ok(sse_event_bytes(
+                            event_type,
+                            json!({ "type": event_type }),
+                        ));
+                    }
+                    Ok(Some(ImageGenerationStreamEvent::Completed(image))) => {
+                        if let Err(err) = validate_image_base64(&image.b64_json) {
+                            yield Ok(sse_error_event_bytes(&err.to_string()));
+                            return;
+                        }
+                        let response = build_openai_images_response(image);
+                        yield Ok(sse_event_bytes("image_generation.completed", json!(response)));
+                        yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        yield Ok(sse_error_event_bytes(&err.to_string()));
+                        return;
+                    }
+                }
+            }
+        }
+
+        if !buffer.trim().is_empty() {
+            let tail = std::mem::take(&mut buffer) + "\n\n";
+            buffer.push_str(&tail);
+            while let Some(block) = take_sse_block(&mut buffer) {
+                match image_generation_stream_event_from_block(&block, &mut event_types) {
+                    Ok(Some(ImageGenerationStreamEvent::Progress(event_type))) => {
+                        yield Ok(sse_event_bytes(
+                            event_type,
+                            json!({ "type": event_type }),
+                        ));
+                    }
+                    Ok(Some(ImageGenerationStreamEvent::Completed(image))) => {
+                        if let Err(err) = validate_image_base64(&image.b64_json) {
+                            yield Ok(sse_error_event_bytes(&err.to_string()));
+                            return;
+                        }
+                        let response = build_openai_images_response(image);
+                        yield Ok(sse_event_bytes("image_generation.completed", json!(response)));
+                        yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        yield Ok(sse_error_event_bytes(&err.to_string()));
+                        return;
+                    }
+                }
+            }
+        }
+
+        let events_seen = if event_types.is_empty() {
+            "(none)".to_string()
+        } else {
+            event_types.sort();
+            event_types.dedup();
+            event_types.join(", ")
+        };
+        yield Ok(sse_error_event_bytes(&format!(
+            "Codex image generation finished without image_generation_call.result; events seen: {events_seen}"
+        )));
+    }
+}
+
 fn build_image_prompt_text(request: &ParsedImageGenerationRequest) -> String {
     let mut text = format!(
         "Use the image_generation tool to render the following. Request: {}. Output format: {}.",
@@ -315,6 +434,42 @@ fn parse_image_generation_sse_block(
     block: &str,
     event_types: &mut Vec<String>,
 ) -> Result<Option<GeneratedImage>, ProxyError> {
+    let Some(event) = parse_sse_json_block(block, event_types)? else {
+        return Ok(None);
+    };
+    image_from_codex_event(&event)
+}
+
+enum ImageGenerationStreamEvent {
+    Progress(&'static str),
+    Completed(GeneratedImage),
+}
+
+fn image_generation_stream_event_from_block(
+    block: &str,
+    event_types: &mut Vec<String>,
+) -> Result<Option<ImageGenerationStreamEvent>, ProxyError> {
+    let Some(event) = parse_sse_json_block(block, event_types)? else {
+        return Ok(None);
+    };
+    if let Some(image) = image_from_codex_event(&event)? {
+        return Ok(Some(ImageGenerationStreamEvent::Completed(image)));
+    }
+    let progress = match event.get("type").and_then(Value::as_str) {
+        Some("response.image_generation_call.in_progress") => Some("image_generation.queued"),
+        Some("response.image_generation_call.generating") => Some("image_generation.generating"),
+        Some("response.image_generation_call.partial_image") => {
+            Some("image_generation.partial_image")
+        }
+        _ => None,
+    };
+    Ok(progress.map(ImageGenerationStreamEvent::Progress))
+}
+
+fn parse_sse_json_block(
+    block: &str,
+    event_types: &mut Vec<String>,
+) -> Result<Option<Value>, ProxyError> {
     let data_lines: Vec<&str> = block
         .lines()
         .filter_map(|line| strip_sse_field(line, "data"))
@@ -335,6 +490,10 @@ fn parse_image_generation_sse_block(
         event_types.push(event_type.to_string());
     }
 
+    Ok(Some(event))
+}
+
+fn image_from_codex_event(event: &Value) -> Result<Option<GeneratedImage>, ProxyError> {
     if event.get("type").and_then(Value::as_str) != Some("response.output_item.done") {
         return Ok(None);
     }
@@ -356,6 +515,23 @@ fn parse_image_generation_sse_block(
             .and_then(Value::as_str)
             .map(ToString::to_string),
     }))
+}
+
+fn sse_event_bytes(event: &str, data: Value) -> Bytes {
+    let data = serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
+    Bytes::from(format!("event: {event}\ndata: {data}\n\n"))
+}
+
+fn sse_error_event_bytes(message: &str) -> Bytes {
+    sse_event_bytes(
+        "error",
+        json!({
+            "error": {
+                "message": message,
+                "type": "upstream_error",
+            }
+        }),
+    )
 }
 
 fn validate_image_base64(value: &str) -> Result<(), ProxyError> {
@@ -409,6 +585,8 @@ mod tests {
             quality: None,
             style: None,
             background: None,
+            stream: None,
+            partial_images: None,
         })
         .expect("valid request");
 
@@ -430,6 +608,8 @@ mod tests {
             quality: None,
             style: None,
             background: None,
+            stream: None,
+            partial_images: None,
         })
         .expect_err("url response format should fail");
 
@@ -448,6 +628,8 @@ mod tests {
             quality: Some("medium".to_string()),
             style: None,
             background: None,
+            stream: Some(true),
+            partial_images: Some(0),
         })
         .expect("valid request");
 

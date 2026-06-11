@@ -23,6 +23,7 @@ import {
   X,
   FileDown,
   FileUp,
+  Image,
 } from "lucide-react";
 import { useCodexOauth } from "./hooks/useCodexOauth";
 import { copyText } from "@/lib/clipboard";
@@ -43,6 +44,10 @@ interface CodexOAuthSectionProps {
   fastModeEnabled?: boolean;
   /** FAST mode 切换回调 */
   onFastModeChange?: (enabled: boolean) => void;
+  /** 是否启用 Codex OAuth 生成图片能力 */
+  imageGenerationEnabled?: boolean;
+  /** 生成图片能力切换回调 */
+  onImageGenerationChange?: (enabled: boolean) => void;
 }
 
 /**
@@ -59,6 +64,8 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
   showLoggedInAccounts = false,
   fastModeEnabled = false,
   onFastModeChange,
+  imageGenerationEnabled = false,
+  onImageGenerationChange,
 }) => {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
@@ -139,6 +146,30 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             checked={fastModeEnabled}
             onCheckedChange={onFastModeChange}
             aria-label={t("codexOauth.fastMode", "FAST mode")}
+          />
+        </div>
+      )}
+
+      {onImageGenerationChange && (
+        <div className="flex items-center justify-between rounded-md border bg-muted/30 p-3">
+          <div className="space-y-1 pr-4">
+            <div className="flex items-center gap-2">
+              <Image className="h-4 w-4 text-muted-foreground" />
+              <Label className="text-sm font-medium">
+                {t("codexOauth.imageGeneration", "生成图片")}
+              </Label>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("codexOauth.imageGenerationDescription", {
+                defaultValue:
+                  "Enable OpenAI-compatible /v1/images/generations through the ChatGPT Codex backend.",
+              })}
+            </p>
+          </div>
+          <Switch
+            checked={imageGenerationEnabled}
+            onCheckedChange={onImageGenerationChange}
+            aria-label={t("codexOauth.imageGeneration", "生成图片")}
           />
         </div>
       )}
@@ -274,14 +305,16 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             onClick={() => setImportOpen(true)}
             variant="outline"
           >
-            <FileDown className="mr-2 h-4 w-4" /> {t("codexSession.importEntry", "导入 Session")}
+            <FileDown className="mr-2 h-4 w-4" />{" "}
+            {t("codexSession.importEntry", "导入 Session")}
           </Button>
           <Button
             type="button"
             onClick={() => setExportOpen(true)}
             variant="outline"
           >
-            <FileUp className="mr-2 h-4 w-4" /> {t("codexSession.exportEntry", "导出")}
+            <FileUp className="mr-2 h-4 w-4" />{" "}
+            {t("codexSession.exportEntry", "导出")}
           </Button>
         </div>
       )}
@@ -295,12 +328,19 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
           className="w-full"
           size="sm"
         >
-          <FileDown className="mr-2 h-4 w-4" /> {t("codexSession.importEntryEmpty", "或从外部导入 Codex Session")}
+          <FileDown className="mr-2 h-4 w-4" />{" "}
+          {t("codexSession.importEntryEmpty", "或从外部导入 Codex Session")}
         </Button>
       )}
 
-      <CodexSessionImportDialog open={importOpen} onOpenChange={setImportOpen} />
-      <CodexSessionExportDialog open={exportOpen} onOpenChange={setExportOpen} />
+      <CodexSessionImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+      />
+      <CodexSessionExportDialog
+        open={exportOpen}
+        onOpenChange={setExportOpen}
+      />
 
       {/* 轮询中状态 */}
       {isPolling && deviceCode && (

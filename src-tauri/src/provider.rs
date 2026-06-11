@@ -244,6 +244,13 @@ impl Provider {
             .unwrap_or(false)
     }
 
+    pub fn codex_image_generation_enabled(&self) -> bool {
+        self.meta
+            .as_ref()
+            .map(|m| m.codex_image_generation_enabled())
+            .unwrap_or(false)
+    }
+
     pub fn has_usage_script_enabled(&self) -> bool {
         self.meta
             .as_ref()
@@ -611,6 +618,12 @@ pub struct ProviderMeta {
     /// Codex OAuth FAST mode: inject `service_tier = "priority"` for ChatGPT Codex requests.
     #[serde(rename = "codexFastMode", skip_serializing_if = "Option::is_none")]
     pub codex_fast_mode: Option<bool>,
+    /// Codex OAuth image generation via ChatGPT Codex backend. Defaults off.
+    #[serde(
+        rename = "codexImageGenerationEnabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub codex_image_generation_enabled: Option<bool>,
     /// Codex Responses -> Chat Completions reasoning capability metadata.
     #[serde(rename = "codexChatReasoning", skip_serializing_if = "Option::is_none")]
     pub codex_chat_reasoning: Option<CodexChatReasoningConfig>,
@@ -633,6 +646,12 @@ impl ProviderMeta {
     /// 会按更高速率消耗 ChatGPT 订阅配额，用户需显式开启以换取更低延迟。
     pub fn codex_fast_mode_enabled(&self) -> bool {
         self.codex_fast_mode.unwrap_or(false)
+    }
+
+    /// Codex OAuth 图片生成能力是否启用。默认关闭，避免无意中调用 ChatGPT
+    /// Codex 内部 image_generation 工具。
+    pub fn codex_image_generation_enabled(&self) -> bool {
+        self.codex_image_generation_enabled.unwrap_or(false)
     }
 
     /// 解析指定托管认证供应商绑定的账号 ID。
@@ -1081,6 +1100,25 @@ mod tests {
         let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
 
         assert!(value.get("pricingModelSource").is_none());
+    }
+
+    #[test]
+    fn provider_meta_serializes_codex_image_generation_enabled() {
+        let meta = ProviderMeta {
+            codex_image_generation_enabled: Some(true),
+            ..ProviderMeta::default()
+        };
+
+        let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
+
+        assert_eq!(
+            value
+                .get("codexImageGenerationEnabled")
+                .and_then(|item| item.as_bool()),
+            Some(true)
+        );
+        assert!(meta.codex_image_generation_enabled());
+        assert!(value.get("codex_image_generation_enabled").is_none());
     }
 
     #[test]

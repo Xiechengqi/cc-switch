@@ -19,6 +19,7 @@ pub mod claude_oauth_auth;
 mod codex;
 pub(crate) mod codex_chat_common;
 pub mod codex_chat_history;
+pub mod codex_image_generation;
 pub mod codex_oauth_auth;
 pub mod codex_oauth_session;
 pub mod copilot_auth;

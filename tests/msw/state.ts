@@ -23,6 +23,12 @@ type LiveProviderIdsByApp = Record<
 type ShareConnectInfo = {
   tunnelUrl: string;
   subdomain: string;
+  examples: Array<{
+    id: string;
+    method: string;
+    path: string;
+    curl: string;
+  }>;
 };
 
 const createDefaultProviders = (): ProvidersByApp => ({
@@ -431,6 +437,7 @@ export const getShareConnectInfo = (shareId: string): ShareConnectInfo | null =>
   return {
     tunnelUrl: share.tunnelUrl ?? "",
     subdomain: share.subdomain ?? "",
+    examples: [],
   };
 };
 

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Copy, Edit3, Play, Power, RotateCcw, Trash2 } from "lucide-react";
 import type {
   PublicMarket,
+  ShareConnectExample,
   ShareAccessByApp,
   ShareRecord,
   TunnelConfig,
@@ -18,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { useProviderHealth } from "@/lib/query/failover";
+import { useShareConnectInfoQuery } from "@/lib/query/share";
 import { copyText } from "@/lib/clipboard";
 import { toast } from "sonner";
 import { SHARE_REGIONS } from "@/config/shareRegions";
@@ -199,6 +201,13 @@ export function ShareCard({
     tunnelConfigured,
     tunnelStatus,
   );
+  const { data: connectInfo } = useShareConnectInfoQuery(share.id, true);
+  const connectDisplay = connectInfo ?? {
+    tunnelUrl: tunnelDisplay.tunnelUrl,
+    subdomain: tunnelDisplay.subdomain,
+    examples: [],
+  };
+  const connectExamples = connectDisplay.examples ?? [];
   const usageMarkets = markets.filter(
     (market) => (market.marketKind ?? "usage") !== "share",
   );
@@ -393,22 +402,36 @@ export function ShareCard({
           <div className="grid gap-2 lg:grid-cols-3">
             <ConnectInlineValue
               label={t("share.tunnelUrl")}
-              value={tunnelDisplay.tunnelUrl}
+              value={connectDisplay.tunnelUrl}
               onCopy={() =>
-                void handleCopy(tunnelDisplay.tunnelUrl, "share.toast.copyUrl")
+                void handleCopy(connectDisplay.tunnelUrl, "share.toast.copyUrl")
               }
             />
             <ConnectInlineValue
               label={t("share.subdomain")}
-              value={tunnelDisplay.subdomain}
+              value={connectDisplay.subdomain}
               onCopy={() =>
                 void handleCopy(
-                  tunnelDisplay.subdomain,
+                  connectDisplay.subdomain,
                   "share.toast.copySubdomain",
                 )
               }
             />
           </div>
+
+          {connectExamples.length > 0 ? (
+            <div className="grid gap-3 xl:grid-cols-2">
+              {connectExamples.map((example) => (
+                <ConnectExampleBlock
+                  key={`${example.id}:${example.path}`}
+                  example={example}
+                  onCopy={() =>
+                    void handleCopy(example.curl, "share.toast.copyCurl")
+                  }
+                />
+              ))}
+            </div>
+          ) : null}
         </section>
 
         <section className="space-y-4 border-t border-border-default/70 pt-4">
@@ -652,6 +675,52 @@ function ConnectInlineValue({
           <Copy className="h-3.5 w-3.5" />
         </Button>
       </div>
+    </div>
+  );
+}
+
+function ConnectExampleBlock({
+  example,
+  onCopy,
+}: {
+  example: ShareConnectExample;
+  onCopy: () => void;
+}) {
+  const { t } = useTranslation();
+  const label =
+    example.id === "text"
+      ? t("share.connectExamples.text", {
+          defaultValue: "生成文字 API 调用",
+        })
+      : example.id === "image"
+        ? t("share.connectExamples.image", {
+            defaultValue: "生成图片 API 调用",
+          })
+        : example.id;
+
+  return (
+    <div className="min-w-0 rounded-md border border-border-default bg-background/60 px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs text-muted-foreground">{label}</div>
+          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+            <span>{example.method}</span>
+            <code className="min-w-0 truncate">{example.path}</code>
+          </div>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0"
+          disabled={!example.curl}
+          onClick={onCopy}
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-muted/40 p-2 text-xs leading-5">
+        <code>{example.curl}</code>
+      </pre>
     </div>
   );
 }

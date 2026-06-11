@@ -52,6 +52,8 @@ interface CodexFormFieldsProps {
   isCodexOauthAuthenticated?: boolean;
   selectedCodexAccountId?: string | null;
   onCodexAccountSelect?: (accountId: string | null) => void;
+  codexImageGenerationEnabled?: boolean;
+  onCodexImageGenerationChange?: (enabled: boolean) => void;
   isCursorOauthPreset?: boolean;
   selectedCursorAccountId?: string | null;
   onCursorAccountSelect?: (accountId: string | null) => void;
@@ -124,6 +126,8 @@ export function CodexFormFields({
   isCodexOauthAuthenticated = false,
   selectedCodexAccountId,
   onCodexAccountSelect,
+  codexImageGenerationEnabled,
+  onCodexImageGenerationChange,
   isCursorOauthPreset = false,
   selectedCursorAccountId,
   onCursorAccountSelect,
@@ -305,6 +309,8 @@ export function CodexFormFields({
           selectedAccountId={selectedCodexAccountId}
           onAccountSelect={onCodexAccountSelect}
           allowDefaultAccountOption={false}
+          imageGenerationEnabled={codexImageGenerationEnabled}
+          onImageGenerationChange={onCodexImageGenerationChange}
         />
       )}
 

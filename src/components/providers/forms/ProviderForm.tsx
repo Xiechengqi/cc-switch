@@ -376,6 +376,9 @@ function ProviderFormFull({
         initialData?.meta?.pricingModelSource,
       ),
     });
+    setCodexImageGenerationEnabled(
+      initialData?.meta?.codexImageGenerationEnabled ?? false,
+    );
     setCodexChatReasoning(initialData?.meta?.codexChatReasoning ?? {});
   }, [appId, initialData, supportsFullUrl]);
 
@@ -559,6 +562,10 @@ function ProviderFormFull({
   const [codexFastMode, setCodexFastMode] = useState<boolean>(
     () => initialData?.meta?.codexFastMode ?? false,
   );
+  const [codexImageGenerationEnabled, setCodexImageGenerationEnabled] =
+    useState<boolean>(
+      () => initialData?.meta?.codexImageGenerationEnabled ?? false,
+    );
   const [codexChatReasoning, setCodexChatReasoning] =
     useState<CodexChatReasoning>(
       () => initialData?.meta?.codexChatReasoning ?? {},
@@ -1841,6 +1848,9 @@ function ProviderFormFull({
           ? selectedGitHubAccountId
           : undefined,
       codexFastMode: isCodexOauthProvider ? codexFastMode : undefined,
+      codexImageGenerationEnabled: isCodexOfficialPreset
+        ? codexImageGenerationEnabled
+        : undefined,
       codexChatReasoning:
         appId === "codex" &&
         category !== "official" &&
@@ -1878,6 +1888,10 @@ function ProviderFormFull({
 
     if (!isCodexOauthProvider && "codexFastMode" in nextMeta) {
       delete nextMeta.codexFastMode;
+    }
+
+    if (!isCodexOfficialPreset && "codexImageGenerationEnabled" in nextMeta) {
+      delete nextMeta.codexImageGenerationEnabled;
     }
 
     payload.meta = nextMeta;
@@ -2597,6 +2611,8 @@ function ProviderFormFull({
               onApiFormatChange={handleCodexApiFormatChange}
               codexChatReasoning={codexChatReasoning}
               onCodexChatReasoningChange={setCodexChatReasoning}
+              codexImageGenerationEnabled={codexImageGenerationEnabled}
+              onCodexImageGenerationChange={setCodexImageGenerationEnabled}
               catalogModels={codexCatalogModels}
               onCatalogModelsChange={setCodexCatalogModels}
               speedTestEndpoints={speedTestEndpoints}

@@ -1542,7 +1542,11 @@ async fn invoke_local_admin_scoped(
             let share = ShareService::get_detail(&app_state.db, &share_id)
                 .map_err(WebError::internal)?
                 .ok_or_else(|| WebError::not_found(format!("Share not found: {share_id}")))?;
-            Ok(share_connect_info(&share))
+            Ok(json!(crate::commands::share::build_share_connect_info(
+                &app_state.db,
+                &share
+            )
+            .map_err(WebError::internal)?))
         }
         "list_share_markets" => Ok(json!(crate::commands::share::list_share_markets()
             .await
@@ -1577,7 +1581,11 @@ async fn invoke_share_scoped(
         "list_shares" => Ok(json!([sanitize_share_for_web(scope.share.clone())])),
         "get_share_detail" => Ok(json!(Some(sanitize_share_for_web(scope.share.clone())))),
         "get_tunnel_status" => Ok(json!(share_tunnel_status(state, share_id).await?)),
-        "get_share_connect_info" => Ok(json!(share_connect_info(&scope.share))),
+        "get_share_connect_info" => Ok(json!(crate::commands::share::build_share_connect_info(
+            &state.db,
+            &scope.share
+        )
+        .map_err(WebError::internal)?)),
         "list_share_markets" => Ok(json!([])),
         _ => Err(WebError::not_found(format!(
             "share web command is not exposed: {command}"
@@ -2373,18 +2381,6 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "delete_env_vars"
             | "restore_env_backup"
     )
-}
-
-fn share_connect_info(share: &crate::database::ShareRecord) -> Value {
-    let config = current_tunnel_config();
-    let subdomain = share
-        .subdomain
-        .clone()
-        .unwrap_or_else(|| format!("share-{}", &share.id[..8]));
-    json!({
-        "tunnelUrl": share.tunnel_url.clone().unwrap_or_else(|| config.get_tunnel_addr(&subdomain)),
-        "subdomain": subdomain,
-    })
 }
 
 fn current_tunnel_config() -> crate::tunnel::config::TunnelConfig {

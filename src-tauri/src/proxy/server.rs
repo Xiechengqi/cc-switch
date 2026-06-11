@@ -369,6 +369,23 @@ impl ProxyServer {
             .route("/v1/responses", post(handlers::handle_responses))
             .route("/v1/v1/responses", post(handlers::handle_responses))
             .route("/codex/v1/responses", post(handlers::handle_responses))
+            // OpenAI Images API (Codex OAuth 生成图片能力)
+            .route(
+                "/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route(
+                "/v1/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route(
+                "/v1/v1/images/generations",
+                post(handlers::handle_images_generations),
+            )
+            .route(
+                "/codex/v1/images/generations",
+                post(handlers::handle_images_generations),
+            )
             // OpenAI Responses Compact API (Codex CLI 远程压缩，透传)
             .route(
                 "/responses/compact",

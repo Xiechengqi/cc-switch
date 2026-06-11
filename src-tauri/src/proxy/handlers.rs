@@ -16,12 +16,17 @@ use super::{
     },
     handler_context::RequestContext,
     providers::{
-        codex_chat_history::record_responses_sse_stream, get_adapter, get_claude_api_format,
+        codex_chat_history::record_responses_sse_stream,
+        codex_image_generation::{
+            build_openai_images_response, generate_image_with_codex_oauth,
+            OpenAiImageGenerationRequest,
+        },
+        get_adapter, get_claude_api_format,
         streaming::create_anthropic_sse_stream,
         streaming_codex_chat::create_responses_sse_stream_from_chat_with_context,
         streaming_gemini::create_anthropic_sse_stream_from_gemini,
-        streaming_responses::create_anthropic_sse_stream_from_responses, transform,
-        transform_codex_chat, transform_gemini, transform_responses,
+        streaming_responses::create_anthropic_sse_stream_from_responses,
+        transform, transform_codex_chat, transform_gemini, transform_responses,
     },
     response_processor::{
         create_logged_passthrough_stream, process_response, read_decoded_body,
@@ -35,6 +40,7 @@ use super::{
     ProxyError,
 };
 use crate::app_config::AppType;
+use crate::commands::CodexOAuthState;
 use crate::database::PRICING_SOURCE_REQUEST;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
@@ -42,6 +48,7 @@ use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::str::FromStr;
+use tauri::Manager;
 
 const SHARE_ROUTER_REQUEST_LOGS_LIMIT: usize = 10;
 
@@ -1042,6 +1049,91 @@ pub async fn handle_responses(
         connection_guard,
     )
     .await
+}
+
+/// 处理 /v1/images/generations 请求（OpenAI Images API - Codex OAuth 生图）
+pub async fn handle_images_generations(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    let (parts, req_body) = request.into_parts();
+    let headers = parts.headers;
+    let body_bytes = req_body
+        .collect()
+        .await
+        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
+        .to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ProxyError::InvalidRequest(format!("Failed to parse request body: {e}")))?;
+
+    let ctx =
+        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+
+    if !ctx.provider.is_codex_official_with_managed_auth() {
+        return Ok(codex_image_error_response(
+            StatusCode::FORBIDDEN,
+            "unsupported_provider",
+            "Image generation requires the Codex OpenAI Official provider with a managed ChatGPT account.",
+        ));
+    }
+
+    if !ctx.provider.codex_image_generation_enabled() {
+        return Ok(codex_image_error_response(
+            StatusCode::FORBIDDEN,
+            "capability_disabled",
+            "Image generation is disabled for the selected Codex OAuth provider.",
+        ));
+    }
+
+    let Some(app_handle) = &state.app_handle else {
+        return Err(ProxyError::AuthError(
+            "Codex OAuth image generation is unavailable without app state".to_string(),
+        ));
+    };
+
+    let image_request: OpenAiImageGenerationRequest = serde_json::from_value(body)
+        .map_err(|e| ProxyError::InvalidRequest(format!("Invalid image request: {e}")))?;
+    let account_id = ctx
+        .provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("codex_oauth"));
+    let codex_state = app_handle.state::<CodexOAuthState>();
+    let codex_auth = codex_state.0.read().await;
+    let token = match account_id.as_deref() {
+        Some(id) => codex_auth.get_valid_token_for_account(id).await,
+        None => codex_auth.get_valid_token().await,
+    }
+    .map_err(|e| ProxyError::AuthError(format!("Codex OAuth 认证失败: {e}")))?;
+    let resolved_account_id = match account_id {
+        Some(id) => Some(id),
+        None => codex_auth.default_account_id().await,
+    };
+
+    drop(codex_auth);
+
+    let image =
+        generate_image_with_codex_oauth(&token, resolved_account_id.as_deref(), image_request)
+            .await?;
+
+    Ok(Json(build_openai_images_response(image)).into_response())
+}
+
+fn codex_image_error_response(
+    status: StatusCode,
+    error_type: &str,
+    message: &str,
+) -> axum::response::Response {
+    (
+        status,
+        Json(json!({
+            "error": {
+                "message": message,
+                "type": error_type,
+            }
+        })),
+    )
+        .into_response()
 }
 
 /// 处理 /v1/responses/compact 请求（OpenAI Responses Compact API - Codex CLI 透传）

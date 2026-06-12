@@ -828,6 +828,9 @@ export function SharePage({
           tunnelConfig={tunnelConfig}
           tunnelConfigSaving={configureTunnelMutation.isPending}
           isSubmitting={createMutation.isPending || enableMutation.isPending}
+          markets={markets}
+          marketsLoading={marketsLoading}
+          marketsError={marketsError ? extractErrorMessage(marketsError) : null}
           providersByApp={
             providersByApp as Record<
               "claude" | "codex" | "gemini",
@@ -837,6 +840,7 @@ export function SharePage({
           onSaveTunnelConfig={(config) =>
             configureTunnelMutation.mutateAsync(config)
           }
+          onRetryMarkets={() => void refetchMarkets()}
           onSubmit={handleCreate}
         />
       ) : null}

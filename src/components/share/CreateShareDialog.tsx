@@ -89,8 +89,11 @@ interface CreateShareDialogProps {
   isSubmitting: boolean;
   submitLabel?: string;
   markets?: PublicMarket[];
+  marketsLoading?: boolean;
+  marketsError?: string | null;
   /** P8 多 app share：每个 app_type 各自一组候选（已过滤掉被别的 share 绑定的）。 */
   providersByApp: Record<keyof ShareBindings, ProviderOption[]>;
+  onRetryMarkets?: () => void;
   onSaveTunnelConfig: (config: TunnelConfig) => Promise<void> | void;
   onSubmit: (
     params: CreateShareParams,
@@ -177,7 +180,10 @@ export function CreateShareDialog({
   isSubmitting,
   submitLabel,
   markets = EMPTY_MARKETS,
+  marketsLoading = false,
+  marketsError = null,
   providersByApp,
+  onRetryMarkets,
   onSaveTunnelConfig,
   onSubmit,
 }: CreateShareDialogProps) {
@@ -990,7 +996,23 @@ export function CreateShareDialog({
                         })}
                       </div>
                     ) : null}
-                    {usageMarkets.length === 0 ? (
+                    {marketsLoading && usageMarkets.length === 0 ? (
+                      <div className="text-xs text-muted-foreground">
+                        {t("common.loading", { defaultValue: "Loading" })}
+                      </div>
+                    ) : null}
+                    {marketsError ? (
+                      <button
+                        type="button"
+                        className="text-xs text-destructive underline"
+                        onClick={onRetryMarkets}
+                      >
+                        {marketsError}
+                      </button>
+                    ) : null}
+                    {!marketsLoading &&
+                    !marketsError &&
+                    usageMarkets.length === 0 ? (
                       <div className="text-xs text-muted-foreground">
                         {t("share.market.empty", {
                           defaultValue: "暂无可用的 token market",
@@ -1022,7 +1044,11 @@ export function CreateShareDialog({
                       value={
                         selectedShareMarketEmail || "__select_share_market__"
                       }
-                      disabled={marketDisabled || shareMarkets.length === 0}
+                      disabled={
+                        marketDisabled ||
+                        marketsLoading ||
+                        shareMarkets.length === 0
+                      }
                       onValueChange={(value) =>
                         value === "__select_share_market__"
                           ? undefined
@@ -1069,7 +1095,23 @@ export function CreateShareDialog({
                         })}
                       </div>
                     ) : null}
-                    {shareMarkets.length === 0 ? (
+                    {marketsLoading && shareMarkets.length === 0 ? (
+                      <div className="text-xs text-muted-foreground">
+                        {t("common.loading", { defaultValue: "Loading" })}
+                      </div>
+                    ) : null}
+                    {marketsError ? (
+                      <button
+                        type="button"
+                        className="text-xs text-destructive underline"
+                        onClick={onRetryMarkets}
+                      >
+                        {marketsError}
+                      </button>
+                    ) : null}
+                    {!marketsLoading &&
+                    !marketsError &&
+                    shareMarkets.length === 0 ? (
                       <div className="text-xs text-muted-foreground">
                         {t("share.accountMarket.empty", {
                           defaultValue: "暂无可委托的 share market",

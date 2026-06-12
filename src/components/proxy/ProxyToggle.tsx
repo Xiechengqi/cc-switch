@@ -26,6 +26,7 @@ import {
   useCreateShareMutation,
   useProvidersQuery,
   useSettingsQuery,
+  useShareMarketsQuery,
   useSharesQuery,
   useUpdateShareAclMutation,
 } from "@/lib/query";
@@ -76,6 +77,12 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     () => getTunnelConfigFromSettings(settings),
     [settings],
   );
+  const {
+    data: markets = [],
+    isLoading: marketsLoading,
+    error: marketsError,
+    refetch: refetchMarkets,
+  } = useShareMarketsQuery(createOpen);
   const selectedShare = useMemo(
     () => selectBestShare(shares, activeApp),
     [shares, activeApp],
@@ -365,6 +372,9 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         isSubmitting={
           createShareMutation.isPending || stage === "creating-share"
         }
+        markets={markets}
+        marketsLoading={marketsLoading}
+        marketsError={marketsError ? extractErrorMessage(marketsError) : null}
         tunnelConfig={tunnelConfig}
         tunnelConfigSaving={configureTunnelMutation.isPending}
         submitLabel={t("share.toggle.createAndEnable", {
@@ -373,6 +383,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         onSaveTunnelConfig={(config) =>
           configureTunnelMutation.mutateAsync(config)
         }
+        onRetryMarkets={() => void refetchMarkets()}
         onSubmit={createAndEnable}
       />
 

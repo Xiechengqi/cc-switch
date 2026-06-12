@@ -159,7 +159,6 @@ function buildDefaultValues(
     description: "",
     forSale: "Yes",
     saleMarketKind: "token",
-    autoStart: true,
     tokenLimit: UNLIMITED_TOKEN_LIMIT,
     parallelLimit: UNLIMITED_PARALLEL_LIMIT,
     expiresInSecs: permanentExpiresInSecs(),
@@ -272,7 +271,6 @@ export function CreateShareDialog({
   const saleMarketKind = form.watch("saleMarketKind") as "token" | "share";
   const subdomainValue = form.watch("subdomain") as string;
   const forSaleValue = form.watch("forSale") as "Yes" | "No" | "Free";
-  const autoStartValue = form.watch("autoStart") as boolean;
   const descriptionValue = form.watch("description") as string;
   const expiresInSecsValue = form.watch("expiresInSecs") as number;
   const unlimitedTokenLimit = isUnlimitedTokenLimit(tokenLimit);
@@ -435,7 +433,6 @@ export function CreateShareDialog({
         parallelLimit: values.parallelLimit,
         expiresInSecs: values.expiresInSecs,
         subdomain: values.subdomain || undefined,
-        autoStart: values.autoStart,
       },
       {
         sharedWithEmails: flatSharedWithEmails,
@@ -466,7 +463,6 @@ export function CreateShareDialog({
   const summary = useMemo(
     () =>
       buildDefaultsSummary(t, {
-        autoStart: autoStartValue,
         forSale: forSaleValue,
         saleMarketKind,
         marketAccessMode,
@@ -479,7 +475,6 @@ export function CreateShareDialog({
       }),
     [
       t,
-      autoStartValue,
       forSaleValue,
       saleMarketKind,
       marketAccessMode,
@@ -797,30 +792,6 @@ export function CreateShareDialog({
                   <FieldError error={form.formState.errors.forSale?.message} />
                 </div>
 
-                <div className="space-y-1.5">
-                  <div className="flex min-h-10 items-center gap-2 rounded-md border border-border-default px-3 py-2">
-                    <Checkbox
-                      id="share-auto-start"
-                      checked={autoStartValue}
-                      onCheckedChange={(checked) =>
-                        form.setValue("autoStart", checked === true, {
-                          shouldDirty: true,
-                          shouldValidate: true,
-                        })
-                      }
-                    />
-                    <Label
-                      htmlFor="share-auto-start"
-                      className="cursor-pointer text-sm font-normal"
-                    >
-                      {t("share.autoStart")}
-                    </Label>
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {t("share.autoStartHint")}
-                  </div>
-                </div>
-
                 <div className="space-y-1.5 md:col-span-2">
                   <Label>
                     {t("share.saleMarketKind.title", {
@@ -968,7 +939,7 @@ export function CreateShareDialog({
                           </SelectItem>
                           {usageMarkets.map((market) => (
                             <SelectItem key={market.id} value={market.email}>
-                              {market.displayName}
+                              {formatMarketSelectLabel(market)}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -1073,7 +1044,7 @@ export function CreateShareDialog({
                         </SelectItem>
                         {shareMarkets.map((market) => (
                           <SelectItem key={market.id} value={market.email}>
-                            {market.displayName}
+                            {formatMarketSelectLabel(market)}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1485,6 +1456,10 @@ function shareAppDisplayLabel(app: keyof ShareBindings): string {
   return "Gemini";
 }
 
+function formatMarketSelectLabel(market: PublicMarket): string {
+  return market.displayName.replace(/^https?:\/\//i, "");
+}
+
 function FieldError({ error }: { error?: string }) {
   if (!error) return null;
   return <p className={cn("text-sm text-destructive")}>{error}</p>;
@@ -1560,7 +1535,6 @@ interface SummaryLine {
 function buildDefaultsSummary(
   t: ReturnType<typeof useTranslation>["t"],
   values: {
-    autoStart: boolean;
     forSale: "Yes" | "No" | "Free";
     saleMarketKind: "token" | "share";
     marketAccessMode: "selected" | "all";
@@ -1577,13 +1551,6 @@ function buildDefaultsSummary(
       key: "providerBinding",
       label: t("share.providerBindings", { defaultValue: "Provider 绑定" }),
       value: values.providerBinding,
-    },
-    {
-      key: "autoStart",
-      label: t("share.autoStart"),
-      value: values.autoStart
-        ? t("common.enabled", { defaultValue: "已启用" })
-        : t("common.disabled", { defaultValue: "未启用" }),
     },
     {
       key: "forSale",

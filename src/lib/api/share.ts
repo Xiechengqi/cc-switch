@@ -5,7 +5,9 @@ import { invokeCommand } from "@/lib/runtime";
  * P8 多 app share：键固定从 "claude" | "codex" | "gemini" 三个 app 里挑，缺省 = 该 app
  * 未绑定，对应请求会被拒绝并 emit share-needs-rebind。
  */
-export type ShareBindings = Partial<Record<"claude" | "codex" | "gemini", string>>;
+export type ShareBindings = Partial<
+  Record<"claude" | "codex" | "gemini", string>
+>;
 
 export type ShareAppAccess = {
   sharedWithEmails: string[];
@@ -71,7 +73,6 @@ export interface CreateShareParams {
   parallelLimit: number;
   expiresInSecs: number;
   subdomain?: string;
-  autoStart: boolean;
 }
 
 export interface UpdateShareProviderBindingParams {
@@ -127,7 +128,7 @@ export function sharePrimaryProviderId(
   share: Pick<ShareRecord, "bindings"> | null | undefined,
 ): string | null {
   const app = sharePrimaryApp(share);
-  return app ? share?.bindings?.[app] ?? null : null;
+  return app ? (share?.bindings?.[app] ?? null) : null;
 }
 
 export interface PublicMarket {
@@ -181,11 +182,6 @@ export interface UpdateShareForSaleOfficialPricePercentParams {
 export interface UpdateShareExpirationParams {
   shareId: string;
   expiresAt: string;
-}
-
-export interface UpdateShareAutoStartParams {
-  shareId: string;
-  autoStart: boolean;
 }
 
 export interface UpdateShareOwnerEmailParams {
@@ -301,21 +297,18 @@ async function updateForSale(
 async function updateForSaleOfficialPricePercent(
   params: UpdateShareForSaleOfficialPricePercentParams,
 ): Promise<ShareRecord> {
-  return invokeCommand<ShareRecord>("update_share_for_sale_official_price_percent", {
-    params,
-  });
+  return invokeCommand<ShareRecord>(
+    "update_share_for_sale_official_price_percent",
+    {
+      params,
+    },
+  );
 }
 
 async function updateExpiration(
   params: UpdateShareExpirationParams,
 ): Promise<ShareRecord> {
   return invokeCommand<ShareRecord>("update_share_expiration", { params });
-}
-
-async function updateAutoStart(
-  params: UpdateShareAutoStartParams,
-): Promise<ShareRecord> {
-  return invokeCommand<ShareRecord>("update_share_auto_start", { params });
 }
 
 async function updateOwnerEmail(
@@ -337,17 +330,22 @@ async function updateAcl(params: UpdateShareAclParams): Promise<ShareRecord> {
 async function updateProviderBinding(
   params: UpdateShareProviderBindingParams,
 ): Promise<ShareRecord> {
-  return invokeCommand<ShareRecord>("update_share_provider_binding", { params });
+  return invokeCommand<ShareRecord>("update_share_provider_binding", {
+    params,
+  });
 }
 
 async function listBindingHistory(
   shareId: string,
   limit?: number,
 ): Promise<ShareBindingHistoryEntry[]> {
-  return invokeCommand<ShareBindingHistoryEntry[]>("list_share_binding_history", {
-    shareId,
-    limit,
-  });
+  return invokeCommand<ShareBindingHistoryEntry[]>(
+    "list_share_binding_history",
+    {
+      shareId,
+      limit,
+    },
+  );
 }
 
 export interface ImportSharesResult {
@@ -449,7 +447,6 @@ export const shareApi = {
   updateForSale,
   updateForSaleOfficialPricePercent,
   updateExpiration,
-  updateAutoStart,
   updateOwnerEmail,
   transferOwner,
   updateAcl,

@@ -85,7 +85,6 @@ describe("share query hooks", () => {
       tokenLimit: 1000,
       parallelLimit: 3,
       expiresInSecs: 3600,
-      autoStart: false,
     });
 
     await waitFor(() =>

@@ -157,7 +157,9 @@ function useClientTunnelWriteMutation(
     mutationFn,
     onSuccess: async (state) => {
       queryClient.setQueryData(shareKeys.clientTunnel(), state);
-      await queryClient.invalidateQueries({ queryKey: shareKeys.clientTunnel() });
+      await queryClient.invalidateQueries({
+        queryKey: shareKeys.clientTunnel(),
+      });
       toast.success(
         buildMessages({
           successKey: "share.clientTunnel.saveSuccess",
@@ -198,7 +200,9 @@ export function useStartClientTunnelMutation() {
   return useMutation({
     mutationFn: shareApi.startClientTunnel,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: shareKeys.clientTunnel() });
+      await queryClient.invalidateQueries({
+        queryKey: shareKeys.clientTunnel(),
+      });
       toast.success(
         buildMessages({
           successKey: "share.clientTunnel.startSuccess",
@@ -231,7 +235,9 @@ export function useStopClientTunnelMutation() {
   return useMutation({
     mutationFn: shareApi.stopClientTunnel,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: shareKeys.clientTunnel() });
+      await queryClient.invalidateQueries({
+        queryKey: shareKeys.clientTunnel(),
+      });
       toast.success(
         buildMessages({
           successKey: "share.clientTunnel.stopSuccess",
@@ -444,7 +450,12 @@ export function useDisableShareMutation() {
         (current) =>
           current?.map((share) =>
             share.id === shareId
-              ? { ...share, status: "paused", tunnelUrl: null, autoStart: false }
+              ? {
+                  ...share,
+                  status: "paused",
+                  tunnelUrl: null,
+                  autoStart: false,
+                }
               : share,
           ),
       );
@@ -452,7 +463,12 @@ export function useDisableShareMutation() {
         shareKeys.detail(shareId),
         (current) =>
           current
-            ? { ...current, status: "paused", tunnelUrl: null, autoStart: false }
+            ? {
+                ...current,
+                status: "paused",
+                tunnelUrl: null,
+                autoStart: false,
+              }
             : current,
       );
 
@@ -620,20 +636,6 @@ export function useUpdateShareExpirationMutation() {
       successDefault: "到期时间已更新",
       errorKey: "share.toast.updateExpirationError",
       errorDefault: "更新到期时间失败: {{error}}",
-    },
-    ({ shareId }) => shareId,
-  );
-}
-
-export function useUpdateShareAutoStartMutation() {
-  return useShareActionMutation(
-    ({ shareId, autoStart }: { shareId: string; autoStart: boolean }) =>
-      shareApi.updateAutoStart({ shareId, autoStart }),
-    {
-      successKey: "share.toast.updateAutoStartSuccess",
-      successDefault: "开机启动设置已更新",
-      errorKey: "share.toast.updateAutoStartError",
-      errorDefault: "更新开机启动设置失败: {{error}}",
     },
     ({ shareId }) => shareId,
   );

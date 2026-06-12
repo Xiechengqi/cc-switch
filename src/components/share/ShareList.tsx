@@ -67,10 +67,6 @@ interface ShareListProps {
     share: ShareRecord,
     expiresAt: string,
   ) => Promise<void> | void;
-  onUpdateAutoStart: (
-    share: ShareRecord,
-    autoStart: boolean,
-  ) => Promise<void> | void;
   onUpdateOwnerEmail: (
     share: ShareRecord,
     ownerEmail: string,
@@ -102,7 +98,10 @@ interface ShareListProps {
    * provider"从 disabled 集合里挪出来——否则用户要换回原绑定时会被禁选。
    */
   providersByApp?: Partial<
-    Record<"claude" | "codex" | "gemini", import("./CreateShareDialog").ProviderOption[]>
+    Record<
+      "claude" | "codex" | "gemini",
+      import("./CreateShareDialog").ProviderOption[]
+    >
   >;
 }
 
@@ -136,7 +135,6 @@ export function ShareList({
   onUpdateForSale,
   onUpdateShareSalePricing,
   onUpdateExpiration,
-  onUpdateAutoStart,
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
@@ -243,7 +241,6 @@ export function ShareList({
           onUpdateForSale={onUpdateForSale}
           onUpdateShareSalePricing={onUpdateShareSalePricing}
           onUpdateExpiration={onUpdateExpiration}
-          onUpdateAutoStart={onUpdateAutoStart}
           onUpdateOwnerEmail={onUpdateOwnerEmail}
           onTransferOwner={onTransferOwner}
           onUpdateAcl={onUpdateAcl}

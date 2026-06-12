@@ -1579,7 +1579,9 @@ async fn invoke_share_scoped(
         "get_share_detail" => Ok(json!(Some(sanitize_share_for_web(scope.share.clone())))),
         "get_tunnel_status" => Ok(json!(share_tunnel_status(state, share_id).await?)),
         "get_share_connect_info" => Ok(json!(share_connect_info(&scope.share))),
-        "list_share_markets" => Ok(json!([])),
+        "list_share_markets" => Ok(json!(crate::commands::share::list_share_markets()
+            .await
+            .map_err(WebError::internal)?)),
         _ => Err(WebError::not_found(format!(
             "share web command is not exposed: {command}"
         ))),

@@ -41,11 +41,14 @@ pub struct CreateShareParams {
 #[serde(rename_all = "camelCase")]
 pub struct PublicMarket {
     pub id: String,
+    #[serde(alias = "display_name")]
     pub display_name: String,
     pub email: String,
     pub subdomain: String,
+    #[serde(alias = "public_base_url")]
     pub public_base_url: String,
     #[serde(default = "default_market_kind")]
+    #[serde(alias = "market_kind")]
     pub market_kind: String,
     pub status: String,
 }
@@ -706,11 +709,8 @@ pub async fn start_share_tunnel(
 pub async fn restore_active_share_tunnel(state: &AppState) -> Result<(), AppError> {
     for share in ShareService::list(&state.db)?
         .into_iter()
-        .filter(|share| share.status == "active" || share.auto_start)
+        .filter(should_restore_share_tunnel)
     {
-        if share.auto_start && share.status != "active" {
-            state.db.update_share_status(&share.id, "active")?;
-        }
         let already_running = {
             let mgr = state.tunnel_manager.read().await;
             mgr.get_info(&share.id).is_some()
@@ -733,6 +733,10 @@ pub async fn restore_active_share_tunnel(state: &AppState) -> Result<(), AppErro
     }
 
     Ok(())
+}
+
+fn should_restore_share_tunnel(share: &ShareRecord) -> bool {
+    share.status == "active"
 }
 
 pub(crate) async fn start_share_tunnel_with_error_tracking(
@@ -1259,6 +1263,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn public_markets_parse_router_snake_case_fields() {
+        let body: MarketsResponse = serde_json::from_value(serde_json::json!({
+            "markets": [
+                {
+                    "id": "market-1",
+                    "display_name": "Share Market",
+                    "email": "share-market@example.com",
+                    "subdomain": "share-market",
+                    "public_base_url": "https://share-market.example.com",
+                    "market_kind": "share",
+                    "status": "active"
+                }
+            ]
+        }))
+        .expect("router snake_case markets response should parse");
+
+        assert_eq!(body.markets[0].display_name, "Share Market");
+        assert_eq!(
+            body.markets[0].public_base_url,
+            "https://share-market.example.com"
+        );
+        assert_eq!(body.markets[0].market_kind, "share");
+    }
+
+    #[test]
+    fn restore_share_tunnel_uses_only_previous_active_status() {
+        let active = test_share("active", false);
+        let paused_legacy_auto_start = test_share("paused", true);
+
+        assert!(should_restore_share_tunnel(&active));
+        assert!(!should_restore_share_tunnel(&paused_legacy_auto_start));
+    }
+
+    #[test]
     fn share_market_delegation_preserves_per_app_shareto() {
         let mut access_by_app = HashMap::new();
         access_by_app.insert(
@@ -1307,5 +1345,35 @@ mod tests {
                 "new-share-market@example.com".to_string()
             ]
         );
+    }
+
+    fn test_share(status: &str, auto_start: bool) -> ShareRecord {
+        ShareRecord {
+            id: "share-1".to_string(),
+            name: "Test Share".to_string(),
+            owner_email: "owner@example.com".to_string(),
+            shared_with_emails: vec![],
+            market_access_mode: "selected".to_string(),
+            access_by_app: HashMap::new(),
+            for_sale_official_price_percent_by_app: HashMap::new(),
+            description: None,
+            for_sale: "No".to_string(),
+            sale_market_kind: "token".to_string(),
+            bindings: HashMap::new(),
+            dynamic_apps: HashSet::new(),
+            api_key: String::new(),
+            settings_config: None,
+            token_limit: -1,
+            parallel_limit: -1,
+            tokens_used: 0,
+            requests_count: 0,
+            expires_at: String::new(),
+            subdomain: Some("share-1".to_string()),
+            tunnel_url: None,
+            status: status.to_string(),
+            auto_start,
+            created_at: String::new(),
+            last_used_at: None,
+        }
     }
 }

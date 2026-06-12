@@ -96,10 +96,6 @@ interface EditShareDialogProps {
     share: ShareRecord,
     expiresAt: string,
   ) => Promise<void> | void;
-  onUpdateAutoStart: (
-    share: ShareRecord,
-    autoStart: boolean,
-  ) => Promise<void> | void;
   onUpdateOwnerEmail: (
     share: ShareRecord,
     ownerEmail: string,
@@ -157,7 +153,6 @@ export function EditShareDialog({
   onUpdateForSale,
   onUpdateShareSalePricing,
   onUpdateExpiration,
-  onUpdateAutoStart,
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
@@ -203,7 +198,6 @@ export function EditShareDialog({
   const [salePricingInputs, setSalePricingInputs] = useState<
     Record<string, string>
   >({});
-  const [autoStartInput, setAutoStartInput] = useState(false);
   const [expiryDateInput, setExpiryDateInput] = useState("");
   const [expiryHourInput, setExpiryHourInput] = useState("");
   const [expiryMinuteInput, setExpiryMinuteInput] = useState("");
@@ -329,7 +323,6 @@ export function EditShareDialog({
         currentShareSalePricing,
       ),
     );
-    setAutoStartInput(share.autoStart);
     const permanent = isPermanentExpiry(share.expiresAt);
     setExpiryPermanent(permanent);
     const expires = new Date(share.expiresAt);
@@ -492,7 +485,6 @@ export function EditShareDialog({
       const parsed = Number.parseInt(value, 10);
       return parsed < 1 || parsed > 100;
     });
-  const autoStartDirty = autoStartInput !== share.autoStart;
   const parsedExpiryHour = Number.parseInt(expiryHourInput, 10);
   const parsedExpiryMinute = Number.parseInt(expiryMinuteInput, 10);
   const computedExpiryIso =
@@ -543,7 +535,6 @@ export function EditShareDialog({
     aclDirty ||
     forSaleDirty ||
     salePricingDirty ||
-    autoStartDirty ||
     ownerEmailDirty ||
     descriptionDirty ||
     expiryDirty ||
@@ -588,7 +579,6 @@ export function EditShareDialog({
             : parseSalePricingInputs(salePricingInputs),
         );
       }
-      if (autoStartDirty) await onUpdateAutoStart(share, autoStartInput);
       if (ownerEmailDirty)
         await onUpdateOwnerEmail(share, normalizedOwnerEmail);
       if (descriptionDirty)
@@ -641,7 +631,7 @@ export function EditShareDialog({
         }}
       >
         <DialogContent className="flex max-h-[90vh] w-full max-w-3xl flex-col gap-0 p-0">
-          <DialogHeader className="flex flex-row items-start justify-between gap-4">
+          <DialogHeader>
             <div className="flex flex-col gap-1">
               <DialogTitle>
                 {t("share.editDialog.title", { defaultValue: "设置选项" })}
@@ -650,21 +640,6 @@ export function EditShareDialog({
                 </span>
               </DialogTitle>
             </div>
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                id={`edit-share-auto-start-${share.id}`}
-                checked={autoStartInput}
-                disabled={busy}
-                onCheckedChange={(checked) =>
-                  setAutoStartInput(checked === true)
-                }
-              />
-              <span className="cursor-pointer">
-                {t("share.editDialog.autoStartTopLabel", {
-                  defaultValue: "开机时自动启动此 Share",
-                })}
-              </span>
-            </label>
           </DialogHeader>
 
           <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
@@ -1021,7 +996,7 @@ export function EditShareDialog({
                         </SelectItem>
                         {usageMarkets.map((market) => (
                           <SelectItem key={market.id} value={market.email}>
-                            {market.displayName}
+                            {formatMarketSelectLabel(market)}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1125,7 +1100,7 @@ export function EditShareDialog({
                     <SelectContent>
                       {shareMarkets.map((market) => (
                         <SelectItem key={market.id} value={market.email}>
-                          {market.displayName}
+                          {formatMarketSelectLabel(market)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -1534,6 +1509,10 @@ function shareAppLabel(app: keyof ShareBindings) {
   if (app === "claude") return "Claude";
   if (app === "codex") return "Codex";
   return "Gemini";
+}
+
+function formatMarketSelectLabel(market: PublicMarket): string {
+  return market.displayName.replace(/^https?:\/\//i, "");
 }
 
 function MarketTags({

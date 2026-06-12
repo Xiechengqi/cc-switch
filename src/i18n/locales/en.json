@@ -2989,8 +2989,6 @@
     "descriptionSettings": "Description Settings",
     "forSale": "For Sale",
     "forSaleHint": "Mark whether this share is currently intended to be sold. Synced to the cc-switch-router share list.",
-    "autoStart": "Start on Launch",
-    "autoStartHint": "When enabled, cc-switch starts this share automatically on app launch.",
     "forSaleSettings": "For Sale Settings",
     "saveForSale": "Save For Sale",
     "forSaleOptions": {
@@ -2999,7 +2997,7 @@
       "free": "Free"
     },
     "market": {
-      "title": "Market",
+      "title": "Market Selection",
       "select": "Select Market",
       "all": "All",
       "restore": "Restore",
@@ -3133,7 +3131,6 @@
     "editDialog": {
       "title": "Settings",
       "save": "Save settings",
-      "autoStartTopLabel": "Auto-start this share on launch",
       "forSaleDisableHint": "When For Sale is Free or No, target markets and model pricing cannot be edited."
     },
     "confirmDeleteTitle": "Delete Share",
@@ -3163,8 +3160,6 @@
       "updateForSaleError": "Failed to update For Sale: {{error}}",
       "updateExpirationSuccess": "Expiration updated",
       "updateExpirationError": "Failed to update expiration: {{error}}",
-      "updateAutoStartSuccess": "Start on launch updated",
-      "updateAutoStartError": "Failed to update start on launch: {{error}}",
       "updateTokenLimitSuccess": "Token limit updated",
       "updateTokenLimitError": "Failed to update token limit: {{error}}",
       "updateParallelLimitSuccess": "Max concurrency updated",

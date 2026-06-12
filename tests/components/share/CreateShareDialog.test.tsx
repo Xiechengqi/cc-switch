@@ -82,8 +82,7 @@ async function selectProvider(
 describe("CreateShareDialog", () => {
   it("collapses advanced settings by default", () => {
     renderDialog();
-    // Advanced controls (e.g. ForSale select, autoStart checkbox) are hidden.
-    expect(screen.queryByLabelText("share.autoStart")).not.toBeInTheDocument();
+    // Advanced controls are hidden by default.
     expect(screen.queryByLabelText("share.tokenLimit")).not.toBeInTheDocument();
     expect(screen.queryByText(/将以默认设置创建/)).toBeInTheDocument();
   });
@@ -104,7 +103,6 @@ describe("CreateShareDialog", () => {
           ownerEmail: "owner@example.com",
           bindings: { claude: TEST_PROVIDERS[0]!.id },
           forSale: "Yes",
-          autoStart: true,
           tokenLimit: -1,
           parallelLimit: -1,
         }),

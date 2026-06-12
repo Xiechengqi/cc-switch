@@ -26,7 +26,6 @@ import {
   useProvidersQuery,
   useResetShareUsageMutation,
   useUpdateShareAclMutation,
-  useUpdateShareAutoStartMutation,
   useSharesQuery,
   useUpdateShareDescriptionMutation,
   useUpdateShareExpirationMutation,
@@ -189,7 +188,6 @@ export function SharePage({
   const updateSharePricingMutation =
     useUpdateShareForSaleOfficialPricePercentMutation();
   const updateExpirationMutation = useUpdateShareExpirationMutation();
-  const updateAutoStartMutation = useUpdateShareAutoStartMutation();
   const updateOwnerEmailMutation = useUpdateShareOwnerEmailMutation();
   const transferOwnerMutation = useTransferShareOwnerMutation();
   const updateAclMutation = useUpdateShareAclMutation();
@@ -723,16 +721,6 @@ export function SharePage({
                 : updateExpirationMutation.mutateAsync({
                     shareId: share.id,
                     expiresAt,
-                  }),
-            )
-          }
-          onUpdateAutoStart={(share, autoStart) =>
-            runShareAction(share, () =>
-              shareScoped
-                ? writeSharePatch(share, { autoStart })
-                : updateAutoStartMutation.mutateAsync({
-                    shareId: share.id,
-                    autoStart,
                   }),
             )
           }

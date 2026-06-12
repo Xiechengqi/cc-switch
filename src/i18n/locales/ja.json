@@ -2990,8 +2990,6 @@
     "descriptionSettings": "説明設定",
     "forSale": "販売可否",
     "forSaleHint": "この share に販売意向があるかを示します。cc-switch-router の share 一覧に同期されます。",
-    "autoStart": "起動時に開始",
-    "autoStartHint": "有効にすると、cc-switch 起動時にこの share を自動開始します。",
     "forSaleSettings": "販売可否設定",
     "saveForSale": "販売可否を保存",
     "forSaleOptions": {
@@ -3000,7 +2998,7 @@
       "free": "Free"
     },
     "market": {
-      "title": "Market",
+      "title": "Market 選択",
       "select": "Market を選択",
       "all": "All",
       "restore": "復元",
@@ -3134,7 +3132,6 @@
     "editDialog": {
       "title": "設定オプション",
       "save": "設定を保存",
-      "autoStartTopLabel": "起動時にこの Share を自動起動",
       "forSaleDisableHint": "For Sale が Free または No の場合、ターゲット市場とモデル価格は編集できません。"
     },
     "confirmDeleteTitle": "Share を削除",
@@ -3164,8 +3161,6 @@
       "updateForSaleError": "販売可否の更新に失敗しました: {{error}}",
       "updateExpirationSuccess": "期限を更新しました",
       "updateExpirationError": "期限の更新に失敗しました: {{error}}",
-      "updateAutoStartSuccess": "起動時開始設定を更新しました",
-      "updateAutoStartError": "起動時開始設定の更新に失敗しました: {{error}}",
       "updateTokenLimitSuccess": "Token 上限を更新しました",
       "updateTokenLimitError": "Token 上限の更新に失敗しました: {{error}}",
       "updateParallelLimitSuccess": "最大同時実行数を更新しました",

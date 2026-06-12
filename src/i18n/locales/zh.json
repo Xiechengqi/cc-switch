@@ -2989,8 +2989,6 @@
     "descriptionSettings": "说明设置",
     "forSale": "是否出售",
     "forSaleHint": "标记当前 share 是否有出售意愿，会同步到 cc-switch-router share 列表。",
-    "autoStart": "开机启动",
-    "autoStartHint": "开启后，cc-switch 启动时会自动开启这个 share。",
     "forSaleSettings": "出售意愿设置",
     "saveForSale": "保存出售意愿",
     "forSaleOptions": {
@@ -2999,7 +2997,7 @@
       "free": "Free"
     },
     "market": {
-      "title": "Market",
+      "title": "Market 选择",
       "select": "选择 Market",
       "all": "All",
       "restore": "还原",
@@ -3133,7 +3131,6 @@
     "editDialog": {
       "title": "设置选项",
       "save": "保存设置",
-      "autoStartTopLabel": "开机时自动启动此 Share",
       "forSaleDisableHint": "选择 Free 或 No 时，目标市场和模型定价将不可编辑。"
     },
     "confirmDeleteTitle": "删除分享",
@@ -3163,8 +3160,6 @@
       "updateForSaleError": "更新出售意愿失败: {{error}}",
       "updateExpirationSuccess": "到期时间已更新",
       "updateExpirationError": "更新到期时间失败: {{error}}",
-      "updateAutoStartSuccess": "开机启动设置已更新",
-      "updateAutoStartError": "更新开机启动设置失败: {{error}}",
       "updateTokenLimitSuccess": "Token 上限已更新",
       "updateTokenLimitError": "更新 Token 上限失败: {{error}}",
       "updateParallelLimitSuccess": "最大并发数已更新",

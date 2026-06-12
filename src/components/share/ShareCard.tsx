@@ -96,10 +96,6 @@ interface ShareCardProps {
     share: ShareRecord,
     expiresAt: string,
   ) => Promise<void> | void;
-  onUpdateAutoStart: (
-    share: ShareRecord,
-    autoStart: boolean,
-  ) => Promise<void> | void;
   onUpdateOwnerEmail: (
     share: ShareRecord,
     ownerEmail: string,
@@ -164,7 +160,6 @@ export function ShareCard({
   onUpdateForSale,
   onUpdateShareSalePricing,
   onUpdateExpiration,
-  onUpdateAutoStart,
   onUpdateOwnerEmail,
   onTransferOwner,
   onUpdateAcl,
@@ -471,12 +466,6 @@ export function ShareCard({
                   : String(share.parallelLimit)
               }
             />
-            <SummaryLine
-              label={t("share.autoStart")}
-              value={
-                share.autoStart ? t("common.enabled") : t("common.disabled")
-              }
-            />
           </div>
         </section>
 
@@ -504,7 +493,6 @@ export function ShareCard({
         onUpdateForSale={onUpdateForSale}
         onUpdateShareSalePricing={onUpdateShareSalePricing}
         onUpdateExpiration={onUpdateExpiration}
-        onUpdateAutoStart={onUpdateAutoStart}
         onUpdateOwnerEmail={onUpdateOwnerEmail}
         onTransferOwner={onTransferOwner}
         onUpdateAcl={onUpdateAcl}
@@ -597,7 +585,9 @@ function shareAccessSummary(share: ShareRecord, marketEmailSet: Set<string>) {
 
   return accessApps
     .map((app) => {
-      const access = (accessByApp as Record<string, { sharedWithEmails?: string[] }>)[app];
+      const access = (
+        accessByApp as Record<string, { sharedWithEmails?: string[] }>
+      )[app];
       const emails = Array.from(
         new Set(
           (access?.sharedWithEmails ?? [])

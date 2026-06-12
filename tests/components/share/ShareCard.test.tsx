@@ -91,7 +91,6 @@ describe("ShareCard", () => {
     onUpdateForSale: vi.fn(),
     onUpdateShareSalePricing: vi.fn(),
     onUpdateExpiration: vi.fn(),
-    onUpdateAutoStart: vi.fn(),
     onUpdateOwnerEmail: vi.fn(),
     onTransferOwner: vi.fn(),
     onUpdateAcl: vi.fn(),
@@ -536,9 +535,24 @@ describe("ShareCard", () => {
         tunnelConfig={tunnelConfig}
         tunnelConfigured={true}
         providerSalePricing={[
-          { app: "claude", label: "Claude", providerName: "Claude P", percent: 20 },
-          { app: "codex", label: "Codex", providerName: "Codex P", percent: 30 },
-          { app: "gemini", label: "Gemini", providerName: "Gemini P", percent: 40 },
+          {
+            app: "claude",
+            label: "Claude",
+            providerName: "Claude P",
+            percent: 20,
+          },
+          {
+            app: "codex",
+            label: "Codex",
+            providerName: "Codex P",
+            percent: 30,
+          },
+          {
+            app: "gemini",
+            label: "Gemini",
+            providerName: "Gemini P",
+            percent: 40,
+          },
         ]}
         {...handlers}
       />,

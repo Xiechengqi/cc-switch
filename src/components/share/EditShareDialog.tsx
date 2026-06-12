@@ -365,6 +365,10 @@ export function EditShareDialog({
     !/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/.test(subdomainInput.trim()) ||
     ["admin", "api", "www", "cdn-cgi"].includes(subdomainInput.trim());
   const sharePaused = share.status === "paused";
+  const dynamicAppSet = useMemo(
+    () => new Set(share.dynamicApps ?? []),
+    [share.dynamicApps],
+  );
   // P8：每个 slot 独立 dirty 检查。"" 视为 "未绑定"，与 share.bindings 缺键等价。
   const bindingChanges = useMemo(() => {
     return SHARE_APP_TYPES.map((app: keyof ShareBindings) => {
@@ -374,6 +378,21 @@ export function EditShareDialog({
     });
   }, [providerIdInputs, share.bindings]);
   const bindingsDirty = bindingChanges.some((entry) => entry.dirty);
+  const duplicateFixedProviderIds = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entry of bindingChanges) {
+      if (!entry.input) continue;
+      const remainsDynamic = dynamicAppSet.has(entry.app) && !entry.dirty;
+      if (remainsDynamic) continue;
+      counts.set(entry.input, (counts.get(entry.input) ?? 0) + 1);
+    }
+    return new Set(
+      [...counts.entries()]
+        .filter(([, count]) => count > 1)
+        .map(([providerId]) => providerId),
+    );
+  }, [bindingChanges, dynamicAppSet]);
+  const fixedBindingDuplicate = duplicateFixedProviderIds.size > 0;
   // P16：active 状态下也允许编辑 binding select。保存时若 share 还在 active，走
   // onRebindAtomic（disable → update → enable）兜底；后端 update_provider_binding
   // 仍然保留 paused-required 约束，所以"直接绕过"的请求会被拒，安全性由后端守门。
@@ -550,6 +569,7 @@ export function EditShareDialog({
     (descriptionDirty && descriptionInvalid) ||
     (expiryDirty && expiryInvalid) ||
     (subdomainDirty && subdomainInvalid) ||
+    (bindingsDirty && fixedBindingDuplicate) ||
     (tokenLimitDirty && tokenLimitInvalid) ||
     (parallelLimitDirty && parallelLimitInvalid);
 
@@ -677,6 +697,7 @@ export function EditShareDialog({
               title={t("share.providerBindings", {
                 defaultValue: "Provider 绑定",
               })}
+              invalid={bindingsDirty && fixedBindingDuplicate}
               hint={
                 sharePaused
                   ? t("share.providerBindingsEditHint", {
@@ -696,6 +717,13 @@ export function EditShareDialog({
                   const selectedProvider = candidates.find(
                     (provider) => provider.id === value,
                   );
+                  const selectedInOtherFixedSlot = (providerId: string) =>
+                    bindingChanges.some((entry) => {
+                      if (entry.app === app || entry.input !== providerId) {
+                        return false;
+                      }
+                      return !(dynamicAppSet.has(entry.app) && !entry.dirty);
+                    });
                   return (
                     <div
                       key={app}
@@ -747,20 +775,34 @@ export function EditShareDialog({
                                 })}
                               </SelectItem>
                             ) : (
-                              candidates.map((provider) => (
-                                <SelectItem
-                                  key={provider.id}
-                                  value={provider.id}
-                                  disabled={provider.disabled}
-                                >
-                                  {formatProviderOptionLabel(
-                                    provider,
-                                    t("share.providerBindingTaken", {
-                                      defaultValue: "已被其他 share 绑定",
-                                    }),
-                                  )}
-                                </SelectItem>
-                              ))
+                              candidates.map((provider) => {
+                                const duplicateInForm =
+                                  selectedInOtherFixedSlot(provider.id);
+                                const disabled =
+                                  provider.disabled || duplicateInForm;
+                                return (
+                                  <SelectItem
+                                    key={provider.id}
+                                    value={provider.id}
+                                    disabled={disabled}
+                                  >
+                                    {formatProviderOptionLabel(
+                                      { ...provider, disabled },
+                                      duplicateInForm
+                                        ? t(
+                                            "share.providerBindingSelected",
+                                            {
+                                              defaultValue:
+                                                "已在本 share 其他分支选择",
+                                            },
+                                          )
+                                        : t("share.providerBindingTaken", {
+                                            defaultValue: "已被其他 share 绑定",
+                                          }),
+                                    )}
+                                  </SelectItem>
+                                );
+                              })
                             )}
                           </SelectContent>
                         </Select>
@@ -791,6 +833,14 @@ export function EditShareDialog({
                     </div>
                   );
                 })}
+                {bindingsDirty && fixedBindingDuplicate ? (
+                  <div className="text-xs text-destructive">
+                    {t("share.validation.providerDuplicate", {
+                      defaultValue:
+                        "同一个固定 Provider 只能绑定一个 share 分支",
+                    })}
+                  </div>
+                ) : null}
               </div>
             </DialogSection>
 

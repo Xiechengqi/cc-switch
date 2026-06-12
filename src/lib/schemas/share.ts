@@ -19,6 +19,15 @@ export const createShareSchema = z.object({
         (value.codex?.length ?? 0) > 0 ||
         (value.gemini?.length ?? 0) > 0,
       "share.validation.providerRequired",
+    )
+    .refine(
+      (value) => {
+        const fixedProviderIds = [value.claude, value.codex, value.gemini]
+          .map((item) => item?.trim() ?? "")
+          .filter((item) => item.length > 0 && item !== "__dynamic__");
+        return new Set(fixedProviderIds).size === fixedProviderIds.length;
+      },
+      "share.validation.providerDuplicate",
     ),
   description: z
     .string()

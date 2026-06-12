@@ -126,6 +126,13 @@ impl ShareService {
             bindings.insert(app_type.clone(), current);
             dynamic_apps.insert(app_type);
         }
+        ensure_unique_fixed_provider_ids(&bindings, &dynamic_apps)?;
+        for (app_type, provider_id) in &bindings {
+            if dynamic_apps.contains(app_type) {
+                continue;
+            }
+            ensure_fixed_provider_available(db, provider_id, None, None)?;
+        }
 
         let record = ShareRecord {
             id,
@@ -159,8 +166,8 @@ impl ShareService {
 
     pub fn create(db: &Arc<Database>, record: ShareRecord) -> Result<ShareRecord, AppError> {
         // 多 share 模式：同一 cc-switch 可挂多个 share。
-        // share ↔ provider 1:1 由 schema 的 UNIQUE(provider_id) 兜底；
-        // 这里依赖 db.create_share 把 UNIQUE 违反映射成 AppError 抛出。
+        // share ↔ fixed provider 1:1 已在 prepare_create / update_provider_binding 前置校验；
+        // schema 的 UNIQUE(provider_id) 只作为并发写入时的最后兜底。
         db.create_share(&record)?;
         crate::tunnel::sync::schedule_sync_share(record.clone(), db);
         Ok(record)
@@ -411,6 +418,7 @@ impl ShareService {
                 ))
             })?;
             debug_assert_eq!(provider.id, *pid);
+            ensure_fixed_provider_available(db, pid, Some(share_id), Some(&app_type))?;
         }
 
         db.upsert_share_binding_with_history(
@@ -811,6 +819,51 @@ fn normalize_sale_market_kind(value: &str) -> Result<String, AppError> {
     }
 }
 
+fn ensure_unique_fixed_provider_ids(
+    bindings: &HashMap<String, String>,
+    dynamic_apps: &HashSet<String>,
+) -> Result<(), AppError> {
+    let mut seen: HashMap<&str, &str> = HashMap::new();
+    for (app_type, provider_id) in bindings {
+        if dynamic_apps.contains(app_type) {
+            continue;
+        }
+        if let Some(previous_app) = seen.insert(provider_id.as_str(), app_type.as_str()) {
+            return Err(AppError::Message(format!(
+                "Provider {provider_id} 已同时选择给 {previous_app} 和 {app_type}；同一个固定 Provider 只能绑定一个 share 分支，请更换或清空其中一个"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_fixed_provider_available(
+    db: &Arc<Database>,
+    provider_id: &str,
+    current_share_id: Option<&str>,
+    current_app_type: Option<&str>,
+) -> Result<(), AppError> {
+    for (share, app_type) in db.list_active_shares_bound_to_provider(provider_id)? {
+        if share.dynamic_apps.contains(&app_type) {
+            continue;
+        }
+        let is_current_slot = current_share_id == Some(share.id.as_str())
+            && current_app_type == Some(app_type.as_str());
+        if is_current_slot {
+            continue;
+        }
+        let share_label = share
+            .subdomain
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(share.name.as_str());
+        return Err(AppError::Message(format!(
+            "Provider {provider_id} 已被 share {share_label} 的 {app_type} 分支绑定；同一个固定 Provider 只能绑定一个 share 分支，请先解绑原 share 后再保存"
+        )));
+    }
+    Ok(())
+}
+
 fn access_by_app_has_shared_email(access_by_app: &HashMap<String, ShareAppAccess>) -> bool {
     access_by_app.values().any(|access| {
         access
@@ -1081,6 +1134,42 @@ mod tests {
     }
 
     #[test]
+    fn prepare_create_rejects_duplicate_fixed_provider_ids() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .unwrap();
+        db.save_provider("codex", &make_provider("p1", "codex"))
+            .unwrap();
+        let mut params = base_params("p1");
+        params
+            .bindings
+            .insert("codex".to_string(), "p1".to_string());
+
+        let err = ShareService::prepare_create(&db, params)
+            .expect_err("same fixed provider in two slots must be rejected before DB insert");
+        assert!(
+            err.to_string().contains("同一个固定 Provider"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn prepare_create_rejects_provider_bound_to_existing_share() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .unwrap();
+        db.create_share(&raw_share("s1", "p1", "sub1"))
+            .expect("existing share inserts");
+
+        let err = ShareService::prepare_create(&db, base_params("p1"))
+            .expect_err("provider already bound to existing share must be rejected");
+        assert!(
+            err.to_string().contains("已被 share sub1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn unique_provider_constraint_blocks_second_active_binding() {
         // 走侧表 UNIQUE INDEX：同一 provider 全局只能挂一个 share-slot。
         let db = fresh_db();
@@ -1182,6 +1271,28 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].old_provider_id.as_deref(), Some("p1"));
         assert!(history[0].new_provider_id.is_none());
+    }
+
+    #[test]
+    fn update_provider_binding_rejects_provider_bound_elsewhere() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .unwrap();
+        db.save_provider("claude", &make_provider("p2", "claude"))
+            .unwrap();
+        let mut first = raw_share("s1", "p1", "sub1");
+        first.status = "paused".to_string();
+        db.create_share(&first).unwrap();
+        let mut second = raw_share("s2", "p2", "sub2");
+        second.status = "paused".to_string();
+        db.create_share(&second).unwrap();
+
+        let err = ShareService::update_provider_binding(&db, "s2", "claude", Some("p1"))
+            .expect_err("provider already bound to another share must be rejected");
+        assert!(
+            err.to_string().contains("已被 share sub1"),
+            "unexpected error: {err}"
+        );
     }
 
     /// E-4：api_key 字段是历史遗留死字段，prepare_create 永远写空串。

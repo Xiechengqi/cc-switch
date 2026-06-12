@@ -311,6 +311,16 @@ export function CreateShareDialog({
   const watchedBindings = form.watch("bindings") as
     | Record<keyof ShareBindings, string>
     | undefined;
+  const selectedFixedProviderIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const app of SHARE_APP_TYPES) {
+      const providerId = watchedBindings?.[app]?.trim() ?? "";
+      if (providerId && providerId !== DYNAMIC_BINDING_VALUE) {
+        ids.add(providerId);
+      }
+    }
+    return ids;
+  }, [watchedBindings]);
   const boundShareApps = useMemo<Array<keyof ShareBindings>>(() => {
     const bound = SHARE_APP_TYPES.filter((app) => {
       const pid = watchedBindings?.[app];
@@ -548,11 +558,17 @@ export function CreateShareDialog({
               的 bindings 校验错误仍在这里渲染，避免高级设置未展开时静默失败。 */}
           {form.formState.errors.bindings ? (
             <div className="text-xs text-destructive">
-              {t(
-                (form.formState.errors.bindings as { message?: string })
-                  ?.message ?? "share.validation.providerRequired",
-                { defaultValue: "至少为一个 app 选择 provider" },
-              )}
+              {(() => {
+                const messageKey =
+                  (form.formState.errors.bindings as { message?: string })
+                    ?.message ?? "share.validation.providerRequired";
+                return t(messageKey, {
+                  defaultValue:
+                    messageKey === "share.validation.providerDuplicate"
+                      ? "同一个固定 Provider 只能绑定一个 share 分支"
+                      : "至少为一个 app 选择 provider",
+                });
+              })()}
             </div>
           ) : null}
 
@@ -654,6 +670,9 @@ export function CreateShareDialog({
                       const selectedProvider = candidates.find(
                         (provider) => provider.id === value,
                       );
+                      const selectedInOtherSlot = (providerId: string) =>
+                        selectedFixedProviderIds.has(providerId) &&
+                        value !== providerId;
                       return (
                         <div
                           key={app}
@@ -724,20 +743,35 @@ export function CreateShareDialog({
                                     })}
                                   </SelectItem>
                                 ) : (
-                                  candidates.map((provider) => (
-                                    <SelectItem
-                                      key={provider.id}
-                                      value={provider.id}
-                                      disabled={provider.disabled}
-                                    >
-                                      {formatProviderOptionLabel(
-                                        provider,
-                                        t("share.providerBindingTaken", {
-                                          defaultValue: "已被其他 share 绑定",
-                                        }),
-                                      )}
-                                    </SelectItem>
-                                  ))
+                                  candidates.map((provider) => {
+                                    const duplicateInForm =
+                                      selectedInOtherSlot(provider.id);
+                                    const disabled =
+                                      provider.disabled || duplicateInForm;
+                                    return (
+                                      <SelectItem
+                                        key={provider.id}
+                                        value={provider.id}
+                                        disabled={disabled}
+                                      >
+                                        {formatProviderOptionLabel(
+                                          { ...provider, disabled },
+                                          duplicateInForm
+                                            ? t(
+                                                "share.providerBindingSelected",
+                                                {
+                                                  defaultValue:
+                                                    "已在本 share 其他分支选择",
+                                                },
+                                              )
+                                            : t("share.providerBindingTaken", {
+                                                defaultValue:
+                                                  "已被其他 share 绑定",
+                                              }),
+                                        )}
+                                      </SelectItem>
+                                    );
+                                  })
                                 )}
                               </SelectContent>
                             </Select>

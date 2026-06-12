@@ -760,7 +760,7 @@ impl Database {
 
     /// SHARE_SELECT_COLUMNS 的列数（用于 JOIN 查询定位附加列下标）。
     const fn share_column_count() -> usize {
-        22
+        23
     }
 
     /// 读侧表中 share_id 对应的所有 binding（app_type → provider_id）。

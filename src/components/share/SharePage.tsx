@@ -336,8 +336,22 @@ export function SharePage({
     await refetch();
   };
 
+  const fixedBoundProviderIds = useMemo(() => {
+    const takenProviderIds = new Set<string>();
+    shares.forEach((share) => {
+      if (share.status === "deleted") return;
+      const dynamicApps = new Set(share.dynamicApps ?? []);
+      (["claude", "codex", "gemini"] as const).forEach((app) => {
+        if (dynamicApps.has(app)) return;
+        const pid = share.bindings?.[app];
+        if (pid) takenProviderIds.add(pid);
+      });
+    });
+    return takenProviderIds;
+  }, [shares]);
+
   // 构造 CreateShareDialog 用的 provider 选项：按 defaultApp 过滤，
-  // 把"已被其他 active share 绑定"的 provider 标灰禁选。share ↔ provider
+  // 把"已被其他固定 share slot 绑定"的 provider 标灰禁选。share ↔ fixed provider
   // P8 多 app share：dialogProviderOptions 现在只用于 CreateShareDialog 默认聚焦的 slot
   // 兼容路径，真正的"哪些 provider 可选"由下面 providersByApp 全量提供。这里保留是为了
   // 给老的、按"当前 app 单 slot"语义渲染的入口（例如 ProxyToggle）继续提供候选。
@@ -347,12 +361,6 @@ export function SharePage({
     const queryData =
       providerQueries[defaultApp as "claude" | "codex" | "gemini"];
     if (!queryData) return [];
-    const takenProviderIds = new Set<string>();
-    shares.forEach((share) => {
-      if (share.status === "deleted") return;
-      const pid = share.bindings?.[defaultApp as keyof typeof share.bindings];
-      if (pid) takenProviderIds.add(pid);
-    });
     return Object.values(queryData.providers ?? {})
       .filter((provider): provider is Provider => Boolean(provider))
       .sort((a, b) =>
@@ -365,11 +373,11 @@ export function SharePage({
       .map((provider) => ({
         ...buildProviderOption(
           provider,
-          takenProviderIds.has(provider.id),
+          fixedBoundProviderIds.has(provider.id),
           managedAuthStatuses,
         ),
       }));
-  }, [defaultApp, providerQueries, shares, managedAuthStatuses]);
+  }, [defaultApp, providerQueries, fixedBoundProviderIds, managedAuthStatuses]);
 
   // ShareCard 上"绑定 provider"显示名的查找表，key = `{appType}:{providerId}`。
   // 由 SharePage 在 provider 查询完成后统一计算，避免 Card 自己持有 query 句柄。
@@ -389,7 +397,7 @@ export function SharePage({
 
   // P8 多 app share：每个 app slot 的可绑定 provider 列表。CreateShareDialog 和
   // EditShareDialog 都按 `providersByApp[app]` 取候选，ShareList 那一层再为每条 share
-  // 已绑定的 provider 取消 disabled（让"保持原 provider"始终可选）。
+  // 当前 slot 已绑定的 provider 取消 disabled（让"保持原 provider"始终可选）。
   const providersByApp = useMemo(() => {
     const result: Partial<
       Record<"claude" | "codex" | "gemini", typeof dialogProviderOptions>
@@ -400,12 +408,6 @@ export function SharePage({
         result[app] = [];
         return;
       }
-      const takenProviderIds = new Set<string>();
-      shares.forEach((share) => {
-        if (share.status === "deleted") return;
-        const pid = share.bindings?.[app];
-        if (pid) takenProviderIds.add(pid);
-      });
       result[app] = Object.values(data.providers ?? {})
         .filter((provider): provider is Provider => Boolean(provider))
         .sort((a, b) =>
@@ -418,13 +420,18 @@ export function SharePage({
         .map((provider) =>
           buildProviderOption(
             provider,
-            takenProviderIds.has(provider.id),
+            fixedBoundProviderIds.has(provider.id),
             managedAuthStatuses,
           ),
         );
     });
     return result;
-  }, [providerQueries, shares, dialogProviderOptions, managedAuthStatuses]);
+  }, [
+    providerQueries,
+    fixedBoundProviderIds,
+    dialogProviderOptions,
+    managedAuthStatuses,
+  ]);
 
   const handleCreate = async (
     params: Parameters<typeof createMutation.mutateAsync>[0],

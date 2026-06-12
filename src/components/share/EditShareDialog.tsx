@@ -377,6 +377,13 @@ export function EditShareDialog({
       return { app, original, input, dirty: input !== original };
     });
   }, [providerIdInputs, share.bindings]);
+  const nextAccessApps = useMemo<Array<keyof ShareBindings>>(() => {
+    const bound = SHARE_APP_TYPES.filter((app) => {
+      const providerId = (providerIdInputs[app] ?? "").trim();
+      return providerId.length > 0;
+    });
+    return bound.length > 0 ? bound : supportedAccessApps;
+  }, [providerIdInputs, supportedAccessApps]);
   const bindingsDirty = bindingChanges.some((entry) => entry.dirty);
   const duplicateFixedProviderIds = useMemo(() => {
     const counts = new Map<string, number>();
@@ -421,7 +428,7 @@ export function EditShareDialog({
     }
     return result;
   }, [shareToEmailsByApp, publicMarketEmailSet]);
-  const shareToDirty = supportedAccessApps.some(
+  const shareToDirty = nextAccessApps.some(
     (app) =>
       JSON.stringify(normalizedShareToByApp[app]) !==
       JSON.stringify(currentNonMarketEmailsByApp[app]),
@@ -470,7 +477,7 @@ export function EditShareDialog({
         (currentShareMarketEmails[0] ?? ""));
   const nextAccessByApp = useMemo(() => {
     const result: ShareAccessByApp = {};
-    for (const app of supportedAccessApps) {
+    for (const app of nextAccessApps) {
       result[app] = {
         sharedWithEmails: uniqueSorted([
           ...(normalizedShareToByApp[app] ?? []),
@@ -492,8 +499,8 @@ export function EditShareDialog({
     normalizedSelectedMarketEmails,
     normalizedSelectedShareMarketEmail,
     normalizedShareToByApp,
+    nextAccessApps,
     saleMarketKindInput,
-    supportedAccessApps,
   ]);
   const nextAclEmails = uniqueSorted(
     Object.values(nextAccessByApp).flatMap(
@@ -811,13 +818,10 @@ export function EditShareDialog({
                                     {formatProviderOptionLabel(
                                       { ...provider, disabled },
                                       duplicateInForm
-                                        ? t(
-                                            "share.providerBindingSelected",
-                                            {
-                                              defaultValue:
-                                                "已在本 share 其他分支选择",
-                                            },
-                                          )
+                                        ? t("share.providerBindingSelected", {
+                                            defaultValue:
+                                              "已在本 share 其他分支选择",
+                                          })
                                         : t("share.providerBindingTaken", {
                                             defaultValue: "已被其他 share 绑定",
                                           }),

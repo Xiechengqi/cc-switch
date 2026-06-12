@@ -548,7 +548,8 @@ impl ShareService {
         let shared_with_emails =
             normalize_email_list(share.shared_with_emails.clone(), &owner_email)?;
         let market_access_mode = normalize_market_access_mode(&share.market_access_mode)?;
-        let access_by_app = normalize_access_by_app(share.effective_access_by_app(), &owner_email)?;
+        let access_by_app =
+            normalize_access_by_app(share.effective_access_by_app(), &owner_email, false)?;
         db.update_share_acl(
             share_id,
             &owner_email,
@@ -602,7 +603,7 @@ impl ShareService {
         let next_shared_with = normalize_email_list(next_shared_with, &target_email)?;
         let market_access_mode = normalize_market_access_mode(&share.market_access_mode)?;
         let mut access_by_app =
-            normalize_access_by_app(share.effective_access_by_app(), &target_email)?;
+            normalize_access_by_app(share.effective_access_by_app(), &target_email, false)?;
         for access in access_by_app.values_mut() {
             access
                 .shared_with_emails
@@ -645,18 +646,23 @@ impl ShareService {
             .get_share_by_id(share_id)?
             .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
         let owner_email = normalize_email(owner_email)?;
+        let sale_market_kind =
+            normalize_sale_market_kind(sale_market_kind.unwrap_or(&share.sale_market_kind))?;
+        let allow_owner_in_acl = sale_market_kind == "share";
         let access_by_app = match access_by_app {
-            Some(value) => normalize_access_by_app(value, &owner_email)?,
+            Some(value) => normalize_access_by_app(value, &owner_email, allow_owner_in_acl)?,
             None => {
-                let shared_with_emails = normalize_email_list(shared_with_emails, &owner_email)?;
+                let shared_with_emails = normalize_email_list_with_options(
+                    shared_with_emails,
+                    &owner_email,
+                    allow_owner_in_acl,
+                )?;
                 let market_access_mode = normalize_market_access_mode(market_access_mode)?;
                 derive_access_by_app(&share.bindings, &shared_with_emails, &market_access_mode)
             }
         };
         let (shared_with_emails, market_access_mode) =
             legacy_acl_from_access_by_app(&access_by_app);
-        let sale_market_kind =
-            normalize_sale_market_kind(sale_market_kind.unwrap_or(&share.sale_market_kind))?;
         if sale_market_kind == "share" && !access_by_app_has_shared_email(&access_by_app) {
             return Err(AppError::Message(
                 "Share Market 出售必须显式委托给一个 Share Market".to_string(),
@@ -907,11 +913,13 @@ fn normalize_for_sale_official_price_percent_by_app(
 fn normalize_access_by_app(
     access_by_app: HashMap<String, ShareAppAccess>,
     owner_email: &str,
+    allow_owner: bool,
 ) -> Result<HashMap<String, ShareAppAccess>, AppError> {
     let mut normalized = HashMap::new();
     for (app, access) in access_by_app {
         let app = normalize_share_app_type(&app)?;
-        let shared_with_emails = normalize_email_list(access.shared_with_emails, owner_email)?;
+        let shared_with_emails =
+            normalize_email_list_with_options(access.shared_with_emails, owner_email, allow_owner)?;
         let market_access_mode = normalize_market_access_mode(&access.market_access_mode)?;
         normalized.insert(
             app,
@@ -933,10 +941,18 @@ fn normalize_email(value: &str) -> Result<String, AppError> {
 }
 
 fn normalize_email_list(values: Vec<String>, owner_email: &str) -> Result<Vec<String>, AppError> {
+    normalize_email_list_with_options(values, owner_email, false)
+}
+
+fn normalize_email_list_with_options(
+    values: Vec<String>,
+    owner_email: &str,
+    allow_owner: bool,
+) -> Result<Vec<String>, AppError> {
     let mut result = Vec::new();
     for value in values {
         let email = normalize_email(&value)?;
-        if email == owner_email || result.contains(&email) {
+        if (!allow_owner && email == owner_email) || result.contains(&email) {
             continue;
         }
         result.push(email);
@@ -1173,6 +1189,54 @@ mod tests {
                 .get("claude")
                 .map(|access| access.shared_with_emails.as_slice()),
             Some(&["share-market@example.com".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn update_acl_accepts_share_market_delegate_equal_to_owner_email() {
+        let db = fresh_db();
+        db.save_provider("codex", &make_provider("p1", "codex"))
+            .expect("save provider");
+        let mut params = base_params("p1");
+        params.owner_email = "router@jptokenswitch.cc".to_string();
+        params.for_sale = "Yes".to_string();
+        params.bindings.clear();
+        params
+            .bindings
+            .insert("codex".to_string(), "p1".to_string());
+        let record = ShareService::prepare_create(&db, params).expect("prepare ok");
+        ShareService::create(&db, record.clone()).expect("create ok");
+
+        let mut access_by_app = HashMap::new();
+        access_by_app.insert(
+            "codex".to_string(),
+            ShareAppAccess {
+                shared_with_emails: vec!["router@jptokenswitch.cc".to_string()],
+                market_access_mode: "selected".to_string(),
+            },
+        );
+        let updated = ShareService::update_acl(
+            &db,
+            &record.id,
+            &record.owner_email,
+            Vec::new(),
+            "selected",
+            Some(access_by_app),
+            Some("share"),
+        )
+        .expect("share market delegation can use the owner email as market identity");
+
+        assert_eq!(updated.sale_market_kind, "share");
+        assert_eq!(
+            updated.shared_with_emails,
+            vec!["router@jptokenswitch.cc".to_string()]
+        );
+        assert_eq!(
+            updated
+                .access_by_app
+                .get("codex")
+                .map(|access| access.shared_with_emails.as_slice()),
+            Some(&["router@jptokenswitch.cc".to_string()][..])
         );
     }
 

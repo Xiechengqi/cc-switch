@@ -9,6 +9,7 @@ import type {
 } from "@/lib/api";
 import { SHARE_APP_TYPES } from "@/lib/api";
 import type { ProviderOption } from "./CreateShareDialog";
+import { formatProviderOptionLabel } from "./providerOptions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -179,7 +180,9 @@ export function EditShareDialog({
     DEFAULT_PARALLEL_LIMIT,
   );
   const [subdomainInput, setSubdomainInput] = useState("");
-  const [providerIdInputs, setProviderIdInputs] = useState<Record<string, string>>({});
+  const [providerIdInputs, setProviderIdInputs] = useState<
+    Record<string, string>
+  >({});
   const [descriptionInput, setDescriptionInput] = useState("");
   const [ownerEmailInput, setOwnerEmailInput] = useState("");
   const [shareToEmailsByApp, setShareToEmailsByApp] = useState<
@@ -218,7 +221,8 @@ export function EditShareDialog({
   );
 
   const usageMarkets = useMemo(
-    () => markets.filter((market) => (market.marketKind ?? "usage") !== "share"),
+    () =>
+      markets.filter((market) => (market.marketKind ?? "usage") !== "share"),
     [markets],
   );
   const shareMarkets = useMemo(
@@ -320,7 +324,10 @@ export function EditShareDialog({
     setSaleMarketKindInput(currentSaleMarketKind);
     setForSaleInput(share.forSale);
     setSalePricingInputs(
-      salePricingInputValues(effectiveProviderSalePricing, currentShareSalePricing),
+      salePricingInputValues(
+        effectiveProviderSalePricing,
+        currentShareSalePricing,
+      ),
     );
     setAutoStartInput(share.autoStart);
     const permanent = isPermanentExpiry(share.expiresAt);
@@ -425,7 +432,8 @@ export function EditShareDialog({
           JSON.stringify(normalizedSelectedMarketEmails) !==
             JSON.stringify(currentMarketEmails)))) ||
     (saleMarketKindInput === "share" &&
-      normalizedSelectedShareMarketEmail !== (currentShareMarketEmails[0] ?? ""));
+      normalizedSelectedShareMarketEmail !==
+        (currentShareMarketEmails[0] ?? ""));
   const nextAccessByApp = useMemo(() => {
     const result: ShareAccessByApp = {};
     for (const app of supportedAccessApps) {
@@ -556,7 +564,8 @@ export function EditShareDialog({
 
   const busy = isBusy || saving || readOnly;
   const marketDisabled = forSaleInput !== "Yes";
-  const pricingDisabled = forSaleInput !== "Yes" || saleMarketKindInput !== "token";
+  const pricingDisabled =
+    forSaleInput !== "Yes" || saleMarketKindInput !== "token";
 
   const handleSave = async () => {
     if (!hasChanges || hasInvalidChanges || busy) return;
@@ -709,6 +718,9 @@ export function EditShareDialog({
                 {SHARE_APP_TYPES.map((app) => {
                   const candidates = providersByApp[app] ?? [];
                   const value = providerIdInputs[app] ?? "";
+                  const selectedProvider = candidates.find(
+                    (provider) => provider.id === value,
+                  );
                   return (
                     <div
                       key={app}
@@ -742,10 +754,15 @@ export function EditShareDialog({
                         >
                           <SelectTrigger className="flex-1">
                             <SelectValue
-                              placeholder={t("share.providerBindingPlaceholder", {
-                                defaultValue: `为 ${app} 选一个 provider`,
-                              })}
-                            />
+                              placeholder={t(
+                                "share.providerBindingPlaceholder",
+                                {
+                                  defaultValue: `为 ${app} 选一个 provider`,
+                                },
+                              )}
+                            >
+                              {selectedProvider?.name}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
                             {candidates.length === 0 ? (
@@ -761,12 +778,12 @@ export function EditShareDialog({
                                   value={provider.id}
                                   disabled={provider.disabled}
                                 >
-                                  {provider.name}
-                                  {provider.disabled
-                                    ? ` · ${t("share.providerBindingTaken", {
-                                        defaultValue: "已被其他 share 绑定",
-                                      })}`
-                                    : ""}
+                                  {formatProviderOptionLabel(
+                                    provider,
+                                    t("share.providerBindingTaken", {
+                                      defaultValue: "已被其他 share 绑定",
+                                    }),
+                                  )}
                                 </SelectItem>
                               ))
                             )}
@@ -803,7 +820,10 @@ export function EditShareDialog({
             </DialogSection>
 
             {/* P9-C：binding 改动审计历史。默认折叠，展开后才拉数据，避免每次开 Dialog 都查 DB。 */}
-            <BindingHistorySection shareId={share.id} providerNameByKey={providerNameByKey} />
+            <BindingHistorySection
+              shareId={share.id}
+              providerNameByKey={providerNameByKey}
+            />
 
             <DialogSection
               title={t("share.sharedWithEmails", { defaultValue: "Share To" })}
@@ -830,7 +850,8 @@ export function EditShareDialog({
                         }))
                       }
                       placeholder={t("share.sharedWithEmailsPlaceholder", {
-                        defaultValue: "friend@example.com, teammate@example.com",
+                        defaultValue:
+                          "friend@example.com, teammate@example.com",
                       })}
                       onPromote={(email) => setTransferTargetEmail(email)}
                       promotableEmails={uniqueSorted(
@@ -946,7 +967,9 @@ export function EditShareDialog({
 
             {saleMarketKindInput === "token" ? (
               <DialogSection
-                title={t("share.market.title", { defaultValue: "Token Market" })}
+                title={t("share.market.title", {
+                  defaultValue: "Token Market",
+                })}
                 hint={
                   marketDisabled
                     ? t("share.market.forSaleRequired", {
@@ -958,182 +981,183 @@ export function EditShareDialog({
                       })
                 }
               >
-              <div className="space-y-3">
-                <div className="flex gap-2">
-                  <Select
-                    key={marketSelectKey}
-                    onValueChange={(value) => {
-                      if (value === "__all__") {
-                        setMarketAccessModeInput("all");
-                        setSelectedMarketEmails([]);
+                <div className="space-y-3">
+                  <div className="flex gap-2">
+                    <Select
+                      key={marketSelectKey}
+                      onValueChange={(value) => {
+                        if (value === "__all__") {
+                          setMarketAccessModeInput("all");
+                          setSelectedMarketEmails([]);
+                          setMarketSelectKey((current) => current + 1);
+                          return;
+                        }
+                        setMarketAccessModeInput("selected");
+                        setSelectedMarketEmails((current) =>
+                          uniqueSorted([...current, value.toLowerCase()]),
+                        );
                         setMarketSelectKey((current) => current + 1);
-                        return;
+                      }}
+                      disabled={busy || marketDisabled || marketsLoading}
+                    >
+                      <SelectTrigger
+                        aria-label={t("share.market.select", {
+                          defaultValue: "Select market",
+                        })}
+                      >
+                        <SelectValue
+                          placeholder={
+                            marketsLoading
+                              ? t("common.loading", { defaultValue: "Loading" })
+                              : t("share.market.select", {
+                                  defaultValue: "Select market",
+                                })
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__all__">
+                          {t("share.market.all", { defaultValue: "All" })}
+                        </SelectItem>
+                        {usageMarkets.map((market) => (
+                          <SelectItem key={market.id} value={market.email}>
+                            {market.displayName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={
+                        busy ||
+                        marketDisabled ||
+                        (marketAccessModeInput === "selected" &&
+                          selectedMarketEmails.length === 0)
                       }
-                      setMarketAccessModeInput("selected");
+                      onClick={() => {
+                        setMarketAccessModeInput("selected");
+                        setSelectedMarketEmails([]);
+                      }}
+                    >
+                      {t("share.market.restore", { defaultValue: "还原" })}
+                    </Button>
+                  </div>
+                  <MarketTags
+                    markets={usageMarkets}
+                    marketAccessMode={marketAccessModeInput}
+                    selectedMarketEmails={normalizedSelectedMarketEmails}
+                    removable
+                    disabled={busy || marketDisabled}
+                    onRemove={(email) =>
                       setSelectedMarketEmails((current) =>
-                        uniqueSorted([...current, value.toLowerCase()]),
-                      );
-                      setMarketSelectKey((current) => current + 1);
+                        current.filter((item) => item !== email),
+                      )
+                    }
+                  />
+                  {marketAccessModeInput !== "all" &&
+                  normalizedSelectedMarketEmails.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">
+                      {t("share.market.default", {
+                        defaultValue: "默认，不授权 Market",
+                      })}
+                    </div>
+                  ) : null}
+                  {marketsError ? (
+                    <button
+                      type="button"
+                      className="text-xs text-destructive underline"
+                      onClick={onRetryMarkets}
+                    >
+                      {marketsError}
+                    </button>
+                  ) : null}
+                </div>
+              </DialogSection>
+            ) : null}
+
+            {saleMarketKindInput === "share" ? (
+              <DialogSection
+                title={t("share.accountMarket.title", {
+                  defaultValue: "Share Market",
+                })}
+                hint={
+                  marketDisabled
+                    ? t("share.accountMarket.forSaleRequired", {
+                        defaultValue:
+                          "Set ForSale to Yes before delegating an account market.",
+                      })
+                    : t("share.accountMarket.description", {
+                        defaultValue:
+                          "Choose one share market for account-hosted sale.",
+                      })
+                }
+              >
+                <div className="space-y-3">
+                  <Select
+                    key={`share-market-${selectedShareMarketEmail || "none"}`}
+                    value={selectedShareMarketEmail || undefined}
+                    onValueChange={(value) => {
+                      setSelectedShareMarketEmail(value.toLowerCase());
                     }}
-                    disabled={busy || marketDisabled || marketsLoading}
+                    disabled={
+                      busy ||
+                      marketDisabled ||
+                      marketsLoading ||
+                      shareMarkets.length === 0
+                    }
                   >
                     <SelectTrigger
-                      aria-label={t("share.market.select", {
-                        defaultValue: "Select market",
+                      aria-label={t("share.accountMarket.select", {
+                        defaultValue: "Select share market",
                       })}
                     >
                       <SelectValue
                         placeholder={
                           marketsLoading
                             ? t("common.loading", { defaultValue: "Loading" })
-                            : t("share.market.select", {
-                                defaultValue: "Select market",
+                            : t("share.accountMarket.select", {
+                                defaultValue: "Select share market",
                               })
                         }
                       />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__all__">
-                        {t("share.market.all", { defaultValue: "All" })}
-                      </SelectItem>
-                      {usageMarkets.map((market) => (
+                      {shareMarkets.map((market) => (
                         <SelectItem key={market.id} value={market.email}>
                           {market.displayName}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={
-                      busy ||
-                      marketDisabled ||
-                      (marketAccessModeInput === "selected" &&
-                        selectedMarketEmails.length === 0)
+                  <MarketTags
+                    markets={shareMarkets}
+                    selectedMarketEmails={
+                      normalizedSelectedShareMarketEmail
+                        ? [normalizedSelectedShareMarketEmail]
+                        : []
                     }
-                    onClick={() => {
-                      setMarketAccessModeInput("selected");
-                      setSelectedMarketEmails([]);
-                    }}
-                  >
-                    {t("share.market.restore", { defaultValue: "还原" })}
-                  </Button>
+                  />
+                  {marketInvalid ? (
+                    <div className="text-sm text-destructive">
+                      {t("share.accountMarket.required", {
+                        defaultValue: "请选择一个 Share Market",
+                      })}
+                    </div>
+                  ) : null}
+                  {shareMarkets.length === 0 && !marketsLoading ? (
+                    <div className="text-sm text-muted-foreground">
+                      {t("share.accountMarket.empty", {
+                        defaultValue: "暂无可委托的 share market",
+                      })}
+                    </div>
+                  ) : null}
                 </div>
-                <MarketTags
-                  markets={usageMarkets}
-                  marketAccessMode={marketAccessModeInput}
-                  selectedMarketEmails={normalizedSelectedMarketEmails}
-                  removable
-                  disabled={busy || marketDisabled}
-                  onRemove={(email) =>
-                    setSelectedMarketEmails((current) =>
-                      current.filter((item) => item !== email),
-                    )
-                  }
-                />
-                {marketAccessModeInput !== "all" &&
-                normalizedSelectedMarketEmails.length === 0 ? (
-                  <div className="text-sm text-muted-foreground">
-                    {t("share.market.default", {
-                      defaultValue: "默认，不授权 Market",
-                    })}
-                  </div>
-                ) : null}
-                {marketsError ? (
-                  <button
-                    type="button"
-                    className="text-xs text-destructive underline"
-                    onClick={onRetryMarkets}
-                  >
-                    {marketsError}
-                  </button>
-                ) : null}
-              </div>
               </DialogSection>
             ) : null}
 
-            {saleMarketKindInput === "share" ? (
-              <DialogSection
-              title={t("share.accountMarket.title", {
-                defaultValue: "Share Market",
-              })}
-              hint={
-                marketDisabled
-                  ? t("share.accountMarket.forSaleRequired", {
-                      defaultValue:
-                        "Set ForSale to Yes before delegating an account market.",
-                    })
-                  : t("share.accountMarket.description", {
-                      defaultValue:
-                        "Choose one share market for account-hosted sale.",
-                    })
-              }
-            >
-              <div className="space-y-3">
-                <Select
-                  key={`share-market-${selectedShareMarketEmail || "none"}`}
-                  value={selectedShareMarketEmail || undefined}
-                  onValueChange={(value) => {
-                    setSelectedShareMarketEmail(value.toLowerCase());
-                  }}
-                  disabled={
-                    busy ||
-                    marketDisabled ||
-                    marketsLoading ||
-                    shareMarkets.length === 0
-                  }
-                >
-                  <SelectTrigger
-                    aria-label={t("share.accountMarket.select", {
-                      defaultValue: "Select share market",
-                    })}
-                  >
-                    <SelectValue
-                      placeholder={
-                        marketsLoading
-                          ? t("common.loading", { defaultValue: "Loading" })
-                          : t("share.accountMarket.select", {
-                              defaultValue: "Select share market",
-                            })
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {shareMarkets.map((market) => (
-                      <SelectItem key={market.id} value={market.email}>
-                        {market.displayName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <MarketTags
-                  markets={shareMarkets}
-                  selectedMarketEmails={
-                    normalizedSelectedShareMarketEmail
-                      ? [normalizedSelectedShareMarketEmail]
-                      : []
-                  }
-                />
-                {marketInvalid ? (
-                  <div className="text-sm text-destructive">
-                    {t("share.accountMarket.required", {
-                      defaultValue: "请选择一个 Share Market",
-                    })}
-                  </div>
-                ) : null}
-                {shareMarkets.length === 0 && !marketsLoading ? (
-                  <div className="text-sm text-muted-foreground">
-                    {t("share.accountMarket.empty", {
-                      defaultValue: "暂无可委托的 share market",
-                    })}
-                  </div>
-                ) : null}
-              </div>
-              </DialogSection>
-            ) : null}
-
-            {saleMarketKindInput === "token" && effectiveProviderSalePricing.length > 0 ? (
+            {saleMarketKindInput === "token" &&
+            effectiveProviderSalePricing.length > 0 ? (
               <DialogSection
                 title={t("share.modelPricingPercentTitle", {
                   defaultValue: "模型定价（Share 默认；供应商非空时优先）",
@@ -1612,7 +1636,9 @@ function BindingHistorySection({
     return name ? (
       <span>
         {name}
-        <span className="ml-1 text-[10px] text-muted-foreground">({providerId})</span>
+        <span className="ml-1 text-[10px] text-muted-foreground">
+          ({providerId})
+        </span>
       </span>
     ) : (
       <span className="font-mono">{providerId}</span>

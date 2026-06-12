@@ -18,6 +18,27 @@ const TEST_PROVIDERS_BY_APP = {
   gemini: [],
 };
 
+const TEST_MARKETS = [
+  {
+    id: "usage-market-1",
+    displayName: "Token Market One",
+    email: "token-market@example.com",
+    subdomain: "token-market",
+    publicBaseUrl: "https://token-market.example.com",
+    marketKind: "usage",
+    status: "active",
+  },
+  {
+    id: "share-market-1",
+    displayName: "Share Market One",
+    email: "share-market@example.com",
+    subdomain: "share-market",
+    publicBaseUrl: "https://share-market.example.com",
+    marketKind: "share",
+    status: "active",
+  },
+];
+
 function renderDialog(overrides: Partial<Record<string, unknown>> = {}) {
   const base: Record<string, unknown> = {
     open: true,
@@ -52,7 +73,9 @@ async function selectProvider(
   const trigger = document.getElementById("share-create-provider-claude");
   if (!trigger) throw new Error("Provider Select trigger not found");
   await user.click(trigger);
-  const option = await screen.findByRole("option", { name: providerName });
+  const option = await screen.findByRole("option", {
+    name: new RegExp(providerName),
+  });
   await user.click(option);
 }
 
@@ -60,9 +83,7 @@ describe("CreateShareDialog", () => {
   it("collapses advanced settings by default", () => {
     renderDialog();
     // Advanced controls (e.g. ForSale select, autoStart checkbox) are hidden.
-    expect(
-      screen.queryByLabelText("share.autoStart"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("share.autoStart")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("share.tokenLimit")).not.toBeInTheDocument();
     expect(screen.queryByText(/将以默认设置创建/)).toBeInTheDocument();
   });
@@ -95,6 +116,49 @@ describe("CreateShareDialog", () => {
     );
   });
 
+  it("shows provider account and request URL details in binding options", async () => {
+    const user = userEvent.setup();
+    renderDialog({
+      providersByApp: {
+        claude: [
+          {
+            id: "claude-oauth-provider",
+            name: "Claude OAuth",
+            disabled: false,
+            detail: "claude-user@example.com",
+          },
+          {
+            id: "third-party-provider",
+            name: "Third Party API",
+            disabled: false,
+            detail: "https://api.example.com",
+          },
+        ],
+        codex: [],
+        gemini: [],
+      },
+    });
+
+    const advancedToggle = screen.getByRole("button", {
+      name: /高级设置|advanced/i,
+    });
+    await user.click(advancedToggle);
+    const trigger = document.getElementById("share-create-provider-claude");
+    if (!trigger) throw new Error("Provider Select trigger not found");
+    await user.click(trigger);
+
+    expect(
+      await screen.findByRole("option", {
+        name: /Claude OAuth .* claude-user@example\.com/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", {
+        name: /Third Party API .* https:\/\/api\.example\.com/,
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("submits directly without confirmation when advanced is expanded", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
@@ -112,6 +176,45 @@ describe("CreateShareDialog", () => {
           forSale: "Yes",
         }),
         expect.objectContaining({ marketAccessMode: "all" }),
+      ),
+    );
+  });
+
+  it("submits share market delegation from advanced settings", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderDialog({ onSubmit, markets: TEST_MARKETS });
+
+    await selectProvider(user);
+    await user.click(screen.getByLabelText("Share Market"));
+    await user.click(
+      screen.getByRole("combobox", {
+        name: /Select share market|选择 share market/i,
+      }),
+    );
+    await user.click(
+      await screen.findByRole("option", { name: "Share Market One" }),
+    );
+    await user.click(screen.getByRole("button", { name: "share.create" }));
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bindings: { claude: TEST_PROVIDERS[0]!.id },
+          forSale: "Yes",
+          saleMarketKind: "share",
+        }),
+        expect.objectContaining({
+          marketAccessMode: "selected",
+          saleMarketKind: "share",
+          sharedWithEmails: ["share-market@example.com"],
+          accessByApp: {
+            claude: {
+              marketAccessMode: "selected",
+              sharedWithEmails: ["share-market@example.com"],
+            },
+          },
+        }),
       ),
     );
   });

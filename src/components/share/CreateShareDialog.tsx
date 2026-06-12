@@ -51,6 +51,12 @@ import {
   permanentExpiresInSecs,
 } from "@/utils/shareUtils";
 import { cn } from "@/lib/utils";
+import {
+  formatProviderOptionLabel,
+  type ProviderOption,
+} from "./providerOptions";
+
+export type { ProviderOption } from "./providerOptions";
 
 export interface CreateShareExtras {
   /**
@@ -72,13 +78,6 @@ export interface CreateShareExtras {
  * Why: share ↔ provider 严格 1:1。一个 provider 同时只能被一个非 deleted share
  * 绑定，所以选择器要把已被其他 share 绑定的 provider 标灰禁选。
  */
-export interface ProviderOption {
-  id: string;
-  name: string;
-  /** true 表示该 provider 已被其他 active share 绑定，本表单要禁选 */
-  disabled: boolean;
-}
-
 interface CreateShareDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -198,9 +197,27 @@ export function CreateShareDialog({
     DEFAULT_PARALLEL_LIMIT,
   );
   const usageMarkets = useMemo(
-    () => markets.filter((market) => (market.marketKind ?? "usage") !== "share"),
+    () =>
+      markets.filter((market) => (market.marketKind ?? "usage") !== "share"),
     [markets],
   );
+  const shareMarkets = useMemo(
+    () => markets.filter((market) => market.marketKind === "share"),
+    [markets],
+  );
+  const usageMarketEmailSet = useMemo(
+    () => new Set(usageMarkets.map((market) => market.email.toLowerCase())),
+    [usageMarkets],
+  );
+  const shareMarketEmailSet = useMemo(
+    () => new Set(shareMarkets.map((market) => market.email.toLowerCase())),
+    [shareMarkets],
+  );
+  const [selectedMarketEmails, setSelectedMarketEmails] = useState<string[]>(
+    [],
+  );
+  const [selectedShareMarketEmail, setSelectedShareMarketEmail] = useState("");
+  const [marketSelectKey, setMarketSelectKey] = useState(0);
   // 按 app 区分的「Share To」邮箱列表。与 EditShareDialog 行为对齐：用本地 state
   // 而不是 react-hook-form schema 字段，避免每个字段都要走 zod 校验。submit 时
   // 才汇总成 ShareAccessByApp。
@@ -209,9 +226,8 @@ export function CreateShareDialog({
     codex: [],
     gemini: [],
   });
-  const [shareToEmailsByApp, setShareToEmailsByApp] = useState<
-    Record<keyof ShareBindings, string[]>
-  >(emptyShareToByApp);
+  const [shareToEmailsByApp, setShareToEmailsByApp] =
+    useState<Record<keyof ShareBindings, string[]>>(emptyShareToByApp);
   const subdomainManualRef = useRef(false);
 
   const form = useForm<CreateShareFormInput, unknown, CreateShareFormValues>({
@@ -237,6 +253,9 @@ export function CreateShareDialog({
     setAdvancedOpened(false);
     setDefaultsConfirmOpen(false);
     setShareToEmailsByApp(emptyShareToByApp());
+    setSelectedMarketEmails([]);
+    setSelectedShareMarketEmail("");
+    setMarketSelectKey((current) => current + 1);
     subdomainManualRef.current = false;
     // providersByApp 引用变化（fetch 完成）时也重置一次，确保默认 slot 能选上 provider。
   }, [form, open, ownerEmail, tunnelConfig.domain, defaultApp, providersByApp]);
@@ -250,6 +269,7 @@ export function CreateShareDialog({
   const tokenLimit = form.watch("tokenLimit") as number;
   const parallelLimit = form.watch("parallelLimit") as number;
   const marketAccessMode = form.watch("marketAccessMode") as "selected" | "all";
+  const saleMarketKind = form.watch("saleMarketKind") as "token" | "share";
   const subdomainValue = form.watch("subdomain") as string;
   const forSaleValue = form.watch("forSale") as "Yes" | "No" | "Free";
   const autoStartValue = form.watch("autoStart") as boolean;
@@ -289,6 +309,25 @@ export function CreateShareDialog({
     });
     return bound.length > 0 ? bound : [...SHARE_APP_TYPES];
   }, [watchedBindings]);
+  const normalizedSelectedMarketEmails = useMemo(
+    () =>
+      uniqueSortedEmails(
+        selectedMarketEmails
+          .map((email) => email.trim().toLowerCase())
+          .filter((email) => usageMarketEmailSet.has(email)),
+      ),
+    [selectedMarketEmails, usageMarketEmailSet],
+  );
+  const normalizedSelectedShareMarketEmail = shareMarketEmailSet.has(
+    selectedShareMarketEmail.trim().toLowerCase(),
+  )
+    ? selectedShareMarketEmail.trim().toLowerCase()
+    : "";
+  const marketDisabled = forSaleValue !== "Yes";
+  const marketInvalid =
+    forSaleValue === "Yes" &&
+    saleMarketKind === "share" &&
+    normalizedSelectedShareMarketEmail.length === 0;
 
   const defaultShareApp = toShareAppType(defaultApp);
   const defaultProviderId =
@@ -317,6 +356,9 @@ export function CreateShareDialog({
       return;
     }
     if (shareToInvalid) {
+      return;
+    }
+    if (marketInvalid) {
       return;
     }
     const nextRouterDomain = routerDomain.trim();
@@ -349,11 +391,27 @@ export function CreateShareDialog({
     const accessByApp: ShareAccessByApp = {};
     for (const app of SHARE_APP_TYPES) {
       if (!usedApps.has(app)) continue;
-      const emails = normalizeEmails(shareToEmailsByApp[app] ?? []);
+      const marketEmails =
+        forSaleValue !== "Yes"
+          ? []
+          : saleMarketKind === "share"
+            ? normalizedSelectedShareMarketEmail
+              ? [normalizedSelectedShareMarketEmail]
+              : []
+            : values.marketAccessMode === "all"
+              ? []
+              : normalizedSelectedMarketEmails;
+      const emails = uniqueSortedEmails([
+        ...normalizeEmails(shareToEmailsByApp[app] ?? []),
+        ...marketEmails,
+      ]);
       if (emails.length === 0) continue;
       accessByApp[app] = {
         sharedWithEmails: emails,
-        marketAccessMode: values.marketAccessMode,
+        marketAccessMode:
+          forSaleValue === "Yes" && saleMarketKind === "share"
+            ? "selected"
+            : values.marketAccessMode,
       };
     }
     const accessByAppOrUndef =
@@ -381,7 +439,10 @@ export function CreateShareDialog({
       },
       {
         sharedWithEmails: flatSharedWithEmails,
-        marketAccessMode: values.marketAccessMode,
+        marketAccessMode:
+          forSaleValue === "Yes" && saleMarketKind === "share"
+            ? "selected"
+            : values.marketAccessMode,
         accessByApp: accessByAppOrUndef,
         saleMarketKind: values.saleMarketKind,
       },
@@ -407,6 +468,7 @@ export function CreateShareDialog({
       buildDefaultsSummary(t, {
         autoStart: autoStartValue,
         forSale: forSaleValue,
+        saleMarketKind,
         marketAccessMode,
         expiresInSecs: expiresInSecsValue,
         isPermanent,
@@ -419,6 +481,7 @@ export function CreateShareDialog({
       t,
       autoStartValue,
       forSaleValue,
+      saleMarketKind,
       marketAccessMode,
       expiresInSecsValue,
       isPermanent,
@@ -582,6 +645,9 @@ export function CreateShareDialog({
                       const value =
                         (form.watch(fieldKey) as string | undefined) ?? "";
                       const isDynamic = value === DYNAMIC_BINDING_VALUE;
+                      const selectedProvider = candidates.find(
+                        (provider) => provider.id === value,
+                      );
                       return (
                         <div
                           key={app}
@@ -610,7 +676,7 @@ export function CreateShareDialog({
                           </div>
                           <div className="flex items-center gap-2">
                             <Select
-                              value={value || undefined}
+                              value={value || ""}
                               onValueChange={(next) =>
                                 form.setValue(fieldKey, next, {
                                   shouldValidate: true,
@@ -635,14 +701,13 @@ export function CreateShareDialog({
                                         defaultValue:
                                           "动态绑定当前选中的 provider",
                                       })
-                                    : undefined}
+                                    : selectedProvider?.name}
                                 </SelectValue>
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value={DYNAMIC_BINDING_VALUE}>
                                   {t("share.providerBindingDynamic", {
-                                    defaultValue:
-                                      "动态绑定当前选中的 provider",
+                                    defaultValue: "动态绑定当前选中的 provider",
                                   })}
                                 </SelectItem>
                                 {candidates.length === 0 ? (
@@ -659,16 +724,12 @@ export function CreateShareDialog({
                                       value={provider.id}
                                       disabled={provider.disabled}
                                     >
-                                      {provider.name}
-                                      {provider.disabled
-                                        ? ` · ${t(
-                                            "share.providerBindingTaken",
-                                            {
-                                              defaultValue:
-                                                "已被其他 share 绑定",
-                                            },
-                                          )}`
-                                        : ""}
+                                      {formatProviderOptionLabel(
+                                        provider,
+                                        t("share.providerBindingTaken", {
+                                          defaultValue: "已被其他 share 绑定",
+                                        }),
+                                      )}
                                     </SelectItem>
                                   ))
                                 )}
@@ -762,58 +823,285 @@ export function CreateShareDialog({
 
                 <div className="space-y-1.5 md:col-span-2">
                   <Label>
-                    {t("share.market.title", { defaultValue: "Market" })}
+                    {t("share.saleMarketKind.title", {
+                      defaultValue: "Market Type",
+                    })}
                   </Label>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Select
-                      value={
-                        marketAccessMode === "all" ? "__all__" : "__selected__"
-                      }
-                      onValueChange={(value) => {
-                        form.setValue(
-                          "marketAccessMode",
-                          value === "__all__" ? "all" : "selected",
-                          { shouldDirty: true, shouldValidate: true },
-                        );
-                      }}
-                    >
-                      <SelectTrigger className="w-48">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__all__">
-                          {t("share.market.all", { defaultValue: "全部" })}
-                        </SelectItem>
-                        <SelectItem value="__selected__">
-                          {t("share.market.none", {
-                            defaultValue: "不授权 (默认)",
-                          })}
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                    {marketAccessMode === "all" ? (
-                      <Badge variant="secondary" className="text-xs">
-                        {t("share.market.allSelected", {
-                          defaultValue: "已选中所有 Market",
+                  <div className="text-xs text-muted-foreground">
+                    {marketDisabled
+                      ? t("share.market.forSaleRequired", {
+                          defaultValue:
+                            "Set ForSale to Yes before choosing a market.",
+                        })
+                      : t("share.saleMarketKind.description", {
+                          defaultValue:
+                            "Choose Token Market for token usage sale or Share Market for account rental.",
                         })}
-                      </Badge>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">
+                  </div>
+                  <div className="flex flex-wrap items-center gap-5 pt-1">
+                    {(["token", "share"] as const).map((value) => {
+                      const id = `share-create-sale-market-kind-${value}`;
+                      return (
+                        <label
+                          key={value}
+                          htmlFor={id}
+                          className={cn(
+                            "flex cursor-pointer items-center gap-2 text-sm",
+                            marketDisabled && "cursor-not-allowed opacity-60",
+                          )}
+                        >
+                          <input
+                            id={id}
+                            type="radio"
+                            name="share-create-sale-market-kind"
+                            value={value}
+                            checked={saleMarketKind === value}
+                            disabled={marketDisabled}
+                            onChange={() => {
+                              form.setValue("saleMarketKind", value, {
+                                shouldDirty: true,
+                                shouldValidate: true,
+                              });
+                              if (value === "token") {
+                                form.setValue("marketAccessMode", "all", {
+                                  shouldDirty: true,
+                                  shouldValidate: true,
+                                });
+                                setSelectedMarketEmails([]);
+                                setSelectedShareMarketEmail("");
+                              } else {
+                                form.setValue("marketAccessMode", "selected", {
+                                  shouldDirty: true,
+                                  shouldValidate: true,
+                                });
+                                setSelectedMarketEmails([]);
+                              }
+                              setMarketSelectKey((current) => current + 1);
+                            }}
+                            className="h-4 w-4 accent-primary"
+                          />
+                          <span>
+                            {value === "token"
+                              ? t("share.saleMarketKind.token", {
+                                  defaultValue: "Token Market",
+                                })
+                              : t("share.saleMarketKind.share", {
+                                  defaultValue: "Share Market",
+                                })}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {saleMarketKind === "token" ? (
+                  <div className="space-y-1.5 md:col-span-2">
+                    <Label>
+                      {t("share.market.title", {
+                        defaultValue: "Token Market",
+                      })}
+                    </Label>
+                    <div className="text-xs text-muted-foreground">
+                      {marketDisabled
+                        ? t("share.market.forSaleRequired", {
+                            defaultValue:
+                              "Set ForSale to Yes before choosing a market.",
+                          })
+                        : t("share.market.description", {
+                            defaultValue:
+                              "Choose all or selected token markets.",
+                          })}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Select
+                        key={marketSelectKey}
+                        value={
+                          marketAccessMode === "all"
+                            ? "__all__"
+                            : "__selected_market__"
+                        }
+                        disabled={marketDisabled}
+                        onValueChange={(value) => {
+                          if (value === "__all__") {
+                            form.setValue("marketAccessMode", "all", {
+                              shouldDirty: true,
+                              shouldValidate: true,
+                            });
+                            setSelectedMarketEmails([]);
+                            setMarketSelectKey((current) => current + 1);
+                            return;
+                          }
+                          form.setValue("marketAccessMode", "selected", {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          });
+                          setSelectedMarketEmails((current) =>
+                            uniqueSortedEmails([
+                              ...current,
+                              value.toLowerCase(),
+                            ]),
+                          );
+                          setMarketSelectKey((current) => current + 1);
+                        }}
+                      >
+                        <SelectTrigger
+                          className="w-56"
+                          aria-label={t("share.market.select", {
+                            defaultValue: "Select market",
+                          })}
+                        >
+                          <SelectValue
+                            placeholder={t("share.market.select", {
+                              defaultValue: "Select market",
+                            })}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__all__">
+                            {t("share.market.all", { defaultValue: "全部" })}
+                          </SelectItem>
+                          <SelectItem value="__selected_market__" disabled>
+                            {t("share.market.select", {
+                              defaultValue: "Select market",
+                            })}
+                          </SelectItem>
+                          {usageMarkets.map((market) => (
+                            <SelectItem key={market.id} value={market.email}>
+                              {market.displayName}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={
+                          marketDisabled ||
+                          (marketAccessMode === "selected" &&
+                            normalizedSelectedMarketEmails.length === 0)
+                        }
+                        onClick={() => {
+                          form.setValue("marketAccessMode", "selected", {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          });
+                          setSelectedMarketEmails([]);
+                        }}
+                      >
+                        {t("share.market.restore", {
+                          defaultValue: "还原",
+                        })}
+                      </Button>
+                    </div>
+                    <MarketTags
+                      markets={usageMarkets}
+                      marketAccessMode={marketAccessMode}
+                      selectedMarketEmails={normalizedSelectedMarketEmails}
+                      removable
+                      disabled={marketDisabled}
+                      onRemove={(email) =>
+                        setSelectedMarketEmails((current) =>
+                          current.filter((item) => item !== email),
+                        )
+                      }
+                    />
+                    {marketAccessMode !== "all" &&
+                    normalizedSelectedMarketEmails.length === 0 ? (
+                      <div className="text-xs text-muted-foreground">
                         {t("share.market.default", {
                           defaultValue: "默认，不授权 Market",
                         })}
-                      </span>
-                    )}
+                      </div>
+                    ) : null}
+                    {usageMarkets.length === 0 ? (
+                      <div className="text-xs text-muted-foreground">
+                        {t("share.market.empty", {
+                          defaultValue: "暂无可用的 token market",
+                        })}
+                      </div>
+                    ) : null}
                   </div>
-                  {usageMarkets.length > 0 ? (
-                    <div className="text-xs text-muted-foreground">
-                      {t("share.createDialog.marketHint", {
-                        defaultValue:
-                          "创建后可在 share 卡片中精细调整 Market 列表。",
+                ) : null}
+
+                {saleMarketKind === "share" ? (
+                  <div className="space-y-1.5 md:col-span-2">
+                    <Label>
+                      {t("share.accountMarket.title", {
+                        defaultValue: "Share Market",
                       })}
+                    </Label>
+                    <div className="text-xs text-muted-foreground">
+                      {marketDisabled
+                        ? t("share.accountMarket.forSaleRequired", {
+                            defaultValue:
+                              "Set ForSale to Yes before delegating an account market.",
+                          })
+                        : t("share.accountMarket.description", {
+                            defaultValue:
+                              "Choose one share market for account-hosted sale.",
+                          })}
                     </div>
-                  ) : null}
-                </div>
+                    <Select
+                      value={
+                        selectedShareMarketEmail || "__select_share_market__"
+                      }
+                      disabled={marketDisabled || shareMarkets.length === 0}
+                      onValueChange={(value) =>
+                        value === "__select_share_market__"
+                          ? undefined
+                          : setSelectedShareMarketEmail(value.toLowerCase())
+                      }
+                    >
+                      <SelectTrigger
+                        className="w-56"
+                        aria-label={t("share.accountMarket.select", {
+                          defaultValue: "Select share market",
+                        })}
+                      >
+                        <SelectValue
+                          placeholder={t("share.accountMarket.select", {
+                            defaultValue: "Select share market",
+                          })}
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__select_share_market__" disabled>
+                          {t("share.accountMarket.select", {
+                            defaultValue: "Select share market",
+                          })}
+                        </SelectItem>
+                        {shareMarkets.map((market) => (
+                          <SelectItem key={market.id} value={market.email}>
+                            {market.displayName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <MarketTags
+                      markets={shareMarkets}
+                      selectedMarketEmails={
+                        normalizedSelectedShareMarketEmail
+                          ? [normalizedSelectedShareMarketEmail]
+                          : []
+                      }
+                    />
+                    {marketInvalid ? (
+                      <div className="text-xs text-destructive">
+                        {t("share.accountMarket.required", {
+                          defaultValue: "请选择一个 Share Market",
+                        })}
+                      </div>
+                    ) : null}
+                    {shareMarkets.length === 0 ? (
+                      <div className="text-xs text-muted-foreground">
+                        {t("share.accountMarket.empty", {
+                          defaultValue: "暂无可委托的 share market",
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {/* Share To：与 EditShareDialog 风格一致，按 app 分别输入；只为
                     已经绑了 provider 的 app 渲染，避免对未绑定 app 写入空 ACL。 */}
@@ -1113,7 +1401,12 @@ export function CreateShareDialog({
           </Button>
           <Button
             onClick={handleCreateClick}
-            disabled={isSubmitting || tunnelConfigSaving || ownerEmailInvalid}
+            disabled={
+              isSubmitting ||
+              tunnelConfigSaving ||
+              ownerEmailInvalid ||
+              (advancedOpened && marketInvalid)
+            }
           >
             {submitLabel ?? t("share.create")}
           </Button>
@@ -1197,6 +1490,67 @@ function FieldError({ error }: { error?: string }) {
   return <p className={cn("text-sm text-destructive")}>{error}</p>;
 }
 
+function MarketTags({
+  markets,
+  marketAccessMode = "selected",
+  selectedMarketEmails,
+  removable = false,
+  disabled = false,
+  onRemove,
+}: {
+  markets: PublicMarket[];
+  marketAccessMode?: "selected" | "all";
+  selectedMarketEmails: string[];
+  removable?: boolean;
+  disabled?: boolean;
+  onRemove?: (email: string) => void;
+}) {
+  const { t } = useTranslation();
+  const marketByEmail = new Map(
+    markets.map((market) => [market.email.toLowerCase(), market]),
+  );
+
+  if (marketAccessMode === "all") {
+    return (
+      <Badge variant="secondary" className="w-fit text-xs">
+        {t("share.market.allSelected", {
+          defaultValue: "已选中所有 Market",
+        })}
+      </Badge>
+    );
+  }
+
+  if (selectedMarketEmails.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {selectedMarketEmails.map((email) => {
+        const market = marketByEmail.get(email);
+        return (
+          <Badge
+            key={email}
+            variant="outline"
+            className="flex items-center gap-1 text-xs"
+          >
+            <span>{market?.displayName ?? email}</span>
+            {removable ? (
+              <button
+                type="button"
+                className="rounded-full text-muted-foreground hover:text-foreground disabled:opacity-50"
+                disabled={disabled}
+                aria-label={`Remove ${market?.displayName ?? email}`}
+                onClick={() => onRemove?.(email)}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            ) : null}
+          </Badge>
+        );
+      })}
+    </div>
+  );
+}
+
 interface SummaryLine {
   key: string;
   label: string;
@@ -1208,6 +1562,7 @@ function buildDefaultsSummary(
   values: {
     autoStart: boolean;
     forSale: "Yes" | "No" | "Free";
+    saleMarketKind: "token" | "share";
     marketAccessMode: "selected" | "all";
     expiresInSecs: number;
     isPermanent: boolean;
@@ -1239,9 +1594,15 @@ function buildDefaultsSummary(
       key: "market",
       label: t("share.market.title", { defaultValue: "Market" }),
       value:
-        values.marketAccessMode === "all"
-          ? t("share.market.allSelected", { defaultValue: "已选中所有 Market" })
-          : t("share.market.default", { defaultValue: "默认，不授权 Market" }),
+        values.saleMarketKind === "share"
+          ? t("share.saleMarketKind.share", { defaultValue: "Share Market" })
+          : values.marketAccessMode === "all"
+            ? t("share.market.allSelected", {
+                defaultValue: "已选中所有 Token Market",
+              })
+            : t("share.market.default", {
+                defaultValue: "默认，不授权 Market",
+              }),
     },
     {
       key: "expiry",

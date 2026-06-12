@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import {
+  authApi,
   shareApi,
   type AppId,
   type ShareAccessByApp,
@@ -50,6 +51,11 @@ import {
 import { CreateShareDialog } from "./CreateShareDialog";
 import { ShareList } from "./ShareList";
 import { ShareRouterBar } from "./ShareRouterBar";
+import {
+  buildProviderOption,
+  SHARE_PROVIDER_AUTH_PROVIDERS,
+  type ManagedAuthStatusByProvider,
+} from "./providerOptions";
 import type { Provider } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -95,6 +101,34 @@ export function SharePage({
   const claudeProvidersQuery = useProvidersQuery("claude");
   const codexProvidersQuery = useProvidersQuery("codex");
   const geminiProvidersQuery = useProvidersQuery("gemini");
+  const managedAuthStatusResults = useQueries({
+    queries: SHARE_PROVIDER_AUTH_PROVIDERS.map((authProvider) => ({
+      queryKey: ["managed-auth-status", authProvider],
+      queryFn: () => authApi.authGetStatus(authProvider),
+      staleTime: 30000,
+    })),
+  });
+  const deepSeekAccountStatusResult = useQuery({
+    queryKey: ["deepseek-account-status"],
+    queryFn: () => authApi.deepseekAccountStatus(),
+    staleTime: 30000,
+  });
+  const managedAuthStatusVersion = managedAuthStatusResults
+    .map((result) => String(result.dataUpdatedAt))
+    .concat(String(deepSeekAccountStatusResult.dataUpdatedAt))
+    .join(":");
+  const managedAuthStatuses = useMemo<ManagedAuthStatusByProvider>(() => {
+    const result: ManagedAuthStatusByProvider = {};
+    SHARE_PROVIDER_AUTH_PROVIDERS.forEach((authProvider, index) => {
+      const status = managedAuthStatusResults[index]?.data;
+      if (status) result[authProvider] = status;
+    });
+    if (deepSeekAccountStatusResult.data) {
+      result.deepseek_account = deepSeekAccountStatusResult.data;
+    }
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [managedAuthStatusVersion]);
 
   // C-1：保留近期 share-needs-rebind 事件以便在页面顶部常驻红条提示。
   // toast 弹一下就消失，对于"已经发生且未解决"的状态需要更显著的存在感。
@@ -331,11 +365,13 @@ export function SharePage({
             : 0,
       )
       .map((provider) => ({
-        id: provider.id,
-        name: provider.name,
-        disabled: takenProviderIds.has(provider.id),
+        ...buildProviderOption(
+          provider,
+          takenProviderIds.has(provider.id),
+          managedAuthStatuses,
+        ),
       }));
-  }, [defaultApp, providerQueries, shares]);
+  }, [defaultApp, providerQueries, shares, managedAuthStatuses]);
 
   // ShareCard 上"绑定 provider"显示名的查找表，key = `{appType}:{providerId}`。
   // 由 SharePage 在 provider 查询完成后统一计算，避免 Card 自己持有 query 句柄。
@@ -381,14 +417,16 @@ export function SharePage({
               ? 1
               : 0,
         )
-        .map((provider) => ({
-          id: provider.id,
-          name: provider.name,
-          disabled: takenProviderIds.has(provider.id),
-        }));
+        .map((provider) =>
+          buildProviderOption(
+            provider,
+            takenProviderIds.has(provider.id),
+            managedAuthStatuses,
+          ),
+        );
     });
     return result;
-  }, [providerQueries, shares, dialogProviderOptions]);
+  }, [providerQueries, shares, dialogProviderOptions, managedAuthStatuses]);
 
   const handleCreate = async (
     params: Parameters<typeof createMutation.mutateAsync>[0],
@@ -718,21 +756,29 @@ export function SharePage({
                   }),
             )
           }
-          onUpdateAcl={(share, sharedWithEmails, marketAccessMode, accessByApp, saleMarketKind) =>
+          onUpdateAcl={(
+            share,
+            sharedWithEmails,
+            marketAccessMode,
+            accessByApp,
+            saleMarketKind,
+          ) =>
             runShareAction(share, () =>
               shareScoped
                 ? writeSharePatch(share, {
                     sharedWithEmails,
                     marketAccessMode,
                     accessByApp,
-                    saleMarketKind: saleMarketKind ?? share.saleMarketKind ?? "token",
+                    saleMarketKind:
+                      saleMarketKind ?? share.saleMarketKind ?? "token",
                   })
                 : updateAclMutation.mutateAsync({
                     shareId: share.id,
                     sharedWithEmails,
                     marketAccessMode,
                     accessByApp,
-                    saleMarketKind: saleMarketKind ?? share.saleMarketKind ?? "token",
+                    saleMarketKind:
+                      saleMarketKind ?? share.saleMarketKind ?? "token",
                   }),
             )
           }

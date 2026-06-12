@@ -435,7 +435,29 @@ export function EditShareDialog({
     selectedShareMarketEmail.trim().toLowerCase(),
   )
     ? selectedShareMarketEmail.trim().toLowerCase()
-    : "";
+    : forSaleInput === "Yes" && saleMarketKindInput === "share"
+      ? (shareMarkets[0]?.email?.trim().toLowerCase() ?? "")
+      : "";
+
+  useEffect(() => {
+    if (!open || forSaleInput !== "Yes" || saleMarketKindInput !== "share") {
+      return;
+    }
+    const currentEmail = selectedShareMarketEmail.trim().toLowerCase();
+    if (currentEmail && shareMarketEmailSet.has(currentEmail)) return;
+    const firstShareMarket = shareMarkets[0]?.email?.trim().toLowerCase();
+    if (firstShareMarket) {
+      setSelectedShareMarketEmail(firstShareMarket);
+    }
+  }, [
+    forSaleInput,
+    open,
+    saleMarketKindInput,
+    selectedShareMarketEmail,
+    shareMarketEmailSet,
+    shareMarkets,
+  ]);
+
   const marketDirty =
     saleMarketKindInput !== currentSaleMarketKind ||
     (saleMarketKindInput === "token" &&

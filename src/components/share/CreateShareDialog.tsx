@@ -328,6 +328,24 @@ export function CreateShareDialog({
     });
     return bound.length > 0 ? bound : [...SHARE_APP_TYPES];
   }, [watchedBindings]);
+
+  useEffect(() => {
+    if (!open || forSaleValue !== "Yes" || saleMarketKind !== "share") return;
+    const currentEmail = selectedShareMarketEmail.trim().toLowerCase();
+    if (currentEmail && shareMarketEmailSet.has(currentEmail)) return;
+    const firstShareMarket = shareMarkets[0]?.email?.trim().toLowerCase();
+    if (firstShareMarket) {
+      setSelectedShareMarketEmail(firstShareMarket);
+    }
+  }, [
+    forSaleValue,
+    open,
+    saleMarketKind,
+    selectedShareMarketEmail,
+    shareMarketEmailSet,
+    shareMarkets,
+  ]);
+
   const normalizedSelectedMarketEmails = useMemo(
     () =>
       uniqueSortedEmails(
@@ -341,7 +359,9 @@ export function CreateShareDialog({
     selectedShareMarketEmail.trim().toLowerCase(),
   )
     ? selectedShareMarketEmail.trim().toLowerCase()
-    : "";
+    : forSaleValue === "Yes" && saleMarketKind === "share"
+      ? (shareMarkets[0]?.email?.trim().toLowerCase() ?? "")
+      : "";
   const marketDisabled = forSaleValue !== "Yes";
   const marketInvalid =
     forSaleValue === "Yes" &&

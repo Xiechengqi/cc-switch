@@ -225,8 +225,13 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
   ) => {
     try {
       setStage("creating-share");
-      const created = await createShareMutation.mutateAsync(params);
+      const createParams =
+        extras.saleMarketKind === "share"
+          ? ({ ...params, saleMarketKind: "token" as const })
+          : params;
+      const created = await createShareMutation.mutateAsync(createParams);
       if (
+        extras.saleMarketKind === "share" ||
         extras.marketAccessMode === "all" ||
         extras.sharedWithEmails.length > 0 ||
         (!!extras.accessByApp && Object.keys(extras.accessByApp).length > 0)

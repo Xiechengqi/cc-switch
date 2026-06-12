@@ -71,6 +71,11 @@ impl ShareService {
         let description = normalize_description(params.description)?;
         let for_sale = normalize_for_sale(&params.for_sale)?;
         let sale_market_kind = normalize_sale_market_kind(&params.sale_market_kind)?;
+        if for_sale == ShareService::FOR_SALE_YES && sale_market_kind == "share" {
+            return Err(AppError::Message(
+                "Share Market 出售必须先选择一个 Share Market；请通过 ACL 更新完成委托".to_string(),
+            ));
+        }
         let parallel_limit = normalize_parallel_limit(params.parallel_limit)?;
         let owner_email = normalize_email(&params.owner_email)?;
         let token_limit = params.token_limit;
@@ -643,6 +648,11 @@ impl ShareService {
             legacy_acl_from_access_by_app(&access_by_app);
         let sale_market_kind =
             normalize_sale_market_kind(sale_market_kind.unwrap_or(&share.sale_market_kind))?;
+        if sale_market_kind == "share" && !access_by_app_has_shared_email(&access_by_app) {
+            return Err(AppError::Message(
+                "Share Market 出售必须显式委托给一个 Share Market".to_string(),
+            ));
+        }
         db.update_share_acl(
             share_id,
             &owner_email,
@@ -798,6 +808,15 @@ fn normalize_sale_market_kind(value: &str) -> Result<String, AppError> {
             "出售 Market 类型只能是 token 或 share".to_string(),
         )),
     }
+}
+
+fn access_by_app_has_shared_email(access_by_app: &HashMap<String, ShareAppAccess>) -> bool {
+    access_by_app.values().any(|access| {
+        access
+            .shared_with_emails
+            .iter()
+            .any(|email| !email.trim().is_empty())
+    })
 }
 
 fn normalize_market_access_mode(value: &str) -> Result<String, AppError> {

@@ -435,10 +435,15 @@ export function SharePage({
       accessByApp?: ShareAccessByApp;
     },
   ) => {
-    const created = await createMutation.mutateAsync(params);
+    const createParams =
+      extras.saleMarketKind === "share"
+        ? ({ ...params, saleMarketKind: "token" as const })
+        : params;
+    const created = await createMutation.mutateAsync(createParams);
     const hasPerAppAccess =
       !!extras.accessByApp && Object.keys(extras.accessByApp).length > 0;
     if (
+      extras.saleMarketKind === "share" ||
       extras.marketAccessMode === "all" ||
       extras.sharedWithEmails.length > 0 ||
       hasPerAppAccess

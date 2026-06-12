@@ -68,6 +68,22 @@ struct MarketsResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum MarketsPayload {
+    Wrapped(MarketsResponse),
+    List(Vec<PublicMarket>),
+}
+
+impl MarketsPayload {
+    fn into_markets(self) -> Vec<PublicMarket> {
+        match self {
+            MarketsPayload::Wrapped(response) => response.markets,
+            MarketsPayload::List(markets) => markets,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateShareTokenLimitParams {
     pub share_id: String,
@@ -268,10 +284,10 @@ async fn fetch_public_markets() -> Result<Vec<PublicMarket>, String> {
         return Err(format!("获取 market 列表失败: HTTP {}", response.status()));
     }
     let body = response
-        .json::<MarketsResponse>()
+        .json::<MarketsPayload>()
         .await
         .map_err(|e| format!("解析 market 列表失败: {e}"))?;
-    Ok(body.markets)
+    Ok(body.into_markets())
 }
 
 #[tauri::command]
@@ -1285,6 +1301,37 @@ mod tests {
             "https://share-market.example.com"
         );
         assert_eq!(body.markets[0].market_kind, "share");
+    }
+
+    #[test]
+    fn public_markets_parse_wrapped_or_direct_list_payloads() {
+        let wrapped: MarketsPayload = serde_json::from_value(serde_json::json!({
+            "markets": [{
+                "id": "usage-market-1",
+                "displayName": "https://market.example.com",
+                "email": "market@example.com",
+                "subdomain": "market",
+                "publicBaseUrl": "https://market.example.com",
+                "marketKind": "usage",
+                "status": "active"
+            }]
+        }))
+        .expect("wrapped router markets response should parse");
+        assert_eq!(wrapped.into_markets()[0].market_kind, "usage");
+
+        let direct: MarketsPayload = serde_json::from_value(serde_json::json!([
+            {
+                "id": "share-market-1",
+                "displayName": "https://share-market.example.com",
+                "email": "share-market@example.com",
+                "subdomain": "share-market",
+                "publicBaseUrl": "https://share-market.example.com",
+                "marketKind": "share",
+                "status": "active"
+            }
+        ]))
+        .expect("direct router markets response should parse");
+        assert_eq!(direct.into_markets()[0].market_kind, "share");
     }
 
     #[test]

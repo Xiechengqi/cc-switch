@@ -217,6 +217,7 @@ export function CreateShareDialog({
   );
   const [selectedShareMarketEmail, setSelectedShareMarketEmail] = useState("");
   const [marketSelectKey, setMarketSelectKey] = useState(0);
+  const wasOpenRef = useRef(false);
   // 按 app 区分的「Share To」邮箱列表。与 EditShareDialog 行为对齐：用本地 state
   // 而不是 react-hook-form schema 字段，避免每个字段都要走 zod 校验。submit 时
   // 才汇总成 ShareAccessByApp。
@@ -239,7 +240,12 @@ export function CreateShareDialog({
   });
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
     setOwnerEmailInput(ownerEmail ?? "");
     setRouterDomain(tunnelConfig.domain);
     form.reset(
@@ -256,8 +262,7 @@ export function CreateShareDialog({
     setSelectedShareMarketEmail("");
     setMarketSelectKey((current) => current + 1);
     subdomainManualRef.current = false;
-    // providersByApp 引用变化（fetch 完成）时也重置一次，确保默认 slot 能选上 provider。
-  }, [form, open, ownerEmail, tunnelConfig.domain, defaultApp, providersByApp]);
+  }, [form, open, ownerEmail, tunnelConfig.domain, defaultApp]);
 
   useEffect(() => {
     if (!open || subdomainManualRef.current) return;

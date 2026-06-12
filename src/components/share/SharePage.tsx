@@ -220,7 +220,7 @@ export function SharePage({
     isLoading: marketsLoading,
     error: marketsError,
     refetch: refetchMarkets,
-  } = useShareMarketsQuery(Boolean(tunnelConfig.domain));
+  } = useShareMarketsQuery();
   const providerQueries = useMemo(
     () => ({
       claude: claudeProvidersQuery.data,

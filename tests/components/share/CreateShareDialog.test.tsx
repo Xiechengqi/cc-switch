@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { describe, it, expect, vi } from "vitest";
 import {
   CreateShareDialog,
@@ -85,6 +86,29 @@ describe("CreateShareDialog", () => {
     // Advanced controls are hidden by default.
     expect(screen.queryByLabelText("share.tokenLimit")).not.toBeInTheDocument();
     expect(screen.queryByText(/将以默认设置创建/)).toBeInTheDocument();
+  });
+
+  it("keeps advanced settings open when provider data refreshes", async () => {
+    const user = userEvent.setup();
+    const { props, rendered } = renderDialog();
+
+    await user.click(
+      screen.getByRole("button", { name: /高级设置|advanced/i }),
+    );
+    expect(screen.getByLabelText("share.tokenLimit")).toBeInTheDocument();
+
+    rendered.rerender(
+      <CreateShareDialog
+        {...(props as unknown as ComponentProps<typeof CreateShareDialog>)}
+        providersByApp={{
+          claude: [...TEST_PROVIDERS],
+          codex: [],
+          gemini: [],
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText("share.tokenLimit")).toBeInTheDocument();
   });
 
   it("submits with the provider explicitly picked in advanced settings", async () => {

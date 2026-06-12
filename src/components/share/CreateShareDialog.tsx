@@ -72,6 +72,79 @@ export interface CreateShareExtras {
   accessByApp?: ShareAccessByApp;
 }
 
+export interface BuildCreateShareAccessPayloadInput {
+  forSale: "Yes" | "No" | "Free";
+  saleMarketKind: "token" | "share";
+  marketAccessMode: "selected" | "all";
+  fixedBindings: Partial<Record<keyof ShareBindings, string>>;
+  dynamicApps: Array<keyof ShareBindings>;
+  shareToEmailsByApp: Record<keyof ShareBindings, string[]>;
+  selectedTokenMarketEmails: string[];
+  selectedShareMarketEmail: string;
+  defaultShareApp: keyof ShareBindings;
+}
+
+export function buildCreateShareAccessPayload({
+  forSale,
+  saleMarketKind,
+  marketAccessMode,
+  fixedBindings,
+  dynamicApps,
+  shareToEmailsByApp,
+  selectedTokenMarketEmails,
+  selectedShareMarketEmail,
+  defaultShareApp,
+}: BuildCreateShareAccessPayloadInput): CreateShareExtras {
+  const usedApps = new Set<keyof ShareBindings>([
+    ...(Object.keys(fixedBindings) as Array<keyof ShareBindings>),
+    ...dynamicApps,
+  ]);
+  if (forSale === "Yes" && saleMarketKind === "share" && usedApps.size === 0) {
+    usedApps.add(defaultShareApp);
+  }
+
+  const accessByApp: ShareAccessByApp = {};
+  for (const app of SHARE_APP_TYPES) {
+    if (!usedApps.has(app)) continue;
+    const marketEmails =
+      forSale !== "Yes"
+        ? []
+        : saleMarketKind === "share"
+          ? selectedShareMarketEmail
+            ? [selectedShareMarketEmail]
+            : []
+          : marketAccessMode === "all"
+            ? []
+            : selectedTokenMarketEmails;
+    const emails = uniqueSortedEmails([
+      ...normalizeEmails(shareToEmailsByApp[app] ?? []),
+      ...marketEmails,
+    ]);
+    if (emails.length === 0) continue;
+    accessByApp[app] = {
+      sharedWithEmails: emails,
+      marketAccessMode:
+        forSale === "Yes" && saleMarketKind === "share"
+          ? "selected"
+          : marketAccessMode,
+    };
+  }
+
+  return {
+    sharedWithEmails: uniqueSortedEmails(
+      Object.values(accessByApp).flatMap(
+        (entry) => entry?.sharedWithEmails ?? [],
+      ),
+    ),
+    marketAccessMode:
+      forSale === "Yes" && saleMarketKind === "share"
+        ? "selected"
+        : marketAccessMode,
+    accessByApp: Object.keys(accessByApp).length > 0 ? accessByApp : undefined,
+    saleMarketKind,
+  };
+}
+
 /**
  * 表单里 Provider 选择器展示的最小 provider 形态。调用方按 `appType` 过滤后传入。
  *
@@ -420,47 +493,17 @@ export function CreateShareDialog({
       .filter(([, pid]) => pid === DYNAMIC_BINDING_VALUE)
       .map(([app]) => app as string);
 
-    // 仅给「会被本 share 用到的 app」（fixed 绑定 + dynamic 占位）建 accessByApp。
-    // 没绑 provider 的 app 不应该有 sharedWithEmails 项，否则 router 那边的 ACL
-    // 也用不上还要回传。
-    const usedApps = new Set<keyof ShareBindings>([
-      ...(Object.keys(fixedBindings) as Array<keyof ShareBindings>),
-      ...(dynamicApps as Array<keyof ShareBindings>),
-    ]);
-    const accessByApp: ShareAccessByApp = {};
-    for (const app of SHARE_APP_TYPES) {
-      if (!usedApps.has(app)) continue;
-      const marketEmails =
-        forSaleValue !== "Yes"
-          ? []
-          : saleMarketKind === "share"
-            ? normalizedSelectedShareMarketEmail
-              ? [normalizedSelectedShareMarketEmail]
-              : []
-            : values.marketAccessMode === "all"
-              ? []
-              : normalizedSelectedMarketEmails;
-      const emails = uniqueSortedEmails([
-        ...normalizeEmails(shareToEmailsByApp[app] ?? []),
-        ...marketEmails,
-      ]);
-      if (emails.length === 0) continue;
-      accessByApp[app] = {
-        sharedWithEmails: emails,
-        marketAccessMode:
-          forSaleValue === "Yes" && saleMarketKind === "share"
-            ? "selected"
-            : values.marketAccessMode,
-      };
-    }
-    const accessByAppOrUndef =
-      Object.keys(accessByApp).length > 0 ? accessByApp : undefined;
-    // sharedWithEmails 保留作为「全 app 并集」回传，兼容 UpdateShareAclParams 现状。
-    const flatSharedWithEmails = uniqueSortedEmails(
-      Object.values(accessByApp).flatMap(
-        (entry) => entry?.sharedWithEmails ?? [],
-      ),
-    );
+    const accessPayload = buildCreateShareAccessPayload({
+      forSale: forSaleValue,
+      saleMarketKind,
+      marketAccessMode: values.marketAccessMode,
+      fixedBindings,
+      dynamicApps: dynamicApps as Array<keyof ShareBindings>,
+      shareToEmailsByApp,
+      selectedTokenMarketEmails: normalizedSelectedMarketEmails,
+      selectedShareMarketEmail: normalizedSelectedShareMarketEmail,
+      defaultShareApp,
+    });
 
     await onSubmit(
       {
@@ -475,15 +518,7 @@ export function CreateShareDialog({
         expiresInSecs: values.expiresInSecs,
         subdomain: values.subdomain || undefined,
       },
-      {
-        sharedWithEmails: flatSharedWithEmails,
-        marketAccessMode:
-          forSaleValue === "Yes" && saleMarketKind === "share"
-            ? "selected"
-            : values.marketAccessMode,
-        accessByApp: accessByAppOrUndef,
-        saleMarketKind: values.saleMarketKind,
-      },
+      accessPayload,
     );
   });
 
@@ -764,8 +799,9 @@ export function CreateShareDialog({
                                   </SelectItem>
                                 ) : (
                                   candidates.map((provider) => {
-                                    const duplicateInForm =
-                                      selectedInOtherSlot(provider.id);
+                                    const duplicateInForm = selectedInOtherSlot(
+                                      provider.id,
+                                    );
                                     const disabled =
                                       provider.disabled || duplicateInForm;
                                     return (

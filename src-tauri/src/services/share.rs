@@ -1095,6 +1095,87 @@ mod tests {
         assert_eq!(record.sale_market_kind, "token");
     }
 
+    #[test]
+    fn update_acl_rejects_share_market_without_delegate_email() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .expect("save provider");
+        let mut params = base_params("p1");
+        params.for_sale = "Yes".to_string();
+        let record = ShareService::prepare_create(&db, params).expect("prepare ok");
+        ShareService::create(&db, record.clone()).expect("create ok");
+
+        let mut access_by_app = HashMap::new();
+        access_by_app.insert(
+            "claude".to_string(),
+            ShareAppAccess {
+                shared_with_emails: Vec::new(),
+                market_access_mode: "selected".to_string(),
+            },
+        );
+        let err = ShareService::update_acl(
+            &db,
+            &record.id,
+            &record.owner_email,
+            Vec::new(),
+            "selected",
+            Some(access_by_app),
+            Some("share"),
+        )
+        .expect_err("share market delegation requires explicit market email");
+        assert!(
+            err.to_string().contains("显式委托"),
+            "unexpected error: {err}"
+        );
+        let stored = db.get_share_by_id(&record.id).unwrap().unwrap();
+        assert_eq!(stored.sale_market_kind, "token");
+        assert!(stored.shared_with_emails.is_empty());
+    }
+
+    #[test]
+    fn update_acl_accepts_share_market_with_delegate_email() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .expect("save provider");
+        let mut params = base_params("p1");
+        params.for_sale = "Yes".to_string();
+        let record = ShareService::prepare_create(&db, params).expect("prepare ok");
+        ShareService::create(&db, record.clone()).expect("create ok");
+
+        let mut access_by_app = HashMap::new();
+        access_by_app.insert(
+            "claude".to_string(),
+            ShareAppAccess {
+                shared_with_emails: vec!["share-market@example.com".to_string()],
+                market_access_mode: "selected".to_string(),
+            },
+        );
+        let updated = ShareService::update_acl(
+            &db,
+            &record.id,
+            &record.owner_email,
+            Vec::new(),
+            "selected",
+            Some(access_by_app),
+            Some("share"),
+        )
+        .expect("share market delegation should save");
+
+        assert_eq!(updated.sale_market_kind, "share");
+        assert_eq!(updated.market_access_mode, "selected");
+        assert_eq!(
+            updated.shared_with_emails,
+            vec!["share-market@example.com".to_string()]
+        );
+        assert_eq!(
+            updated
+                .access_by_app
+                .get("claude")
+                .map(|access| access.shared_with_emails.as_slice()),
+            Some(&["share-market@example.com".to_string()][..])
+        );
+    }
+
     /// P8 新增：可以一次创建多 app share，bindings 全部落库。
     #[test]
     fn prepare_create_accepts_multi_app_bindings() {

@@ -227,22 +227,34 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
       setStage("creating-share");
       const createParams =
         extras.saleMarketKind === "share"
-          ? ({ ...params, saleMarketKind: "token" as const })
+          ? { ...params, saleMarketKind: "token" as const }
           : params;
       const created = await createShareMutation.mutateAsync(createParams);
-      if (
-        extras.saleMarketKind === "share" ||
-        extras.marketAccessMode === "all" ||
-        extras.sharedWithEmails.length > 0 ||
-        (!!extras.accessByApp && Object.keys(extras.accessByApp).length > 0)
-      ) {
-        await updateAclMutation.mutateAsync({
-          shareId: created.id,
-          sharedWithEmails: extras.sharedWithEmails,
-          marketAccessMode: extras.marketAccessMode,
-          saleMarketKind: extras.saleMarketKind ?? "token",
-          accessByApp: extras.accessByApp,
-        });
+      try {
+        if (
+          extras.saleMarketKind === "share" ||
+          extras.marketAccessMode === "all" ||
+          extras.sharedWithEmails.length > 0 ||
+          (!!extras.accessByApp && Object.keys(extras.accessByApp).length > 0)
+        ) {
+          await updateAclMutation.mutateAsync({
+            shareId: created.id,
+            sharedWithEmails: extras.sharedWithEmails,
+            marketAccessMode: extras.marketAccessMode,
+            saleMarketKind: extras.saleMarketKind ?? "token",
+            accessByApp: extras.accessByApp,
+          });
+        }
+      } catch (error) {
+        try {
+          await shareApi.delete(created.id);
+          await invalidateShareState(created.id);
+        } catch (rollbackError) {
+          throw new Error(
+            `${extractErrorMessage(error)}；回滚删除失败：${extractErrorMessage(rollbackError)}`,
+          );
+        }
+        throw error;
       }
       setCreateOpen(false);
       await startShareAndEnable(created);

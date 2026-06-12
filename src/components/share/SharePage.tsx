@@ -444,24 +444,35 @@ export function SharePage({
   ) => {
     const createParams =
       extras.saleMarketKind === "share"
-        ? ({ ...params, saleMarketKind: "token" as const })
+        ? { ...params, saleMarketKind: "token" as const }
         : params;
     const created = await createMutation.mutateAsync(createParams);
     const hasPerAppAccess =
       !!extras.accessByApp && Object.keys(extras.accessByApp).length > 0;
-    if (
-      extras.saleMarketKind === "share" ||
-      extras.marketAccessMode === "all" ||
-      extras.sharedWithEmails.length > 0 ||
-      hasPerAppAccess
-    ) {
-      await updateAclMutation.mutateAsync({
-        shareId: created.id,
-        sharedWithEmails: extras.sharedWithEmails,
-        marketAccessMode: extras.marketAccessMode,
-        accessByApp: extras.accessByApp,
-        saleMarketKind: extras.saleMarketKind ?? "token",
-      });
+    try {
+      if (
+        extras.saleMarketKind === "share" ||
+        extras.marketAccessMode === "all" ||
+        extras.sharedWithEmails.length > 0 ||
+        hasPerAppAccess
+      ) {
+        await updateAclMutation.mutateAsync({
+          shareId: created.id,
+          sharedWithEmails: extras.sharedWithEmails,
+          marketAccessMode: extras.marketAccessMode,
+          accessByApp: extras.accessByApp,
+          saleMarketKind: extras.saleMarketKind ?? "token",
+        });
+      }
+    } catch (error) {
+      try {
+        await deleteMutation.mutateAsync(created.id);
+      } catch (rollbackError) {
+        throw new Error(
+          `${extractErrorMessage(error)}；回滚删除失败：${extractErrorMessage(rollbackError)}`,
+        );
+      }
+      throw error;
     }
     setCreateOpen(false);
     await runShareAction(created, () => enableMutation.mutateAsync(created.id));

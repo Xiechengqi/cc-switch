@@ -70,12 +70,13 @@ impl ShareService {
         let expires_at = now + chrono::Duration::seconds(params.expires_in_secs);
         let description = normalize_description(params.description)?;
         let for_sale = normalize_for_sale(&params.for_sale)?;
-        let sale_market_kind = normalize_sale_market_kind(&params.sale_market_kind)?;
-        if for_sale == ShareService::FOR_SALE_YES && sale_market_kind == "share" {
-            return Err(AppError::Message(
-                "Share Market 出售必须先选择一个 Share Market；请通过 ACL 更新完成委托".to_string(),
-            ));
-        }
+        let requested_sale_market_kind = normalize_sale_market_kind(&params.sale_market_kind)?;
+        let sale_market_kind =
+            if for_sale == ShareService::FOR_SALE_YES && requested_sale_market_kind == "share" {
+                "token".to_string()
+            } else {
+                requested_sale_market_kind
+            };
         let parallel_limit = normalize_parallel_limit(params.parallel_limit)?;
         let owner_email = normalize_email(&params.owner_email)?;
         let token_limit = params.token_limit;
@@ -1023,6 +1024,22 @@ mod tests {
         );
         assert_eq!(record.primary_app().as_deref(), Some("claude"));
         assert_eq!(record.status, "paused");
+    }
+
+    #[test]
+    fn prepare_create_defers_share_market_kind_until_acl_update() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .expect("save provider");
+        let mut params = base_params("p1");
+        params.for_sale = "Yes".to_string();
+        params.sale_market_kind = "share".to_string();
+
+        let record =
+            ShareService::prepare_create(&db, params).expect("share market create is deferred");
+
+        assert_eq!(record.for_sale, "Yes");
+        assert_eq!(record.sale_market_kind, "token");
     }
 
     /// P8 新增：可以一次创建多 app share，bindings 全部落库。

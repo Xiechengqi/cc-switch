@@ -4,6 +4,7 @@ import { Copy, Edit3, Play, Power, RotateCcw, Trash2 } from "lucide-react";
 import type {
   PublicMarket,
   ShareAccessByApp,
+  ShareAppSettingsByApp,
   ShareRecord,
   TunnelConfig,
   TunnelInfo,
@@ -110,6 +111,7 @@ interface ShareCardProps {
     marketAccessMode: "selected" | "all",
     accessByApp?: ShareAccessByApp,
     saleMarketKind?: "token" | "share",
+    appSettings?: ShareAppSettingsByApp,
   ) => Promise<void> | void;
   /**
    * 当前 app 下可绑定的 provider 列表（同 CreateShareDialog 的形态）。

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::database::ShareAppAccess;
+use crate::database::{ShareAppAccess, ShareAppSettings};
 
 const KNOWN_PUBLIC_SHARE_ROUTER_DOMAINS: &[&str] = &["jptokenswitch.cc", "sgptokenswitch.cc"];
 
@@ -357,6 +357,8 @@ pub struct ShareTunnelMetadata {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub access_by_app: HashMap<String, ShareAppAccess>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub app_settings: HashMap<String, ShareAppSettings>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub for_sale_official_price_percent_by_app: HashMap<String, u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -491,6 +493,7 @@ mod tests {
             shared_with_emails: vec!["friend@example.com".to_string()],
             market_access_mode: "selected".to_string(),
             access_by_app: HashMap::new(),
+            app_settings: HashMap::new(),
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),
@@ -553,6 +556,7 @@ mod tests {
             shared_with_emails: vec!["friend@example.com".to_string()],
             market_access_mode: "all".to_string(),
             access_by_app: HashMap::new(),
+            app_settings: HashMap::new(),
             for_sale_official_price_percent_by_app: pricing,
             description: Some("not signed by claim".to_string()),
             for_sale: "Yes".to_string(),

@@ -3,6 +3,7 @@ import { Plus } from "lucide-react";
 import type {
   PublicMarket,
   ShareAccessByApp,
+  ShareAppSettingsByApp,
   ShareRecord,
   TunnelConfig,
   TunnelInfo,
@@ -81,6 +82,7 @@ interface ShareListProps {
     marketAccessMode: "selected" | "all",
     accessByApp?: ShareAccessByApp,
     saleMarketKind?: "token" | "share",
+    appSettings?: ShareAppSettingsByApp,
   ) => Promise<void> | void;
   onUpdateProviderBinding: (
     share: ShareRecord,

@@ -1,5 +1,6 @@
 use crate::database::{
-    derive_access_by_app, legacy_acl_from_access_by_app, Database, ShareAppAccess, ShareRecord,
+    derive_access_by_app, legacy_acl_from_access_by_app, Database, ShareAppAccess,
+    ShareAppSettings, ShareRecord,
 };
 use crate::error::AppError;
 use std::collections::{HashMap, HashSet};
@@ -141,6 +142,7 @@ impl ShareService {
             shared_with_emails: Vec::new(),
             market_access_mode: "selected".to_string(),
             access_by_app: derive_access_by_app(&bindings, &[], "selected"),
+            app_settings: HashMap::new(),
             for_sale_official_price_percent_by_app: HashMap::new(),
             description,
             for_sale,
@@ -493,6 +495,23 @@ impl ShareService {
         Ok(updated)
     }
 
+    pub fn update_app_settings(
+        db: &Arc<Database>,
+        share_id: &str,
+        app_settings: HashMap<String, ShareAppSettings>,
+    ) -> Result<ShareRecord, AppError> {
+        let share = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        let normalized = normalize_app_settings(app_settings, &share.owner_email)?;
+        db.update_share_app_settings(share_id, &normalized)?;
+        let updated = db
+            .get_share_by_id(share_id)?
+            .ok_or_else(|| AppError::Message(format!("Share not found: {share_id}")))?;
+        crate::tunnel::sync::schedule_sync_share(updated.clone(), db);
+        Ok(updated)
+    }
+
     pub fn update_expires_at(
         db: &Arc<Database>,
         share_id: &str,
@@ -784,6 +803,15 @@ fn normalize_parallel_limit(value: i64) -> Result<i64, AppError> {
     )))
 }
 
+fn normalize_token_limit(value: i64) -> Result<i64, AppError> {
+    if ShareService::is_unlimited_token_limit(value) || value > 0 {
+        return Ok(value);
+    }
+    Err(AppError::Message(
+        "Token limit 必须大于 0，或设为 -1 表示无上限".to_string(),
+    ))
+}
+
 fn normalize_description(description: Option<String>) -> Result<Option<String>, AppError> {
     let Some(description) = description else {
         return Ok(None);
@@ -910,6 +938,51 @@ fn normalize_for_sale_official_price_percent_by_app(
     Ok(normalized)
 }
 
+fn normalize_app_settings(
+    settings: HashMap<String, ShareAppSettings>,
+    owner_email: &str,
+) -> Result<HashMap<String, ShareAppSettings>, AppError> {
+    let mut normalized = HashMap::new();
+    for (app, setting) in settings {
+        let app = normalize_share_app_type(&app)?;
+        let for_sale = normalize_for_sale(&setting.for_sale)?;
+        let sale_market_kind = normalize_sale_market_kind(&setting.sale_market_kind)?;
+        let allow_owner = sale_market_kind == "share";
+        let shared_with_emails = normalize_email_list_with_options(
+            setting.shared_with_emails,
+            owner_email,
+            allow_owner,
+        )?;
+        if for_sale == ShareService::FOR_SALE_YES
+            && sale_market_kind == "share"
+            && shared_with_emails.is_empty()
+        {
+            return Err(AppError::Message(format!(
+                "{app} Share Market 出售必须显式委托给一个 Share Market"
+            )));
+        }
+        let token_limit = normalize_token_limit(setting.token_limit)?;
+        let parallel_limit = normalize_parallel_limit(setting.parallel_limit)?;
+        if !setting.expires_at.trim().is_empty() {
+            chrono::DateTime::parse_from_rfc3339(&setting.expires_at)
+                .map_err(|_| AppError::Message(format!("{app} 到期时间格式无效")))?;
+        }
+        normalized.insert(
+            app,
+            ShareAppSettings {
+                for_sale,
+                sale_market_kind,
+                market_access_mode: normalize_market_access_mode(&setting.market_access_mode)?,
+                shared_with_emails,
+                token_limit,
+                parallel_limit,
+                expires_at: setting.expires_at,
+            },
+        );
+    }
+    Ok(normalized)
+}
+
 fn normalize_access_by_app(
     access_by_app: HashMap<String, ShareAppAccess>,
     owner_email: &str,
@@ -1016,6 +1089,7 @@ mod tests {
             shared_with_emails: Vec::new(),
             market_access_mode: "selected".to_string(),
             access_by_app: HashMap::new(),
+            app_settings: HashMap::new(),
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),

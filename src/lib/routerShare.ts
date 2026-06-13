@@ -8,6 +8,7 @@ export interface RouterShareSettingsPatch {
   marketAccessMode?: "selected" | "all";
   sharedWithEmails?: string[];
   accessByApp?: import("@/lib/api").ShareAccessByApp;
+  appSettings?: import("@/lib/api").ShareAppSettingsByApp;
   forSaleOfficialPricePercentByApp?: Record<string, number>;
   tokenLimit?: number;
   parallelLimit?: number;

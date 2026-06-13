@@ -1,4 +1,4 @@
-use crate::database::{ShareAppAccess, ShareRecord};
+use crate::database::{ShareAppAccess, ShareAppSettings, ShareRecord};
 use crate::error::AppError;
 use crate::proxy::ProxyConfig;
 use crate::services::share::{PrepareShareParams, ShareService};
@@ -162,6 +162,8 @@ pub struct UpdateShareAclParams {
     pub market_access_mode: String,
     #[serde(default)]
     pub access_by_app: Option<std::collections::HashMap<String, ShareAppAccess>>,
+    #[serde(default)]
+    pub app_settings: Option<std::collections::HashMap<String, ShareAppSettings>>,
     #[serde(default)]
     pub sale_market_kind: Option<String>,
 }
@@ -369,7 +371,7 @@ pub fn update_share_acl(
         .map_err(|e: AppError| e.to_string())?
         .ok_or_else(|| format!("Share not found: {}", params.share_id))?;
     let owner_email = share.owner_email.clone();
-    ShareService::update_acl(
+    let updated = ShareService::update_acl(
         &state.db,
         &params.share_id,
         &owner_email,
@@ -378,7 +380,13 @@ pub fn update_share_acl(
         params.access_by_app,
         params.sale_market_kind.as_deref(),
     )
-    .map_err(|e: AppError| e.to_string())
+    .map_err(|e: AppError| e.to_string())?;
+    if let Some(app_settings) = params.app_settings {
+        ShareService::update_app_settings(&state.db, &params.share_id, app_settings)
+            .map_err(|e: AppError| e.to_string())
+    } else {
+        Ok(updated)
+    }
 }
 
 #[tauri::command]
@@ -1402,6 +1410,7 @@ mod tests {
             shared_with_emails: vec![],
             market_access_mode: "selected".to_string(),
             access_by_app: HashMap::new(),
+            app_settings: HashMap::new(),
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),

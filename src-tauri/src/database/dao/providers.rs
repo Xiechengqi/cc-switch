@@ -1030,6 +1030,7 @@ mod provider_catalog_prune_tests {
             shared_with_emails: Vec::new(),
             market_access_mode: "selected".to_string(),
             access_by_app: HashMap::new(),
+            app_settings: HashMap::new(),
             for_sale_official_price_percent_by_app: HashMap::new(),
             description: None,
             for_sale: "No".to_string(),

@@ -20,6 +20,20 @@ export type ShareAccessByApp = Partial<
 
 export type ShareSaleMarketKind = "token" | "share";
 
+export type ShareAppSettings = {
+  forSale: "Yes" | "No" | "Free";
+  saleMarketKind: ShareSaleMarketKind;
+  marketAccessMode: "selected" | "all";
+  sharedWithEmails: string[];
+  tokenLimit: number;
+  parallelLimit: number;
+  expiresAt: string;
+};
+
+export type ShareAppSettingsByApp = Partial<
+  Record<keyof ShareBindings, ShareAppSettings>
+>;
+
 export interface ShareRecord {
   id: string;
   name: string;
@@ -27,6 +41,7 @@ export interface ShareRecord {
   sharedWithEmails: string[];
   marketAccessMode: "selected" | "all";
   accessByApp?: ShareAccessByApp;
+  appSettings?: ShareAppSettingsByApp;
   forSaleOfficialPricePercentByApp: Record<string, number>;
   description?: string | null;
   forSale: "Yes" | "No" | "Free";
@@ -146,6 +161,7 @@ export interface UpdateShareAclParams {
   sharedWithEmails: string[];
   marketAccessMode: "selected" | "all";
   accessByApp?: ShareAccessByApp;
+  appSettings?: ShareAppSettingsByApp;
   saleMarketKind?: ShareSaleMarketKind;
 }
 

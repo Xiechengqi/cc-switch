@@ -392,6 +392,7 @@ impl Database {
                 shared_with_emails_json TEXT NOT NULL DEFAULT '[]',
                 market_access_mode TEXT NOT NULL DEFAULT 'selected',
                 access_by_app_json TEXT NOT NULL DEFAULT '{}',
+                app_settings_json TEXT NOT NULL DEFAULT '{}',
                 for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
@@ -639,6 +640,11 @@ impl Database {
                         log::info!("迁移数据库从 v26 到 v27（pricing_model 维度入主键，proxy_request_logs 增加 pricing_model 列）");
                         Self::migrate_v26_to_v27(conn)?;
                         Self::set_user_version(conn, 27)?;
+                    }
+                    27 => {
+                        log::info!("迁移数据库从 v27 到 v28（Share 设置按 app 分支拆分）");
+                        Self::migrate_v27_to_v28(conn)?;
+                        Self::set_user_version(conn, 28)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1427,6 +1433,7 @@ impl Database {
                 owner_email TEXT NOT NULL DEFAULT '',
                 shared_with_emails_json TEXT NOT NULL DEFAULT '[]',
                 market_access_mode TEXT NOT NULL DEFAULT 'selected',
+                app_settings_json TEXT NOT NULL DEFAULT '{}',
                 for_sale_official_price_percent_json TEXT NOT NULL DEFAULT '{}',
                 description TEXT,
                 for_sale TEXT NOT NULL DEFAULT 'No',
@@ -1539,12 +1546,14 @@ impl Database {
 
     /// v15 -> v16 迁移：添加 Hermes Agent 支持
     fn migrate_v15_to_v16(conn: &Connection) -> Result<(), AppError> {
-        Self::add_column_if_missing(
-            conn,
-            "mcp_servers",
-            "enabled_hermes",
-            "BOOLEAN NOT NULL DEFAULT 0",
-        )?;
+        if Self::table_exists(conn, "mcp_servers")? {
+            Self::add_column_if_missing(
+                conn,
+                "mcp_servers",
+                "enabled_hermes",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
+        }
 
         // skills table may not exist in databases migrated from very old versions
         if Self::table_exists(conn, "skills")? {
@@ -2012,6 +2021,22 @@ impl Database {
         log::info!(
             "v26 -> v27 迁移完成：usage_daily_rollups 已保留 request_model/pricing_model 维度"
         );
+        Ok(())
+    }
+
+    /// v27 -> v28：shares 增加 app_settings_json，用于按 claude/codex/gemini
+    /// 独立保存出售、Share Market 委托、token/concurrency/expiry 等设置。
+    fn migrate_v27_to_v28(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "shares")? {
+            Self::add_column_if_missing(
+                conn,
+                "shares",
+                "app_settings_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )?;
+        }
+
+        log::info!("v27 -> v28 迁移完成：shares 增加 app_settings_json");
         Ok(())
     }
 

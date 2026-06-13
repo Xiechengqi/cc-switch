@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::app_config::AppType;
-use crate::database::{Database, ShareAppAccess, ShareRecord};
+use crate::database::{Database, ShareAppAccess, ShareAppSettings, ShareRecord};
 use crate::provider::Provider;
 use crate::settings;
 use crate::tunnel::config::{
@@ -38,6 +38,8 @@ pub struct ShareSettingsPatch {
     pub shared_with_emails: Option<Vec<String>>,
     #[serde(default)]
     pub access_by_app: Option<HashMap<String, ShareAppAccess>>,
+    #[serde(default)]
+    pub app_settings: Option<HashMap<String, ShareAppSettings>>,
     #[serde(default)]
     pub for_sale_official_price_percent_by_app: Option<HashMap<String, u16>>,
     #[serde(default)]
@@ -340,6 +342,9 @@ pub(crate) fn apply_share_settings_patch(
         crate::services::share::ShareService::update_for_sale_official_price_percent_by_app(
             db, share_id, pricing,
         )?;
+    }
+    if let Some(app_settings) = patch.app_settings {
+        crate::services::share::ShareService::update_app_settings(db, share_id, app_settings)?;
     }
     if let Some(token_limit) = patch.token_limit {
         crate::services::share::ShareService::update_token_limit(db, share_id, token_limit)?;
@@ -1862,6 +1867,7 @@ pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMeta
         shared_with_emails: share.shared_with_emails.clone(),
         market_access_mode: share.market_access_mode.clone(),
         access_by_app: share.effective_access_by_app(),
+        app_settings: share.effective_app_settings(),
         for_sale_official_price_percent_by_app: for_sale_pricing,
         description: share.description.clone(),
         for_sale: share.for_sale.clone(),
@@ -2014,6 +2020,7 @@ mod tests {
                 shared_with_emails: Vec::new(),
                 market_access_mode: "selected".to_string(),
                 access_by_app: HashMap::new(),
+                app_settings: HashMap::new(),
                 for_sale_official_price_percent_by_app: HashMap::new(),
                 description: None,
                 for_sale: "No".to_string(),
@@ -2105,6 +2112,7 @@ mod tests {
             shared_with_emails: Vec::new(),
             market_access_mode: "all".to_string(),
             access_by_app: HashMap::new(),
+            app_settings: HashMap::new(),
             for_sale_official_price_percent_by_app: pricing,
             description: None,
             for_sale: "Yes".to_string(),

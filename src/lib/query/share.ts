@@ -676,12 +676,14 @@ export function useUpdateShareAclMutation() {
       sharedWithEmails,
       marketAccessMode,
       accessByApp,
+      appSettings,
       saleMarketKind,
     }: {
       shareId: string;
       sharedWithEmails: string[];
       marketAccessMode: "selected" | "all";
       accessByApp?: import("@/lib/api").ShareAccessByApp;
+      appSettings?: import("@/lib/api").ShareAppSettingsByApp;
       saleMarketKind?: import("@/lib/api").ShareSaleMarketKind;
     }) =>
       shareApi.updateAcl({
@@ -689,6 +691,7 @@ export function useUpdateShareAclMutation() {
         sharedWithEmails,
         marketAccessMode,
         accessByApp,
+        appSettings,
         saleMarketKind,
       }),
     {

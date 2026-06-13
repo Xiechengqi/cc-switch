@@ -8,6 +8,7 @@ import {
   shareApi,
   type AppId,
   type ShareAccessByApp,
+  type ShareAppSettingsByApp,
   type ShareRecord,
   type ShareTunnelStatus,
 } from "@/lib/api";
@@ -440,6 +441,7 @@ export function SharePage({
       marketAccessMode: "selected" | "all";
       saleMarketKind?: "token" | "share";
       accessByApp?: ShareAccessByApp;
+      appSettings?: ShareAppSettingsByApp;
     },
   ) => {
     const createParams =
@@ -449,18 +451,22 @@ export function SharePage({
     const created = await createMutation.mutateAsync(createParams);
     const hasPerAppAccess =
       !!extras.accessByApp && Object.keys(extras.accessByApp).length > 0;
+    const hasPerAppSettings =
+      !!extras.appSettings && Object.keys(extras.appSettings).length > 0;
     try {
       if (
         extras.saleMarketKind === "share" ||
         extras.marketAccessMode === "all" ||
         extras.sharedWithEmails.length > 0 ||
-        hasPerAppAccess
+        hasPerAppAccess ||
+        hasPerAppSettings
       ) {
         await updateAclMutation.mutateAsync({
           shareId: created.id,
           sharedWithEmails: extras.sharedWithEmails,
           marketAccessMode: extras.marketAccessMode,
           accessByApp: extras.accessByApp,
+          appSettings: extras.appSettings,
           saleMarketKind: extras.saleMarketKind ?? "token",
         });
       }
@@ -773,6 +779,7 @@ export function SharePage({
             marketAccessMode,
             accessByApp,
             saleMarketKind,
+            appSettings,
           ) =>
             runShareAction(share, () =>
               shareScoped
@@ -780,6 +787,7 @@ export function SharePage({
                     sharedWithEmails,
                     marketAccessMode,
                     accessByApp,
+                    appSettings,
                     saleMarketKind:
                       saleMarketKind ?? share.saleMarketKind ?? "token",
                   })
@@ -788,6 +796,7 @@ export function SharePage({
                     sharedWithEmails,
                     marketAccessMode,
                     accessByApp,
+                    appSettings,
                     saleMarketKind:
                       saleMarketKind ?? share.saleMarketKind ?? "token",
                   }),

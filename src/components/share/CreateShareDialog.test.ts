@@ -31,6 +31,17 @@ describe("buildCreateShareAccessPayload", () => {
           marketAccessMode: "selected",
         },
       },
+      appSettings: {
+        codex: {
+          forSale: "Yes",
+          saleMarketKind: "share",
+          marketAccessMode: "selected",
+          sharedWithEmails: ["router@jptokenswitch.cc"],
+          tokenLimit: -1,
+          parallelLimit: -1,
+          expiresAt: "",
+        },
+      },
     });
   });
 

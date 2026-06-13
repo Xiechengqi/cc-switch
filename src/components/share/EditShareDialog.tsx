@@ -4,6 +4,7 @@ import { X } from "lucide-react";
 import type {
   PublicMarket,
   ShareAccessByApp,
+  ShareAppSettingsByApp,
   ShareBindings,
   ShareRecord,
 } from "@/lib/api";
@@ -110,6 +111,7 @@ interface EditShareDialogProps {
     marketAccessMode: "selected" | "all",
     accessByApp?: ShareAccessByApp,
     saleMarketKind?: "token" | "share",
+    appSettings?: ShareAppSettingsByApp,
   ) => Promise<void> | void;
   /**
    * P8：改绑 / 解绑 share 的某个 app_type slot 的 provider。
@@ -183,6 +185,8 @@ export function EditShareDialog({
   const [shareToEmailsByApp, setShareToEmailsByApp] = useState<
     Record<keyof ShareBindings, string[]>
   >({ claude: [], codex: [], gemini: [] });
+  const [activeSettingsApp, setActiveSettingsApp] =
+    useState<keyof ShareBindings>("claude");
   const [selectedMarketEmails, setSelectedMarketEmails] = useState<string[]>(
     [],
   );
@@ -235,6 +239,11 @@ export function EditShareDialog({
     () => shareAccessApps(share),
     [share.bindings],
   );
+  useEffect(() => {
+    if (!supportedAccessApps.includes(activeSettingsApp)) {
+      setActiveSettingsApp(supportedAccessApps[0] ?? "claude");
+    }
+  }, [activeSettingsApp, supportedAccessApps]);
   const currentAccessByApp = useMemo(
     () => effectiveAccessByApp(share),
     [share],
@@ -554,6 +563,33 @@ export function EditShareDialog({
         ).toISOString()
       : "";
   const expiryIso = expiryPermanent ? PERMANENT_EXPIRES_AT : computedExpiryIso;
+  const nextAppSettings = useMemo<ShareAppSettingsByApp>(() => {
+    const result: ShareAppSettingsByApp = {};
+    for (const app of nextAccessApps) {
+      const access = nextAccessByApp[app];
+      result[app] = {
+        forSale: forSaleInput,
+        saleMarketKind: saleMarketKindInput,
+        marketAccessMode:
+          saleMarketKindInput === "share" ? "selected" : marketAccessModeInput,
+        sharedWithEmails: access?.sharedWithEmails ?? [],
+        tokenLimit: parsedTokenLimit,
+        parallelLimit: parsedParallelLimit,
+        expiresAt: expiryIso || share.expiresAt,
+      };
+    }
+    return result;
+  }, [
+    expiryIso,
+    forSaleInput,
+    marketAccessModeInput,
+    nextAccessApps,
+    nextAccessByApp,
+    parsedParallelLimit,
+    parsedTokenLimit,
+    saleMarketKindInput,
+    share.expiresAt,
+  ]);
   const currentExpiryMs = new Date(share.expiresAt).getTime();
   const nextExpiryMs = expiryIso ? new Date(expiryIso).getTime() : NaN;
   const expiryDirty = expiryPermanent
@@ -579,6 +615,8 @@ export function EditShareDialog({
     forSaleInput === "Yes" &&
     saleMarketKindInput === "share" &&
     normalizedSelectedShareMarketEmail.length === 0;
+  const appSettingsDirty =
+    aclDirty || forSaleDirty || tokenLimitDirty || parallelLimitDirty || expiryDirty;
   const hasChanges =
     aclDirty ||
     forSaleDirty ||
@@ -611,13 +649,14 @@ export function EditShareDialog({
     if (!hasChanges || hasInvalidChanges || busy) return;
     setSaving(true);
     try {
-      if (aclDirty)
+      if (appSettingsDirty)
         await onUpdateAcl(
           share,
           nextAclEmails,
           saleMarketKindInput === "share" ? "selected" : marketAccessModeInput,
           nextAccessByApp,
           saleMarketKindInput,
+          nextAppSettings,
         );
       if (forSaleDirty) await onUpdateForSale(share, forSaleInput);
       if (salePricingDirty) {
@@ -885,7 +924,24 @@ export function EditShareDialog({
               invalid={shareToDirty && shareToInvalid}
             >
               <div className="space-y-3">
-                {supportedAccessApps.map((app) => (
+                <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
+                  {supportedAccessApps.map((app) => (
+                    <button
+                      key={app}
+                      type="button"
+                      onClick={() => setActiveSettingsApp(app)}
+                      className={cn(
+                        "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                        activeSettingsApp === app
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {shareAppLabel(app)}
+                    </button>
+                  ))}
+                </div>
+                {[activeSettingsApp].map((app) => (
                   <div key={app} className="space-y-1.5">
                     <Label className="text-xs text-muted-foreground">
                       {shareAppLabel(app)}

@@ -8,6 +8,7 @@ import type {
   CreateShareParams,
   PublicMarket,
   ShareAccessByApp,
+  ShareAppSettingsByApp,
   ShareBindings,
   TunnelConfig,
 } from "@/lib/api";
@@ -70,6 +71,7 @@ export interface CreateShareExtras {
    * 按 app 区分的可访问邮箱。空对象 = 没有 per-app 自定义，仍走 `sharedWithEmails` 兼容路径。
    */
   accessByApp?: ShareAccessByApp;
+  appSettings?: ShareAppSettingsByApp;
 }
 
 export interface BuildCreateShareAccessPayloadInput {
@@ -82,6 +84,9 @@ export interface BuildCreateShareAccessPayloadInput {
   selectedTokenMarketEmails: string[];
   selectedShareMarketEmail: string;
   defaultShareApp: keyof ShareBindings;
+  tokenLimit?: number;
+  parallelLimit?: number;
+  expiresInSecs?: number;
 }
 
 export function buildCreateShareAccessPayload({
@@ -94,6 +99,9 @@ export function buildCreateShareAccessPayload({
   selectedTokenMarketEmails,
   selectedShareMarketEmail,
   defaultShareApp,
+  tokenLimit,
+  parallelLimit,
+  expiresInSecs,
 }: BuildCreateShareAccessPayloadInput): CreateShareExtras {
   const usedApps = new Set<keyof ShareBindings>([
     ...(Object.keys(fixedBindings) as Array<keyof ShareBindings>),
@@ -104,6 +112,7 @@ export function buildCreateShareAccessPayload({
   }
 
   const accessByApp: ShareAccessByApp = {};
+  const appSettings: ShareAppSettingsByApp = {};
   for (const app of SHARE_APP_TYPES) {
     if (!usedApps.has(app)) continue;
     const marketEmails =
@@ -128,6 +137,21 @@ export function buildCreateShareAccessPayload({
           ? "selected"
           : marketAccessMode,
     };
+    appSettings[app] = {
+      forSale,
+      saleMarketKind,
+      marketAccessMode:
+        forSale === "Yes" && saleMarketKind === "share"
+          ? "selected"
+          : marketAccessMode,
+      sharedWithEmails: emails,
+      tokenLimit: tokenLimit ?? UNLIMITED_TOKEN_LIMIT,
+      parallelLimit: parallelLimit ?? UNLIMITED_PARALLEL_LIMIT,
+      expiresAt:
+        typeof expiresInSecs === "number"
+          ? new Date(Date.now() + expiresInSecs * 1000).toISOString()
+          : "",
+    };
   }
 
   return {
@@ -141,6 +165,7 @@ export function buildCreateShareAccessPayload({
         ? "selected"
         : marketAccessMode,
     accessByApp: Object.keys(accessByApp).length > 0 ? accessByApp : undefined,
+    appSettings: Object.keys(appSettings).length > 0 ? appSettings : undefined,
     saleMarketKind,
   };
 }
@@ -307,6 +332,8 @@ export function CreateShareDialog({
   });
   const [shareToEmailsByApp, setShareToEmailsByApp] =
     useState<Record<keyof ShareBindings, string[]>>(emptyShareToByApp);
+  const [activeSettingsApp, setActiveSettingsApp] =
+    useState<keyof ShareBindings>("claude");
   const subdomainManualRef = useRef(false);
 
   const form = useForm<CreateShareFormInput, unknown, CreateShareFormValues>({
@@ -401,6 +428,12 @@ export function CreateShareDialog({
     });
     return bound.length > 0 ? bound : [...SHARE_APP_TYPES];
   }, [watchedBindings]);
+
+  useEffect(() => {
+    if (!boundShareApps.includes(activeSettingsApp)) {
+      setActiveSettingsApp(boundShareApps[0] ?? "claude");
+    }
+  }, [activeSettingsApp, boundShareApps]);
 
   useEffect(() => {
     if (!open || forSaleValue !== "Yes" || saleMarketKind !== "share") return;
@@ -503,6 +536,9 @@ export function CreateShareDialog({
       selectedTokenMarketEmails: normalizedSelectedMarketEmails,
       selectedShareMarketEmail: normalizedSelectedShareMarketEmail,
       defaultShareApp,
+      tokenLimit: values.tokenLimit,
+      parallelLimit: values.parallelLimit,
+      expiresInSecs: values.expiresInSecs,
     });
 
     await onSubmit(
@@ -1223,8 +1259,25 @@ export function CreateShareDialog({
                         "每个 App 独立配置可访问邮箱；登录 cc-switch-router 后即可看到对应 share。留空 = 仅 owner 可见。",
                     })}
                   </div>
-                  <div className="grid gap-2 pt-1">
+                  <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
                     {boundShareApps.map((app) => (
+                      <button
+                        key={app}
+                        type="button"
+                        onClick={() => setActiveSettingsApp(app)}
+                        className={cn(
+                          "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                          activeSettingsApp === app
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {shareAppDisplayLabel(app)}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="grid gap-2 pt-1">
+                    {[activeSettingsApp].map((app) => (
                       <div key={app} className="space-y-1.5">
                         <Label className="text-xs uppercase text-muted-foreground">
                           {shareAppDisplayLabel(app)}

@@ -1232,20 +1232,18 @@ async fn resolve_codex_oauth_auth_override(
             .and_then(|meta| meta.managed_account_id_for("openai_official_session"));
 
         let (token, resolved_account_id) = match account_id.as_deref() {
-            Some(id) => (
-                auth_manager
-                    .get_valid_token_for_account(id)
+            Some(id) => auth_manager
+                .get_valid_token_with_chatgpt_account_id_for_account(id)
+                .await
+                .map_err(|e| AppError::Message(format!("OpenAI Official session 认证失败: {e}")))?,
+            None => {
+                let (token, chatgpt_account_id) = auth_manager
+                    .get_valid_token_with_chatgpt_account_id()
                     .await
                     .map_err(|e| {
                         AppError::Message(format!("OpenAI Official session 认证失败: {e}"))
-                    })?,
-                Some(id.to_string()),
-            ),
-            None => {
-                let token = auth_manager.get_valid_token().await.map_err(|e| {
-                    AppError::Message(format!("OpenAI Official session 认证失败: {e}"))
-                })?;
-                (token, auth_manager.default_account_id().await)
+                    })?;
+                (token, chatgpt_account_id)
             }
         };
 
@@ -1254,7 +1252,7 @@ async fn resolve_codex_oauth_auth_override(
                 token,
                 crate::proxy::providers::AuthStrategy::CodexOAuth,
             )
-            .with_managed_account_id(resolved_account_id),
+            .with_managed_account_id(Some(resolved_account_id)),
         ));
     }
 

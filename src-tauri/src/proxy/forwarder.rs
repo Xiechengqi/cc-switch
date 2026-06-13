@@ -1629,23 +1629,22 @@ impl RequestForwarder {
                             let token_result = match &account_id {
                                 Some(id) => {
                                     log::debug!("[OpenAISession] 使用指定账号 {id} 获取 token");
-                                    session_auth.get_valid_token_for_account(id).await
+                                    session_auth
+                                        .get_valid_token_with_chatgpt_account_id_for_account(id)
+                                        .await
                                 }
                                 None => {
                                     log::debug!("[OpenAISession] 使用默认账号获取 token");
-                                    session_auth.get_valid_token().await
+                                    session_auth.get_valid_token_with_chatgpt_account_id().await
                                 }
                             };
                             match token_result {
-                                Ok(token) => {
+                                Ok((token, chatgpt_account_id)) => {
                                     auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
                                     should_send_codex_oauth_session_headers = true;
-                                    codex_oauth_account_id = match account_id {
-                                        Some(id) => Some(id),
-                                        None => session_auth.default_account_id().await,
-                                    };
+                                    codex_oauth_account_id = Some(chatgpt_account_id);
                                     log::debug!(
-                                        "[OpenAISession] 成功获取 access_token (account={})",
+                                        "[OpenAISession] 成功获取 access_token (chatgpt_account={})",
                                         codex_oauth_account_id.as_deref().unwrap_or("default")
                                     );
                                 }

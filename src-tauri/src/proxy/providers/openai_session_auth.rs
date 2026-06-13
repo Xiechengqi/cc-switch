@@ -214,6 +214,17 @@ impl OpenAISessionManager {
         self.get_valid_token_for_account(&account_id).await
     }
 
+    pub async fn get_valid_token_with_chatgpt_account_id(
+        &self,
+    ) -> Result<(String, String), OpenAISessionError> {
+        let account_id = self
+            .resolve_default_account_id()
+            .await
+            .ok_or_else(|| OpenAISessionError::AccountNotFound("default".to_string()))?;
+        self.get_valid_token_with_chatgpt_account_id_for_account(&account_id)
+            .await
+    }
+
     pub async fn get_valid_token_for_account(
         &self,
         account_id: &str,
@@ -228,6 +239,24 @@ impl OpenAISessionManager {
             return Err(OpenAISessionError::SessionExpired);
         }
         Ok(account.access_token.clone())
+    }
+
+    pub async fn get_valid_token_with_chatgpt_account_id_for_account(
+        &self,
+        account_id: &str,
+    ) -> Result<(String, String), OpenAISessionError> {
+        let account_id = account_id.trim();
+        let accounts = self.accounts.read().await;
+        let account = accounts
+            .get(account_id)
+            .ok_or_else(|| OpenAISessionError::AccountNotFound(account_id.to_string()))?;
+        let now_ms = Utc::now().timestamp_millis();
+        if account.expires_at_ms - now_ms <= TOKEN_EXPIRY_BUFFER_MS {
+            return Err(OpenAISessionError::SessionExpired);
+        }
+        let chatgpt_account_id =
+            resolve_chatgpt_account_id(account).unwrap_or_else(|| account.account_id.clone());
+        Ok((account.access_token.clone(), chatgpt_account_id))
     }
 
     pub async fn remove_account(&self, account_id: &str) -> Result<(), OpenAISessionError> {
@@ -342,14 +371,7 @@ fn parse_chatgpt_session(raw_json: &str) -> Result<ParsedChatGptSession, OpenAIS
     }
 
     let account_id = decode_jwt_claims(&access_token)
-        .and_then(|claims| {
-            claims
-                .get("chatgpt_account_id")
-                .or_else(|| claims.pointer("/https://api.openai.com/profile/chatgpt_account_id"))
-                .or_else(|| claims.pointer("/openai_auth/chatgpt_account_id"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
+        .and_then(|claims| chatgpt_account_id_from_claims(&claims))
         .or_else(|| {
             value
                 .pointer("/user/id")
@@ -390,6 +412,35 @@ fn decode_jwt_claims(token: &str) -> Option<Value> {
     serde_json::from_slice(&decoded).ok()
 }
 
+fn resolve_chatgpt_account_id(account: &OpenAISessionAccountData) -> Option<String> {
+    decode_jwt_claims(&account.access_token)
+        .and_then(|claims| chatgpt_account_id_from_claims(&claims))
+}
+
+fn chatgpt_account_id_from_claims(claims: &Value) -> Option<String> {
+    claims
+        .get("chatgpt_account_id")
+        .or_else(|| {
+            claims
+                .get("https://api.openai.com/auth")
+                .and_then(|value| value.get("chatgpt_account_id"))
+        })
+        .or_else(|| {
+            claims
+                .get("https://api.openai.com/profile")
+                .and_then(|value| value.get("chatgpt_account_id"))
+        })
+        .or_else(|| {
+            claims
+                .get("openai_auth")
+                .and_then(|value| value.get("chatgpt_account_id"))
+        })
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn stable_session_id(token: &str) -> String {
     let mut hasher = XxHash64::with_seed(0);
     hasher.write(token.as_bytes());
@@ -408,6 +459,25 @@ mod tests {
         format!("{header}.{payload}.")
     }
 
+    fn jwt_with_openai_auth_account(account_id: &str, user_id: &str, exp: i64) -> String {
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::json!({
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": account_id,
+                    "chatgpt_user_id": user_id
+                },
+                "https://api.openai.com/profile": {
+                    "email": "u@example.com"
+                },
+                "exp": exp
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        format!("{header}.{payload}.")
+    }
+
     #[test]
     fn parses_chatgpt_session_json() {
         let exp = Utc::now().timestamp() + 3600;
@@ -423,6 +493,35 @@ mod tests {
         assert_eq!(parsed.account_id, "acct-1");
         assert_eq!(parsed.email.as_deref(), Some("u@example.com"));
         assert_eq!(parsed.expires_at_ms, exp * 1000);
+    }
+
+    #[test]
+    fn parses_nested_openai_auth_chatgpt_account_id() {
+        let exp = Utc::now().timestamp() + 3600;
+        let token = jwt_with_openai_auth_account("workspace-1", "user-1", exp);
+        let raw = serde_json::json!({
+            "accessToken": token,
+            "user": {"id": "user-1", "email": "u@example.com"}
+        })
+        .to_string();
+
+        let parsed = parse_chatgpt_session(&raw).unwrap();
+        assert_eq!(parsed.account_id, "workspace-1");
+
+        let legacy_data = OpenAISessionAccountData {
+            account_id: "user-1".to_string(),
+            email: Some("u@example.com".to_string()),
+            name: None,
+            access_token: token,
+            refresh_token: None,
+            expires_at_ms: exp * 1000,
+            authenticated_at: Utc::now().timestamp(),
+            imported_at: Utc::now().timestamp(),
+        };
+        assert_eq!(
+            resolve_chatgpt_account_id(&legacy_data).as_deref(),
+            Some("workspace-1")
+        );
     }
 
     #[test]

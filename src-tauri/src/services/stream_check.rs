@@ -1303,6 +1303,13 @@ impl StreamCheckService {
             return None;
         }
         let lower = body.to_lowercase();
+        if status == 401
+            && (lower.contains("token_invalidated")
+                || lower.contains("authentication token has been invalidated"))
+        {
+            return Some("tokenInvalidated");
+        }
+
         let qianfan_quota_indicators = [
             "coding_plan_hour_quota_exceeded",
             "coding_plan_week_quota_exceeded",
@@ -1339,12 +1346,23 @@ impl StreamCheckService {
 
     fn format_http_status_message(status: u16, body: &str) -> String {
         let label = Self::classify_http_status(status);
+        if status == 401 && Self::is_token_invalidated_body(body) {
+            return format!(
+                "{label}: OpenAI session token has been invalidated. Sign in to chatgpt.com again, fetch /api/auth/session, and re-import."
+            );
+        }
         let body = Self::summarize_http_error_body(body);
         if body.is_empty() {
             label.to_string()
         } else {
             format!("{label}: {body}")
         }
+    }
+
+    fn is_token_invalidated_body(body: &str) -> bool {
+        let lower = body.to_lowercase();
+        lower.contains("token_invalidated")
+            || lower.contains("authentication token has been invalidated")
     }
 
     fn summarize_http_error_body(body: &str) -> String {
@@ -2510,6 +2528,16 @@ mod tests {
         assert_eq!(
             StreamCheckService::detect_error_category(401, auth_err),
             None
+        );
+
+        let token_invalidated = r#"{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","type":"invalid_request_error","code":"token_invalidated"}}"#;
+        assert_eq!(
+            StreamCheckService::detect_error_category(401, token_invalidated),
+            Some("tokenInvalidated")
+        );
+        assert_eq!(
+            StreamCheckService::format_http_status_message(401, token_invalidated),
+            "Auth rejected (401): OpenAI session token has been invalidated. Sign in to chatgpt.com again, fetch /api/auth/session, and re-import."
         );
     }
 

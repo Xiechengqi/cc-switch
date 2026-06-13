@@ -76,6 +76,21 @@ export function useStreamCheck(appId: AppId) {
               closeButton: true,
             },
           );
+        } else if (result.errorCategory === "tokenInvalidated") {
+          toast.warning(
+            t("streamCheck.tokenInvalidated", {
+              providerName: providerName,
+              defaultValue: `${providerName} session token has been invalidated`,
+            }),
+            {
+              description: t("streamCheck.tokenInvalidatedHint", {
+                defaultValue:
+                  "Sign in to chatgpt.com again, fetch /api/auth/session, and re-import the JSON.",
+              }),
+              duration: 10000,
+              closeButton: true,
+            },
+          );
         } else {
           const httpStatus = result.httpStatus;
           const hintKey = httpStatus

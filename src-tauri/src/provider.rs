@@ -92,8 +92,15 @@ impl Provider {
             == Some("codex_oauth")
     }
 
+    pub fn is_openai_session_provider(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("openai_official_session")
+    }
+
     pub fn is_codex_oauth(&self) -> bool {
-        self.is_codex_oauth_provider()
+        self.is_codex_oauth_provider() || self.is_openai_session_provider()
     }
 
     pub fn is_github_copilot(&self) -> bool {
@@ -171,6 +178,7 @@ impl Provider {
                 Some("github_copilot")
             )
             || self.is_codex_oauth_provider()
+            || self.is_openai_session_provider()
             || self.is_claude_oauth_provider()
             || self.is_google_gemini_oauth_provider()
             || self.is_antigravity_oauth_provider()
@@ -197,10 +205,13 @@ impl Provider {
                     || self.is_kiro_oauth_provider()
                     || self.is_cursor_oauth_provider()
                     || self.is_antigravity_oauth_provider()
+                    || self.is_openai_session_provider()
                     || self.is_codex_official_with_managed_auth()
             }
             AppType::Codex => {
-                self.is_codex_official_with_managed_auth() || self.is_cursor_oauth_provider()
+                self.is_codex_official_with_managed_auth()
+                    || self.is_openai_session_provider()
+                    || self.is_cursor_oauth_provider()
             }
             AppType::Gemini => {
                 self.is_google_gemini_oauth_provider()
@@ -223,6 +234,9 @@ impl Provider {
                 Some("https://daily-cloudcode-pa.googleapis.com")
             }
             AppType::Codex if self.is_codex_official_with_managed_auth() => {
+                Some("https://chatgpt.com/backend-api/codex")
+            }
+            AppType::Claude | AppType::Codex if self.is_openai_session_provider() => {
                 Some("https://chatgpt.com/backend-api/codex")
             }
             AppType::Gemini
@@ -1243,6 +1257,7 @@ mod tests {
         for provider_type in [
             "github_copilot",
             "codex_oauth",
+            "openai_official_session",
             "claude_oauth",
             "google_gemini_oauth",
             "antigravity_oauth",
@@ -1297,7 +1312,7 @@ mod tests {
     fn codex_official_with_managed_auth_is_allowed_during_proxy_takeover() {
         let provider = Provider {
             id: "codex-official".to_string(),
-            name: "OpenAI Official".to_string(),
+            name: "OpenAI Official (OAuth)".to_string(),
             settings_config: json!({}),
             website_url: None,
             category: Some("official".to_string()),

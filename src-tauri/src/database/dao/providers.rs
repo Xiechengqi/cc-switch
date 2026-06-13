@@ -5,6 +5,10 @@ use indexmap::IndexMap;
 use rusqlite::params;
 use std::collections::{HashMap, HashSet};
 
+const OPENAI_OFFICIAL_LEGACY_NAME: &str = "OpenAI Official";
+const OPENAI_OFFICIAL_OAUTH_NAME: &str = "OpenAI Official (OAuth)";
+const OPENAI_OFFICIAL_SESSION_NAME: &str = "OpenAI Official (session)";
+
 type OmoProviderRow = (
     String,
     String,
@@ -32,9 +36,13 @@ fn is_core_catalog_provider_allowed(app_type: &str, provider: &Provider) -> bool
                 provider.category.as_deref() == Some("official")
                     && provider_type.is_none_or(|value| value == "claude_oauth")
             }
-            "OpenAI Official" => {
+            name if is_openai_official_oauth_name(name) => {
                 provider.category.as_deref() == Some("official")
                     && provider_type.is_none_or(|value| value == "codex_oauth")
+            }
+            OPENAI_OFFICIAL_SESSION_NAME => {
+                provider.category.as_deref() == Some("official")
+                    && provider_type.is_none_or(|value| value == "openai_official_session")
             }
             "DeepSeek Official" => {
                 provider.category.as_deref() == Some("cn_official")
@@ -47,7 +55,11 @@ fn is_core_catalog_provider_allowed(app_type: &str, provider: &Provider) -> bool
             _ => false,
         },
         "codex" => {
-            provider.name == "OpenAI Official" && provider.category.as_deref() == Some("official")
+            provider.category.as_deref() == Some("official")
+                && ((is_openai_official_oauth_name(&provider.name)
+                    && provider_type.is_none_or(|value| value == "codex_oauth"))
+                    || (provider.name == OPENAI_OFFICIAL_SESSION_NAME
+                        && provider_type.is_none_or(|value| value == "openai_official_session")))
         }
         "gemini" => {
             provider.name == "Google Official"
@@ -70,7 +82,8 @@ fn is_core_catalog_fallback(app_type: &str, provider: &Provider) -> bool {
                     .is_none_or(|value| value == "claude_oauth")
         }
         "codex" => {
-            provider.name == "OpenAI Official" && provider.category.as_deref() == Some("official")
+            is_openai_official_oauth_name(&provider.name)
+                && provider.category.as_deref() == Some("official")
         }
         "gemini" => {
             provider.name == "Google Official"
@@ -83,6 +96,10 @@ fn is_core_catalog_fallback(app_type: &str, provider: &Provider) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_openai_official_oauth_name(name: &str) -> bool {
+    name == OPENAI_OFFICIAL_OAUTH_NAME || name == OPENAI_OFFICIAL_LEGACY_NAME
 }
 
 impl Database {
@@ -487,7 +504,7 @@ impl Database {
         let mut updated = 0_usize;
         let providers = self.get_all_providers("codex")?;
         for mut provider in providers.into_values() {
-            if provider.name != "OpenAI Official"
+            if !is_openai_official_oauth_name(&provider.name)
                 || provider.category.as_deref() != Some("official")
                 || provider.settings_config.get("auth").is_none()
             {
@@ -519,6 +536,29 @@ impl Database {
         }
 
         self.set_setting("codex_openai_official_default_model_v1", "true")?;
+        Ok(updated)
+    }
+
+    pub fn ensure_openai_official_oauth_display_name(&self) -> Result<usize, AppError> {
+        if self
+            .get_bool_flag("openai_official_oauth_display_name_v1")
+            .unwrap_or(false)
+        {
+            return Ok(0);
+        }
+
+        let conn = lock_conn!(self.conn);
+        let updated = conn
+            .execute(
+                "UPDATE providers
+                 SET name = ?1
+                 WHERE app_type = 'codex' AND name = ?2 AND category = 'official'",
+                params![OPENAI_OFFICIAL_OAUTH_NAME, OPENAI_OFFICIAL_LEGACY_NAME],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        drop(conn);
+
+        self.set_setting("openai_official_oauth_display_name_v1", "true")?;
         Ok(updated)
     }
 
@@ -869,6 +909,10 @@ impl Database {
             provider.category = Some("official".to_string());
             provider.icon = Some(seed.icon.to_string());
             provider.icon_color = Some(seed.icon_color.to_string());
+            provider.meta = seed.provider_type.map(|provider_type| ProviderMeta {
+                provider_type: Some(provider_type.to_string()),
+                ..Default::default()
+            });
             provider.sort_index = Some(next_sort_index);
             provider.created_at = Some(now_ms);
 
@@ -935,6 +979,10 @@ impl Database {
         provider.category = Some("official".to_string());
         provider.icon = Some(seed.icon.to_string());
         provider.icon_color = Some(seed.icon_color.to_string());
+        provider.meta = seed.provider_type.map(|provider_type| ProviderMeta {
+            provider_type: Some(provider_type.to_string()),
+            ..Default::default()
+        });
         provider.sort_index = Some(next_sort_index);
         provider.created_at = Some(now_ms);
 
@@ -1146,5 +1194,70 @@ mod ensure_official_seed_tests {
         let result =
             db.ensure_official_seed_by_id(CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID, AppType::Claude);
         assert!(result.is_err(), "(id, app_type) mismatch should be Err");
+    }
+}
+
+#[cfg(test)]
+mod openai_official_oauth_display_name_tests {
+    use crate::database::Database;
+    use crate::provider::Provider;
+    use serde_json::json;
+
+    fn provider(id: &str, name: &str, category: &str) -> Provider {
+        let mut provider = Provider::with_id(
+            id.to_string(),
+            name.to_string(),
+            json!({ "auth": {}, "config": "" }),
+            None,
+        );
+        provider.category = Some(category.to_string());
+        provider
+    }
+
+    #[test]
+    fn rename_legacy_name_only_for_codex_official_provider() {
+        let db = Database::memory().expect("memory db");
+        db.save_provider(
+            "codex",
+            &provider("codex-official", "OpenAI Official", "official"),
+        )
+        .expect("save codex official");
+        db.save_provider(
+            "claude",
+            &provider("claude-openai", "OpenAI Official", "official"),
+        )
+        .expect("save claude same-name official");
+        db.save_provider(
+            "codex",
+            &provider("custom-openai", "OpenAI Official", "custom"),
+        )
+        .expect("save codex custom");
+
+        let updated = db
+            .ensure_openai_official_oauth_display_name()
+            .expect("rename succeeds");
+        assert_eq!(updated, 1);
+
+        assert_eq!(
+            db.get_provider_by_id("codex-official", "codex")
+                .expect("query codex official")
+                .expect("codex official exists")
+                .name,
+            "OpenAI Official (OAuth)"
+        );
+        assert_eq!(
+            db.get_provider_by_id("claude-openai", "claude")
+                .expect("query claude provider")
+                .expect("claude provider exists")
+                .name,
+            "OpenAI Official"
+        );
+        assert_eq!(
+            db.get_provider_by_id("custom-openai", "codex")
+                .expect("query custom provider")
+                .expect("custom provider exists")
+                .name,
+            "OpenAI Official"
+        );
     }
 }

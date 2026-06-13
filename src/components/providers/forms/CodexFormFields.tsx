@@ -21,6 +21,7 @@ import {
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { CursorOAuthSection } from "./CursorOAuthSection";
+import { OpenAISessionSection } from "./OpenAISessionSection";
 import { ApiKeySection, EndpointField, ModelDropdown } from "./shared";
 import {
   fetchModelsForConfig,
@@ -56,6 +57,10 @@ interface CodexFormFieldsProps {
   onCodexAccountSelect?: (accountId: string | null) => void;
   codexImageGenerationEnabled?: boolean;
   onCodexImageGenerationChange?: (enabled: boolean) => void;
+  isOpenAISessionPreset?: boolean;
+  isOpenAISessionAuthenticated?: boolean;
+  selectedOpenAISessionAccountId?: string | null;
+  onOpenAISessionAccountSelect?: (accountId: string | null) => void;
   isCursorOauthPreset?: boolean;
   selectedCursorAccountId?: string | null;
   onCursorAccountSelect?: (accountId: string | null) => void;
@@ -134,6 +139,10 @@ export function CodexFormFields({
   onCodexAccountSelect,
   codexImageGenerationEnabled,
   onCodexImageGenerationChange,
+  isOpenAISessionPreset = false,
+  isOpenAISessionAuthenticated = false,
+  selectedOpenAISessionAccountId,
+  onOpenAISessionAccountSelect,
   isCursorOauthPreset = false,
   selectedCursorAccountId,
   onCursorAccountSelect,
@@ -345,8 +354,15 @@ export function CodexFormFields({
         />
       )}
 
+      {isOpenAISessionPreset && (
+        <OpenAISessionSection
+          selectedAccountId={selectedOpenAISessionAccountId}
+          onAccountSelect={onOpenAISessionAccountSelect}
+        />
+      )}
+
       {/* Codex API Key 输入框 */}
-      {!isCursorOauthPreset && (
+      {!isCursorOauthPreset && !isOpenAISessionPreset && (
         <ApiKeySection
           id="codexApiKey"
           label="API Key"
@@ -378,8 +394,16 @@ export function CodexFormFields({
           </p>
         )}
 
+      {isOpenAISessionPreset && !isOpenAISessionAuthenticated && (
+        <p className="text-xs text-destructive">
+          {t("openaiSession.loginRequired", {
+            defaultValue: "请先导入 OpenAI session JSON",
+          })}
+        </p>
+      )}
+
       {/* Codex Base URL 输入框 */}
-      {shouldShowSpeedTest && !isCodexOfficialPreset && (
+      {shouldShowSpeedTest && !isCodexOfficialPreset && !isOpenAISessionPreset && (
         <EndpointField
           id="codexBaseUrl"
           label={t("codexConfig.apiUrlLabel")}
@@ -687,7 +711,10 @@ export function CodexFormFields({
       )}
 
       {/* 端点测速弹窗 - Codex */}
-      {shouldShowSpeedTest && !isCodexOfficialPreset && isEndpointModalOpen && (
+      {shouldShowSpeedTest &&
+        !isCodexOfficialPreset &&
+        !isOpenAISessionPreset &&
+        isEndpointModalOpen && (
         <EndpointSpeedTest
           appId="codex"
           providerId={providerId}

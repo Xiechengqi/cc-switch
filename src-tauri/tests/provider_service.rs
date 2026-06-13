@@ -22,6 +22,18 @@ fn sanitize_provider_name(name: &str) -> String {
         .to_lowercase()
 }
 
+fn codex_oauth_meta(account_id: &str) -> ProviderMeta {
+    serde_json::from_value(json!({
+        "providerType": "codex_oauth",
+        "authBinding": {
+            "source": "managed_account",
+            "authProvider": "codex_oauth",
+            "accountId": account_id
+        }
+    }))
+    .expect("valid codex oauth provider meta")
+}
+
 #[test]
 fn migrate_legacy_common_config_usage_marks_historical_provider_enabled() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
@@ -568,7 +580,7 @@ wire_api = "responses"
 
         let mut official_provider = Provider::with_id(
             "official-provider".to_string(),
-            "OpenAI Official".to_string(),
+            "OpenAI Official (OAuth)".to_string(),
             json!({
                 "auth": oauth_auth,
                 "config": official_config
@@ -576,6 +588,7 @@ wire_api = "responses"
             None,
         );
         official_provider.category = Some("official".to_string());
+        official_provider.meta = Some(codex_oauth_meta("acct-official"));
         manager
             .providers
             .insert("official-provider".to_string(), official_provider);
@@ -634,7 +647,7 @@ wire_api = "responses"
     let config_after_takeover =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config");
     assert!(
-        config_after_takeover.contains("http://127.0.0.1:15721/v1"),
+        config_after_takeover.contains("http://127.0.0.1:53000/v1"),
         "enabling takeover should point Codex config.toml at the local proxy"
     );
     assert!(
@@ -821,7 +834,7 @@ requires_openai_auth = true
         );
         let mut official_provider = Provider::with_id(
             "official-provider".to_string(),
-            "OpenAI Official".to_string(),
+            "OpenAI Official (OAuth)".to_string(),
             json!({
                 "auth": {},
                 "config": ""
@@ -829,6 +842,7 @@ requires_openai_auth = true
             None,
         );
         official_provider.category = Some("official".to_string());
+        official_provider.meta = Some(codex_oauth_meta("acct-official"));
         manager
             .providers
             .insert("official-provider".to_string(), official_provider);
@@ -900,6 +914,7 @@ fn provider_service_switch_codex_official_accounts_write_auth_json() {
         None,
     );
     official_a.category = Some("official".to_string());
+    official_a.meta = Some(codex_oauth_meta("acct-a"));
 
     let mut official_b = Provider::with_id(
         "official-b".to_string(),
@@ -918,6 +933,7 @@ fn provider_service_switch_codex_official_accounts_write_auth_json() {
         None,
     );
     official_b.category = Some("official".to_string());
+    official_b.meta = Some(codex_oauth_meta("acct-b"));
 
     let mut initial_config = MultiAppConfig::default();
     {
@@ -1214,7 +1230,7 @@ model = "deepseek-chat"
 
 [model_providers.deepseek]
 name = "DeepSeek"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:53000/v1"
 wire_api = "responses"
 experimental_bearer_token = "PROXY_MANAGED"
 "#;
@@ -1295,7 +1311,7 @@ wire_api = "responses"
     let live_config =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
     assert!(
-        live_config.contains("http://127.0.0.1:15721/v1"),
+        live_config.contains("http://127.0.0.1:53000/v1"),
         "live config should remain pointed at the local proxy"
     );
     assert!(
@@ -1526,7 +1542,7 @@ fn packycode_partner_meta_triggers_security_flag_even_without_keywords() {
 }
 
 #[test]
-fn switch_google_official_gemini_preserves_env_vars() {
+fn switch_google_gemini_api_key_preserves_env_vars() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let home = ensure_test_home();
@@ -1537,20 +1553,17 @@ fn switch_google_official_gemini_preserves_env_vars() {
             .get_manager_mut(&AppType::Gemini)
             .expect("gemini manager");
         manager.current = "google-official".to_string();
-        let mut provider = Provider::with_id(
+        let provider = Provider::with_id(
             "google-official".to_string(),
             "Google".to_string(),
             json!({
                 "env": {
+                    "GEMINI_API_KEY": "google-api-key",
                     "GEMINI_MODEL": "gemini-2.5-pro"
                 }
             }),
             Some("https://ai.google.dev".to_string()),
         );
-        provider.meta = Some(ProviderMeta {
-            partner_promotion_key: Some("google-official".to_string()),
-            ..ProviderMeta::default()
-        });
         manager
             .providers
             .insert("google-official".to_string(), provider);
@@ -1559,7 +1572,7 @@ fn switch_google_official_gemini_preserves_env_vars() {
     let state = create_test_state_with_config(&config).expect("create test state");
 
     ProviderService::switch(&state, AppType::Gemini, "google-official")
-        .expect("switching to Google official Gemini should succeed");
+        .expect("switching to Google Gemini API-key provider should succeed");
 
     // Verify env vars are preserved in ~/.gemini/.env
     let env_path = home.join(".gemini").join(".env");
@@ -1574,7 +1587,7 @@ fn switch_google_official_gemini_preserves_env_vars() {
         "GEMINI_MODEL should be preserved in .env, got: {env_content}"
     );
 
-    // Verify OAuth security flag is still set correctly
+    // Verify API-key security flag is still set correctly
     let gemini_settings = home.join(".gemini").join("settings.json");
     let gemini_raw = std::fs::read_to_string(&gemini_settings).expect("read gemini settings");
     let gemini_value: serde_json::Value =
@@ -1583,8 +1596,8 @@ fn switch_google_official_gemini_preserves_env_vars() {
         gemini_value
             .pointer("/security/auth/selectedType")
             .and_then(|v| v.as_str()),
-        Some("oauth-personal"),
-        "OAuth security flag should still be set"
+        Some("gemini-api-key"),
+        "API-key security flag should still be set"
     );
 }
 

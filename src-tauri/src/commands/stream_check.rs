@@ -7,6 +7,7 @@ use crate::commands::codex_oauth::CodexOAuthState;
 use crate::commands::copilot::CopilotAuthState;
 use crate::commands::deepseek_account::DeepSeekAccountState;
 use crate::commands::gemini_oauth::GeminiOAuthState;
+use crate::commands::openai_session::OpenAISessionState;
 use crate::error::AppError;
 use crate::services::stream_check::{
     HealthStatus, StreamCheckConfig, StreamCheckResult, StreamCheckService,
@@ -25,6 +26,7 @@ pub async fn stream_check_provider(
     state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
     codex_oauth_state: State<'_, CodexOAuthState>,
+    openai_session_state: State<'_, OpenAISessionState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
     antigravity_oauth_state: State<'_, AntigravityOAuthState>,
@@ -95,7 +97,13 @@ pub async fn stream_check_provider(
 
     let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
         .await?
-        .or(resolve_codex_oauth_auth_override(&app_type, provider, &codex_oauth_state).await?)
+        .or(resolve_codex_oauth_auth_override(
+            &app_type,
+            provider,
+            &codex_oauth_state,
+            &openai_session_state,
+        )
+        .await?)
         .or(resolve_claude_oauth_auth_override(provider, &claude_oauth_state).await?)
         .or(resolve_gemini_oauth_auth_override(&app_type, provider, &gemini_oauth_state).await?);
     let base_url_override = resolve_codex_oauth_base_url_override(&app_type, provider)
@@ -146,6 +154,7 @@ pub(crate) async fn run_stream_check_for_provider(
 
     let copilot_state = app_handle.state::<CopilotAuthState>();
     let codex_oauth_state = app_handle.state::<CodexOAuthState>();
+    let openai_session_state = app_handle.state::<OpenAISessionState>();
     let claude_oauth_state = app_handle.state::<ClaudeOAuthState>();
     let gemini_oauth_state = app_handle.state::<GeminiOAuthState>();
     let antigravity_oauth_state = app_handle.state::<AntigravityOAuthState>();
@@ -182,7 +191,13 @@ pub(crate) async fn run_stream_check_for_provider(
 
     let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
         .await?
-        .or(resolve_codex_oauth_auth_override(app_type, provider, &codex_oauth_state).await?)
+        .or(resolve_codex_oauth_auth_override(
+            app_type,
+            provider,
+            &codex_oauth_state,
+            &openai_session_state,
+        )
+        .await?)
         .or(resolve_claude_oauth_auth_override(provider, &claude_oauth_state).await?)
         .or(resolve_gemini_oauth_auth_override(app_type, provider, &gemini_oauth_state).await?);
     let base_url_override = resolve_codex_oauth_base_url_override(app_type, provider)
@@ -220,6 +235,7 @@ pub async fn stream_check_all_providers(
     state: State<'_, AppState>,
     copilot_state: State<'_, CopilotAuthState>,
     codex_oauth_state: State<'_, CodexOAuthState>,
+    openai_session_state: State<'_, OpenAISessionState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
     gemini_oauth_state: State<'_, GeminiOAuthState>,
     antigravity_oauth_state: State<'_, AntigravityOAuthState>,
@@ -307,7 +323,13 @@ pub async fn stream_check_all_providers(
 
         let auth_override = resolve_copilot_auth_override(&provider, &copilot_state)
             .await?
-            .or(resolve_codex_oauth_auth_override(&app_type, &provider, &codex_oauth_state).await?)
+            .or(resolve_codex_oauth_auth_override(
+                &app_type,
+                &provider,
+                &codex_oauth_state,
+                &openai_session_state,
+            )
+            .await?)
             .or(resolve_claude_oauth_auth_override(&provider, &claude_oauth_state).await?)
             .or(
                 resolve_gemini_oauth_auth_override(&app_type, &provider, &gemini_oauth_state)
@@ -1196,9 +1218,44 @@ async fn resolve_codex_oauth_auth_override(
     app_type: &AppType,
     provider: &crate::provider::Provider,
     codex_oauth_state: &State<'_, CodexOAuthState>,
+    openai_session_state: &State<'_, OpenAISessionState>,
 ) -> Result<Option<crate::proxy::providers::AuthInfo>, AppError> {
     if !uses_codex_oauth_auth(app_type, provider) {
         return Ok(None);
+    }
+
+    if provider.is_openai_session_provider() {
+        let auth_manager = openai_session_state.0.read().await;
+        let account_id = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.managed_account_id_for("openai_official_session"));
+
+        let (token, resolved_account_id) = match account_id.as_deref() {
+            Some(id) => (
+                auth_manager
+                    .get_valid_token_for_account(id)
+                    .await
+                    .map_err(|e| {
+                        AppError::Message(format!("OpenAI Official session 认证失败: {e}"))
+                    })?,
+                Some(id.to_string()),
+            ),
+            None => {
+                let token = auth_manager.get_valid_token().await.map_err(|e| {
+                    AppError::Message(format!("OpenAI Official session 认证失败: {e}"))
+                })?;
+                (token, auth_manager.default_account_id().await)
+            }
+        };
+
+        return Ok(Some(
+            crate::proxy::providers::AuthInfo::new(
+                token,
+                crate::proxy::providers::AuthStrategy::CodexOAuth,
+            )
+            .with_managed_account_id(resolved_account_id),
+        ));
     }
 
     let auth_manager = codex_oauth_state.0.read().await;
@@ -1235,9 +1292,13 @@ async fn resolve_codex_oauth_auth_override(
 
 fn uses_codex_oauth_auth(app_type: &AppType, provider: &crate::provider::Provider) -> bool {
     match app_type {
-        AppType::Codex => provider.is_codex_official_with_managed_auth(),
+        AppType::Codex => {
+            provider.is_codex_official_with_managed_auth() || provider.is_openai_session_provider()
+        }
         AppType::Claude => {
-            provider.is_codex_oauth_provider() || provider.is_codex_official_with_managed_auth()
+            provider.is_codex_oauth_provider()
+                || provider.is_openai_session_provider()
+                || provider.is_codex_official_with_managed_auth()
         }
         _ => false,
     }
@@ -1248,6 +1309,10 @@ fn resolve_codex_oauth_base_url_override(
     provider: &crate::provider::Provider,
 ) -> Option<String> {
     if matches!(app_type, AppType::Claude) && provider.is_codex_official_with_managed_auth() {
+        return Some("https://chatgpt.com/backend-api/codex".to_string());
+    }
+    if matches!(app_type, AppType::Claude | AppType::Codex) && provider.is_openai_session_provider()
+    {
         return Some("https://chatgpt.com/backend-api/codex".to_string());
     }
     provider
@@ -1374,7 +1439,9 @@ async fn resolve_claude_api_format_override(
         .map(|auth| auth.strategy == crate::proxy::providers::AuthStrategy::CodexOAuth)
         .unwrap_or(false);
     if is_codex_oauth
-        && (provider.is_codex_oauth_provider() || provider.is_codex_official_with_managed_auth())
+        && (provider.is_codex_oauth_provider()
+            || provider.is_openai_session_provider()
+            || provider.is_codex_official_with_managed_auth())
     {
         return Ok(Some("openai_responses".to_string()));
     }
@@ -1531,7 +1598,7 @@ mod tests {
     fn codex_official_managed_auth_base_url_override_uses_chatgpt_codex_endpoint() {
         let provider = Provider {
             id: "p5".to_string(),
-            name: "OpenAI Official".to_string(),
+            name: "OpenAI Official (OAuth)".to_string(),
             settings_config: json!({}),
             website_url: None,
             category: Some("official".to_string()),
@@ -1593,7 +1660,7 @@ mod tests {
     fn claude_openai_official_provider_uses_codex_oauth_auth_override() {
         let provider = Provider {
             id: "p7".to_string(),
-            name: "OpenAI Official".to_string(),
+            name: "OpenAI Official (OAuth)".to_string(),
             settings_config: json!({}),
             website_url: None,
             category: Some("official".to_string()),
@@ -1614,6 +1681,45 @@ mod tests {
         };
 
         assert!(uses_codex_oauth_auth(&AppType::Claude, &provider));
+        assert!(provider.supports_stream_check(&AppType::Claude));
+    }
+
+    #[test]
+    fn openai_session_provider_uses_session_auth_override_and_chatgpt_endpoint() {
+        let provider = Provider {
+            id: "p8".to_string(),
+            name: "OpenAI Official (session)".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                provider_type: Some("openai_official_session".to_string()),
+                auth_binding: Some(AuthBinding {
+                    source: AuthBindingSource::ManagedAccount,
+                    auth_provider: Some("openai_official_session".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                }),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert!(uses_codex_oauth_auth(&AppType::Codex, &provider));
+        assert!(uses_codex_oauth_auth(&AppType::Claude, &provider));
+        assert_eq!(
+            resolve_codex_oauth_base_url_override(&AppType::Codex, &provider).as_deref(),
+            Some("https://chatgpt.com/backend-api/codex")
+        );
+        assert_eq!(
+            resolve_codex_oauth_base_url_override(&AppType::Claude, &provider).as_deref(),
+            Some("https://chatgpt.com/backend-api/codex")
+        );
+        assert!(provider.supports_stream_check(&AppType::Codex));
         assert!(provider.supports_stream_check(&AppType::Claude));
     }
 }

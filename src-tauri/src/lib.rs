@@ -689,6 +689,14 @@ pub fn run() {
                 }
             }
 
+            match app_state.db.ensure_openai_official_oauth_display_name() {
+                Ok(count) if count > 0 => {
+                    log::info!("✓ Renamed {count} OpenAI Official provider(s) to OAuth display name");
+                }
+                Ok(_) => log::debug!("○ OpenAI Official OAuth display name already current"),
+                Err(e) => log::warn!("✗ Failed to rename OpenAI Official provider: {e}"),
+            }
+
             // 1.7b. 一次性清理旧版供应商目录，只保留核心 app 的白名单供应商
             // 和显式自定义配置。历史使用过但已经从 UI 移除的第三方/聚合预设不再
             // 继续出现在主列表中。
@@ -701,10 +709,14 @@ pub fn run() {
             }
             match app_state.db.ensure_codex_openai_official_default_model() {
                 Ok(count) if count > 0 => {
-                    log::info!("✓ Updated {count} Codex OpenAI Official provider(s) to gpt-5.5");
+                    log::info!(
+                        "✓ Updated {count} Codex OpenAI Official (OAuth) provider(s) to gpt-5.5"
+                    );
                 }
-                Ok(_) => log::debug!("○ Codex OpenAI Official default model already current"),
-                Err(e) => log::warn!("✗ Failed to update Codex OpenAI Official model: {e}"),
+                Ok(_) => log::debug!(
+                    "○ Codex OpenAI Official (OAuth) default model already current"
+                ),
+                Err(e) => log::warn!("✗ Failed to update Codex OpenAI Official (OAuth) model: {e}"),
             }
 
             // 1.8. 一次性强制重置本地代理 / 故障转移默认值
@@ -1040,6 +1052,20 @@ pub fn run() {
                 let codex_oauth_manager = CodexOAuthManager::new(app_config_dir);
                 app.manage(CodexOAuthState(Arc::new(RwLock::new(codex_oauth_manager))));
                 log::info!("✓ CodexOAuthManager initialized");
+            }
+
+            // 初始化 OpenAISessionManager (ChatGPT session JSON 导入)
+            {
+                use crate::proxy::providers::openai_session_auth::OpenAISessionManager;
+                use commands::OpenAISessionState;
+                use tokio::sync::RwLock;
+
+                let app_config_dir = crate::config::get_app_config_dir();
+                let openai_session_manager = OpenAISessionManager::new(app_config_dir);
+                app.manage(OpenAISessionState(Arc::new(RwLock::new(
+                    openai_session_manager,
+                ))));
+                log::info!("✓ OpenAISessionManager initialized");
             }
 
             // 初始化 ClaudeOAuthManager (Claude 官方订阅 OAuth 反代)
@@ -1457,13 +1483,11 @@ pub fn run() {
             commands::refresh_oauth_quota,
             commands::get_codex_oauth_models,
             commands::get_antigravity_oauth_models,
-            commands::preview_codex_session_parse,
-            commands::import_codex_sessions,
-            commands::export_codex_sessions,
-            commands::mark_codex_account_handoff,
-            commands::restore_codex_account_management,
-            commands::save_codex_session_export,
-            commands::get_codex_session_machine_id,
+            commands::openai_session_import,
+            commands::openai_session_status,
+            commands::openai_session_remove,
+            commands::openai_session_set_default,
+            commands::openai_session_clear,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // DeepSeek account management

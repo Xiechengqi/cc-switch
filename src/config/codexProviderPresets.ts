@@ -32,7 +32,7 @@ export interface CodexProviderPreset {
   // Codex API 格式
   apiFormat?: CodexApiFormat;
   // 特殊供应商类型
-  providerType?: "cursor_oauth";
+  providerType?: "cursor_oauth" | "openai_official_session";
   requiresOAuth?: boolean;
   // Codex Chat 本地路由模式下的模型目录
   modelCatalog?: CodexCatalogModel[];
@@ -89,7 +89,7 @@ function modelCatalog(
 
 export const codexProviderPresets: CodexProviderPreset[] = [
   {
-    name: "OpenAI Official",
+    name: "OpenAI Official (OAuth)",
     websiteUrl: "https://chatgpt.com/codex",
     isOfficial: true,
     category: "official",
@@ -98,6 +98,22 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     theme: {
       icon: "codex",
       backgroundColor: "#1F2937", // gray-800
+      textColor: "#FFFFFF",
+    },
+    icon: "openai",
+    iconColor: "#00A67E",
+  },
+  {
+    name: "OpenAI Official (session)",
+    websiteUrl: "https://chatgpt.com/api/auth/session",
+    isOfficial: true,
+    category: "official",
+    auth: {},
+    config: `model = "gpt-5.5"`,
+    providerType: "openai_official_session",
+    theme: {
+      icon: "codex",
+      backgroundColor: "#111827",
       textColor: "#FFFFFF",
     },
     icon: "openai",

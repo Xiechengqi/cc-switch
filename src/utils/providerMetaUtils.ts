@@ -107,6 +107,7 @@ export function isManagedOauthProvider(
   return (
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
     provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
@@ -133,6 +134,7 @@ export function canTestProvider(
   if (
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
     provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
     isCursorOauthWithManagedAuth(provider) ||
     provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH
@@ -191,6 +193,7 @@ export function getProviderQuotaSource(
 
   if (
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
     (appId === "codex" && isCodexOfficialWithManagedAuth(provider))
   ) {
     return "codex_oauth";

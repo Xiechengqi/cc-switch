@@ -2361,12 +2361,13 @@ impl ProviderService {
 
                 if provider.category.as_deref() == Some("official")
                     && !provider.is_codex_official_with_managed_auth()
+                    && !provider.is_openai_session_provider()
                     && !provider.is_cursor_oauth_provider()
                 {
                     return Err(AppError::localized(
                         "provider.codex.official.account_required",
-                        "OpenAI Official 必须绑定一个 ChatGPT 账号",
-                        "OpenAI Official must be bound to a ChatGPT account",
+                        "OpenAI Official (OAuth) 必须绑定一个 ChatGPT 账号",
+                        "OpenAI Official (OAuth) must be bound to a ChatGPT account",
                     ));
                 }
 

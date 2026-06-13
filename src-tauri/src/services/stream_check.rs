@@ -168,7 +168,7 @@ impl StreamCheckService {
                 "Claude Official 使用 Claude Code 官方登录流程，不支持独立流式健康检查。请直接在 Claude Code 中验证。"
             }
             AppType::Codex => {
-                "OpenAI Official 使用官方 OAuth 登录流程，不支持独立流式健康检查。请直接在 Codex CLI 中验证。"
+                "OpenAI Official (OAuth) 使用官方 OAuth 登录流程，不支持独立流式健康检查。请直接在 Codex CLI 中验证。"
             }
             AppType::Gemini => {
                 "Google Official 使用官方 OAuth 登录流程，不支持独立流式健康检查。请直接在 Gemini CLI 中验证。"

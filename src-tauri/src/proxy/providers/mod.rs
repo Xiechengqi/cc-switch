@@ -21,7 +21,6 @@ pub(crate) mod codex_chat_common;
 pub mod codex_chat_history;
 pub mod codex_image_generation;
 pub mod codex_oauth_auth;
-pub mod codex_oauth_session;
 pub mod copilot_auth;
 pub mod copilot_model_map;
 pub mod cursor_claude;
@@ -40,6 +39,7 @@ pub mod gemini_shadow;
 pub mod kiro_claude;
 pub mod kiro_oauth_auth;
 pub mod models;
+pub mod openai_session_auth;
 pub mod streaming;
 pub mod streaming_codex_chat;
 pub mod streaming_gemini;
@@ -171,7 +171,10 @@ impl ProviderType {
                     if meta.provider_type.as_deref() == Some("github_copilot") {
                         return ProviderType::GitHubCopilot;
                     }
-                    if meta.provider_type.as_deref() == Some("codex_oauth") {
+                    if matches!(
+                        meta.provider_type.as_deref(),
+                        Some("codex_oauth" | "openai_official_session")
+                    ) {
                         return ProviderType::CodexOAuth;
                     }
                     if meta.provider_type.as_deref() == Some("claude_oauth") {

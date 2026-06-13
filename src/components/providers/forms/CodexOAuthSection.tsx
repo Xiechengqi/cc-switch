@@ -21,14 +21,10 @@ import {
   Sparkles,
   User,
   X,
-  FileDown,
-  FileUp,
   Image,
 } from "lucide-react";
 import { useCodexOauth } from "./hooks/useCodexOauth";
 import { copyText } from "@/lib/clipboard";
-import { CodexSessionImportDialog } from "@/components/codex-session/CodexSessionImportDialog";
-import { CodexSessionExportDialog } from "@/components/codex-session/CodexSessionExportDialog";
 
 interface CodexOAuthSectionProps {
   className?: string;
@@ -69,8 +65,6 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
 }) => {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
-  const [importOpen, setImportOpen] = React.useState(false);
-  const [exportOpen, setExportOpen] = React.useState(false);
 
   const {
     accounts,
@@ -290,7 +284,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
 
       {/* 已有账号 - 添加更多按钮 */}
       {hasAnyAccount && pollingState === "idle" && (
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 gap-2">
           <Button
             type="button"
             onClick={addAccount}
@@ -300,47 +294,8 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             <Plus className="mr-2 h-4 w-4" />
             {t("codexOauth.addAnotherAccount", "添加其他账号")}
           </Button>
-          <Button
-            type="button"
-            onClick={() => setImportOpen(true)}
-            variant="outline"
-          >
-            <FileDown className="mr-2 h-4 w-4" />{" "}
-            {t("codexSession.importEntry", "导入 Session")}
-          </Button>
-          <Button
-            type="button"
-            onClick={() => setExportOpen(true)}
-            variant="outline"
-          >
-            <FileUp className="mr-2 h-4 w-4" />{" "}
-            {t("codexSession.exportEntry", "导出")}
-          </Button>
         </div>
       )}
-
-      {/* 未认证 - 仍然提供导入入口（免登录场景） */}
-      {!hasAnyAccount && pollingState === "idle" && (
-        <Button
-          type="button"
-          onClick={() => setImportOpen(true)}
-          variant="ghost"
-          className="w-full"
-          size="sm"
-        >
-          <FileDown className="mr-2 h-4 w-4" />{" "}
-          {t("codexSession.importEntryEmpty", "或从外部导入 Codex Session")}
-        </Button>
-      )}
-
-      <CodexSessionImportDialog
-        open={importOpen}
-        onOpenChange={setImportOpen}
-      />
-      <CodexSessionExportDialog
-        open={exportOpen}
-        onOpenChange={setExportOpen}
-      />
 
       {/* 轮询中状态 */}
       {isPolling && deviceCode && (

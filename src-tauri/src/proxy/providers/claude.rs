@@ -30,10 +30,8 @@ const REASONING_VENDOR_HINTS: &[&str] = &["moonshot", "kimi", "deepseek", "mimo"
 /// 优先级：meta.apiFormat > settings_config.api_format > openrouter_compat_mode > 默认 "anthropic"
 pub fn get_claude_api_format(provider: &Provider) -> &'static str {
     // 0) Codex OAuth 强制使用 openai_responses（不可被覆盖）
-    if let Some(meta) = provider.meta.as_ref() {
-        if meta.provider_type.as_deref() == Some("codex_oauth") {
-            return "openai_responses";
-        }
+    if provider.is_codex_oauth() {
+        return "openai_responses";
     }
 
     // 1) Preferred: meta.apiFormat (SSOT, never written to Claude Code config)
@@ -508,12 +506,7 @@ impl ClaudeAdapter {
 
     /// 检测是否为 Codex OAuth 供应商（ChatGPT Plus/Pro 反代）
     fn is_codex_oauth(&self, provider: &Provider) -> bool {
-        if let Some(meta) = provider.meta.as_ref() {
-            if meta.provider_type.as_deref() == Some("codex_oauth") {
-                return true;
-            }
-        }
-        false
+        provider.is_codex_oauth()
     }
 
     fn is_kiro_oauth(&self, provider: &Provider) -> bool {

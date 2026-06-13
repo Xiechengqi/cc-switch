@@ -5,7 +5,7 @@
 //!
 //! 字段与前端预设保持一致，参见：
 //! - `src/config/claudeProviderPresets.ts`（"Claude Official"）
-//! - `src/config/codexProviderPresets.ts`（"OpenAI Official"）
+//! - `src/config/codexProviderPresets.ts`（"OpenAI Official (OAuth)"）
 //! - `src/config/geminiProviderPresets.ts`（"Google Official"）
 
 use crate::app_config::AppType;
@@ -20,6 +20,7 @@ pub(crate) struct OfficialProviderSeed {
     pub website_url: &'static str,
     pub icon: &'static str,
     pub icon_color: &'static str,
+    pub provider_type: Option<&'static str>,
     /// settings_config 的 JSON 字符串，每个 app 结构不同。
     pub settings_config_json: &'static str,
 }
@@ -35,6 +36,7 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         website_url: "https://www.anthropic.com/claude-code",
         icon: "anthropic",
         icon_color: "#D4915D",
+        provider_type: Some("claude_oauth"),
         // 空 env 让用户走 Claude CLI 默认认证流程
         settings_config_json: r#"{"env":{}}"#,
     },
@@ -45,17 +47,30 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         website_url: "https://claude.ai/download",
         icon: "anthropic",
         icon_color: "#D4915D",
+        provider_type: None,
         // 空 env 只是占位；切换该 provider 时会恢复 Claude Desktop 1P 模式
         settings_config_json: r#"{"env":{}}"#,
     },
     OfficialProviderSeed {
         id: "codex-official",
         app_type: AppType::Codex,
-        name: "OpenAI Official",
+        name: "OpenAI Official (OAuth)",
         website_url: "https://chatgpt.com/codex",
         icon: "openai",
         icon_color: "#00A67E",
+        provider_type: Some("codex_oauth"),
         // 空 auth + 显式模型让用户走 ChatGPT Plus/Pro OAuth，同时默认使用 gpt-5.5
+        settings_config_json: r#"{"auth":{},"config":"model = \"gpt-5.5\""}"#,
+    },
+    OfficialProviderSeed {
+        id: "codex-official-session",
+        app_type: AppType::Codex,
+        name: "OpenAI Official (session)",
+        website_url: "https://chatgpt.com/api/auth/session",
+        icon: "openai",
+        icon_color: "#00A67E",
+        provider_type: Some("openai_official_session"),
+        // 空 auth + 显式模型；access_token 由导入的 ChatGPT session 账号动态注入
         settings_config_json: r#"{"auth":{},"config":"model = \"gpt-5.5\""}"#,
     },
     OfficialProviderSeed {
@@ -65,6 +80,7 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         website_url: "https://ai.google.dev/",
         icon: "gemini",
         icon_color: "#4285F4",
+        provider_type: Some("google_gemini_oauth"),
         // 空 env + 空 config 让用户走 Google OAuth
         settings_config_json: r#"{"env":{},"config":{}}"#,
     },

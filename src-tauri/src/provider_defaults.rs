@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_fuzzy_match() {
-        let icon = infer_provider_icon("OpenAI Official");
+        let icon = infer_provider_icon("OpenAI Official (OAuth)");
         assert!(icon.is_some());
         let icon = icon.unwrap();
         assert_eq!(icon.name, "openai");

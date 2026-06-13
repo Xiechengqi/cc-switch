@@ -918,7 +918,7 @@ base_url = "https://proxy.example/v1"
 
         let mut official = Provider::with_id(
             "codex-official".to_string(),
-            "OpenAI Official".to_string(),
+            "OpenAI Official (OAuth)".to_string(),
             serde_json::json!({"auth": {}, "config": "model_provider = \"openai\""}),
             None,
         );
@@ -1271,7 +1271,7 @@ base_url = "https://proxy.example/v1"
         );
         let mut official = Provider::with_id(
             "codex-official".to_string(),
-            "OpenAI Official".to_string(),
+            "OpenAI Official (OAuth)".to_string(),
             serde_json::json!({"auth": {}, "config": "model_provider = \"openai\""}),
             None,
         );

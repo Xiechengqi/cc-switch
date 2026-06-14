@@ -28,6 +28,7 @@ interface ShareListProps {
    * 形如 `claude:p1` → "Provider A"；找不到时 ShareCard 退化显示 provider id。
    */
   providerNameByKey?: Record<string, string>;
+  providerAccountByKey?: Record<string, string>;
   marketsLoading?: boolean;
   marketsError?: string | null;
   readOnly?: boolean;
@@ -118,6 +119,7 @@ export function ShareList({
   markets,
   providerSalePricing,
   providerNameByKey,
+  providerAccountByKey,
   marketsLoading,
   marketsError,
   readOnly = false,
@@ -220,6 +222,7 @@ export function ShareList({
           share={share}
           // P8：多 app share，传 bindings 全集；ShareCard 自己渲染 0..3 个 provider chip。
           providerNameByKey={providerNameByKey}
+          providerAccountByKey={providerAccountByKey}
           tunnelStatus={tunnelStatusMap[share.id]}
           tunnelConfig={tunnelConfig}
           tunnelConfigured={tunnelConfigured}

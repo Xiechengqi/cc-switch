@@ -72,11 +72,18 @@ function getProviderOptionDetail(
   provider: Provider,
   authStatuses?: ManagedAuthStatusByProvider,
 ): string | null {
-  const accountProvider = getProviderAccountProvider(provider);
-  if (accountProvider) {
-    return getAccountLabel(provider, accountProvider, authStatuses);
-  }
+  const accountLabel = getProviderAccountLabel(provider, authStatuses);
+  if (accountLabel) return accountLabel;
   return getProviderRequestUrl(provider);
+}
+
+export function getProviderAccountLabel(
+  provider: Provider,
+  authStatuses?: ManagedAuthStatusByProvider,
+): string | null {
+  const accountProvider = getProviderAccountProvider(provider);
+  if (!accountProvider) return null;
+  return getAccountLabel(provider, accountProvider, authStatuses);
 }
 
 function getProviderAccountProvider(

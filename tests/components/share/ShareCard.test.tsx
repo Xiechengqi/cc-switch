@@ -209,7 +209,9 @@ describe("ShareCard", () => {
     expect(
       screen.getByText(/share\.settings|Settings|设置项/),
     ).toBeInTheDocument();
-    expect(screen.getByText("share.expiresAt")).toBeInTheDocument();
+    expect(screen.queryByText("share.tokenLimit")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /设置项/ }));
+    expect(screen.getByText("share.tokenLimit")).toBeInTheDocument();
     expect(screen.queryByText("share.editDescription")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "保存设置" }),
@@ -345,6 +347,12 @@ describe("ShareCard", () => {
         },
       },
       "token",
+      expect.objectContaining({
+        claude: expect.objectContaining({
+          sharedWithEmails: ["alpha@example.com"],
+          marketAccessMode: "selected",
+        }),
+      }),
     );
   });
 
@@ -387,6 +395,12 @@ describe("ShareCard", () => {
         },
       },
       "token",
+      expect.objectContaining({
+        claude: expect.objectContaining({
+          sharedWithEmails: [],
+          marketAccessMode: "all",
+        }),
+      }),
     );
   });
 
@@ -429,6 +443,12 @@ describe("ShareCard", () => {
         },
       },
       "token",
+      expect.objectContaining({
+        claude: expect.objectContaining({
+          sharedWithEmails: [],
+          marketAccessMode: "all",
+        }),
+      }),
     );
   });
 
@@ -607,6 +627,12 @@ describe("ShareCard", () => {
         },
       },
       "token",
+      expect.objectContaining({
+        claude: expect.objectContaining({
+          sharedWithEmails: ["friend@example.com"],
+          marketAccessMode: "selected",
+        }),
+      }),
     );
   });
 });

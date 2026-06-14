@@ -1,6 +1,15 @@
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Copy, Edit3, Play, Power, RotateCcw, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Edit3,
+  Play,
+  Power,
+  RotateCcw,
+  Trash2,
+} from "lucide-react";
 import type {
   PublicMarket,
   ShareAccessByApp,
@@ -53,6 +62,7 @@ interface ShareCardProps {
    * 在卡片摘要里渲染每个已绑 slot 的 provider 名；找不到时回退显示 provider id。
    */
   providerNameByKey?: Record<string, string>;
+  providerAccountByKey?: Record<string, string>;
   tunnelStatus?: TunnelInfo | null;
   tunnelConfig: TunnelConfig;
   tunnelConfigured: boolean;
@@ -139,6 +149,7 @@ const EMPTY_PROVIDER_SALE_PRICING: ShareProviderSalePricing[] = [];
 export function ShareCard({
   share,
   providerNameByKey,
+  providerAccountByKey,
   tunnelStatus,
   tunnelConfig,
   tunnelConfigured,
@@ -171,6 +182,8 @@ export function ShareCard({
 }: ShareCardProps) {
   const { t } = useTranslation();
   const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [connectionExpanded, setConnectionExpanded] = useState(false);
+  const [settingsExpanded, setSettingsExpanded] = useState(false);
   const ratio = getShareUsageRatio(share);
   // P8：多 app share。胸标里渲染每个已绑定 slot 的 chip + 健康色点。
   // primaryApp/primaryProvider 用于摘要标题、健康轮询等仍按"单值"逻辑的入口。
@@ -245,16 +258,20 @@ export function ShareCard({
                 const pid = share.bindings[app];
                 if (!pid) return null;
                 const name = providerNameByKey?.[`${app}:${pid}`] ?? pid;
+                const account = providerAccountByKey?.[`${app}:${pid}`];
                 const isPrimary = app === primaryAppType;
                 return (
                   <Badge
                     key={app}
                     variant="outline"
-                    className="rounded-full px-2.5 py-1 text-[11px] font-medium border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
-                    title={t("share.boundProviderHint", {
-                      defaultValue:
-                        "本 share 在该 app 上的请求强制走此 provider，不参与故障转移",
-                    })}
+                    className="max-w-full rounded-full px-2.5 py-1 text-[11px] font-medium border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                    title={[
+                      t("share.boundProviderHint", {
+                        defaultValue:
+                          "本 share 在该 app 上的请求强制走此 provider，不参与故障转移",
+                      }),
+                      account ? `${name} · ${account}` : name,
+                    ].join("\n")}
                   >
                     {isPrimary ? (
                       <span
@@ -273,8 +290,13 @@ export function ShareCard({
                         }
                       />
                     ) : null}
-                    <span className="uppercase mr-1">{app}</span>
-                    {name}
+                    <span className="mr-1 uppercase">{app}</span>
+                    <span className="min-w-0 max-w-40 truncate">{name}</span>
+                    {account ? (
+                      <span className="ml-1 min-w-0 max-w-52 truncate text-sky-700/70 dark:text-sky-200/75">
+                        · {account}
+                      </span>
+                    ) : null}
                   </Badge>
                 );
               })}
@@ -385,90 +407,111 @@ export function ShareCard({
         </div>
 
         <section className="space-y-3 border-t border-border-default/70 pt-4">
-          <div className="text-sm font-semibold">{t("share.connectInfo")}</div>
+          <CollapsibleSectionHeader
+            title={t("share.connectInfo")}
+            expanded={connectionExpanded}
+            onToggle={() => setConnectionExpanded((prev) => !prev)}
+          />
 
-          <div className="grid gap-2 lg:grid-cols-3">
-            <ConnectInlineValue
-              label={t("share.tunnelUrl")}
-              value={tunnelDisplay.tunnelUrl}
-              onCopy={() =>
-                void handleCopy(tunnelDisplay.tunnelUrl, "share.toast.copyUrl")
-              }
-            />
-            <ConnectInlineValue
-              label={t("share.subdomain")}
-              value={tunnelDisplay.subdomain}
-              onCopy={() =>
-                void handleCopy(
-                  tunnelDisplay.subdomain,
-                  "share.toast.copySubdomain",
-                )
-              }
-            />
-          </div>
-        </section>
-
-        <section className="space-y-4 border-t border-border-default/70 pt-4">
-          <div className="text-sm font-semibold">
-            {t("share.settings", { defaultValue: "设置项" })}
-          </div>
-
-          {!isUnlimitedTokenLimit(share.tokenLimit) ? (
-            <div className="h-2 rounded-full bg-muted">
-              <div
-                className="h-2 rounded-full bg-blue-500"
-                style={{ width: `${Math.max(4, ratio * 100)}%` }}
+          {connectionExpanded ? (
+            <div className="grid gap-2 lg:grid-cols-3">
+              <ConnectInlineValue
+                label={t("share.tunnelUrl")}
+                value={tunnelDisplay.tunnelUrl}
+                onCopy={() =>
+                  void handleCopy(
+                    tunnelDisplay.tunnelUrl,
+                    "share.toast.copyUrl",
+                  )
+                }
+              />
+              <ConnectInlineValue
+                label={t("share.subdomain")}
+                value={tunnelDisplay.subdomain}
+                onCopy={() =>
+                  void handleCopy(
+                    tunnelDisplay.subdomain,
+                    "share.toast.copySubdomain",
+                  )
+                }
               />
             </div>
           ) : null}
+        </section>
 
-          <div className="grid gap-2 md:grid-cols-3">
-            <SummaryLine
-              label={t("share.ownerEmail", { defaultValue: "Owner Email" })}
-              value={share.ownerEmail || "-"}
-            />
-            <SummaryLine
-              label={t("share.sharedWithEmails", { defaultValue: "Share To" })}
-              value={shareToSummary || "-"}
-            />
-            <SummaryLine
-              label={t("share.forSale")}
-              value={t(`share.forSaleOptions.${share.forSale.toLowerCase()}`)}
-            />
-            <MarketSummary
-              markets={usageMarkets}
-              marketAccessMode={currentMarketAccessMode}
-              selectedMarketEmails={currentMarketEmails}
-            />
-            <SummaryLine
-              label={t("share.description")}
-              value={share.description || "-"}
-            />
-            <SummaryLine
-              label={t("share.tokenLimit")}
-              value={
-                isUnlimitedTokenLimit(share.tokenLimit)
-                  ? t("share.unlimited")
-                  : String(share.tokenLimit)
-              }
-            />
-            <SummaryLine
-              label={t("share.expiresAt")}
-              value={
-                isPermanentExpiry(share.expiresAt)
-                  ? t("share.expiry.permanentLabel")
-                  : formatUtcDateTime(share.expiresAt)
-              }
-            />
-            <SummaryLine
-              label={t("share.parallelLimit")}
-              value={
-                isUnlimitedParallelLimit(share.parallelLimit)
-                  ? t("share.unlimited")
-                  : String(share.parallelLimit)
-              }
-            />
-          </div>
+        <section className="space-y-4 border-t border-border-default/70 pt-4">
+          <CollapsibleSectionHeader
+            title={t("share.settings", { defaultValue: "设置项" })}
+            expanded={settingsExpanded}
+            onToggle={() => setSettingsExpanded((prev) => !prev)}
+          />
+
+          {settingsExpanded ? (
+            <>
+              {!isUnlimitedTokenLimit(share.tokenLimit) ? (
+                <div className="h-2 rounded-full bg-muted">
+                  <div
+                    className="h-2 rounded-full bg-blue-500"
+                    style={{ width: `${Math.max(4, ratio * 100)}%` }}
+                  />
+                </div>
+              ) : null}
+
+              <div className="grid gap-2 md:grid-cols-3">
+                <SummaryLine
+                  label={t("share.ownerEmail", {
+                    defaultValue: "Owner Email",
+                  })}
+                  value={share.ownerEmail || "-"}
+                />
+                <SummaryLine
+                  label={t("share.sharedWithEmails", {
+                    defaultValue: "Share To",
+                  })}
+                  value={shareToSummary || "-"}
+                />
+                <SummaryLine
+                  label={t("share.forSale")}
+                  value={t(
+                    `share.forSaleOptions.${share.forSale.toLowerCase()}`,
+                  )}
+                />
+                <MarketSummary
+                  markets={usageMarkets}
+                  marketAccessMode={currentMarketAccessMode}
+                  selectedMarketEmails={currentMarketEmails}
+                />
+                <SummaryLine
+                  label={t("share.description")}
+                  value={share.description || "-"}
+                />
+                <SummaryLine
+                  label={t("share.tokenLimit")}
+                  value={
+                    isUnlimitedTokenLimit(share.tokenLimit)
+                      ? t("share.unlimited")
+                      : String(share.tokenLimit)
+                  }
+                />
+                <SummaryLine
+                  label={t("share.expiresAt")}
+                  value={
+                    isPermanentExpiry(share.expiresAt)
+                      ? t("share.expiry.permanentLabel")
+                      : formatUtcDateTime(share.expiresAt)
+                  }
+                />
+                <SummaryLine
+                  label={t("share.parallelLimit")}
+                  value={
+                    isUnlimitedParallelLimit(share.parallelLimit)
+                      ? t("share.unlimited")
+                      : String(share.parallelLimit)
+                  }
+                />
+              </div>
+            </>
+          ) : null}
         </section>
 
         {!readOnly && !hideRuntimeActions ? (
@@ -506,6 +549,29 @@ export function ShareCard({
         onRebindAtomic={onRebindAtomic}
       />
     </Card>
+  );
+}
+
+function CollapsibleSectionHeader({
+  title,
+  expanded,
+  onToggle,
+}: {
+  title: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const Icon = expanded ? ChevronDown : ChevronRight;
+  return (
+    <button
+      type="button"
+      aria-expanded={expanded}
+      className="flex w-full items-center justify-between gap-3 rounded-md px-0 py-0 text-left text-sm font-semibold text-foreground"
+      onClick={onToggle}
+    >
+      <span>{title}</span>
+      <Icon className="h-4 w-4 text-muted-foreground" />
+    </button>
   );
 }
 

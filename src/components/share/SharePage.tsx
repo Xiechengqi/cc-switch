@@ -53,6 +53,7 @@ import { ShareList } from "./ShareList";
 import { ShareRouterBar } from "./ShareRouterBar";
 import {
   buildProviderOption,
+  getProviderAccountLabel,
   SHARE_PROVIDER_AUTH_PROVIDERS,
   type ManagedAuthStatusByProvider,
 } from "./providerOptions";
@@ -396,6 +397,22 @@ export function SharePage({
     return map;
   }, [providerQueries]);
 
+  const providerAccountByKey = useMemo(() => {
+    const map: Record<string, string> = {};
+    (["claude", "codex", "gemini"] as const).forEach((app) => {
+      const data = providerQueries[app];
+      if (!data) return;
+      Object.values(data.providers ?? {}).forEach((provider) => {
+        if (!provider) return;
+        const account = getProviderAccountLabel(provider, managedAuthStatuses);
+        if (account) {
+          map[`${app}:${provider.id}`] = account;
+        }
+      });
+    });
+    return map;
+  }, [providerQueries, managedAuthStatuses]);
+
   // P8 多 app share：每个 app slot 的可绑定 provider 列表。CreateShareDialog 和
   // EditShareDialog 都按 `providersByApp[app]` 取候选，ShareList 那一层再为每条 share
   // 当前 slot 已绑定的 provider 取消 disabled（让"保持原 provider"始终可选）。
@@ -668,6 +685,7 @@ export function SharePage({
           markets={markets}
           providerSalePricing={providerSalePricing}
           providerNameByKey={providerNameByKey}
+          providerAccountByKey={providerAccountByKey}
           providersByApp={providersByApp}
           marketsLoading={marketsLoading}
           marketsError={marketsError ? extractErrorMessage(marketsError) : null}

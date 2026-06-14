@@ -52,39 +52,78 @@ export const usageApi = {
     startDate?: number,
     endDate?: number,
     appType?: string,
+    providerName?: string,
+    model?: string,
   ): Promise<UsageSummary> => {
-    return invokeCommand("get_usage_summary", { startDate, endDate, appType });
+    return invokeCommand("get_usage_summary", {
+      startDate,
+      endDate,
+      appType,
+      providerName,
+      model,
+    });
   },
 
   getUsageSummaryByApp: async (
     startDate?: number,
     endDate?: number,
+    providerName?: string,
+    model?: string,
   ): Promise<UsageSummaryByApp[]> => {
-    return invokeCommand("get_usage_summary_by_app", { startDate, endDate });
+    return invokeCommand("get_usage_summary_by_app", {
+      startDate,
+      endDate,
+      providerName,
+      model,
+    });
   },
 
   getUsageTrends: async (
     startDate?: number,
     endDate?: number,
     appType?: string,
+    providerName?: string,
+    model?: string,
   ): Promise<DailyStats[]> => {
-    return invokeCommand("get_usage_trends", { startDate, endDate, appType });
+    return invokeCommand("get_usage_trends", {
+      startDate,
+      endDate,
+      appType,
+      providerName,
+      model,
+    });
   },
 
   getProviderStats: async (
     startDate?: number,
     endDate?: number,
     appType?: string,
+    providerName?: string,
+    model?: string,
   ): Promise<ProviderStats[]> => {
-    return invokeCommand("get_provider_stats", { startDate, endDate, appType });
+    return invokeCommand("get_provider_stats", {
+      startDate,
+      endDate,
+      appType,
+      providerName,
+      model,
+    });
   },
 
   getModelStats: async (
     startDate?: number,
     endDate?: number,
     appType?: string,
+    providerName?: string,
+    model?: string,
   ): Promise<ModelStats[]> => {
-    return invokeCommand("get_model_stats", { startDate, endDate, appType });
+    return invokeCommand("get_model_stats", {
+      startDate,
+      endDate,
+      appType,
+      providerName,
+      model,
+    });
   },
 
   getRequestLogs: async (

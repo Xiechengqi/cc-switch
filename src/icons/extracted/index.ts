@@ -12,7 +12,6 @@ import _eflowcode from "./eflowcode.png";
 import _hermes from "./hermes.png";
 import _huoshan from "./huoshan.png";
 import _kiro from "./kiro.png";
-import _lemondata from "./lemondata.png";
 import _pateway from "./pateway.jpg";
 import _pipellm from "./pipellm.png";
 import _relaxcode from "./relaxcode.png";
@@ -105,7 +104,6 @@ export const iconUrls: Record<string, string> = {
   hermes: _hermes,
   huoshan: _huoshan,
   kiro: _kiro,
-  lemondata: _lemondata,
   pateway: _pateway,
   pipellm: _pipellm,
   relaxcode: _relaxcode,

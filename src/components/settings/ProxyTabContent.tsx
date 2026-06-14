@@ -22,7 +22,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface ProxyTabContentProps {
   settings: SettingsFormState;
-  onAutoSave: (updates: Partial<SettingsFormState>) => Promise<void>;
+  onAutoSave: (updates: Partial<SettingsFormState>) => Promise<boolean | void>;
 }
 
 export function ProxyTabContent({

@@ -866,6 +866,8 @@ async fn invoke_local_admin_scoped(
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
                 optional_string_arg(&args, "appType"),
+                optional_string_arg(&args, "providerName"),
+                optional_string_arg(&args, "model"),
             )
             .map_err(WebError::internal)?))
         }
@@ -875,6 +877,8 @@ async fn invoke_local_admin_scoped(
                 app_state,
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
+                optional_string_arg(&args, "providerName"),
+                optional_string_arg(&args, "model"),
             )
             .map_err(WebError::internal)?))
         }
@@ -885,6 +889,8 @@ async fn invoke_local_admin_scoped(
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
                 optional_string_arg(&args, "appType"),
+                optional_string_arg(&args, "providerName"),
+                optional_string_arg(&args, "model"),
             )
             .map_err(WebError::internal)?))
         }
@@ -895,6 +901,8 @@ async fn invoke_local_admin_scoped(
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
                 optional_string_arg(&args, "appType"),
+                optional_string_arg(&args, "providerName"),
+                optional_string_arg(&args, "model"),
             )
             .map_err(WebError::internal)?))
         }
@@ -905,6 +913,8 @@ async fn invoke_local_admin_scoped(
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
                 optional_string_arg(&args, "appType"),
+                optional_string_arg(&args, "providerName"),
+                optional_string_arg(&args, "model"),
             )
             .map_err(WebError::internal)?))
         }

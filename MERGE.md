@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-14
+
+- **上游分支：** `main`
+- **上游 HEAD：** `11572b13`
+- **共同祖先：** `daa5595f`
+- **合并提交数：** 24
+- **主要变更：**
+  - feat(usage): Dashboard 顶部 provider/model 筛选下放到所有 stat 接口；refresh interval 改 select；app filter 文本→图标；claude-desktop 折叠进 claude；toolbar 紧凑化
+  - feat(providers): preset 列表新增搜索与排序（Popover + Tooltip + Search/ArrowUpAZ）
+  - feat(codex): 官方 provider 增加 unified session history 开关 + opt-in 迁移 + ledger-based 还原；Kimi K2.7 + 官方 Kimi 升级；Kimi For Coding preset 复活（thinking on）；GLM 5.1 上下文 + AtlasCloud Codex preset；恢复 LemonData 移除 / SudoCode 降级
+  - feat: claude-mythos-5 / Claude Fable 5 模型加入 schema + mapping
+  - fix(proxy): takeover-residue 跨 config-dir 切换强化；Codex OAuth auth token 在 takeover 时保留
+  - fix(updater): 下载/安装/重启走后端避免挂起；in-app update 后重启防死锁；Codex Desktop role-consistent placeholders
+- **冲突解决：**
+  - `src-tauri/src/services/usage_stats.rs`：保留本仓 `share_id` 过滤；采纳上游 `push_provider_model_filters` 助手替代 HEAD 的 provider_name/model LIKE 过滤（更准的展示名精确匹配 + pricing_model 维度匹配）
+  - `src/lib/api/usage.ts`：5 处 `get_usage_summary*/get_usage_trends/get_provider_stats/get_model_stats` 调用采纳上游签名（新增 providerName/model），保留本仓 `invokeCommand` runtime 抽象（脚本批量转换上游 `invoke(` → `invokeCommand(`）
+  - `src-tauri/src/web/handlers.rs`：5 个对应 web 路由调用同步补齐 `providerName/model` 参数
+  - `src/lib/api/settings.ts`：上游 auto-merged 进的 3 个新 Codex unify-history / installUpdate 命令统一改为本仓 `invokeCommand`
+  - `src/components/providers/forms/ProviderPresetSelector.tsx`：保留本仓 `DeepSeekIcon`，并入上游搜索/排序 UI 依赖（Button/Input/Popover/Tooltip + `ArrowUpAZ`/`Search`）
+  - `src/icons/extracted/index.ts`：保留本仓 `kiro`（local OAuth feature）；同步上游 LemonData 移除（删除 `lemondata.png` 引入 + map 项）；删除孤立的 `src/icons/extracted/lemondata.png` 资源
+  - `src/config/{claude,codex,gemini}ProviderPresets.ts`、`tests/config/codexChatProviderPresets.test.ts`：按"禁止新添加 API Key 类供应商"指令，全部 preset/test 冲突采纳 HEAD（含丢弃上游 Kimi K2.7 / Kimi For Coding / AtlasCloud GLM 5.1 等 preset 更新）
+- **验证：** `cargo check` exit 0（3 条 dead-code warning）；`cargo check --tests` exit 0；`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-11
 
 - **上游分支：** `main`

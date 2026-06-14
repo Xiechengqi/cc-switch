@@ -94,7 +94,23 @@ describe("buildCreateShareAccessPayload", () => {
       sharedWithEmails: [],
       marketAccessMode: "all",
       saleMarketKind: "token",
-      accessByApp: undefined,
+      accessByApp: {
+        claude: {
+          sharedWithEmails: [],
+          marketAccessMode: "all",
+        },
+      },
+      appSettings: {
+        claude: {
+          forSale: "Yes",
+          saleMarketKind: "token",
+          marketAccessMode: "all",
+          sharedWithEmails: [],
+          tokenLimit: -1,
+          parallelLimit: -1,
+          expiresAt: "",
+        },
+      },
     });
   });
 });

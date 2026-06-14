@@ -239,11 +239,6 @@ export function EditShareDialog({
     () => shareAccessApps(share),
     [share.bindings],
   );
-  useEffect(() => {
-    if (!supportedAccessApps.includes(activeSettingsApp)) {
-      setActiveSettingsApp(supportedAccessApps[0] ?? "claude");
-    }
-  }, [activeSettingsApp, supportedAccessApps]);
   const currentAccessByApp = useMemo(
     () => effectiveAccessByApp(share),
     [share],
@@ -731,35 +726,76 @@ export function EditShareDialog({
           </DialogHeader>
 
           <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
+            <div className="grid gap-4 md:grid-cols-2">
+              <DialogSection
+                title={t("share.ownerEmail", { defaultValue: "Owner Email" })}
+                hint={t("share.ownerEmailCreateHint", {
+                  defaultValue:
+                    "该邮箱会作为 share owner 上报到 router。router 页面使用相同邮箱登录后可查看 API Key 和编辑设置。",
+                })}
+                invalid={ownerEmailDirty && ownerEmailInvalid}
+              >
+                <Input
+                  type="email"
+                  value={ownerEmailInput}
+                  disabled={busy}
+                  onChange={(event) => setOwnerEmailInput(event.target.value)}
+                  placeholder="owner@example.com"
+                />
+              </DialogSection>
+
+              <DialogSection
+                title={t("share.subdomain", { defaultValue: "Subdomain" })}
+                invalid={subdomainDirty && subdomainInvalid}
+              >
+                <Input
+                  value={subdomainInput}
+                  disabled={busy || subdomainReadOnly}
+                  onChange={(event) =>
+                    setSubdomainInput(event.target.value.toLowerCase())
+                  }
+                />
+              </DialogSection>
+            </div>
+
             <DialogSection
-              title={t("share.ownerEmail", { defaultValue: "Owner Email" })}
-              hint={t("share.ownerEmailCreateHint", {
-                defaultValue:
-                  "该邮箱会作为 share owner 上报到 router。router 页面使用相同邮箱登录后可查看 API Key 和编辑设置。",
-              })}
-              invalid={ownerEmailDirty && ownerEmailInvalid}
+              title={t("share.description")}
+              hint={
+                <>
+                  <span>{t("share.descriptionHint")}</span>
+                  <span>{normalizedDescription.length}/200</span>
+                </>
+              }
+              invalid={descriptionDirty && descriptionInvalid}
             >
-              <Input
-                type="email"
-                value={ownerEmailInput}
+              <Textarea
+                value={descriptionInput}
+                maxLength={200}
                 disabled={busy}
-                onChange={(event) => setOwnerEmailInput(event.target.value)}
-                placeholder="owner@example.com"
+                onChange={(event) => setDescriptionInput(event.target.value)}
+                placeholder={t("share.descriptionPlaceholder", {
+                  defaultValue: "可选，信息将显示在 cc-switch-router 侧边栏",
+                })}
               />
             </DialogSection>
 
-            <DialogSection
-              title={t("share.subdomain", { defaultValue: "Subdomain" })}
-              invalid={subdomainDirty && subdomainInvalid}
-            >
-              <Input
-                value={subdomainInput}
-                disabled={busy || subdomainReadOnly}
-                onChange={(event) =>
-                  setSubdomainInput(event.target.value.toLowerCase())
-                }
-              />
-            </DialogSection>
+            <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
+              {SHARE_APP_TYPES.map((app) => (
+                <button
+                  key={app}
+                  type="button"
+                  onClick={() => setActiveSettingsApp(app)}
+                  className={cn(
+                    "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                    activeSettingsApp === app
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {shareAppLabel(app)}
+                </button>
+              ))}
+            </div>
 
             <DialogSection
               title={t("share.providerBindings", {
@@ -779,7 +815,7 @@ export function EditShareDialog({
               }
             >
               <div className="grid gap-3">
-                {SHARE_APP_TYPES.map((app) => {
+                {[activeSettingsApp].map((app) => {
                   const candidates = providersByApp[app] ?? [];
                   const value = providerIdInputs[app] ?? "";
                   const selectedProvider = candidates.find(
@@ -924,23 +960,6 @@ export function EditShareDialog({
               invalid={shareToDirty && shareToInvalid}
             >
               <div className="space-y-3">
-                <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
-                  {supportedAccessApps.map((app) => (
-                    <button
-                      key={app}
-                      type="button"
-                      onClick={() => setActiveSettingsApp(app)}
-                      className={cn(
-                        "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                        activeSettingsApp === app
-                          ? "bg-background text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      {shareAppLabel(app)}
-                    </button>
-                  ))}
-                </div>
                 {[activeSettingsApp].map((app) => (
                   <div key={app} className="space-y-1.5">
                     <Label className="text-xs text-muted-foreground">
@@ -1316,27 +1335,6 @@ export function EditShareDialog({
                 </div>
               </DialogSection>
             ) : null}
-
-            <DialogSection
-              title={t("share.description")}
-              hint={
-                <>
-                  <span>{t("share.descriptionHint")}</span>
-                  <span>{normalizedDescription.length}/200</span>
-                </>
-              }
-              invalid={descriptionDirty && descriptionInvalid}
-            >
-              <Textarea
-                value={descriptionInput}
-                maxLength={200}
-                disabled={busy}
-                onChange={(event) => setDescriptionInput(event.target.value)}
-                placeholder={t("share.descriptionPlaceholder", {
-                  defaultValue: "可选，信息将显示在 cc-switch-router 侧边栏",
-                })}
-              />
-            </DialogSection>
 
             <div className="grid gap-4 md:grid-cols-3">
               <DialogSection

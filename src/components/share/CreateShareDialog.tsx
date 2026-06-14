@@ -129,7 +129,6 @@ export function buildCreateShareAccessPayload({
       ...normalizeEmails(shareToEmailsByApp[app] ?? []),
       ...marketEmails,
     ]);
-    if (emails.length === 0) continue;
     accessByApp[app] = {
       sharedWithEmails: emails,
       marketAccessMode:
@@ -421,20 +420,6 @@ export function CreateShareDialog({
     }
     return ids;
   }, [watchedBindings]);
-  const boundShareApps = useMemo<Array<keyof ShareBindings>>(() => {
-    const bound = SHARE_APP_TYPES.filter((app) => {
-      const pid = watchedBindings?.[app];
-      return typeof pid === "string" && pid.length > 0;
-    });
-    return bound.length > 0 ? bound : [...SHARE_APP_TYPES];
-  }, [watchedBindings]);
-
-  useEffect(() => {
-    if (!boundShareApps.includes(activeSettingsApp)) {
-      setActiveSettingsApp(boundShareApps[0] ?? "claude");
-    }
-  }, [activeSettingsApp, boundShareApps]);
-
   useEffect(() => {
     if (!open || forSaleValue !== "Yes" || saleMarketKind !== "share") return;
     const currentEmail = selectedShareMarketEmail.trim().toLowerCase();
@@ -663,32 +648,51 @@ export function CreateShareDialog({
             </div>
           ) : null}
 
-          <div className="space-y-1.5">
-            <Label htmlFor="share-owner-email">
-              {t("share.ownerEmail", { defaultValue: "Owner Email" })}
-            </Label>
-            <Input
-              id="share-owner-email"
-              type="email"
-              value={ownerEmailInput}
-              onChange={(event) => setOwnerEmailInput(event.target.value)}
-              placeholder="owner@example.com"
-            />
-            <div className="text-xs text-muted-foreground">
-              {t("share.ownerEmailCreateHint", {
-                defaultValue:
-                  "该邮箱会作为 share owner 上报到 router。router 页面使用相同邮箱登录后可查看 API Key 和编辑设置。",
-              })}
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="share-owner-email">
+                {t("share.ownerEmail", { defaultValue: "Owner Email" })}
+              </Label>
+              <Input
+                id="share-owner-email"
+                type="email"
+                value={ownerEmailInput}
+                onChange={(event) => setOwnerEmailInput(event.target.value)}
+                placeholder="owner@example.com"
+              />
+              <div className="text-xs text-muted-foreground">
+                {t("share.ownerEmailCreateHint", {
+                  defaultValue:
+                    "该邮箱会作为 share owner 上报到 router。router 页面使用相同邮箱登录后可查看 API Key 和编辑设置。",
+                })}
+              </div>
+              <FieldError
+                error={
+                  ownerEmailInput.trim() && ownerEmailInvalid
+                    ? t("share.validation.invalidEmail", {
+                        defaultValue: "邮箱格式无效",
+                      })
+                    : undefined
+                }
+              />
             </div>
-            <FieldError
-              error={
-                ownerEmailInput.trim() && ownerEmailInvalid
-                  ? t("share.validation.invalidEmail", {
-                      defaultValue: "邮箱格式无效",
-                    })
-                  : undefined
-              }
-            />
+
+            <div className="space-y-1.5">
+              <Label htmlFor="share-subdomain">{t("share.subdomain")}</Label>
+              <Input
+                id="share-subdomain"
+                placeholder="my-share"
+                {...subdomainField}
+                onChange={(event) => {
+                  subdomainField.onChange(event);
+                  subdomainManualRef.current = true;
+                }}
+              />
+              <div className="text-xs text-muted-foreground">
+                {t("share.subdomainHint")}
+              </div>
+              <FieldError error={form.formState.errors.subdomain?.message} />
+            </div>
           </div>
 
           <div className="space-y-1.5">
@@ -737,6 +741,26 @@ export function CreateShareDialog({
                 id="share-create-advanced"
                 className="grid gap-3 border-t border-border-default px-3 py-3 md:grid-cols-2"
               >
+                <div className="md:col-span-2">
+                  <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
+                    {SHARE_APP_TYPES.map((app) => (
+                      <button
+                        key={app}
+                        type="button"
+                        onClick={() => setActiveSettingsApp(app)}
+                        className={cn(
+                          "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                          activeSettingsApp === app
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {shareAppDisplayLabel(app)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="space-y-2 md:col-span-2">
                   <div>
                     <Label>
@@ -752,7 +776,7 @@ export function CreateShareDialog({
                     </div>
                   </div>
                   <div className="grid gap-2">
-                    {SHARE_APP_TYPES.map((app) => {
+                    {[activeSettingsApp].map((app) => {
                       const candidates = providersByApp?.[app] ?? [];
                       const fieldKey = `bindings.${app}` as const;
                       const value =
@@ -1259,23 +1283,6 @@ export function CreateShareDialog({
                         "每个 App 独立配置可访问邮箱；登录 cc-switch-router 后即可看到对应 share。留空 = 仅 owner 可见。",
                     })}
                   </div>
-                  <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
-                    {boundShareApps.map((app) => (
-                      <button
-                        key={app}
-                        type="button"
-                        onClick={() => setActiveSettingsApp(app)}
-                        className={cn(
-                          "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                          activeSettingsApp === app
-                            ? "bg-background text-foreground shadow-sm"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {shareAppDisplayLabel(app)}
-                      </button>
-                    ))}
-                  </div>
                   <div className="grid gap-2 pt-1">
                     {[activeSettingsApp].map((app) => (
                       <div key={app} className="space-y-1.5">
@@ -1509,26 +1516,6 @@ export function CreateShareDialog({
                   />
                 </div>
 
-                <div className="space-y-1.5">
-                  <Label htmlFor="share-subdomain">
-                    {t("share.subdomain")}
-                  </Label>
-                  <Input
-                    id="share-subdomain"
-                    placeholder="my-share"
-                    {...subdomainField}
-                    onChange={(event) => {
-                      subdomainField.onChange(event);
-                      subdomainManualRef.current = true;
-                    }}
-                  />
-                  <div className="text-xs text-muted-foreground">
-                    {t("share.subdomainHint")}
-                  </div>
-                  <FieldError
-                    error={form.formState.errors.subdomain?.message}
-                  />
-                </div>
               </div>
             ) : null}
           </div>

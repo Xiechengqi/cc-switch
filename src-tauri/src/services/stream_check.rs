@@ -411,6 +411,7 @@ impl StreamCheckService {
 
         let response_time = start.elapsed().as_millis() as u64;
         Ok(Self::build_stream_check_result(
+            Some(provider),
             result,
             response_time,
             config.degraded_threshold_ms,
@@ -1225,6 +1226,7 @@ impl StreamCheckService {
 
         let response_time = start.elapsed().as_millis() as u64;
         Ok(Self::build_stream_check_result(
+            Some(provider),
             result,
             response_time,
             config.degraded_threshold_ms,
@@ -1239,6 +1241,7 @@ impl StreamCheckService {
     /// `model_tested` 是本次探测使用的模型名，用于在失败场景下仍能把模型信息透传给前端，
     /// 方便针对"模型不存在 / 已下架"这类错误渲染专门的提示。
     fn build_stream_check_result(
+        provider: Option<&Provider>,
         result: Result<StreamCheckProbeResult, AppError>,
         response_time: u64,
         degraded_threshold_ms: u64,
@@ -1267,7 +1270,11 @@ impl StreamCheckService {
             Err(e) => {
                 let (http_status, message, error_category) = match &e {
                     AppError::HttpStatus { status, body } => {
-                        let category = Self::detect_error_category(*status, body);
+                        let category = provider
+                            .and_then(|provider| {
+                                Self::detect_provider_error_category(provider, *status, body)
+                            })
+                            .or_else(|| Self::detect_error_category(*status, body));
                         let message = Self::format_http_status_message(*status, body);
                         (Some(*status), message, category.map(|s| s.to_string()))
                     }
@@ -1344,11 +1351,32 @@ impl StreamCheckService {
         None
     }
 
+    fn detect_provider_error_category(
+        provider: &Provider,
+        status: u16,
+        body: &str,
+    ) -> Option<&'static str> {
+        let category = Self::detect_error_category(status, body)?;
+        if category != "tokenInvalidated" {
+            return Some(category);
+        }
+
+        if provider.is_openai_session_provider() {
+            Some("openaiSessionTokenInvalidated")
+        } else if provider.is_codex_oauth_provider()
+            || provider.is_codex_official_with_managed_auth()
+        {
+            Some("codexOauthTokenInvalidated")
+        } else {
+            Some(category)
+        }
+    }
+
     fn format_http_status_message(status: u16, body: &str) -> String {
         let label = Self::classify_http_status(status);
         if status == 401 && Self::is_token_invalidated_body(body) {
             return format!(
-                "{label}: OpenAI session token has been invalidated. Sign in to chatgpt.com again, fetch /api/auth/session, and re-import."
+                "{label}: OpenAI authentication token has been invalidated. Refresh the managed account sign-in and try again."
             );
         }
         let body = Self::summarize_http_error_body(body);
@@ -2481,6 +2509,8 @@ mod tests {
 
     #[test]
     fn test_detect_model_not_found() {
+        use crate::provider::{AuthBinding, AuthBindingSource, ProviderMeta};
+
         // OpenAI 典型响应：404 + model_not_found 错误码
         let openai_404 = r#"{"error":{"message":"The model `gpt-5.1-codex` does not exist or you do not have access to it","type":"invalid_request_error","param":null,"code":"model_not_found"}}"#;
         assert_eq!(
@@ -2537,7 +2567,54 @@ mod tests {
         );
         assert_eq!(
             StreamCheckService::format_http_status_message(401, token_invalidated),
-            "Auth rejected (401): OpenAI session token has been invalidated. Sign in to chatgpt.com again, fetch /api/auth/session, and re-import."
+            "Auth rejected (401): OpenAI authentication token has been invalidated. Refresh the managed account sign-in and try again."
+        );
+
+        let mut session_provider = make_provider(serde_json::json!({}));
+        session_provider.meta = Some(ProviderMeta {
+            provider_type: Some("openai_official_session".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            StreamCheckService::detect_provider_error_category(
+                &session_provider,
+                401,
+                token_invalidated
+            ),
+            Some("openaiSessionTokenInvalidated")
+        );
+
+        let mut oauth_provider = make_provider(serde_json::json!({}));
+        oauth_provider.meta = Some(ProviderMeta {
+            provider_type: Some("codex_oauth".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            StreamCheckService::detect_provider_error_category(
+                &oauth_provider,
+                401,
+                token_invalidated
+            ),
+            Some("codexOauthTokenInvalidated")
+        );
+
+        let mut official_oauth_provider =
+            make_official_provider("OpenAI Official (OAuth)", serde_json::json!({}));
+        official_oauth_provider.meta = Some(ProviderMeta {
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("acct-1".to_string()),
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            StreamCheckService::detect_provider_error_category(
+                &official_oauth_provider,
+                401,
+                token_invalidated
+            ),
+            Some("codexOauthTokenInvalidated")
         );
     }
 
@@ -2776,6 +2853,7 @@ mod tests {
     #[test]
     fn stream_check_http_status_message_includes_error_body_summary() {
         let result = StreamCheckService::build_stream_check_result(
+            None,
             Err(AppError::HttpStatus {
                 status: 400,
                 body: r#"{"error":{"message":"Invalid Gemini request shape from share proxy"}}"#

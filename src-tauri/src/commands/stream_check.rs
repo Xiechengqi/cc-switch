@@ -9,6 +9,7 @@ use crate::commands::deepseek_account::DeepSeekAccountState;
 use crate::commands::gemini_oauth::GeminiOAuthState;
 use crate::commands::openai_session::OpenAISessionState;
 use crate::error::AppError;
+use crate::proxy::providers::{AuthInfo, AuthStrategy};
 use crate::services::stream_check::{
     HealthStatus, StreamCheckConfig, StreamCheckResult, StreamCheckService,
 };
@@ -95,36 +96,15 @@ pub async fn stream_check_provider(
         return Ok(result);
     }
 
-    let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
-        .await?
-        .or(resolve_codex_oauth_auth_override(
-            &app_type,
-            provider,
-            &codex_oauth_state,
-            &openai_session_state,
-        )
-        .await?)
-        .or(resolve_claude_oauth_auth_override(provider, &claude_oauth_state).await?)
-        .or(resolve_gemini_oauth_auth_override(&app_type, provider, &gemini_oauth_state).await?);
-    let base_url_override = resolve_codex_oauth_base_url_override(&app_type, provider)
-        .or(resolve_copilot_base_url_override(provider, &copilot_state).await?)
-        .or(resolve_claude_oauth_base_url_override(provider))
-        .or(resolve_gemini_oauth_base_url_override(&app_type, provider));
-    let claude_api_format_override = resolve_claude_api_format_override(
+    let result = run_standard_stream_check_with_managed_auth_retry(
         &app_type,
         provider,
         &config,
         &copilot_state,
-        auth_override.as_ref(),
-    )
-    .await?;
-    let result = StreamCheckService::check_with_retry(
-        &app_type,
-        provider,
-        &config,
-        auth_override,
-        base_url_override,
-        claude_api_format_override,
+        &codex_oauth_state,
+        &openai_session_state,
+        &claude_oauth_state,
+        &gemini_oauth_state,
     )
     .await?;
 
@@ -189,37 +169,15 @@ pub(crate) async fn run_stream_check_for_provider(
         .await);
     }
 
-    let auth_override = resolve_copilot_auth_override(provider, &copilot_state)
-        .await?
-        .or(resolve_codex_oauth_auth_override(
-            app_type,
-            provider,
-            &codex_oauth_state,
-            &openai_session_state,
-        )
-        .await?)
-        .or(resolve_claude_oauth_auth_override(provider, &claude_oauth_state).await?)
-        .or(resolve_gemini_oauth_auth_override(app_type, provider, &gemini_oauth_state).await?);
-    let base_url_override = resolve_codex_oauth_base_url_override(app_type, provider)
-        .or(resolve_copilot_base_url_override(provider, &copilot_state).await?)
-        .or(resolve_claude_oauth_base_url_override(provider))
-        .or(resolve_gemini_oauth_base_url_override(app_type, provider));
-    let claude_api_format_override = resolve_claude_api_format_override(
+    let result = run_standard_stream_check_with_managed_auth_retry(
         app_type,
         provider,
         &config,
         &copilot_state,
-        auth_override.as_ref(),
-    )
-    .await?;
-
-    let result = StreamCheckService::check_with_retry(
-        app_type,
-        provider,
-        &config,
-        auth_override,
-        base_url_override,
-        claude_api_format_override,
+        &codex_oauth_state,
+        &openai_session_state,
+        &claude_oauth_state,
+        &gemini_oauth_state,
     )
     .await?;
 
@@ -321,47 +279,15 @@ pub async fn stream_check_all_providers(
             continue;
         }
 
-        let auth_override = resolve_copilot_auth_override(&provider, &copilot_state)
-            .await?
-            .or(resolve_codex_oauth_auth_override(
-                &app_type,
-                &provider,
-                &codex_oauth_state,
-                &openai_session_state,
-            )
-            .await?)
-            .or(resolve_claude_oauth_auth_override(&provider, &claude_oauth_state).await?)
-            .or(
-                resolve_gemini_oauth_auth_override(&app_type, &provider, &gemini_oauth_state)
-                    .await?,
-            );
-        let base_url_override = resolve_codex_oauth_base_url_override(&app_type, &provider)
-            .or(resolve_copilot_base_url_override(&provider, &copilot_state).await?)
-            .or(resolve_claude_oauth_base_url_override(&provider))
-            .or(resolve_gemini_oauth_base_url_override(&app_type, &provider));
-        let claude_api_format_override = resolve_claude_api_format_override(
+        let result = run_standard_stream_check_with_managed_auth_retry(
             &app_type,
             &provider,
             &config,
             &copilot_state,
-            auth_override.as_ref(),
-        )
-        .await
-        .unwrap_or_else(|e| {
-            log::warn!(
-                "[StreamCheck] Failed to resolve Claude API format override for {}: {}",
-                provider.id,
-                e
-            );
-            None
-        });
-        let result = StreamCheckService::check_with_retry(
-            &app_type,
-            &provider,
-            &config,
-            auth_override,
-            base_url_override,
-            claude_api_format_override,
+            &codex_oauth_state,
+            &openai_session_state,
+            &claude_oauth_state,
+            &gemini_oauth_state,
         )
         .await
         .unwrap_or_else(|e| {
@@ -388,7 +314,6 @@ pub async fn stream_check_all_providers(
                 cache_creation_tokens: 0,
             }
         });
-
         let _ = state
             .db
             .save_stream_check_log(&id, &provider.name, app_type.as_str(), &result);
@@ -412,6 +337,152 @@ pub fn save_stream_check_config(
     config: StreamCheckConfig,
 ) -> Result<(), AppError> {
     state.db.save_stream_check_config(&config)
+}
+
+async fn run_standard_stream_check_with_managed_auth_retry(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+    config: &StreamCheckConfig,
+    copilot_state: &State<'_, CopilotAuthState>,
+    codex_oauth_state: &State<'_, CodexOAuthState>,
+    openai_session_state: &State<'_, OpenAISessionState>,
+    claude_oauth_state: &State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: &State<'_, GeminiOAuthState>,
+) -> Result<StreamCheckResult, AppError> {
+    let (auth_override, base_url_override, claude_api_format_override) =
+        resolve_standard_stream_check_inputs(
+            app_type,
+            provider,
+            config,
+            copilot_state,
+            codex_oauth_state,
+            openai_session_state,
+            claude_oauth_state,
+            gemini_oauth_state,
+        )
+        .await?;
+    let codex_oauth_retry_account_id =
+        codex_oauth_retry_account_id(provider, auth_override.as_ref());
+
+    let result = StreamCheckService::check_with_retry(
+        app_type,
+        provider,
+        config,
+        auth_override,
+        base_url_override,
+        claude_api_format_override,
+    )
+    .await?;
+
+    if !result.success && result.http_status == Some(401) {
+        if let Some(account_id) = codex_oauth_retry_account_id {
+            log::warn!(
+                "[StreamCheck] Codex OAuth upstream returned 401 for provider={} account={account_id}; invalidating cached access token and retrying once",
+                provider.id
+            );
+            codex_oauth_state
+                .0
+                .read()
+                .await
+                .invalidate_cached_token(&account_id)
+                .await;
+
+            let (auth_override, base_url_override, claude_api_format_override) =
+                resolve_standard_stream_check_inputs(
+                    app_type,
+                    provider,
+                    config,
+                    copilot_state,
+                    codex_oauth_state,
+                    openai_session_state,
+                    claude_oauth_state,
+                    gemini_oauth_state,
+                )
+                .await?;
+
+            let mut retry_result = StreamCheckService::check_with_retry(
+                app_type,
+                provider,
+                config,
+                auth_override,
+                base_url_override,
+                claude_api_format_override,
+            )
+            .await?;
+            retry_result.retry_count = retry_result
+                .retry_count
+                .saturating_add(result.retry_count)
+                .saturating_add(1);
+            return Ok(retry_result);
+        }
+    }
+
+    Ok(result)
+}
+
+async fn resolve_standard_stream_check_inputs(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+    config: &StreamCheckConfig,
+    copilot_state: &State<'_, CopilotAuthState>,
+    codex_oauth_state: &State<'_, CodexOAuthState>,
+    openai_session_state: &State<'_, OpenAISessionState>,
+    claude_oauth_state: &State<'_, ClaudeOAuthState>,
+    gemini_oauth_state: &State<'_, GeminiOAuthState>,
+) -> Result<(Option<AuthInfo>, Option<String>, Option<String>), AppError> {
+    let auth_override = resolve_copilot_auth_override(provider, copilot_state)
+        .await?
+        .or(resolve_codex_oauth_auth_override(
+            app_type,
+            provider,
+            codex_oauth_state,
+            openai_session_state,
+        )
+        .await?)
+        .or(resolve_claude_oauth_auth_override(provider, claude_oauth_state).await?)
+        .or(resolve_gemini_oauth_auth_override(app_type, provider, gemini_oauth_state).await?);
+    let base_url_override = resolve_codex_oauth_base_url_override(app_type, provider)
+        .or(resolve_copilot_base_url_override(provider, copilot_state).await?)
+        .or(resolve_claude_oauth_base_url_override(provider))
+        .or(resolve_gemini_oauth_base_url_override(app_type, provider));
+    let claude_api_format_override = resolve_claude_api_format_override(
+        app_type,
+        provider,
+        config,
+        copilot_state,
+        auth_override.as_ref(),
+    )
+    .await?;
+
+    Ok((auth_override, base_url_override, claude_api_format_override))
+}
+
+fn codex_oauth_retry_account_id(
+    provider: &crate::provider::Provider,
+    auth_override: Option<&AuthInfo>,
+) -> Option<String> {
+    if provider.is_openai_session_provider() {
+        return None;
+    }
+    if !(provider.is_codex_oauth_provider() || provider.is_codex_official_with_managed_auth()) {
+        return None;
+    }
+
+    let auth = auth_override?;
+    if auth.strategy != AuthStrategy::CodexOAuth {
+        return None;
+    }
+
+    auth.managed_account_id
+        .clone()
+        .or_else(|| {
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+        })
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
 }
 
 async fn check_deepseek_account_provider(

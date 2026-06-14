@@ -76,16 +76,45 @@ export function useStreamCheck(appId: AppId) {
               closeButton: true,
             },
           );
-        } else if (result.errorCategory === "tokenInvalidated") {
+        } else if (result.errorCategory === "codexOauthTokenInvalidated") {
           toast.warning(
-            t("streamCheck.tokenInvalidated", {
+            t("streamCheck.codexOauthTokenInvalidated", {
+              providerName: providerName,
+              defaultValue: `${providerName} OAuth token has been invalidated`,
+            }),
+            {
+              description: t("streamCheck.codexOauthTokenInvalidatedHint", {
+                defaultValue:
+                  "cc-switch retried after refreshing the token, but OpenAI still rejected it. Sign in with OpenAI Official (OAuth) again.",
+              }),
+              duration: 10000,
+              closeButton: true,
+            },
+          );
+        } else if (result.errorCategory === "openaiSessionTokenInvalidated") {
+          toast.warning(
+            t("streamCheck.openaiSessionTokenInvalidated", {
               providerName: providerName,
               defaultValue: `${providerName} session token has been invalidated`,
             }),
             {
-              description: t("streamCheck.tokenInvalidatedHint", {
+              description: t("streamCheck.openaiSessionTokenInvalidatedHint", {
                 defaultValue:
                   "Sign in to chatgpt.com again, fetch /api/auth/session, and re-import the JSON.",
+              }),
+              duration: 10000,
+              closeButton: true,
+            },
+          );
+        } else if (result.errorCategory === "tokenInvalidated") {
+          toast.warning(
+            t("streamCheck.tokenInvalidated", {
+              providerName: providerName,
+              defaultValue: `${providerName} authentication token has been invalidated`,
+            }),
+            {
+              description: t("streamCheck.tokenInvalidatedHint", {
+                defaultValue: "Refresh the managed account sign-in and try again.",
               }),
               duration: 10000,
               closeButton: true,

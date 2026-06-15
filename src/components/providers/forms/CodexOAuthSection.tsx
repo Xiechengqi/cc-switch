@@ -25,6 +25,8 @@ import {
 } from "lucide-react";
 import { useCodexOauth } from "./hooks/useCodexOauth";
 import { copyText } from "@/lib/clipboard";
+import { ENABLE_CODEX_BANKED_RESET } from "@/config/constants";
+import CodexBankedResetPanel from "./CodexBankedResetPanel";
 
 interface CodexOAuthSectionProps {
   className?: string;
@@ -44,6 +46,8 @@ interface CodexOAuthSectionProps {
   imageGenerationEnabled?: boolean;
   /** 生成图片能力切换回调 */
   onImageGenerationChange?: (enabled: boolean) => void;
+  /** 是否显示临时 Banked Reset 活动面板 */
+  showBankedResetPanel?: boolean;
 }
 
 /**
@@ -62,6 +66,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
   onFastModeChange,
   imageGenerationEnabled = false,
   onImageGenerationChange,
+  showBankedResetPanel = false,
 }) => {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
@@ -267,6 +272,10 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             </SelectContent>
           </Select>
         </div>
+      )}
+
+      {ENABLE_CODEX_BANKED_RESET && showBankedResetPanel && hasAnyAccount && (
+        <CodexBankedResetPanel accountId={selectedAccountId} />
       )}
 
       {/* 未认证 - 登录按钮 */}

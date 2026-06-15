@@ -344,6 +344,7 @@ export function CodexFormFields({
           allowDefaultAccountOption={false}
           imageGenerationEnabled={codexImageGenerationEnabled}
           onImageGenerationChange={onCodexImageGenerationChange}
+          showBankedResetPanel
         />
       )}
 

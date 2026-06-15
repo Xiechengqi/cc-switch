@@ -23,3 +23,7 @@ export const TEMPLATE_TYPES = {
 } as const;
 
 export type TemplateType = (typeof TEMPLATE_TYPES)[keyof typeof TEMPLATE_TYPES];
+
+// Temporary Codex Banked Reset campaign entry. Keep all UI gated by this flag so
+// the limited-time feature can be hidden before the isolated implementation is removed.
+export const ENABLE_CODEX_BANKED_RESET = true;

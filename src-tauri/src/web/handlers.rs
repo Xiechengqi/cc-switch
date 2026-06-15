@@ -713,6 +713,35 @@ async fn invoke_local_admin_scoped(
             .await
             .map_err(WebError::internal)?))
         }
+        "codex_banked_reset_status" => {
+            let codex = required_state::<CodexOAuthState>(state, "codex oauth")?;
+            Ok(json!(crate::commands::codex_banked_reset_status(
+                optional_string_arg(&args, "accountId"),
+                codex,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "codex_banked_reset_invite" => {
+            let codex = required_state::<CodexOAuthState>(state, "codex oauth")?;
+            Ok(json!(crate::commands::codex_banked_reset_invite(
+                optional_string_arg(&args, "accountId"),
+                value_arg(&args, "emails")?,
+                codex,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
+        "codex_banked_reset_consume" => {
+            let codex = required_state::<CodexOAuthState>(state, "codex oauth")?;
+            Ok(json!(crate::commands::codex_banked_reset_consume(
+                optional_string_arg(&args, "accountId"),
+                string_arg(&args, "creditId")?,
+                codex,
+            )
+            .await
+            .map_err(WebError::internal)?))
+        }
         "get_antigravity_oauth_models" => {
             let antigravity = required_state::<AntigravityOAuthState>(state, "antigravity oauth")?;
             Ok(json!(crate::commands::get_antigravity_oauth_models(
@@ -2322,6 +2351,9 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "save_stream_check_config"
             | "fetch_models_for_config"
             | "get_codex_oauth_models"
+            | "codex_banked_reset_status"
+            | "codex_banked_reset_invite"
+            | "codex_banked_reset_consume"
             | "get_antigravity_oauth_models"
             | "read_live_provider_settings"
             | "test_api_endpoints"

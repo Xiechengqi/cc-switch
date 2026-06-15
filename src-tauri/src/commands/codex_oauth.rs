@@ -6,6 +6,9 @@
 //! 此处定义 State wrapper 以及 Codex OAuth 专属的订阅额度和模型列表查询命令。
 
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+use crate::services::codex_banked_reset::{
+    self, CodexBankedResetConsumeResult, CodexBankedResetInviteResult, CodexBankedResetStatus,
+};
 use crate::services::model_fetch::FetchedModel;
 use crate::services::subscription::{query_codex_quota, CredentialStatus, SubscriptionQuota};
 use std::sync::Arc;
@@ -87,4 +90,62 @@ pub async fn get_codex_oauth_models(
         .map_err(|e| format!("Codex OAuth token unavailable: {e}"))?;
 
     crate::services::codex_oauth_models::fetch_models_with_token(&token, &id).await
+}
+
+/// 查询 Codex Banked Reset 活动状态。
+///
+/// 这是临时活动入口，协议实现集中在 `services::codex_banked_reset`，便于活动结束后删除。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn codex_banked_reset_status(
+    account_id: Option<String>,
+    state: State<'_, CodexOAuthState>,
+) -> Result<CodexBankedResetStatus, String> {
+    let (token, resolved_account_id) = resolve_codex_oauth_token(account_id, state).await?;
+    codex_banked_reset::get_status(&token, &resolved_account_id).await
+}
+
+/// 通过 Codex Banked Reset 活动发送邀请。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn codex_banked_reset_invite(
+    account_id: Option<String>,
+    emails: Vec<String>,
+    state: State<'_, CodexOAuthState>,
+) -> Result<CodexBankedResetInviteResult, String> {
+    let (token, resolved_account_id) = resolve_codex_oauth_token(account_id, state).await?;
+    codex_banked_reset::send_invite(&token, &resolved_account_id, emails).await
+}
+
+/// 消费一次 Codex Banked Reset credit。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn codex_banked_reset_consume(
+    account_id: Option<String>,
+    credit_id: String,
+    state: State<'_, CodexOAuthState>,
+) -> Result<CodexBankedResetConsumeResult, String> {
+    let (token, resolved_account_id) = resolve_codex_oauth_token(account_id, state).await?;
+    codex_banked_reset::consume(&token, &resolved_account_id, credit_id).await
+}
+
+async fn resolve_codex_oauth_token(
+    account_id: Option<String>,
+    state: State<'_, CodexOAuthState>,
+) -> Result<(String, String), String> {
+    let manager = state.0.read().await;
+    let resolved = match account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => Some(id.to_string()),
+        None => manager.default_account_id().await,
+    };
+    let Some(id) = resolved else {
+        return Err("No ChatGPT account available".to_string());
+    };
+
+    let token = manager
+        .get_valid_token_for_account(&id)
+        .await
+        .map_err(|err| format!("Codex OAuth token unavailable: {err}"))?;
+    Ok((token, id))
 }

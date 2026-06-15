@@ -1201,6 +1201,7 @@
     "sendInvite": "Send invite",
     "inviteSuccess": "Invite sent",
     "invitePartialFailed": "Some emails failed: {{emails}}",
+    "inviteEligibilityUnavailable": "Invite eligibility precheck is temporarily unavailable. Reset credits and campaign rules are still shown; invite sending will use the upstream result.",
     "rules": "Campaign rules",
     "rulesEmpty": "The upstream service did not return rule text."
   },

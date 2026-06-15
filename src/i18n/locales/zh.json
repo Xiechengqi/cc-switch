@@ -1201,6 +1201,7 @@
     "sendInvite": "发送邀请",
     "inviteSuccess": "邀请已发送",
     "invitePartialFailed": "部分邮箱发送失败：{{emails}}",
+    "inviteEligibilityUnavailable": "邀请资格预检查暂不可用；可用重置和活动规则仍可查看，发送邀请时以上游结果为准。",
     "rules": "活动规则",
     "rulesEmpty": "上游未返回规则说明。"
   },

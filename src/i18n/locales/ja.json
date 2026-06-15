@@ -1201,6 +1201,7 @@
     "sendInvite": "招待を送信",
     "inviteSuccess": "招待を送信しました",
     "invitePartialFailed": "一部のメール送信に失敗しました: {{emails}}",
+    "inviteEligibilityUnavailable": "招待資格の事前確認は一時的に利用できません。リセット credit とキャンペーンルールは表示されます。招待送信時は上流の結果に従います。",
     "rules": "キャンペーンルール",
     "rulesEmpty": "上流サービスからルール説明は返されませんでした。"
   },

@@ -23,6 +23,8 @@ pub struct CodexBankedResetStatus {
     pub referral_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invite_eligibility: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invite_eligibility_error: Option<String>,
     pub eligibility_rules: Vec<String>,
     pub requires_consent: bool,
     pub available_count: i64,
@@ -69,13 +71,20 @@ pub struct CodexBankedResetConsumeResult {
 pub async fn get_status(token: &str, account_id: &str) -> Result<CodexBankedResetStatus, String> {
     ensure_enabled()?;
 
-    let eligibility = get_json(
+    let eligibility = match get_json(
         token,
         account_id,
         "/referrals/invite/eligibility",
         &[("referral_key", REFERRAL_KEY)],
     )
-    .await?;
+    .await
+    {
+        Ok(value) => Some(value),
+        Err(err) => {
+            log::warn!("Codex Banked Reset invite eligibility unavailable: {err}");
+            None
+        }
+    };
     let rules_raw = get_json(
         token,
         account_id,
@@ -102,9 +111,15 @@ pub async fn get_status(token: &str, account_id: &str) -> Result<CodexBankedRese
 
     Ok(CodexBankedResetStatus {
         referral_key: REFERRAL_KEY.to_string(),
-        invite_eligibility: Some(eligibility.clone()),
+        invite_eligibility: eligibility.clone(),
+        invite_eligibility_error: eligibility
+            .is_none()
+            .then(|| "Invite eligibility endpoint is unavailable".to_string()),
         eligibility_rules: normalize_rules(&rules_raw),
-        requires_consent: bool_field(&eligibility, "requires_explicit_confirmation")
+        requires_consent: eligibility
+            .as_ref()
+            .and_then(|value| bool_field(value, "requires_explicit_confirmation"))
+            .or_else(|| bool_field(&rules_raw, "requires_explicit_confirmation"))
             .unwrap_or(true),
         available_count,
         credits,

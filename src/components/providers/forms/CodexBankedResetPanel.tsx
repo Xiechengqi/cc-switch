@@ -104,7 +104,10 @@ export const CodexBankedResetPanel: React.FC<CodexBankedResetPanelProps> = ({
       toast[success ? "success" : "error"](consumeMessage(result.code));
       await queryClient.invalidateQueries({ queryKey });
       if (success) {
-        await subscriptionApi.refreshOauthQuota("codex_oauth", accountId ?? null);
+        await subscriptionApi.refreshOauthQuota(
+          "codex_oauth",
+          accountId ?? null,
+        );
         await queryClient.invalidateQueries({
           queryKey: ["codex_oauth", "quota", accountId ?? "default"],
         });
@@ -216,6 +219,12 @@ export const CodexBankedResetPanel: React.FC<CodexBankedResetPanelProps> = ({
         </div>
       ) : (
         <>
+          {statusQuery.data?.inviteEligibilityError && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              {t("codexBankedReset.inviteEligibilityUnavailable")}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
             <div className="space-y-3 rounded-md border border-border-default bg-background p-3">
               <div className="flex items-center justify-between gap-3">

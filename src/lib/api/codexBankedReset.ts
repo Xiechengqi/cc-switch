@@ -12,6 +12,7 @@ export interface CodexBankedResetCredit {
 export interface CodexBankedResetStatus {
   referralKey: string;
   inviteEligibility?: unknown;
+  inviteEligibilityError?: string | null;
   eligibilityRules: string[];
   requiresConsent: boolean;
   availableCount: number;

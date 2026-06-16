@@ -5,9 +5,16 @@ import {
   streamCheckProvider,
   type StreamCheckResult,
 } from "@/lib/api/model-test";
-import type { AppId } from "@/lib/api";
 import { useResetCircuitBreaker } from "@/lib/query/failover";
+import type { AppId } from "@/lib/api";
 
+/**
+ * 供应商连通性检查。
+ *
+ * 只探测 base_url 是否可达（任何 HTTP 响应都算可达），不发真实大模型请求。
+ * 刻意 **不** 重置故障转移熔断器——可达 ≠ 配置正确，一个端口通但鉴权废的供应商
+ * 不应被误判为"健康"而切回线上。熔断器只由真实转发流量驱动（见 proxy/forwarder.rs）。
+ */
 export function useStreamCheck(appId: AppId) {
   const { t } = useTranslation();
   const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
@@ -25,22 +32,19 @@ export function useStreamCheck(appId: AppId) {
 
         if (result.status === "operational") {
           toast.success(
-            t("streamCheck.operational", {
+            t("streamCheck.reachable", {
               providerName: providerName,
               responseTimeMs: result.responseTimeMs,
-              defaultValue: `${providerName} 运行正常 (${result.responseTimeMs}ms)`,
+              defaultValue: `${providerName} 连通正常 (${result.responseTimeMs}ms)`,
             }),
             { closeButton: true },
           );
-
-          // 测试通过后重置熔断器状态
-          resetCircuitBreaker.mutate({ providerId, appType: appId });
         } else if (result.status === "degraded") {
           toast.warning(
-            t("streamCheck.degraded", {
+            t("streamCheck.reachableSlow", {
               providerName: providerName,
               responseTimeMs: result.responseTimeMs,
-              defaultValue: `${providerName} 响应较慢 (${result.responseTimeMs}ms)`,
+              defaultValue: `${providerName} 连通但较慢 (${result.responseTimeMs}ms)`,
             }),
           );
 
@@ -121,37 +125,22 @@ export function useStreamCheck(appId: AppId) {
             },
           );
         } else {
-          const httpStatus = result.httpStatus;
-          const hintKey = httpStatus
-            ? `streamCheck.httpHint.${httpStatus >= 500 ? "5xx" : httpStatus}`
-            : null;
-          const description =
-            (hintKey ? t(hintKey, { defaultValue: "" }) : "") || undefined;
-
-          // 401/403/400 = 检查被拒（供应商可能正常）；429/5xx = 临时问题
-          const isProbeRejection =
-            httpStatus != null &&
-            ([401, 403, 400, 429].includes(httpStatus) || httpStatus >= 500);
-
-          if (isProbeRejection) {
-            toast.warning(
-              t("streamCheck.rejected", {
-                providerName: providerName,
-                message: result.message,
-                defaultValue: `${providerName} 检查被拒: ${result.message}`,
+          // 仅当无法建立连接（DNS / 连接被拒 / TLS / 超时）才会到这里
+          toast.error(
+            t("streamCheck.unreachable", {
+              providerName: providerName,
+              message: result.message,
+              defaultValue: `${providerName} 无法连通: ${result.message}`,
+            }),
+            {
+              description: t("streamCheck.unreachableHint", {
+                defaultValue:
+                  "无法建立连接（DNS / 连接 / TLS / 超时）。请检查 base_url 与网络。",
               }),
-              { description, duration: 8000, closeButton: true },
-            );
-          } else {
-            toast.error(
-              t("streamCheck.failed", {
-                providerName: providerName,
-                message: result.message,
-                defaultValue: `${providerName} 检查失败: ${result.message}`,
-              }),
-              { description, duration: 8000, closeButton: true },
-            );
-          }
+              duration: 8000,
+              closeButton: true,
+            },
+          );
         }
 
         return result;
@@ -172,7 +161,7 @@ export function useStreamCheck(appId: AppId) {
         });
       }
     },
-    [appId, t, resetCircuitBreaker],
+    [appId, t],
   );
 
   const isChecking = useCallback(

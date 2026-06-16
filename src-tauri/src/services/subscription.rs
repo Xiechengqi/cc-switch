@@ -1129,7 +1129,7 @@ pub(crate) async fn query_codex_quota(
         req = req.header("ChatGPT-Account-Id", id);
     }
 
-    let resp = match req.timeout(std::time::Duration::from_secs(10)).send().await {
+    let resp = match req.timeout(std::time::Duration::from_secs(15)).send().await {
         Ok(r) => r,
         Err(e) => {
             return SubscriptionQuota::failure(
@@ -1441,7 +1441,7 @@ async fn refresh_gemini_token(refresh_token: &str) -> Option<String> {
             ("refresh_token", refresh_token),
             ("grant_type", "refresh_token"),
         ])
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
         .ok()?;
@@ -1527,7 +1527,7 @@ async fn query_gemini_quota(access_token: &str) -> SubscriptionQuota {
                 "pluginType": "GEMINI"
             }
         }))
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await;
 
@@ -1609,7 +1609,7 @@ async fn retrieve_user_quota(
         .header("Authorization", format!("Bearer {access_token}"))
         .header("Content-Type", "application/json")
         .json(&quota_body)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await;
 

@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-06-16
+
+- **上游分支：** `main`
+- **上游 HEAD：** `36b557b2`
+- **共同祖先：** `11572b13`
+- **合并提交数：** 17
+- **主要变更：**
+  - feat(health-check): 把"真实 LLM 探测"重写为"HTTP 可达性检测"，禁用对官方供应商的探测；degraded 阈值恢复到 6s；StreamCheckConfig / ProviderTestConfig 大幅瘦身
+  - fix(proxy): DeepSeek `thinking:disabled` 时去除 effort 参数；Codex 缓存 tool call 字段恢复
+  - feat(about): Fable 5 Verified banner；版本徽标走本地 getVersion 不再阻塞工具探测；工具版本探测按工具渐进刷新 + 10min TTL 模块缓存
+  - fix(updater): codex self-update 不再破坏 npm platform-dispatch 安装
+  - fix(macos): provider terminal session 去重
+  - chore(presets): MiniMax 去掉 isPartner；Volcengine Ark Coding Plan 链接/文案更新
+- **冲突解决：**
+  - `src-tauri/src/services/stream_check.rs` / `src-tauri/src/commands/stream_check.rs` / `src-tauri/src/database/dao/stream_check.rs`：上游做了完整重写（移除 claude/codex/gemini test_model + test_prompt、移除细粒度 errorCategory），我们曾在 HEAD 维护一整套真实 LLM 探测分支（DeepSeek/Kiro/Cursor/Antigravity/Codex OAuth managed retry…）。本次接受上游的"HTTP 可达性"思路、整文件采纳 upstream，再补一层 `commands::stream_check::run_stream_check_for_provider(db, app_handle, app_type, provider)` 适配函数（包内可见），把 share / tunnel / web router 的旧调用直接转发到上游的 `StreamCheckService::check_with_retry`
+  - `src/lib/api/model-test.ts`：保留 HEAD 在 `StreamCheckResult` 上的 `errorCategory` + 4 个 token 字段 + 新增 `modelUsed?`，保证前端 `useStreamCheck.ts` 的细分错误分支与 share 日志维度仍能编译；上游的 HTTP 可达性结果不会再触发这些分支（恒回退到通用文案）
+  - `src/hooks/useStreamCheck.ts`：保留 HEAD 全部 toast 分支（degraded 重置 circuit breaker + modelNotFound/quotaExceeded/codexOauth/openaiSession/tokenInvalidated 文案），重新引入 `useResetCircuitBreaker` import
+  - `src/components/settings/AboutSection.tsx`：并入上游的 appVersionCache + 工具按需渐进探测；保留 HEAD 的 buildCommit/buildTime 徽标与"非 Windows 才探测工具版本"守卫（commit f8c1f173 的诉求）；外层 flex 容器走上游版本，让 Fable 5 Verified banner 与版本块并列
+  - `src/components/providers/ProviderCard.tsx`：丢弃上游重新引入的 `isCodexOauth` / `codexNeedsRouting` 路由徽章（我们在 commits 98f78830 / b1810aba 主动移除），改 onTest 仍走本仓 `canTestProvider(provider, appId)` 助手
+  - `src/components/providers/forms/ProviderPresetSelector.tsx`：保留 HEAD 的 `DeepSeekIcon` + iconColor 透传，合并上游的 preset 搜索 UI 导入（ArrowUpAZ/Search 等）；剔除上游 import 中没用到的 Popover/Tooltip
+  - `src/components/usage/ModelTestConfigPanel.tsx`：HEAD 的 `config.claudeModel` 等字段在前端类型上已不存在，采纳上游"连通检测语义说明"提示块替换原本的"测试模型配置"分组
+  - `src-tauri/src/services/subscription.rs`：保留 HEAD 的 Claude `plan_label` 并行抓取（tokio::join!）与 oauth UA / x-app 头
+  - `src-tauri/src/services/coding_plan.rs`：补齐 `failure: None` 字段（HEAD 的 SubscriptionQuota 新字段）
+  - `src/config/{claude,codex}ProviderPresets.ts`、`tests/config/codexChatProviderPresets.test.ts`：按 "禁止新添加 API Key 类供应商" 全部采纳 HEAD
+- **验证：** `cargo check` exit 0（6 条 dead-code warning，含 codex_cli_terminal_user_agent / build_anthropic_beta_value 等遗留）；`cargo check --tests` exit 0；`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-14
 
 - **上游分支：** `main`

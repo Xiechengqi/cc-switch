@@ -1,18 +1,18 @@
 import { invokeCommand } from "@/lib/runtime";
 import type { AppId } from "./types";
 
-// ===== 流式健康检查类型 =====
+// ===== 连通性检查类型 =====
+// 注意：本检查只探测 base_url 是否可达，不发真实大模型请求，也不触碰故障转移熔断器。
 
 export type HealthStatus = "operational" | "degraded" | "failed";
 
 export interface StreamCheckConfig {
+  /** 单次探测超时（秒） */
   timeoutSecs: number;
+  /** 超时类失败的最大重试次数 */
   maxRetries: number;
+  /** 降级阈值（毫秒）：可达但 TTFB 超过该值判定为"较慢" */
   degradedThresholdMs: number;
-  claudeModel: string;
-  codexModel: string;
-  geminiModel: string;
-  testPrompt: string;
 }
 
 export interface StreamCheckResult {
@@ -21,21 +21,22 @@ export interface StreamCheckResult {
   message: string;
   responseTimeMs?: number;
   httpStatus?: number;
-  modelUsed: string;
   testedAt: number;
   retryCount: number;
   /** 细粒度错误分类，如 "modelNotFound" */
   errorCategory?: string;
+  /** 实际探测使用的模型名（用于错误消息中提示哪个模型未找到） */
+  modelUsed?: string;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
 }
 
-// ===== 流式健康检查 API =====
+// ===== 连通性检查 API =====
 
 /**
- * 流式健康检查（单个供应商）
+ * 连通性检查（单个供应商）
  */
 export async function streamCheckProvider(
   appType: AppId,

@@ -33,6 +33,7 @@ const QUOTA_EXHAUSTED_COOLDOWN_SECS: i64 = 24 * 60 * 60;
 const PROMPT_CACHE_CAPACITY: usize = 4096;
 const PROMPT_CACHE_DEFAULT_TTL_SECS: i64 = 5 * 60;
 const PROMPT_CACHE_MAX_TTL_SECS: i64 = 60 * 60;
+const THINKING_SIGNATURE_FALLBACK: &str = "cc-switch-kiro-thinking-signature";
 
 static KIRO_PROMPT_CACHE: Lazy<KiroPromptCache> = Lazy::new(|| {
     KiroPromptCache::new(Some(
@@ -258,8 +259,7 @@ fn anthropic_to_kiro_request(
         .profile_arn
         .clone()
         .unwrap_or_else(|| BUILDER_ID_PROFILE_ARN.to_string());
-    Ok(KiroRequestBuild {
-        body: json!({
+    let mut request_body = json!({
         "conversationState": {
             "agentTaskType": "vibe",
             "chatTriggerType": "MANUAL",
@@ -269,9 +269,33 @@ fn anthropic_to_kiro_request(
             "history": history
         },
         "profileArn": profile_arn
-        }),
+    });
+    if let Some(additional_model_request_fields) = additional_model_request_fields(body, model_id) {
+        request_body["additionalModelRequestFields"] = additional_model_request_fields;
+    }
+
+    Ok(KiroRequestBuild {
+        body: request_body,
         tool_name_map,
     })
+}
+
+fn additional_model_request_fields(body: &Value, model_id: &str) -> Option<Value> {
+    if model_id != "claude-opus-4.6" || thinking_type(body) != Some("adaptive") {
+        return None;
+    }
+    let effort = body
+        .get("output_config")
+        .and_then(|v| v.get("effort"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())?;
+
+    Some(json!({
+        "output_config": {
+            "effort": effort
+        }
+    }))
 }
 
 fn map_model(model: &str) -> Option<&'static str> {
@@ -619,13 +643,9 @@ fn system_text(body: &Value) -> Option<String> {
 }
 
 fn thinking_prefix(body: &Value) -> Option<String> {
-    let thinking = body.get("thinking")?;
-    let thinking_type = thinking
-        .get("type")
-        .or_else(|| thinking.get("thinking_type"))
-        .and_then(|v| v.as_str())?;
-    match thinking_type {
+    match thinking_type(body)? {
         "enabled" => {
+            let thinking = body.get("thinking")?;
             let budget = thinking
                 .get("budget_tokens")
                 .and_then(|v| v.as_i64())
@@ -646,6 +666,14 @@ fn thinking_prefix(body: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn thinking_type(body: &Value) -> Option<&str> {
+    let thinking = body.get("thinking")?;
+    thinking
+        .get("type")
+        .or_else(|| thinking.get("thinking_type"))
+        .and_then(Value::as_str)
 }
 
 fn has_thinking_tags(content: &str) -> bool {
@@ -1057,6 +1085,7 @@ struct SseBuilder {
     text_stopped: bool,
     thinking_index: Option<i32>,
     thinking_stopped: bool,
+    pending_thinking_signature: Option<String>,
     next_index: i32,
     tool_indices: HashMap<String, i32>,
     output_tokens: i32,
@@ -1098,15 +1127,7 @@ impl SseBuilder {
         }
         self.output_tokens += estimate_tokens(text);
         let mut out = Vec::new();
-        if self.thinking_index.is_some() && !self.thinking_stopped {
-            self.thinking_stopped = true;
-            if let Some(index) = self.thinking_index {
-                out.push(sse(
-                    "content_block_stop",
-                    json!({"type":"content_block_stop","index":index}),
-                ));
-            }
-        }
+        out.extend(self.stop_thinking_block());
         if self.text_stopped {
             self.text_index = None;
             self.text_stopped = false;
@@ -1128,6 +1149,13 @@ impl SseBuilder {
             json!({"type":"content_block_delta","index":index,"delta":{"type":"text_delta","text":text}}),
         ));
         out
+    }
+
+    fn reasoning_delta(&mut self, payload: &Value) -> Vec<Bytes> {
+        if let Some(signature) = reasoning_signature(payload) {
+            self.pending_thinking_signature = Some(signature.to_string());
+        }
+        self.thinking_delta(reasoning_text(payload).unwrap_or(""))
     }
 
     fn thinking_delta(&mut self, text: &str) -> Vec<Bytes> {
@@ -1185,15 +1213,7 @@ impl SseBuilder {
             .unwrap_or(false);
 
         let mut out = Vec::new();
-        if self.thinking_index.is_some() && !self.thinking_stopped {
-            self.thinking_stopped = true;
-            if let Some(index) = self.thinking_index {
-                out.push(sse(
-                    "content_block_stop",
-                    json!({"type":"content_block_stop","index":index}),
-                ));
-            }
-        }
+        out.extend(self.stop_thinking_block());
         if self.text_index.is_some() && !self.text_stopped {
             self.text_stopped = true;
             let index = self.text_index.unwrap_or(0);
@@ -1233,15 +1253,7 @@ impl SseBuilder {
 
     fn final_events(&mut self) -> Vec<Bytes> {
         let mut out = Vec::new();
-        if self.thinking_index.is_some() && !self.thinking_stopped {
-            self.thinking_stopped = true;
-            if let Some(index) = self.thinking_index {
-                out.push(sse(
-                    "content_block_stop",
-                    json!({"type":"content_block_stop","index":index}),
-                ));
-            }
-        }
+        out.extend(self.stop_thinking_block());
         if self.text_index.is_some() && !self.text_stopped {
             self.text_stopped = true;
             let index = self.text_index.unwrap_or(0);
@@ -1279,6 +1291,35 @@ impl SseBuilder {
 
     fn set_prompt_cache_usage(&mut self, usage: KiroPromptCacheUsage) {
         self.usage.set_prompt_cache_usage(usage);
+    }
+
+    fn stop_thinking_block(&mut self) -> Vec<Bytes> {
+        if self.thinking_index.is_none() || self.thinking_stopped {
+            return Vec::new();
+        }
+        self.thinking_stopped = true;
+        let index = self.thinking_index.unwrap_or(0);
+        let signature = self
+            .pending_thinking_signature
+            .take()
+            .unwrap_or_else(|| THINKING_SIGNATURE_FALLBACK.to_string());
+        vec![
+            sse(
+                "content_block_delta",
+                json!({
+                    "type":"content_block_delta",
+                    "index":index,
+                    "delta":{
+                        "type":"signature_delta",
+                        "signature":signature
+                    }
+                }),
+            ),
+            sse(
+                "content_block_stop",
+                json!({"type":"content_block_stop","index":index}),
+            ),
+        ]
     }
 }
 
@@ -1334,7 +1375,7 @@ fn process_frame_to_sse(builder: &mut SseBuilder, frame: &KiroFrame) -> Vec<Byte
             }
             Some("reasoningContentEvent") => {
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
-                builder.thinking_delta(reasoning_text(&payload).unwrap_or(""))
+                builder.reasoning_delta(&payload)
             }
             Some("toolUseEvent") => {
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
@@ -1360,6 +1401,7 @@ fn kiro_event_bytes_to_anthropic_json(
     let mut buffer = BytesMut::from(bytes);
     let mut text = String::new();
     let mut thinking = String::new();
+    let mut thinking_signature = None;
     let mut tools: HashMap<String, (String, String)> = HashMap::new();
     let mut usage = KiroUsageAccumulator::default();
     usage.set_prompt_cache_usage(prompt_cache_usage);
@@ -1379,6 +1421,9 @@ fn kiro_event_bytes_to_anthropic_json(
             }
             Some("reasoningContentEvent") => {
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
+                if let Some(signature) = reasoning_signature(&payload) {
+                    thinking_signature = Some(signature.to_string());
+                }
                 if let Some(chunk) = reasoning_text(&payload) {
                     thinking.push_str(chunk);
                 }
@@ -1415,7 +1460,11 @@ fn kiro_event_bytes_to_anthropic_json(
 
     let mut content = Vec::new();
     if !thinking.is_empty() {
-        content.push(json!({"type":"thinking","thinking":thinking}));
+        content.push(json!({
+            "type":"thinking",
+            "thinking":thinking,
+            "signature": thinking_signature.unwrap_or_else(|| THINKING_SIGNATURE_FALLBACK.to_string())
+        }));
     }
     if !text.is_empty() {
         content.push(json!({"type":"text","text":text}));
@@ -1874,6 +1923,14 @@ fn reasoning_text(payload: &Value) -> Option<&str> {
         .or_else(|| value.get("reasoningContent").and_then(Value::as_str))
 }
 
+fn reasoning_signature(payload: &Value) -> Option<&str> {
+    let value = payload.get("reasoningContentEvent").unwrap_or(payload);
+    value
+        .get("signature")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+}
+
 fn sse(event: &str, data: Value) -> Bytes {
     Bytes::from(format!(
         "event: {event}\ndata: {}\n\n",
@@ -2080,6 +2137,37 @@ mod tests {
     }
 
     #[test]
+    fn conversion_emits_output_config_only_for_opus_4_6_adaptive() {
+        let body = json!({
+            "model": "claude-opus-4-6-thinking",
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": "high" },
+            "messages": [{ "role": "user", "content": "think" }]
+        });
+
+        let request = anthropic_to_kiro_request(&body, &test_account()).unwrap();
+        assert_eq!(
+            request
+                .body
+                .pointer("/additionalModelRequestFields/output_config/effort"),
+            Some(&json!("high"))
+        );
+    }
+
+    #[test]
+    fn conversion_skips_output_config_for_unsupported_models() {
+        let body = json!({
+            "model": "claude-sonnet-4-8-thinking",
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": "high" },
+            "messages": [{ "role": "user", "content": "think" }]
+        });
+
+        let request = anthropic_to_kiro_request(&body, &test_account()).unwrap();
+        assert!(request.body.get("additionalModelRequestFields").is_none());
+    }
+
+    #[test]
     fn sse_builder_restores_original_tool_name() {
         let mut tool_name_map = HashMap::new();
         tool_name_map.insert(
@@ -2110,7 +2198,10 @@ mod tests {
                 "reasoningContentEvent".to_string(),
             )]),
             payload: serde_json::to_vec(&json!({
-                "reasoningContentEvent": { "text": "think first" }
+                "reasoningContentEvent": {
+                    "text": "think first",
+                    "signature": "real-signature"
+                }
             }))
             .unwrap(),
         };
@@ -2129,8 +2220,62 @@ mod tests {
         assert!(bytes.contains("\"type\":\"thinking\""));
         assert!(bytes.contains("\"type\":\"thinking_delta\""));
         assert!(bytes.contains("\"thinking\":\"think first\""));
+        assert!(bytes.contains("\"type\":\"signature_delta\""));
+        assert!(bytes.contains("\"signature\":\"real-signature\""));
         assert!(bytes.contains("\"type\":\"text_delta\""));
         assert!(bytes.contains("\"text\":\"visible answer\""));
+    }
+
+    #[test]
+    fn non_streaming_reasoning_block_includes_signature() {
+        let bytes = event_stream_bytes(vec![(
+            "reasoningContentEvent",
+            json!({
+                "reasoningContentEvent": {
+                    "text": "private thought",
+                    "signature": "non-stream-signature"
+                }
+            }),
+        )]);
+
+        let message = kiro_event_bytes_to_anthropic_json(
+            &bytes,
+            "claude-opus-4-6",
+            &HashMap::new(),
+            KiroPromptCacheUsage::default(),
+        );
+        assert_eq!(message.pointer("/content/0/type"), Some(&json!("thinking")));
+        assert_eq!(
+            message.pointer("/content/0/thinking"),
+            Some(&json!("private thought"))
+        );
+        assert_eq!(
+            message.pointer("/content/0/signature"),
+            Some(&json!("non-stream-signature"))
+        );
+    }
+
+    #[test]
+    fn non_streaming_reasoning_block_uses_fallback_signature() {
+        let bytes = event_stream_bytes(vec![(
+            "reasoningContentEvent",
+            json!({
+                "reasoningContentEvent": {
+                    "text": "private thought"
+                }
+            }),
+        )]);
+
+        let message = kiro_event_bytes_to_anthropic_json(
+            &bytes,
+            "claude-opus-4-6",
+            &HashMap::new(),
+            KiroPromptCacheUsage::default(),
+        );
+        assert_eq!(
+            message.pointer("/content/0/signature"),
+            Some(&json!(THINKING_SIGNATURE_FALLBACK))
+        );
     }
 
     #[test]
@@ -2304,5 +2449,35 @@ mod tests {
             reqwest::StatusCode::TOO_MANY_REQUESTS,
             "Due to suspicious activity, we are imposing temporary limits"
         ));
+    }
+
+    fn event_stream_bytes(events: Vec<(&str, Value)>) -> Vec<u8> {
+        events
+            .into_iter()
+            .flat_map(|(event_type, payload)| event_frame(event_type, payload))
+            .collect()
+    }
+
+    fn event_frame(event_type: &str, payload: Value) -> Vec<u8> {
+        let mut headers = Vec::new();
+        push_string_header(&mut headers, ":event-type", event_type);
+        let payload = serde_json::to_vec(&payload).unwrap();
+        let total_len = 12 + headers.len() + payload.len() + 4;
+        let mut frame = Vec::with_capacity(total_len);
+        frame.extend_from_slice(&(total_len as u32).to_be_bytes());
+        frame.extend_from_slice(&(headers.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&0u32.to_be_bytes());
+        frame.extend_from_slice(&headers);
+        frame.extend_from_slice(&payload);
+        frame.extend_from_slice(&0u32.to_be_bytes());
+        frame
+    }
+
+    fn push_string_header(out: &mut Vec<u8>, name: &str, value: &str) {
+        out.push(name.len() as u8);
+        out.extend_from_slice(name.as_bytes());
+        out.push(7);
+        out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        out.extend_from_slice(value.as_bytes());
     }
 }

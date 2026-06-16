@@ -22,6 +22,10 @@ export function ModelTestConfigPanel() {
     timeoutSecs: "8",
     maxRetries: "1",
     degradedThresholdMs: "6000",
+    claudeModel: "claude-haiku-4-5-20251001",
+    codexModel: "gpt-5.5@low",
+    geminiModel: "gemini-3.5-flash",
+    testPrompt: "Who are you?",
   });
 
   useEffect(() => {
@@ -37,6 +41,10 @@ export function ModelTestConfigPanel() {
         timeoutSecs: String(data.timeoutSecs),
         maxRetries: String(data.maxRetries),
         degradedThresholdMs: String(data.degradedThresholdMs),
+        claudeModel: data.claudeModel || "claude-haiku-4-5-20251001",
+        codexModel: data.codexModel || "gpt-5.5@low",
+        geminiModel: data.geminiModel || "gemini-3.5-flash",
+        testPrompt: data.testPrompt || "Who are you?",
       });
     } catch (e) {
       setError(String(e));
@@ -57,6 +65,10 @@ export function ModelTestConfigPanel() {
         timeoutSecs: parseNum(config.timeoutSecs, 8),
         maxRetries: parseNum(config.maxRetries, 1),
         degradedThresholdMs: parseNum(config.degradedThresholdMs, 6000),
+        claudeModel: config.claudeModel.trim() || "claude-haiku-4-5-20251001",
+        codexModel: config.codexModel.trim() || "gpt-5.5@low",
+        geminiModel: config.geminiModel.trim() || "gemini-3.5-flash",
+        testPrompt: config.testPrompt.trim() || "Who are you?",
       };
       await saveStreamCheckConfig(parsed);
       toast.success(t("streamCheck.configSaved"), {
@@ -146,6 +158,57 @@ export function ModelTestConfigPanel() {
               }
             />
           </div>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <h4 className="text-sm font-medium text-muted-foreground">
+          {t("streamCheck.testModels")}
+        </h4>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="claudeModel">{t("streamCheck.claudeModel")}</Label>
+            <Input
+              id="claudeModel"
+              value={config.claudeModel}
+              onChange={(e) =>
+                setConfig({ ...config, claudeModel: e.target.value })
+              }
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="codexModel">{t("streamCheck.codexModel")}</Label>
+            <Input
+              id="codexModel"
+              value={config.codexModel}
+              onChange={(e) =>
+                setConfig({ ...config, codexModel: e.target.value })
+              }
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="geminiModel">{t("streamCheck.geminiModel")}</Label>
+            <Input
+              id="geminiModel"
+              value={config.geminiModel}
+              onChange={(e) =>
+                setConfig({ ...config, geminiModel: e.target.value })
+              }
+            />
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="testPrompt">{t("streamCheck.testPrompt")}</Label>
+          <Input
+            id="testPrompt"
+            value={config.testPrompt}
+            onChange={(e) =>
+              setConfig({ ...config, testPrompt: e.target.value })
+            }
+          />
         </div>
       </div>
 

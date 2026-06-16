@@ -22,6 +22,7 @@ mod kiro_oauth;
 mod mcp;
 mod misc;
 mod model_fetch;
+pub mod model_test;
 mod oauth_quota;
 mod omo;
 mod openai_session;

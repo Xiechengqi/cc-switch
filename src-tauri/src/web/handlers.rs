@@ -623,7 +623,6 @@ async fn invoke_local_admin_scoped(
         }
         "stream_check_provider" => {
             let app_state = required_app_state(state)?;
-            let app = required_app_handle(state)?;
             let app_type = app_type_arg(&args, "appType")?;
             let provider_id = string_arg(&args, "providerId")?;
             let providers = app_state
@@ -635,7 +634,7 @@ async fn invoke_local_admin_scoped(
                 .ok_or_else(|| WebError::bad_request(format!("供应商 {provider_id} 不存在")))?;
             Ok(json!(crate::commands::run_stream_check_for_provider(
                 &app_state.db,
-                Some(app),
+                None,
                 &app_type,
                 provider,
             )
@@ -643,6 +642,65 @@ async fn invoke_local_admin_scoped(
             .map_err(WebError::internal)?))
         }
         "stream_check_all_providers" => {
+            let app_state = required_app_state(state)?;
+            let app_type = app_type_arg(&args, "appType")?;
+            let proxy_targets_only = args
+                .get("proxyTargetsOnly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let providers = app_state
+                .db
+                .get_all_providers(app_type.as_str())
+                .map_err(WebError::internal)?;
+            let allowed_ids = if proxy_targets_only {
+                Some(proxy_target_provider_ids(&app_state, app_type.as_str())?)
+            } else {
+                None
+            };
+            let mut results = Vec::new();
+            for (provider_id, provider) in providers {
+                if allowed_ids
+                    .as_ref()
+                    .is_some_and(|ids| !ids.contains(&provider_id))
+                {
+                    continue;
+                }
+                let result = crate::commands::run_stream_check_for_provider(
+                    &app_state.db,
+                    None,
+                    &app_type,
+                    &provider,
+                )
+                .await
+                .map_err(WebError::internal)?;
+                results.push((provider_id, result));
+            }
+            Ok(json!(results))
+        }
+        "model_test_provider" => {
+            let app_state = required_app_state(state)?;
+            let app = required_app_handle(state)?;
+            let app_type = app_type_arg(&args, "appType")?;
+            let provider_id = string_arg(&args, "providerId")?;
+            let providers = app_state
+                .db
+                .get_all_providers(app_type.as_str())
+                .map_err(WebError::internal)?;
+            let provider = providers
+                .get(&provider_id)
+                .ok_or_else(|| WebError::bad_request(format!("供应商 {provider_id} 不存在")))?;
+            Ok(json!(
+                crate::commands::model_test::run_model_test_for_provider(
+                    &app_state.db,
+                    Some(app),
+                    &app_type,
+                    provider,
+                )
+                .await
+                .map_err(WebError::internal)?
+            ))
+        }
+        "model_test_all_providers" => {
             let app_state = required_app_state(state)?;
             let app = required_app_handle(state)?;
             let app_type = app_type_arg(&args, "appType")?;
@@ -667,7 +725,7 @@ async fn invoke_local_admin_scoped(
                 {
                     continue;
                 }
-                let result = crate::commands::run_stream_check_for_provider(
+                let result = crate::commands::model_test::run_model_test_for_provider(
                     &app_state.db,
                     Some(app),
                     &app_type,
@@ -2347,6 +2405,8 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "get_circuit_breaker_stats"
             | "stream_check_provider"
             | "stream_check_all_providers"
+            | "model_test_provider"
+            | "model_test_all_providers"
             | "get_stream_check_config"
             | "save_stream_check_config"
             | "fetch_models_for_config"

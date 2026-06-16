@@ -61,9 +61,11 @@ interface ProviderCardProps {
   onConfigureUsage: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
   onDuplicate: (provider: Provider) => void;
-  onTest?: (provider: Provider) => void;
+  onTestLink?: (provider: Provider) => void;
+  onTestModel?: (provider: Provider) => void;
   onOpenTerminal?: (provider: Provider) => void;
-  isTesting?: boolean;
+  isTestingLink?: boolean;
+  isTestingModel?: boolean;
   isProxyRunning: boolean;
   isProxyTakeover?: boolean; // 代理接管模式（Live配置已被接管，切换为热切换）
   dragHandleProps?: DragHandleProps;
@@ -215,9 +217,11 @@ export function ProviderCard({
   onConfigureUsage,
   onOpenWebsite,
   onDuplicate,
-  onTest,
+  onTestLink,
+  onTestModel,
   onOpenTerminal,
-  isTesting,
+  isTestingLink,
+  isTestingModel,
   isProxyRunning,
   isProxyTakeover = false,
   dragHandleProps,
@@ -593,16 +597,22 @@ export function ProviderCard({
               appId={appId}
               isCurrent={isCurrent}
               isInConfig={isInConfig}
-              isTesting={isTesting}
+              isTestingLink={isTestingLink}
+              isTestingModel={isTestingModel}
               isProxyTakeover={isProxyTakeover}
               isReadOnly={isHermesReadOnly}
               isOmo={isAnyOmo}
               onSwitch={() => onSwitch(provider)}
               onEdit={() => onEdit(provider)}
               onDuplicate={() => onDuplicate(provider)}
-              onTest={
-                onTest && canTestProvider(provider, appId)
-                  ? () => onTest(provider)
+              onTestLink={
+                onTestLink && canTestProvider(provider, appId)
+                  ? () => onTestLink(provider)
+                  : undefined
+              }
+              onTestModel={
+                onTestModel && canTestProvider(provider, appId)
+                  ? () => onTestModel(provider)
                   : undefined
               }
               onConfigureUsage={

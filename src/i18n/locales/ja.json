@@ -101,6 +101,7 @@
   },
   "provider": {
     "connectivityCheck": "接続チェック",
+    "testLink": "リンクテスト",
     "tabProvider": "プロバイダー",
     "tabUniversal": "統一プロバイダー",
     "noProviders": "まだプロバイダーがありません",

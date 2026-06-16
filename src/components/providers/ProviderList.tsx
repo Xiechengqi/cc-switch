@@ -30,6 +30,7 @@ import {
   useHermesModelConfig,
 } from "@/hooks/useHermes";
 import { useStreamCheck } from "@/hooks/useStreamCheck";
+import { useModelTest } from "@/hooks/useModelTest";
 import { ProviderCard } from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import {
@@ -91,6 +92,7 @@ export function ProviderList({
 }: ProviderListProps) {
   const { t } = useTranslation();
   const { checkProvider, isChecking } = useStreamCheck(appId);
+  const { testProvider, isTesting } = useModelTest(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
     appId,
@@ -198,11 +200,18 @@ export function ProviderList({
   });
 
   // 连通性检查不发真实请求、无封号/计费风险，直接执行（无需确认弹窗）。
-  const handleTest = useCallback(
+  const handleTestLink = useCallback(
     (provider: Provider) => {
       checkProvider(provider.id, provider.name);
     },
     [checkProvider],
+  );
+
+  const handleTestModel = useCallback(
+    (provider: Provider) => {
+      testProvider(provider.id, provider.name);
+    },
+    [testProvider],
   );
 
   // Import current live config as default provider
@@ -408,8 +417,10 @@ export function ProviderList({
                 onConfigureUsage={onConfigureUsage}
                 onOpenWebsite={onOpenWebsite}
                 onOpenTerminal={onOpenTerminal}
-                onTest={handleTest}
-                isTesting={isChecking(provider.id)}
+                onTestLink={handleTestLink}
+                onTestModel={handleTestModel}
+                isTestingLink={isChecking(provider.id)}
+                isTestingModel={isTesting(provider.id)}
                 isProxyRunning={isProxyRunning}
                 isProxyTakeover={isProxyTakeover}
                 isAutoFailoverEnabled={isFailoverModeActive}
@@ -547,8 +558,10 @@ interface SortableProviderCardProps {
   onConfigureUsage?: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
   onOpenTerminal?: (provider: Provider) => void;
-  onTest?: (provider: Provider) => void;
-  isTesting: boolean;
+  onTestLink?: (provider: Provider) => void;
+  onTestModel?: (provider: Provider) => void;
+  isTestingLink: boolean;
+  isTestingModel: boolean;
   isProxyRunning: boolean;
   isProxyTakeover: boolean;
   isAutoFailoverEnabled: boolean;
@@ -578,8 +591,10 @@ function SortableProviderCard({
   onConfigureUsage,
   onOpenWebsite,
   onOpenTerminal,
-  onTest,
-  isTesting,
+  onTestLink,
+  onTestModel,
+  isTestingLink,
+  isTestingModel,
   isProxyRunning,
   isProxyTakeover,
   isAutoFailoverEnabled,
@@ -625,8 +640,10 @@ function SortableProviderCard({
         }
         onOpenWebsite={onOpenWebsite}
         onOpenTerminal={onOpenTerminal}
-        onTest={onTest}
-        isTesting={isTesting}
+        onTestLink={onTestLink}
+        onTestModel={onTestModel}
+        isTestingLink={isTestingLink}
+        isTestingModel={isTestingModel}
         isProxyRunning={isProxyRunning}
         isProxyTakeover={isProxyTakeover}
         dragHandleProps={{

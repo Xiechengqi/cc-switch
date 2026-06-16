@@ -13,6 +13,14 @@ export interface StreamCheckConfig {
   maxRetries: number;
   /** 降级阈值（毫秒）：可达但 TTFB 超过该值判定为"较慢" */
   degradedThresholdMs: number;
+  /** Claude 真实模型测试使用的模型 */
+  claudeModel: string;
+  /** Codex 真实模型测试使用的模型 */
+  codexModel: string;
+  /** Gemini 真实模型测试使用的模型 */
+  geminiModel: string;
+  /** 真实模型测试提示词 */
+  testPrompt: string;
 }
 
 export interface StreamCheckResult {
@@ -52,7 +60,33 @@ export async function streamCheckAllProviders(
   appType: AppId,
   proxyTargetsOnly: boolean = false,
 ): Promise<Array<[string, StreamCheckResult]>> {
-  return invokeCommand("stream_check_all_providers", { appType, proxyTargetsOnly });
+  return invokeCommand("stream_check_all_providers", {
+    appType,
+    proxyTargetsOnly,
+  });
+}
+
+/**
+ * 真实模型测试（单个供应商）
+ */
+export async function modelTestProvider(
+  appType: AppId,
+  providerId: string,
+): Promise<StreamCheckResult> {
+  return invokeCommand("model_test_provider", { appType, providerId });
+}
+
+/**
+ * 批量真实模型测试
+ */
+export async function modelTestAllProviders(
+  appType: AppId,
+  proxyTargetsOnly: boolean = false,
+): Promise<Array<[string, StreamCheckResult]>> {
+  return invokeCommand("model_test_all_providers", {
+    appType,
+    proxyTargetsOnly,
+  });
 }
 
 /**

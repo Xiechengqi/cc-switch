@@ -26,6 +26,26 @@ use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::providers::{get_adapter, ClaudeAdapter, ProviderAdapter};
 
+const DEFAULT_CLAUDE_TEST_MODEL: &str = "claude-haiku-4-5-20251001";
+const DEFAULT_CODEX_TEST_MODEL: &str = "gpt-5.5@low";
+const DEFAULT_GEMINI_TEST_MODEL: &str = "gemini-3.5-flash";
+
+fn default_claude_model() -> String {
+    DEFAULT_CLAUDE_TEST_MODEL.to_string()
+}
+
+fn default_codex_model() -> String {
+    DEFAULT_CODEX_TEST_MODEL.to_string()
+}
+
+fn default_gemini_model() -> String {
+    DEFAULT_GEMINI_TEST_MODEL.to_string()
+}
+
+fn default_test_prompt() -> String {
+    "Who are you?".to_string()
+}
+
 /// 健康状态枚举
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -45,6 +65,18 @@ pub struct StreamCheckConfig {
     pub max_retries: u32,
     /// 降级阈值（毫秒）：可达但 TTFB 超过该值判定为"较慢"
     pub degraded_threshold_ms: u64,
+    /// Claude 真实模型测试使用的模型
+    #[serde(default = "default_claude_model")]
+    pub claude_model: String,
+    /// Codex 真实模型测试使用的模型
+    #[serde(default = "default_codex_model")]
+    pub codex_model: String,
+    /// Gemini 真实模型测试使用的模型
+    #[serde(default = "default_gemini_model")]
+    pub gemini_model: String,
+    /// 真实模型测试提示词
+    #[serde(default = "default_test_prompt")]
+    pub test_prompt: String,
 }
 
 impl Default for StreamCheckConfig {
@@ -56,6 +88,10 @@ impl Default for StreamCheckConfig {
             timeout_secs: 8,
             max_retries: 1,
             degraded_threshold_ms: 6000,
+            claude_model: default_claude_model(),
+            codex_model: default_codex_model(),
+            gemini_model: default_gemini_model(),
+            test_prompt: default_test_prompt(),
         }
     }
 }
@@ -76,6 +112,14 @@ pub struct StreamCheckResult {
     /// 细粒度错误分类；连通性检查不再细分，恒为 None。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_category: Option<String>,
+    #[serde(default)]
+    pub input_tokens: u32,
+    #[serde(default)]
+    pub output_tokens: u32,
+    #[serde(default)]
+    pub cache_read_tokens: u32,
+    #[serde(default)]
+    pub cache_creation_tokens: u32,
 }
 
 /// 连通性检查服务
@@ -134,6 +178,10 @@ impl StreamCheckService {
             tested_at: chrono::Utc::now().timestamp(),
             retry_count: effective.max_retries,
             error_category: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         }))
     }
 
@@ -152,6 +200,10 @@ impl StreamCheckService {
                 degraded_threshold_ms: tc
                     .degraded_threshold_ms
                     .unwrap_or(global.degraded_threshold_ms),
+                claude_model: global.claude_model.clone(),
+                codex_model: global.codex_model.clone(),
+                gemini_model: global.gemini_model.clone(),
+                test_prompt: global.test_prompt.clone(),
             },
             None => global.clone(),
         }
@@ -261,6 +313,10 @@ impl StreamCheckService {
                 tested_at,
                 retry_count: 0,
                 error_category: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             },
             Err(e) => StreamCheckResult {
                 status: HealthStatus::Failed,
@@ -272,6 +328,10 @@ impl StreamCheckService {
                 tested_at,
                 retry_count: 0,
                 error_category: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             },
         }
     }

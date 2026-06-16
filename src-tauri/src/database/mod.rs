@@ -38,8 +38,8 @@ pub(crate) use dao::proxy::{
     PRICING_SOURCE_RESPONSE,
 };
 pub use dao::shares::{
-    derive_access_by_app, legacy_acl_from_access_by_app, ShareAppAccess, ShareBindingHistoryEntry,
-    ShareAppSettings, ShareRecord,
+    derive_access_by_app, legacy_acl_from_access_by_app, ShareAppAccess, ShareAppSettings,
+    ShareBindingHistoryEntry, ShareRecord,
 };
 pub use dao::FailoverQueueItem;
 

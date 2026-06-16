@@ -4,6 +4,7 @@ import {
   Check,
   Copy,
   Edit,
+  Link,
   Loader2,
   Minus,
   Play,
@@ -21,13 +22,15 @@ interface ProviderActionsProps {
   appId?: AppId;
   isCurrent: boolean;
   isInConfig?: boolean;
-  isTesting?: boolean;
+  isTestingLink?: boolean;
+  isTestingModel?: boolean;
   isProxyTakeover?: boolean;
   isOmo?: boolean;
   onSwitch: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
-  onTest?: () => void;
+  onTestLink?: () => void;
+  onTestModel?: () => void;
   onConfigureUsage?: () => void;
   onDelete: () => void;
   onRemoveFromConfig?: () => void;
@@ -59,13 +62,15 @@ export function ProviderActions({
   appId,
   isCurrent,
   isInConfig = false,
-  isTesting,
+  isTestingLink,
+  isTestingModel,
   isProxyTakeover = false,
   isOmo = false,
   onSwitch,
   onEdit,
   onDuplicate,
-  onTest,
+  onTestLink,
+  onTestModel,
   onConfigureUsage,
   onDelete,
   onRemoveFromConfig,
@@ -295,15 +300,35 @@ export function ProviderActions({
         <Button
           size="icon"
           variant="ghost"
-          onClick={onTest || undefined}
-          disabled={isTesting}
-          title={t("provider.connectivityCheck", "检测连通")}
+          onClick={onTestLink || undefined}
+          disabled={isTestingLink}
+          title={t("provider.testLink", { defaultValue: "测试链接" })}
           className={cn(
             iconButtonClass,
-            !onTest && "opacity-40 cursor-not-allowed text-muted-foreground",
+            !onTestLink &&
+              "opacity-40 cursor-not-allowed text-muted-foreground",
           )}
         >
-          {isTesting ? (
+          {isTestingLink ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Link className="h-4 w-4" />
+          )}
+        </Button>
+
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={onTestModel || undefined}
+          disabled={isTestingModel}
+          title={t("provider.testModel", { defaultValue: "测试模型" })}
+          className={cn(
+            iconButtonClass,
+            !onTestModel &&
+              "opacity-40 cursor-not-allowed text-muted-foreground",
+          )}
+        >
+          {isTestingModel ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
             <Activity className="h-4 w-4" />

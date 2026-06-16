@@ -2,8 +2,8 @@ use crate::app_config::AppType;
 use crate::database::{Database, ShareRecord};
 use crate::error::AppError;
 use crate::provider::Provider;
+use crate::services::model_test::StreamCheckResult;
 use crate::services::share::ShareService;
-use crate::services::stream_check::StreamCheckResult;
 use crate::tunnel::config::{ShareModelHealthResult, ShareModelHealthSummary};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, OnceLock};
@@ -202,7 +202,7 @@ async fn check_app(
     }
 
     let started = Instant::now();
-    let result = crate::commands::run_stream_check_for_provider(
+    let result = crate::commands::model_test::run_model_test_for_provider(
         db.as_ref(),
         Some(app_handle),
         app_type,

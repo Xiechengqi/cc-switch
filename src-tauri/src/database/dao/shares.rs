@@ -185,19 +185,22 @@ pub fn derive_app_settings(
     apps.into_iter()
         .map(|app| {
             let access = access_by_app.get(app);
-            let mut settings = app_settings.get(app).cloned().unwrap_or_else(|| ShareAppSettings {
-                for_sale: for_sale.to_string(),
-                sale_market_kind: sale_market_kind.to_string(),
-                market_access_mode: access
-                    .map(|entry| entry.market_access_mode.clone())
-                    .unwrap_or_else(|| market_access_mode.to_string()),
-                shared_with_emails: access
-                    .map(|entry| entry.shared_with_emails.clone())
-                    .unwrap_or_default(),
-                token_limit,
-                parallel_limit,
-                expires_at: expires_at.to_string(),
-            });
+            let mut settings = app_settings
+                .get(app)
+                .cloned()
+                .unwrap_or_else(|| ShareAppSettings {
+                    for_sale: for_sale.to_string(),
+                    sale_market_kind: sale_market_kind.to_string(),
+                    market_access_mode: access
+                        .map(|entry| entry.market_access_mode.clone())
+                        .unwrap_or_else(|| market_access_mode.to_string()),
+                    shared_with_emails: access
+                        .map(|entry| entry.shared_with_emails.clone())
+                        .unwrap_or_default(),
+                    token_limit,
+                    parallel_limit,
+                    expires_at: expires_at.to_string(),
+                });
             settings.market_access_mode = access
                 .map(|entry| entry.market_access_mode.clone())
                 .unwrap_or(settings.market_access_mode);

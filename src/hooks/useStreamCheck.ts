@@ -5,7 +5,6 @@ import {
   streamCheckProvider,
   type StreamCheckResult,
 } from "@/lib/api/model-test";
-import { useResetCircuitBreaker } from "@/lib/query/failover";
 import type { AppId } from "@/lib/api";
 
 /**
@@ -18,7 +17,6 @@ import type { AppId } from "@/lib/api";
 export function useStreamCheck(appId: AppId) {
   const { t } = useTranslation();
   const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
-  const resetCircuitBreaker = useResetCircuitBreaker();
 
   const checkProvider = useCallback(
     async (
@@ -46,83 +44,6 @@ export function useStreamCheck(appId: AppId) {
               responseTimeMs: result.responseTimeMs,
               defaultValue: `${providerName} 连通但较慢 (${result.responseTimeMs}ms)`,
             }),
-          );
-
-          // 降级状态也重置熔断器，因为至少能通信
-          resetCircuitBreaker.mutate({ providerId, appType: appId });
-        } else if (result.errorCategory === "modelNotFound") {
-          // 专门处理"模型不存在/已下架"：指向配置入口，比通用 404 文案更有指导性
-          toast.error(
-            t("streamCheck.modelNotFound", {
-              providerName: providerName,
-              model: result.modelUsed,
-              defaultValue: `${providerName} 测试模型 ${result.modelUsed} 不存在或已下架`,
-            }),
-            {
-              description: t("streamCheck.modelNotFoundHint", {
-                defaultValue: "",
-              }),
-              duration: 10000,
-              closeButton: true,
-            },
-          );
-        } else if (result.errorCategory === "quotaExceeded") {
-          toast.warning(
-            t("streamCheck.quotaExceeded", {
-              providerName: providerName,
-              defaultValue: `${providerName} Coding Plan quota has been exceeded`,
-            }),
-            {
-              description: t("streamCheck.quotaExceededHint", {
-                defaultValue: "",
-              }),
-              duration: 10000,
-              closeButton: true,
-            },
-          );
-        } else if (result.errorCategory === "codexOauthTokenInvalidated") {
-          toast.warning(
-            t("streamCheck.codexOauthTokenInvalidated", {
-              providerName: providerName,
-              defaultValue: `${providerName} OAuth token has been invalidated`,
-            }),
-            {
-              description: t("streamCheck.codexOauthTokenInvalidatedHint", {
-                defaultValue:
-                  "cc-switch retried after refreshing the token, but OpenAI still rejected it. Sign in with OpenAI Official (OAuth) again.",
-              }),
-              duration: 10000,
-              closeButton: true,
-            },
-          );
-        } else if (result.errorCategory === "openaiSessionTokenInvalidated") {
-          toast.warning(
-            t("streamCheck.openaiSessionTokenInvalidated", {
-              providerName: providerName,
-              defaultValue: `${providerName} session token has been invalidated`,
-            }),
-            {
-              description: t("streamCheck.openaiSessionTokenInvalidatedHint", {
-                defaultValue:
-                  "Sign in to chatgpt.com again, fetch /api/auth/session, and re-import the JSON.",
-              }),
-              duration: 10000,
-              closeButton: true,
-            },
-          );
-        } else if (result.errorCategory === "tokenInvalidated") {
-          toast.warning(
-            t("streamCheck.tokenInvalidated", {
-              providerName: providerName,
-              defaultValue: `${providerName} authentication token has been invalidated`,
-            }),
-            {
-              description: t("streamCheck.tokenInvalidatedHint", {
-                defaultValue: "Refresh the managed account sign-in and try again.",
-              }),
-              duration: 10000,
-              closeButton: true,
-            },
           );
         } else {
           // 仅当无法建立连接（DNS / 连接被拒 / TLS / 超时）才会到这里

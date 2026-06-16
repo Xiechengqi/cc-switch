@@ -122,7 +122,7 @@ pub struct ShareRouterModelHealthResponse {
 
 /// Internal model health endpoint used by cc-switch-router.
 ///
-/// This intentionally triggers the same StreamCheckService path as the UI
+/// This intentionally triggers the same ModelTestService path as the UI
 /// "Test model" action, so provider-specific protocol conversion and managed
 /// auth headers stay inside cc-switch rather than being guessed by router.
 pub async fn share_router_model_health(
@@ -182,7 +182,7 @@ pub async fn share_router_model_health(
             .into_response();
     };
 
-    match crate::commands::run_stream_check_for_provider(
+    match crate::commands::model_test::run_model_test_for_provider(
         state.db.as_ref(),
         state.app_handle.as_ref(),
         &app_type,

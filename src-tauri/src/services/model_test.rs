@@ -1,0 +1,3087 @@
+//! 真实模型测试服务
+//!
+//! 使用流式 API 进行快速健康检查，只需接收首个 chunk 即判定成功。
+
+use futures::StreamExt;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::time::Instant;
+
+use crate::app_config::AppType;
+use crate::error::AppError;
+use crate::provider::Provider;
+use crate::proxy::codex_identity::{codex_cli_terminal_user_agent, CODEX_CLI_VERSION};
+use crate::proxy::gemini_url::{normalize_gemini_model_id, resolve_gemini_native_url};
+use crate::proxy::providers::copilot_auth;
+use crate::proxy::providers::transform::anthropic_to_openai;
+use crate::proxy::providers::transform_gemini::anthropic_to_gemini;
+use crate::proxy::providers::transform_responses::anthropic_to_responses;
+use crate::proxy::providers::{
+    get_adapter, AuthInfo, AuthStrategy, ClaudeAdapter, ProviderAdapter,
+};
+use crate::proxy::usage::parser::TokenUsage;
+
+const GEMINI_CODE_ASSIST_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
+const GEMINI_CLI_VERSION: &str = "0.31.0";
+const GEMINI_CLI_API_CLIENT_HEADER: &str = "google-genai-sdk/1.41.0 gl-node/v22.19.0";
+const GEMINI_CODE_ASSIST_TEST_FALLBACK_MODELS: &[&str] = &[
+    "gemini-3-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+];
+const GEMINI_DEFAULT_TEST_MODEL: &str = "gemini-3.5-flash";
+
+/// 健康状态枚举
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum HealthStatus {
+    Operational,
+    Degraded,
+    Failed,
+}
+
+/// 模型测试配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamCheckConfig {
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_degraded_threshold_ms")]
+    pub degraded_threshold_ms: u64,
+    /// Claude 测试模型
+    #[serde(default = "default_claude_model")]
+    pub claude_model: String,
+    /// Codex 测试模型
+    #[serde(default = "default_codex_model")]
+    pub codex_model: String,
+    /// Gemini 测试模型
+    #[serde(default = "default_gemini_model")]
+    pub gemini_model: String,
+    /// 检查提示词
+    #[serde(default = "default_test_prompt")]
+    pub test_prompt: String,
+}
+
+fn default_timeout_secs() -> u64 {
+    45
+}
+
+fn default_max_retries() -> u32 {
+    2
+}
+
+fn default_degraded_threshold_ms() -> u64 {
+    6000
+}
+
+fn default_claude_model() -> String {
+    "claude-haiku-4-5-20251001".to_string()
+}
+
+fn default_codex_model() -> String {
+    "gpt-5.5@low".to_string()
+}
+
+fn default_gemini_model() -> String {
+    GEMINI_DEFAULT_TEST_MODEL.to_string()
+}
+
+fn default_test_prompt() -> String {
+    "Who are you?".to_string()
+}
+
+impl Default for StreamCheckConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: default_timeout_secs(),
+            max_retries: default_max_retries(),
+            degraded_threshold_ms: default_degraded_threshold_ms(),
+            claude_model: default_claude_model(),
+            codex_model: default_codex_model(),
+            gemini_model: default_gemini_model(),
+            test_prompt: default_test_prompt(),
+        }
+    }
+}
+
+impl From<crate::services::stream_check::StreamCheckConfig> for StreamCheckConfig {
+    fn from(config: crate::services::stream_check::StreamCheckConfig) -> Self {
+        Self {
+            // The link checker uses an intentionally short default timeout. Real
+            // model probes wait for the first streamed chunk, so keep the old
+            // safer default unless the stored config explicitly asks for longer.
+            timeout_secs: config.timeout_secs.max(default_timeout_secs()),
+            max_retries: config.max_retries.max(default_max_retries()),
+            degraded_threshold_ms: config.degraded_threshold_ms,
+            claude_model: config.claude_model,
+            codex_model: config.codex_model,
+            gemini_model: config.gemini_model,
+            test_prompt: config.test_prompt,
+        }
+    }
+}
+
+impl StreamCheckConfig {
+    pub fn normalize_legacy_defaults(mut self) -> Self {
+        self.gemini_model = normalize_gemini_test_model(&self.gemini_model);
+        self
+    }
+}
+
+fn normalize_gemini_test_model(model: &str) -> String {
+    match model.trim() {
+        // Code Assist currently returns 404 for these on some accounts. Keep
+        // production model routing untouched; only normalize the health probe.
+        "gemini-3-flash" | "gemini-3-flash-preview" => GEMINI_DEFAULT_TEST_MODEL.to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// 模型测试结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamCheckResult {
+    pub status: HealthStatus,
+    pub success: bool,
+    pub message: String,
+    pub response_time_ms: Option<u64>,
+    pub http_status: Option<u16>,
+    pub model_used: String,
+    pub tested_at: i64,
+    pub retry_count: u32,
+    /// 细粒度错误分类（如 "modelNotFound"），前端据此渲染专门的文案
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<String>,
+    #[serde(default)]
+    pub input_tokens: u32,
+    #[serde(default)]
+    pub output_tokens: u32,
+    #[serde(default)]
+    pub cache_read_tokens: u32,
+    #[serde(default)]
+    pub cache_creation_tokens: u32,
+}
+
+/// 真实模型测试服务
+pub struct ModelTestService;
+
+#[derive(Debug, Clone)]
+struct ModelTestProbeResult {
+    status_code: u16,
+    model: String,
+    usage: Option<TokenUsage>,
+}
+
+impl ModelTestProbeResult {
+    fn without_usage(status_code: u16, model: String) -> Self {
+        Self {
+            status_code,
+            model,
+            usage: None,
+        }
+    }
+}
+
+impl ModelTestService {
+    fn maybe_add_share_api_key_header(
+        request_builder: reqwest::RequestBuilder,
+        base_url: &str,
+        api_key: &str,
+    ) -> reqwest::RequestBuilder {
+        if crate::tunnel::config::is_share_tunnel_url(base_url) {
+            request_builder.header("x-api-key", api_key)
+        } else {
+            request_builder
+        }
+    }
+
+    fn unsupported_official_provider_message(
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Option<String> {
+        if provider.category.as_deref() != Some("official") {
+            return None;
+        }
+
+        if provider.supports_stream_check(app_type) {
+            return None;
+        }
+
+        let message = match app_type {
+            AppType::Claude => {
+                "Claude Official 使用 Claude Code 官方登录流程，不支持独立模型测试。请直接在 Claude Code 中验证。"
+            }
+            AppType::Codex => {
+                "OpenAI Official (OAuth) 使用官方 OAuth 登录流程，不支持独立模型测试。请直接在 Codex CLI 中验证。"
+            }
+            AppType::Gemini => {
+                "Google Official 使用官方 OAuth 登录流程，不支持独立模型测试。请直接在 Gemini CLI 中验证。"
+            }
+            _ => return None,
+        };
+
+        Some(message.to_string())
+    }
+
+    /// 执行模型测试（带重试）
+    ///
+    /// 如果 Provider 配置了单独的测试配置（meta.testConfig），则使用该配置覆盖全局配置
+    pub async fn check_with_retry(
+        app_type: &AppType,
+        provider: &Provider,
+        config: &StreamCheckConfig,
+        auth_override: Option<AuthInfo>,
+        base_url_override: Option<String>,
+        claude_api_format_override: Option<String>,
+    ) -> Result<StreamCheckResult, AppError> {
+        // 合并供应商单独配置和全局配置
+        let effective_config = Self::merge_provider_config(provider, config);
+        let mut last_result = None;
+
+        for attempt in 0..=effective_config.max_retries {
+            let result = Self::check_once(
+                app_type,
+                provider,
+                &effective_config,
+                auth_override.clone(),
+                base_url_override.clone(),
+                claude_api_format_override.clone(),
+            )
+            .await;
+
+            match &result {
+                Ok(r) if r.success => {
+                    return Ok(StreamCheckResult {
+                        retry_count: attempt,
+                        ..r.clone()
+                    });
+                }
+                Ok(r) => {
+                    // 失败但非异常，判断是否重试
+                    if Self::should_retry(&r.message) && attempt < effective_config.max_retries {
+                        last_result = Some(r.clone());
+                        continue;
+                    }
+                    return Ok(StreamCheckResult {
+                        retry_count: attempt,
+                        ..r.clone()
+                    });
+                }
+                Err(e) => {
+                    if Self::should_retry(&e.to_string()) && attempt < effective_config.max_retries
+                    {
+                        continue;
+                    }
+                    return Err(AppError::Message(e.to_string()));
+                }
+            }
+        }
+
+        Ok(last_result.unwrap_or_else(|| StreamCheckResult {
+            status: HealthStatus::Failed,
+            success: false,
+            message: "Check failed".to_string(),
+            response_time_ms: None,
+            http_status: None,
+            model_used: String::new(),
+            tested_at: chrono::Utc::now().timestamp(),
+            retry_count: effective_config.max_retries,
+            error_category: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        }))
+    }
+
+    /// 合并供应商单独配置和全局配置
+    ///
+    /// 如果供应商配置了 meta.testConfig 且 enabled 为 true，则使用供应商配置覆盖全局配置
+    pub(crate) fn merge_provider_config(
+        provider: &Provider,
+        global_config: &StreamCheckConfig,
+    ) -> StreamCheckConfig {
+        let test_config = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.test_config.as_ref())
+            .filter(|tc| tc.enabled);
+
+        match test_config {
+            Some(tc) => StreamCheckConfig {
+                timeout_secs: tc.timeout_secs.unwrap_or(global_config.timeout_secs),
+                max_retries: tc.max_retries.unwrap_or(global_config.max_retries),
+                degraded_threshold_ms: tc
+                    .degraded_threshold_ms
+                    .unwrap_or(global_config.degraded_threshold_ms),
+                claude_model: global_config.claude_model.clone(),
+                codex_model: global_config.codex_model.clone(),
+                gemini_model: global_config.gemini_model.clone(),
+                test_prompt: global_config.test_prompt.clone(),
+            }
+            .normalize_legacy_defaults(),
+            None => global_config.clone().normalize_legacy_defaults(),
+        }
+    }
+
+    /// 单次模型测试
+    async fn check_once(
+        app_type: &AppType,
+        provider: &Provider,
+        config: &StreamCheckConfig,
+        auth_override: Option<AuthInfo>,
+        base_url_override: Option<String>,
+        claude_api_format_override: Option<String>,
+    ) -> Result<StreamCheckResult, AppError> {
+        let start = Instant::now();
+
+        if let Some(message) = Self::unsupported_official_provider_message(app_type, provider) {
+            return Ok(StreamCheckResult {
+                status: HealthStatus::Failed,
+                success: false,
+                message,
+                response_time_ms: None,
+                http_status: None,
+                model_used: Self::resolve_test_model(app_type, provider, config),
+                tested_at: chrono::Utc::now().timestamp(),
+                retry_count: 0,
+                error_category: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+            });
+        }
+
+        // OpenCode / OpenClaw 的 settings_config 结构与 Claude/Codex/Gemini 不同
+        // （baseUrl / apiKey 直接作为根字段而非嵌套在 env），并且协议由 `api`
+        // 或 `npm` 字段显式指定。它们不走 get_adapter 路径，而是直接分发。
+        if matches!(
+            app_type,
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes
+        ) {
+            return Self::check_once_without_adapter(app_type, provider, config, start).await;
+        }
+
+        let adapter: Box<dyn ProviderAdapter> = if matches!(app_type, AppType::ClaudeDesktop) {
+            Box::new(ClaudeAdapter::new())
+        } else {
+            get_adapter(app_type)
+        };
+
+        let base_url = match base_url_override {
+            Some(base_url) => base_url,
+            None => adapter
+                .extract_base_url(provider)
+                .map_err(|e| AppError::Message(format!("Failed to extract base_url: {e}")))?,
+        };
+
+        let auth = auth_override
+            .or_else(|| adapter.extract_auth(provider))
+            .ok_or_else(|| AppError::Message("API Key not found".to_string()))?;
+
+        // 获取 HTTP 客户端
+        let client = crate::proxy::http_client::get();
+        let request_timeout = std::time::Duration::from_secs(config.timeout_secs);
+
+        let model_to_test = Self::resolve_test_model(app_type, provider, config);
+        let test_prompt = &config.test_prompt;
+
+        let result = match app_type {
+            AppType::Claude | AppType::ClaudeDesktop => Self::check_claude_stream(
+                &client,
+                &base_url,
+                &auth,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+                provider,
+                claude_api_format_override.as_deref(),
+                None,
+            )
+            .await
+            .map(|(status, model)| ModelTestProbeResult::without_usage(status, model)),
+            AppType::Codex => {
+                let codex_oauth_account_id = if auth.strategy == AuthStrategy::CodexOAuth {
+                    auth.managed_account_id.clone().or_else(|| {
+                        provider
+                            .meta
+                            .as_ref()
+                            .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+                    })
+                } else {
+                    None
+                };
+                Self::check_codex_stream(
+                    &client,
+                    &base_url,
+                    &auth,
+                    &model_to_test,
+                    test_prompt,
+                    request_timeout,
+                    provider,
+                    codex_oauth_account_id.as_deref(),
+                )
+                .await
+            }
+            AppType::Gemini => Self::check_gemini_stream(
+                &client,
+                &base_url,
+                &auth,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+                None,
+            )
+            .await
+            .map(|(status, model)| ModelTestProbeResult::without_usage(status, model)),
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+                // Already handled via early dispatch above
+                unreachable!("OpenCode/OpenClaw/Hermes 已通过 check_once_without_adapter 处理")
+            }
+        };
+
+        let response_time = start.elapsed().as_millis() as u64;
+        Ok(Self::build_stream_check_result(
+            Some(provider),
+            result,
+            response_time,
+            config.degraded_threshold_ms,
+            &model_to_test,
+        ))
+    }
+
+    /// Provider 级自定义 User-Agent（`meta.customUserAgent`），经 `parse_custom_user_agent` 校验。
+    ///
+    /// 与 forwarder 转发路径（`RequestForwarder::forward`）、model_fetch 共用单一口径：trim、
+    /// 空串视为未设置、**非法值静默忽略**（返回 `None`，不报错）。Stream Check 必须复用同一个
+    /// UA 去探测，否则会与真实流量用不同的 User-Agent（例如 Kimi Coding Plan 的 UA 白名单），
+    /// 导致"检测失败但代理可用"或反之的分歧——非法 UA 时尤甚（转发静默丢弃、检测却会因
+    /// reqwest 非法头在 `.send()` 报错）。
+    fn custom_user_agent(provider: &Provider) -> Option<reqwest::header::HeaderValue> {
+        provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.custom_user_agent_header().ok().flatten())
+    }
+
+    /// Claude 模型测试
+    ///
+    /// 根据供应商的 api_format 选择请求格式：
+    /// - "anthropic" (默认): Anthropic Messages API (/v1/messages)
+    /// - "openai_chat": OpenAI Chat Completions API (/v1/chat/completions)
+    /// - "openai_responses": OpenAI Responses API (/v1/responses)
+    /// - "gemini_native": Gemini Native streamGenerateContent
+    ///
+    /// `extra_headers` 是一个可选的供应商级自定义 header 集合（从 OpenClaw
+    /// 的 `settings_config.headers` 或 OpenCode 的 `settings_config.options.headers`
+    /// 读取），在所有内置 header 之后追加，用于覆盖或补充（例如自定义 User-Agent）。
+    #[allow(clippy::too_many_arguments)]
+    async fn check_claude_stream(
+        client: &Client,
+        base_url: &str,
+        auth: &AuthInfo,
+        model: &str,
+        test_prompt: &str,
+        timeout: std::time::Duration,
+        provider: &Provider,
+        claude_api_format_override: Option<&str>,
+        extra_headers: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<(u16, String), AppError> {
+        let base = base_url.trim_end_matches('/');
+        let is_github_copilot = auth.strategy == AuthStrategy::GitHubCopilot;
+        let codex_oauth_account_id = if auth.strategy == AuthStrategy::CodexOAuth {
+            auth.managed_account_id
+                .as_deref()
+                .map(str::to_string)
+                .or_else(|| {
+                    provider
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+                })
+        } else {
+            None
+        };
+
+        // Detect api_format: meta.api_format > settings_config.api_format > default "anthropic"
+        let api_format = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.api_format.as_deref())
+            .or_else(|| {
+                provider
+                    .settings_config
+                    .get("api_format")
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("anthropic");
+
+        let effective_api_format = claude_api_format_override.unwrap_or(api_format);
+
+        let is_full_url = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.is_full_url)
+            .unwrap_or(false);
+        let is_openai_chat = effective_api_format == "openai_chat";
+        let is_openai_responses = effective_api_format == "openai_responses";
+        let is_gemini_native = effective_api_format == "gemini_native";
+        let url = Self::resolve_claude_stream_url(
+            base,
+            auth.strategy,
+            effective_api_format,
+            is_full_url,
+            model,
+        );
+
+        let max_tokens = if is_openai_responses { 16 } else { 1 };
+
+        // Build from Anthropic-native shape first, then convert for configured targets.
+        let anthropic_body = json!({
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{ "role": "user", "content": test_prompt }],
+            "stream": true
+        });
+        // Codex OAuth (ChatGPT Plus/Pro 反代) 需要 store:false + include 标记，
+        // 否则 Stream Check 会和生产路径一样被服务端 400 拒绝。
+        let is_codex_oauth = provider.is_codex_oauth();
+        let codex_fast_mode = provider.codex_fast_mode_enabled();
+
+        let body = if is_openai_responses {
+            anthropic_to_responses(
+                anthropic_body,
+                Some(&provider.id),
+                is_codex_oauth,
+                codex_fast_mode,
+            )
+            .map_err(|e| AppError::Message(format!("Failed to build test request: {e}")))?
+        } else if is_gemini_native {
+            anthropic_to_gemini(anthropic_body)
+                .map_err(|e| AppError::Message(format!("Failed to build test request: {e}")))?
+        } else if is_openai_chat {
+            anthropic_to_openai(anthropic_body)
+                .map_err(|e| AppError::Message(format!("Failed to build test request: {e}")))?
+        } else {
+            anthropic_body
+        };
+
+        let mut request_builder = client.post(&url);
+
+        if is_github_copilot {
+            // 生成请求追踪 ID
+            let request_id = uuid::Uuid::new_v4().to_string();
+            request_builder = request_builder
+                .header("authorization", format!("Bearer {}", auth.api_key))
+                .header("content-type", "application/json")
+                .header("accept", "text/event-stream")
+                .header("accept-encoding", "identity")
+                .header("user-agent", copilot_auth::COPILOT_USER_AGENT)
+                .header("editor-version", copilot_auth::COPILOT_EDITOR_VERSION)
+                .header(
+                    "editor-plugin-version",
+                    copilot_auth::COPILOT_PLUGIN_VERSION,
+                )
+                .header(
+                    "copilot-integration-id",
+                    copilot_auth::COPILOT_INTEGRATION_ID,
+                )
+                .header("x-github-api-version", copilot_auth::COPILOT_API_VERSION)
+                // 260401 新增copilot 的关键 headers
+                .header("openai-intent", "conversation-agent")
+                .header("x-initiator", "user")
+                .header("x-interaction-type", "conversation-agent")
+                .header("x-vscode-user-agent-library-version", "electron-fetch")
+                .header("x-request-id", &request_id)
+                .header("x-agent-task-id", &request_id);
+        } else if is_gemini_native {
+            request_builder = match auth.strategy {
+                AuthStrategy::GoogleOAuth => {
+                    let token = auth.access_token.as_ref().unwrap_or(&auth.api_key);
+                    let normalized_model = normalize_gemini_model_id(model);
+                    request_builder
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("user-agent", Self::gemini_cli_user_agent(&normalized_model))
+                        .header("x-goog-api-client", GEMINI_CLI_API_CLIENT_HEADER)
+                        .header("content-type", "application/json")
+                        .header("accept", "text/event-stream")
+                        .header("accept-encoding", "identity")
+                }
+                _ => request_builder
+                    .header("x-goog-api-key", &auth.api_key)
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .header("accept-encoding", "identity"),
+            };
+        } else if is_openai_chat || is_openai_responses {
+            // OpenAI-compatible targets: Bearer auth + SSE headers only
+            request_builder = request_builder
+                .header("authorization", format!("Bearer {}", auth.api_key))
+                .header("content-type", "application/json")
+                .header("accept", "text/event-stream")
+                .header("accept-encoding", "identity");
+
+            if auth.strategy == AuthStrategy::CodexOAuth {
+                request_builder = request_builder.header("originator", "codex_cli_rs");
+                if let Some(account_id) = codex_oauth_account_id.as_deref() {
+                    request_builder = request_builder.header("chatgpt-account-id", account_id);
+                }
+            }
+        } else {
+            // Anthropic native: full Claude CLI headers
+            let os_name = Self::get_os_name();
+            let arch_name = Self::get_arch_name();
+            let is_claude_oauth = auth.strategy == AuthStrategy::ClaudeOAuth;
+            let anthropic_beta = if is_claude_oauth {
+                "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
+            } else {
+                "claude-code-20250219,interleaved-thinking-2025-05-14"
+            };
+
+            // 鉴权头复用 ClaudeAdapter::get_auth_headers，与代理路径（forwarder）保持单一真理来源。
+            // - AuthStrategy::Anthropic  → x-api-key
+            // - AuthStrategy::ClaudeAuth → Authorization: Bearer
+            // - AuthStrategy::Bearer     → Authorization: Bearer
+            // 避免之前"无条件 Bearer + 条件 x-api-key 双发"导致的假阴性 / auth conflict。
+            let auth_headers = ClaudeAdapter::new()
+                .get_auth_headers(auth)
+                .map_err(|e| AppError::Message(format!("stream check 构造鉴权头失败: {e}")))?;
+            for (name, value) in auth_headers {
+                request_builder = request_builder.header(name, value);
+            }
+
+            request_builder = request_builder
+                // Anthropic required headers
+                .header("anthropic-version", "2023-06-01")
+                .header("anthropic-beta", anthropic_beta)
+                // Content type headers
+                .header("content-type", "application/json")
+                .header("accept", "application/json")
+                .header("accept-encoding", "identity")
+                .header("accept-language", "*")
+                // Client identification headers
+                .header("user-agent", "claude-cli/2.1.2 (external, cli)")
+                .header("x-app", "cli")
+                // x-stainless SDK headers (dynamic local system info)
+                .header("x-stainless-lang", "js")
+                .header("x-stainless-package-version", "0.70.0")
+                .header("x-stainless-os", os_name)
+                .header("x-stainless-arch", arch_name)
+                .header("x-stainless-runtime", "node")
+                .header("x-stainless-runtime-version", "v22.20.0")
+                .header("x-stainless-retry-count", "0")
+                .header("x-stainless-timeout", "600")
+                // Other headers
+                .header("sec-fetch-mode", "cors")
+                .header("connection", "keep-alive");
+
+            if auth.strategy == AuthStrategy::Anthropic {
+                request_builder =
+                    request_builder.header("anthropic-dangerous-direct-browser-access", "true");
+            }
+        }
+
+        // 供应商自定义 headers 最后追加，允许覆盖内置默认值（例如 user-agent）
+        if let Some(headers) = extra_headers {
+            for (key, value) in headers {
+                if let Some(v) = value.as_str() {
+                    request_builder = request_builder.header(key.as_str(), v);
+                }
+            }
+        }
+
+        let request_builder =
+            Self::maybe_add_share_api_key_header(request_builder, base_url, &auth.api_key);
+        // Provider 级自定义 User-Agent（meta.customUserAgent）覆盖默认 UA，与 forwarder
+        // 转发路径口径一致；Copilot 指纹 UA 不可被覆盖。
+        let request_builder = if !is_github_copilot {
+            if let Some(ua) = Self::custom_user_agent(provider) {
+                request_builder.header("user-agent", ua)
+            } else {
+                request_builder
+            }
+        } else {
+            request_builder
+        };
+
+        let response = request_builder
+            .timeout(timeout)
+            .json(&body)
+            .send()
+            .await
+            .map_err(Self::map_request_error)?;
+
+        let status = response.status().as_u16();
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(Self::http_status_error(status, error_text));
+        }
+
+        // 流式读取：只需首个 chunk
+        let mut stream = response.bytes_stream();
+        if let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(_) => Ok((status, model.to_string())),
+                Err(e) => Err(AppError::Message(format!("Stream read failed: {e}"))),
+            }
+        } else {
+            Err(AppError::Message("No response data received".to_string()))
+        }
+    }
+
+    /// Codex 模型测试
+    ///
+    /// 严格按照 Codex CLI 真实请求格式构建请求 (Responses API)
+    #[allow(clippy::too_many_arguments)]
+    async fn check_codex_stream(
+        client: &Client,
+        base_url: &str,
+        auth: &AuthInfo,
+        model: &str,
+        test_prompt: &str,
+        timeout: std::time::Duration,
+        provider: &Provider,
+        codex_oauth_account_id: Option<&str>,
+    ) -> Result<ModelTestProbeResult, AppError> {
+        let is_full_url = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.is_full_url)
+            .unwrap_or(false);
+        // 当 provider 的 api_format 标记为 openai_chat 时，上游不接受 Responses API；
+        // 必须改打 /chat/completions 并发送 Chat 格式 body，否则 Stream Check 与代理路径不一致，
+        // 会把"实际可用"的供应商误报为不可用（典型如 DeepSeek、MiniMax、Kimi 等 Chat 兼容厂商）。
+        let uses_chat = crate::proxy::providers::codex_provider_uses_chat_completions(provider);
+        let urls = if uses_chat {
+            Self::resolve_codex_chat_stream_urls(base_url, is_full_url)
+        } else {
+            Self::resolve_codex_stream_urls(base_url, is_full_url)
+        };
+
+        // 解析模型名和推理等级 (支持 model@level 或 model#level 格式)
+        let (actual_model, reasoning_effort) = Self::parse_model_with_effort(model);
+
+        // 获取本地系统信息
+        let os_name = Self::get_os_name();
+        let arch_name = Self::get_arch_name();
+        let is_codex_oauth = auth.strategy == AuthStrategy::CodexOAuth;
+
+        // Provider 级自定义 User-Agent（meta.customUserAgent）覆盖默认 codex UA，与 forwarder
+        // 转发路径口径一致——否则 Stream Check 会用与真实流量不同的 UA 探测（如 Kimi UA 白名单）。
+        let user_agent = Self::custom_user_agent(provider).unwrap_or_else(|| {
+            reqwest::header::HeaderValue::from_str(&codex_cli_terminal_user_agent(
+                &os_name, &arch_name,
+            ))
+            .unwrap_or_else(|_| {
+                reqwest::header::HeaderValue::from_str(&format!("codex_cli_rs/{CODEX_CLI_VERSION}"))
+                    .expect("fallback Codex CLI user-agent is valid")
+            })
+        });
+
+        let mut body = if uses_chat {
+            // Chat Completions 请求体（与 transform_codex_chat::responses_to_chat_completions 对齐）
+            json!({
+                "model": actual_model,
+                "messages": [{ "role": "user", "content": test_prompt }],
+                "max_tokens": 1,
+                "stream": true
+            })
+        } else {
+            // Responses API 请求体格式 (input 必须是数组)
+            json!({
+                "model": actual_model,
+                "input": [{ "role": "user", "content": test_prompt }],
+                "stream": true
+            })
+        };
+
+        // Chat 路径只对 OpenAI o-series 透传 reasoning_effort，与 transform_codex_chat
+        // 一致；非 o-series（DeepSeek、Kimi 等）收到未知字段会 400。
+        if let Some(effort) = reasoning_effort {
+            if uses_chat
+                && crate::proxy::providers::transform::supports_reasoning_effort(&actual_model)
+            {
+                body["reasoning_effort"] = json!(effort);
+            } else if !uses_chat {
+                body["reasoning"] = json!({ "effort": effort });
+            }
+        }
+
+        if auth.strategy == AuthStrategy::CodexOAuth {
+            body["store"] = json!(false);
+            body["include"] = json!(["reasoning.encrypted_content"]);
+            body["instructions"] = json!("");
+            body["tools"] = json!([]);
+            body["parallel_tool_calls"] = json!(false);
+            body["stream"] = json!(true);
+        }
+
+        for (i, url) in urls.iter().enumerate() {
+            // 严格按照 Codex CLI 请求格式设置 headers
+            let mut request_builder = client
+                .post(url)
+                .header("authorization", format!("Bearer {}", auth.api_key))
+                .header("content-type", "application/json")
+                .header("accept", "text/event-stream")
+                .header("accept-encoding", "identity")
+                .header("user-agent", user_agent.clone())
+                .header("originator", Self::codex_stream_originator(is_codex_oauth))
+                .timeout(timeout);
+
+            if let Some(account_id) = codex_oauth_account_id {
+                request_builder = request_builder.header("chatgpt-account-id", account_id);
+            }
+
+            let request_builder =
+                Self::maybe_add_share_api_key_header(request_builder, base_url, &auth.api_key);
+
+            let response = request_builder
+                .json(&body)
+                .send()
+                .await
+                .map_err(Self::map_request_error)?;
+
+            let status = response.status().as_u16();
+
+            if !response.status().is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+                // 回退策略：仅当首选 URL 返回 404 时尝试下一个
+                if i == 0 && status == 404 && urls.len() > 1 {
+                    continue;
+                }
+                return Err(Self::http_status_error(status, error_text));
+            }
+
+            let mut stream = response.bytes_stream();
+            let mut chunks = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk =
+                    chunk.map_err(|e| AppError::Message(format!("Stream read failed: {e}")))?;
+                chunks.extend_from_slice(&chunk);
+            }
+
+            if chunks.is_empty() {
+                return Err(AppError::Message("No response data received".to_string()));
+            }
+
+            let usage = std::str::from_utf8(&chunks)
+                .ok()
+                .and_then(Self::parse_sse_json_events)
+                .and_then(|events| TokenUsage::from_codex_stream_events_auto(&events));
+
+            return Ok(ModelTestProbeResult {
+                status_code: status,
+                model: actual_model,
+                usage,
+            });
+        }
+
+        Err(AppError::Message(
+            "No valid Codex responses endpoint found".to_string(),
+        ))
+    }
+
+    fn parse_sse_json_events(text: &str) -> Option<Vec<serde_json::Value>> {
+        let mut events = Vec::new();
+        for block in text.split("\n\n") {
+            let mut data_lines = Vec::new();
+            for line in block.lines() {
+                let line = line.trim_end_matches('\r');
+                if let Some(data) = line.strip_prefix("data:") {
+                    let data = data.trim();
+                    if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+                    data_lines.push(data);
+                }
+            }
+            if data_lines.is_empty() {
+                continue;
+            }
+            let data = data_lines.join("\n");
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) {
+                events.push(value);
+            }
+        }
+        if events.is_empty() {
+            None
+        } else {
+            Some(events)
+        }
+    }
+
+    /// Gemini 模型测试
+    ///
+    /// 使用 Gemini 原生 API 格式 (streamGenerateContent)
+    async fn check_gemini_stream(
+        client: &Client,
+        base_url: &str,
+        auth: &AuthInfo,
+        model: &str,
+        test_prompt: &str,
+        timeout: std::time::Duration,
+        extra_headers: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<(u16, String), AppError> {
+        if auth.strategy == AuthStrategy::GoogleOAuth {
+            return Self::check_gemini_code_assist(client, auth, model, test_prompt, timeout).await;
+        }
+
+        let base = base_url.trim_end_matches('/');
+        let mut last_error: Option<AppError> = None;
+        for candidate in Self::gemini_native_test_models(model) {
+            let normalized_candidate = normalize_gemini_model_id(&candidate);
+            // Gemini 原生 API: /v1beta/models/{model}:streamGenerateContent?alt=sse
+            // 智能处理 /v1beta 路径：如果 base_url 不包含版本路径，则添加 /v1beta。
+            let url = if base.contains("/v1beta") || base.contains("/v1/") {
+                format!("{base}/models/{normalized_candidate}:streamGenerateContent?alt=sse")
+            } else {
+                format!("{base}/v1beta/models/{normalized_candidate}:streamGenerateContent?alt=sse")
+            };
+
+            // Gemini 原生请求体格式
+            let body = json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{ "text": test_prompt }]
+                }]
+            });
+
+            let mut request_builder = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .header("x-goog-api-key", &auth.api_key);
+
+            // 供应商自定义 headers 最后追加
+            if let Some(headers) = extra_headers {
+                for (key, value) in headers {
+                    if let Some(v) = value.as_str() {
+                        request_builder = request_builder.header(key.as_str(), v);
+                    }
+                }
+            }
+
+            let request_builder =
+                Self::maybe_add_share_api_key_header(request_builder, base_url, &auth.api_key);
+
+            let response = request_builder
+                .timeout(timeout)
+                .json(&body)
+                .send()
+                .await
+                .map_err(Self::map_request_error)?;
+
+            let status = response.status().as_u16();
+
+            if !response.status().is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+                let err = Self::http_status_error(status, error_text);
+                let should_try_next = matches!(
+                    &err,
+                    AppError::HttpStatus { status, body }
+                        if matches!(*status, 400 | 404)
+                            && Self::detect_error_category(*status, body)
+                                == Some("modelNotFound")
+                ) || matches!(&err, AppError::HttpStatus { status: 404, .. });
+                last_error = Some(err);
+                if should_try_next {
+                    continue;
+                }
+                break;
+            }
+
+            let mut stream = response.bytes_stream();
+            if let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(_) => return Ok((status, candidate)),
+                    Err(e) => return Err(AppError::Message(format!("Stream read failed: {e}"))),
+                }
+            } else {
+                last_error = Some(AppError::Message("No response data received".to_string()));
+                break;
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            AppError::Message("No Gemini Native test model available".to_string())
+        }))
+    }
+
+    async fn check_gemini_code_assist(
+        client: &Client,
+        auth: &AuthInfo,
+        model: &str,
+        test_prompt: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(u16, String), AppError> {
+        let token = auth.access_token.as_ref().unwrap_or(&auth.api_key);
+        let project_id = Self::load_gemini_code_assist_project(client, token, timeout).await?;
+        let normalized_model = normalize_gemini_model_id(model);
+        let mut body = json!({
+            "model": normalized_model,
+            "request": {
+                "contents": [{
+                    "role": "user",
+                    "parts": [{ "text": test_prompt }]
+                }],
+                "generationConfig": {
+                    "maxOutputTokens": 16
+                }
+            }
+        });
+
+        if let Some(project) = project_id {
+            body["project"] = json!(project);
+        }
+
+        let mut last_error: Option<AppError> = None;
+        for candidate in Self::gemini_code_assist_test_models(&normalized_model) {
+            body["model"] = json!(candidate);
+            match Self::send_gemini_code_assist_stream(client, token, &candidate, &body, timeout)
+                .await
+            {
+                Ok(status) => return Ok((status, candidate)),
+                Err(err) => {
+                    let should_try_next =
+                        matches!(
+                            &err,
+                            AppError::HttpStatus { status, body }
+                                if matches!(*status, 400 | 404)
+                                    && Self::detect_error_category(*status, body)
+                                        == Some("modelNotFound")
+                        ) || matches!(&err, AppError::HttpStatus { status: 404, .. });
+                    last_error = Some(err);
+                    if !should_try_next {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            AppError::Message("No Gemini Code Assist test model available".to_string())
+        }))
+    }
+
+    async fn send_gemini_code_assist_stream(
+        client: &Client,
+        token: &str,
+        model: &str,
+        body: &serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> Result<u16, AppError> {
+        let response = client
+            .post(format!(
+                "{GEMINI_CODE_ASSIST_BASE_URL}/v1internal:streamGenerateContent?alt=sse"
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .header("accept-encoding", "identity")
+            .header("user-agent", Self::gemini_cli_user_agent(model))
+            .header("x-goog-api-client", GEMINI_CLI_API_CLIENT_HEADER)
+            .timeout(timeout)
+            .json(&body)
+            .send()
+            .await
+            .map_err(Self::map_request_error)?;
+
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(Self::http_status_error(status, error_text));
+        }
+
+        let mut stream = response.bytes_stream();
+        if let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(_) => Ok(status),
+                Err(e) => Err(AppError::Message(format!("Stream read failed: {e}"))),
+            }
+        } else {
+            Err(AppError::Message("No response data received".to_string()))
+        }
+    }
+
+    async fn load_gemini_code_assist_project(
+        client: &Client,
+        token: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Option<String>, AppError> {
+        let response = client
+            .post(format!(
+                "{GEMINI_CODE_ASSIST_BASE_URL}/v1internal:loadCodeAssist"
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .header("user-agent", Self::gemini_cli_user_agent("unknown"))
+            .header("x-goog-api-client", GEMINI_CLI_API_CLIENT_HEADER)
+            .timeout(timeout)
+            .json(&json!({
+                "metadata": {
+                    "ideType": "IDE_UNSPECIFIED",
+                    "platform": "PLATFORM_UNSPECIFIED",
+                    "pluginType": "GEMINI"
+                }
+            }))
+            .send()
+            .await
+            .map_err(Self::map_request_error)?;
+
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(Self::http_status_error(status, error_text));
+        }
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::Message(format!("Failed to parse loadCodeAssist: {e}")))?;
+        Ok(body
+            .get("cloudaicompanionProject")
+            .and_then(Self::extract_gemini_project_id))
+    }
+
+    fn extract_gemini_project_id(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Object(obj) => obj
+                .get("id")
+                .or_else(|| obj.get("projectId"))
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            _ => None,
+        }
+    }
+
+    fn gemini_code_assist_test_models(requested_model: &str) -> Vec<String> {
+        let mut models = Vec::with_capacity(1 + GEMINI_CODE_ASSIST_TEST_FALLBACK_MODELS.len());
+        let requested = requested_model.trim();
+        if !requested.is_empty() {
+            models.push(requested.to_string());
+        }
+        for fallback in GEMINI_CODE_ASSIST_TEST_FALLBACK_MODELS {
+            if !models.iter().any(|model| model == fallback) {
+                models.push((*fallback).to_string());
+            }
+        }
+        models
+    }
+
+    fn gemini_native_test_models(requested_model: &str) -> Vec<String> {
+        Self::gemini_code_assist_test_models(requested_model)
+    }
+
+    fn gemini_cli_user_agent(model: &str) -> String {
+        let model = if model.trim().is_empty() {
+            "unknown"
+        } else {
+            model
+        };
+        format!(
+            "GeminiCLI/{GEMINI_CLI_VERSION}/{model} ({}; {})",
+            Self::gemini_cli_platform(),
+            Self::gemini_cli_arch()
+        )
+    }
+
+    fn gemini_cli_platform() -> &'static str {
+        match std::env::consts::OS {
+            "windows" => "win32",
+            other => other,
+        }
+    }
+
+    fn gemini_cli_arch() -> &'static str {
+        match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "x86" => "x86",
+            other => other,
+        }
+    }
+
+    /// OpenCode / OpenClaw 的独立分发入口（绕过 `get_adapter`）
+    ///
+    /// 这两个应用的 `settings_config` 与 Claude/Codex/Gemini 完全不同：
+    /// - OpenClaw: `{ baseUrl, apiKey, api, models: [...] }`，`api` 字段标识协议
+    /// - OpenCode: `{ npm, options: { baseURL, apiKey }, models: {...} }`，`npm` 字段标识协议
+    ///
+    /// 因此不能复用 `get_adapter`（会 fallback 到 CodexAdapter 而提取失败），
+    /// 改为独立解析 base_url/api_key/协议，再分发到现有的 check_*_stream 函数。
+    async fn check_once_without_adapter(
+        app_type: &AppType,
+        provider: &Provider,
+        config: &StreamCheckConfig,
+        start: Instant,
+    ) -> Result<StreamCheckResult, AppError> {
+        // 获取 HTTP 客户端
+        let client = crate::proxy::http_client::get();
+        let request_timeout = std::time::Duration::from_secs(config.timeout_secs);
+
+        let model_to_test = Self::resolve_test_model(app_type, provider, config);
+        let test_prompt = &config.test_prompt;
+
+        let result = match app_type {
+            AppType::OpenClaw => Self::check_additive_app_stream(
+                &client,
+                provider,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+            )
+            .await
+            .map(|(status, model)| ModelTestProbeResult::without_usage(status, model)),
+            AppType::OpenCode => Self::check_opencode_stream(
+                &client,
+                provider,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+            )
+            .await
+            .map(|(status, model)| ModelTestProbeResult::without_usage(status, model)),
+            AppType::Hermes => Self::check_hermes_stream(
+                &client,
+                provider,
+                &model_to_test,
+                test_prompt,
+                request_timeout,
+            )
+            .await
+            .map(|(status, model)| ModelTestProbeResult::without_usage(status, model)),
+            _ => unreachable!("check_once_without_adapter 只处理 OpenCode/OpenClaw/Hermes"),
+        };
+
+        let response_time = start.elapsed().as_millis() as u64;
+        Ok(Self::build_stream_check_result(
+            Some(provider),
+            result,
+            response_time,
+            config.degraded_threshold_ms,
+            &model_to_test,
+        ))
+    }
+
+    /// 将 check_*_stream 的原始结果包装成 StreamCheckResult
+    ///
+    /// 抽取自 check_once 的末尾逻辑，以便 OpenCode/OpenClaw 的独立分支复用。
+    ///
+    /// `model_tested` 是本次探测使用的模型名，用于在失败场景下仍能把模型信息透传给前端，
+    /// 方便针对"模型不存在 / 已下架"这类错误渲染专门的提示。
+    fn build_stream_check_result(
+        provider: Option<&Provider>,
+        result: Result<ModelTestProbeResult, AppError>,
+        response_time: u64,
+        degraded_threshold_ms: u64,
+        model_tested: &str,
+    ) -> StreamCheckResult {
+        let tested_at = chrono::Utc::now().timestamp();
+        match result {
+            Ok(probe) => {
+                let usage = probe.usage.unwrap_or_default();
+                StreamCheckResult {
+                    status: Self::determine_status(response_time, degraded_threshold_ms),
+                    success: true,
+                    message: "Check succeeded".to_string(),
+                    response_time_ms: Some(response_time),
+                    http_status: Some(probe.status_code),
+                    model_used: usage.model.clone().unwrap_or(probe.model),
+                    tested_at,
+                    retry_count: 0,
+                    error_category: None,
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_read_tokens: usage.cache_read_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens,
+                }
+            }
+            Err(e) => {
+                let (http_status, message, error_category) = match &e {
+                    AppError::HttpStatus { status, body } => {
+                        let category = provider
+                            .and_then(|provider| {
+                                Self::detect_provider_error_category(provider, *status, body)
+                            })
+                            .or_else(|| Self::detect_error_category(*status, body));
+                        let message = Self::format_http_status_message(*status, body);
+                        (Some(*status), message, category.map(|s| s.to_string()))
+                    }
+                    _ => (None, e.to_string(), None),
+                };
+                StreamCheckResult {
+                    status: HealthStatus::Failed,
+                    success: false,
+                    message,
+                    response_time_ms: Some(response_time),
+                    http_status,
+                    model_used: model_tested.to_string(),
+                    tested_at,
+                    retry_count: 0,
+                    error_category,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                }
+            }
+        }
+    }
+
+    /// 基于 HTTP 状态码和响应体识别细粒度错误分类。
+    ///
+    /// 目前仅识别"模型不存在 / 已下架"：各厂商该类错误通常返回 4xx，body 中会包含
+    /// 如 `model_not_found`（OpenAI）、`does not exist`、`invalid model`、`not_found_error`
+    /// + `model` 字样（Anthropic）等标记。
+    pub(crate) fn detect_error_category(status: u16, body: &str) -> Option<&'static str> {
+        // 只检查 4xx；5xx 的错误信息里可能巧合出现"model"之类的词，容易误判
+        if !(400..500).contains(&status) {
+            return None;
+        }
+        let lower = body.to_lowercase();
+        if status == 401
+            && (lower.contains("token_invalidated")
+                || lower.contains("authentication token has been invalidated"))
+        {
+            return Some("tokenInvalidated");
+        }
+
+        let qianfan_quota_indicators = [
+            "coding_plan_hour_quota_exceeded",
+            "coding_plan_week_quota_exceeded",
+            "coding_plan_month_quota_exceeded",
+        ];
+        if qianfan_quota_indicators.iter().any(|s| lower.contains(s)) {
+            return Some("quotaExceeded");
+        }
+
+        if status == 404 && lower.contains("requested entity was not found") {
+            return Some("modelNotFound");
+        }
+
+        // 必须提到 "model"，避免通用 404 / 400 被误判
+        if !lower.contains("model") {
+            return None;
+        }
+        let indicators = [
+            "model_not_found",
+            "model not found",
+            "does not exist",
+            "invalid_model",
+            "invalid model",
+            "unknown_model",
+            "unknown model",
+            "is not a valid model",
+            "not_found_error", // Anthropic 的 type 字段
+        ];
+        if indicators.iter().any(|s| lower.contains(s)) {
+            return Some("modelNotFound");
+        }
+        None
+    }
+
+    fn detect_provider_error_category(
+        provider: &Provider,
+        status: u16,
+        body: &str,
+    ) -> Option<&'static str> {
+        let category = Self::detect_error_category(status, body)?;
+        if category != "tokenInvalidated" {
+            return Some(category);
+        }
+
+        if provider.is_openai_session_provider() {
+            Some("openaiSessionTokenInvalidated")
+        } else if provider.is_codex_oauth_provider()
+            || provider.is_codex_official_with_managed_auth()
+        {
+            Some("codexOauthTokenInvalidated")
+        } else {
+            Some(category)
+        }
+    }
+
+    fn format_http_status_message(status: u16, body: &str) -> String {
+        let label = Self::classify_http_status(status);
+        if status == 401 && Self::is_token_invalidated_body(body) {
+            return format!(
+                "{label}: OpenAI authentication token has been invalidated. Refresh the managed account sign-in and try again."
+            );
+        }
+        let body = Self::summarize_http_error_body(body);
+        if body.is_empty() {
+            label.to_string()
+        } else {
+            format!("{label}: {body}")
+        }
+    }
+
+    fn is_token_invalidated_body(body: &str) -> bool {
+        let lower = body.to_lowercase();
+        lower.contains("token_invalidated")
+            || lower.contains("authentication token has been invalidated")
+    }
+
+    fn summarize_http_error_body(body: &str) -> String {
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+
+        if let Ok(json_body) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let candidates = [
+                json_body.pointer("/error/message"),
+                json_body.pointer("/message"),
+                json_body.pointer("/detail"),
+                json_body.pointer("/error"),
+            ];
+            if let Some(message) = candidates
+                .into_iter()
+                .flatten()
+                .find_map(|value| value.as_str())
+            {
+                return Self::truncate_error_summary(message, 180);
+            }
+
+            if let Ok(compact) = serde_json::to_string(&json_body) {
+                return Self::truncate_error_summary(&compact, 180);
+            }
+        }
+
+        Self::truncate_error_summary(trimmed, 180)
+    }
+
+    fn truncate_error_summary(text: &str, max_chars: usize) -> String {
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.chars().count() <= max_chars {
+            return normalized;
+        }
+
+        let truncated = normalized.chars().take(max_chars).collect::<String>();
+        format!("{}...", truncated.trim_end())
+    }
+
+    /// OpenClaw 模型测试分发器
+    ///
+    /// 根据 `settings_config.api` 字段分发到对应协议的检查器。
+    /// 取值参见 `openclawApiProtocols` (前端 openclawProviderPresets.ts):
+    /// - `openai-completions`   → check_claude_stream + api_format="openai_chat"
+    /// - `openai-responses`     → check_claude_stream + api_format="openai_responses"
+    /// - `anthropic-messages`   → check_claude_stream + api_format="anthropic" (ClaudeAuth 策略)
+    /// - `google-generative-ai` → check_gemini_stream (Google API Key 策略)
+    /// - `bedrock-converse-stream` → 不支持（需要 AWS SigV4 签名）
+    async fn check_additive_app_stream(
+        client: &Client,
+        provider: &Provider,
+        model: &str,
+        test_prompt: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(u16, String), AppError> {
+        // 自定义认证头（如 Longcat 的 `apikey` 头）不走标准 Bearer，
+        // 具体头名由 OpenClaw 网关内部决定，cc-switch 无法准确构造，
+        // 因此直接返回友好错误而不是让用户看到一个误导性的 401。
+        if Self::additive_app_uses_auth_header(provider) {
+            return Err(AppError::localized(
+                "openclaw_auth_header_not_supported",
+                "该供应商使用自定义认证头，暂不支持模型测试。建议直接通过 OpenClaw 测试。",
+                "This provider uses a custom auth header; stream health check is not supported. Please test it directly via OpenClaw.",
+            ));
+        }
+
+        let base_url = Self::extract_openclaw_base_url(provider)?;
+        let api_key = Self::extract_openclaw_api_key(provider)?;
+        let api = Self::extract_openclaw_protocol(provider);
+        let extra_headers = Self::extract_openclaw_headers(provider);
+
+        match api.as_deref() {
+            Some("openai-completions") => {
+                let auth = AuthInfo::new(api_key, AuthStrategy::Bearer);
+                Self::check_claude_stream(
+                    client,
+                    &base_url,
+                    &auth,
+                    model,
+                    test_prompt,
+                    timeout,
+                    provider,
+                    Some("openai_chat"),
+                    extra_headers,
+                )
+                .await
+            }
+            Some("openai-responses") => {
+                let auth = AuthInfo::new(api_key, AuthStrategy::Bearer);
+                Self::check_claude_stream(
+                    client,
+                    &base_url,
+                    &auth,
+                    model,
+                    test_prompt,
+                    timeout,
+                    provider,
+                    Some("openai_responses"),
+                    extra_headers,
+                )
+                .await
+            }
+            Some("anthropic-messages") => {
+                // 使用 ClaudeAuth（Bearer-only）以兼容 Claude 中转服务。
+                // 某些中转同时收到 Authorization 和 x-api-key 会报错，ClaudeAuth
+                // 策略保证只下发 Bearer。官方 Anthropic 也接受纯 Bearer。
+                let auth = AuthInfo::new(api_key, AuthStrategy::ClaudeAuth);
+                Self::check_claude_stream(
+                    client,
+                    &base_url,
+                    &auth,
+                    model,
+                    test_prompt,
+                    timeout,
+                    provider,
+                    Some("anthropic"),
+                    extra_headers,
+                )
+                .await
+            }
+            Some("google-generative-ai") => {
+                let auth = AuthInfo::new(api_key, AuthStrategy::Google);
+                Self::check_gemini_stream(
+                    client,
+                    &base_url,
+                    &auth,
+                    model,
+                    test_prompt,
+                    timeout,
+                    extra_headers,
+                )
+                .await
+            }
+            Some("bedrock-converse-stream") => Err(AppError::localized(
+                "openclaw_bedrock_not_supported",
+                "AWS Bedrock 需要 SigV4 签名，当前不支持健康检查。请通过 AWS 控制台或 OpenClaw 验证连通性。",
+                "AWS Bedrock requires SigV4 signing and is not supported by stream health check. Please verify connectivity via AWS console or OpenClaw.",
+            )),
+            Some(other) => Err(AppError::localized(
+                "openclaw_protocol_not_yet_supported",
+                format!("OpenClaw 暂不支持协议: {other}"),
+                format!("OpenClaw protocol not yet supported: {other}"),
+            )),
+            None => Err(AppError::localized(
+                "openclaw_protocol_missing",
+                "OpenClaw 供应商缺少 api 字段",
+                "OpenClaw provider is missing the `api` field",
+            )),
+        }
+    }
+
+    /// 判断 additive-mode 供应商是否使用自定义认证头（`authHeader: true`）
+    fn additive_app_uses_auth_header(provider: &Provider) -> bool {
+        provider
+            .settings_config
+            .get("authHeader")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// 提取 OpenClaw 供应商的自定义 headers（来自 `settings_config.headers`）
+    fn extract_openclaw_headers(
+        provider: &Provider,
+    ) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        provider
+            .settings_config
+            .get("headers")
+            .and_then(|v| v.as_object())
+            .filter(|m| !m.is_empty())
+    }
+
+    fn extract_openclaw_base_url(provider: &Provider) -> Result<String, AppError> {
+        provider
+            .settings_config
+            .get("baseUrl")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                AppError::localized(
+                    "openclaw_base_url_missing",
+                    "OpenClaw 供应商缺少 baseUrl",
+                    "OpenClaw provider is missing `baseUrl`",
+                )
+            })
+    }
+
+    fn extract_openclaw_api_key(provider: &Provider) -> Result<String, AppError> {
+        provider
+            .settings_config
+            .get("apiKey")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                AppError::localized(
+                    "openclaw_api_key_missing",
+                    "OpenClaw 供应商缺少 apiKey",
+                    "OpenClaw provider is missing `apiKey`",
+                )
+            })
+    }
+
+    fn extract_openclaw_protocol(provider: &Provider) -> Option<String> {
+        provider
+            .settings_config
+            .get("api")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    // Hermes 的 settings_config 用 snake_case（base_url / api_key / api_mode），
+    // 与 OpenClaw 的 camelCase（baseUrl / apiKey / api）是两套独立命名。
+    // 见 src/config/hermesProviderPresets.ts 的 HermesProviderSettingsConfig。
+    fn extract_hermes_base_url(provider: &Provider) -> Result<String, AppError> {
+        provider
+            .settings_config
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                AppError::localized(
+                    "hermes_base_url_missing",
+                    "Hermes 供应商缺少 base_url",
+                    "Hermes provider is missing `base_url`",
+                )
+            })
+    }
+
+    fn extract_hermes_api_key(provider: &Provider) -> Result<String, AppError> {
+        provider
+            .settings_config
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                AppError::localized(
+                    "hermes_api_key_missing",
+                    "Hermes 供应商缺少 api_key",
+                    "Hermes provider is missing `api_key`",
+                )
+            })
+    }
+
+    fn extract_hermes_api_mode(provider: &Provider) -> Option<String> {
+        provider
+            .settings_config
+            .get("api_mode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Hermes 模型测试分发器
+    ///
+    /// Hermes 以 `api_mode` 字段显式指定协议，取值来自
+    /// `HermesApiMode`（hermesProviderPresets.ts）：
+    /// - `chat_completions`   → check_claude_stream + api_format="openai_chat"（Bearer）
+    /// - `anthropic_messages` → check_claude_stream + api_format="anthropic"（ClaudeAuth，与 OpenClaw 的 anthropic-messages 同策略）
+    /// - `codex_responses`    → check_claude_stream + api_format="openai_responses"（Bearer）
+    /// - `bedrock_converse`   → 不支持（需要 AWS SigV4 签名）
+    async fn check_hermes_stream(
+        client: &Client,
+        provider: &Provider,
+        model: &str,
+        test_prompt: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(u16, String), AppError> {
+        // 先把 api_mode 路由出协议格式与认证策略。
+        // 纯错误路径（bedrock / 未知 / 缺失）直接 return，避免在用户
+        // 选了 bedrock_converse 时被"缺 base_url"的二级错误盖住真正原因。
+        let (api_format, auth_strategy) = match Self::extract_hermes_api_mode(provider).as_deref() {
+            Some("chat_completions") => ("openai_chat", AuthStrategy::Bearer),
+            Some("anthropic_messages") => ("anthropic", AuthStrategy::ClaudeAuth),
+            Some("codex_responses") => ("openai_responses", AuthStrategy::Bearer),
+            Some("bedrock_converse") => {
+                return Err(AppError::localized(
+                    "hermes_bedrock_not_supported",
+                    "AWS Bedrock 需要 SigV4 签名，当前不支持健康检查。",
+                    "AWS Bedrock requires SigV4 signing and is not supported by stream health check.",
+                ));
+            }
+            Some(other) => {
+                return Err(AppError::localized(
+                    "hermes_protocol_not_yet_supported",
+                    format!("Hermes 暂不支持协议: {other}"),
+                    format!("Hermes protocol not yet supported: {other}"),
+                ));
+            }
+            None => {
+                return Err(AppError::localized(
+                    "hermes_api_mode_missing",
+                    "Hermes 供应商缺少 api_mode 字段",
+                    "Hermes provider is missing the `api_mode` field",
+                ));
+            }
+        };
+
+        let base_url = Self::extract_hermes_base_url(provider)?;
+        let api_key = Self::extract_hermes_api_key(provider)?;
+        let auth = AuthInfo::new(api_key, auth_strategy);
+        Self::check_claude_stream(
+            client,
+            &base_url,
+            &auth,
+            model,
+            test_prompt,
+            timeout,
+            provider,
+            Some(api_format),
+            None,
+        )
+        .await
+    }
+
+    /// OpenCode 模型测试分发器
+    ///
+    /// OpenCode 用 `npm` 字段（AI SDK 包名）隐式指定协议。映射关系参见
+    /// `opencodeNpmPackages` (前端 opencodeProviderPresets.ts):
+    /// - `@ai-sdk/openai-compatible` → check_claude_stream + api_format="openai_chat"
+    /// - `@ai-sdk/openai`            → check_claude_stream + api_format="openai_responses"
+    /// - `@ai-sdk/anthropic`         → check_claude_stream + api_format="anthropic"
+    /// - `@ai-sdk/google`            → check_gemini_stream (Google API Key 策略)
+    /// - `@ai-sdk/amazon-bedrock`    → 不支持（需要 AWS SigV4 签名）
+    ///
+    /// URL/API Key 存放在 `settings_config.options.{baseURL,apiKey}`，注意
+    /// `baseURL` 大写 L（与 OpenClaw 的 `baseUrl` 首字母小写 u 不同）。
+    async fn check_opencode_stream(
+        client: &Client,
+        provider: &Provider,
+        model: &str,
+        test_prompt: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(u16, String), AppError> {
+        let npm = Self::extract_opencode_npm(provider);
+        // 若用户未显式填 baseURL，则根据 npm 回退到 AI SDK 包自带的默认端点
+        let base_url = Self::resolve_opencode_base_url(provider, npm.as_deref())?;
+        let api_key = Self::extract_opencode_api_key(provider)?;
+        let extra_headers = Self::extract_opencode_headers(provider);
+
+        match npm.as_deref() {
+            Some("@ai-sdk/openai-compatible") => {
+                let auth = AuthInfo::new(api_key, AuthStrategy::Bearer);
+                Self::check_claude_stream(
+                    client,
+                    &base_url,
+                    &auth,
+                    model,
+                    test_prompt,
+                    timeout,
+                    provider,
+                    Some("openai_chat"),
+                    extra_headers,
+                )
+                .await
+            }
+            Some("@ai-sdk/openai") => {
+                let auth = AuthInfo::new(api_key, AuthStrategy::Bearer);
+                Self::check_claude_stream(
+                    client,
+                    &base_url,
+                    &auth,
+                    model,
+                    test_prompt,
+                    timeout,
+                    provider,
+                    Some("openai_responses"),
+                    extra_headers,
+                )
+                .await
+            }
+            Some("@ai-sdk/anthropic") => {
+                // 见 check_additive_app_stream 对 anthropic-messages 的处理：
+                // 用 ClaudeAuth（Bearer-only）兼容中转服务。
+                let auth = AuthInfo::new(api_key, AuthStrategy::ClaudeAuth);
+                Self::check_claude_stream(
+                    client,
+                    &base_url,
+                    &auth,
+                    model,
+                    test_prompt,
+                    timeout,
+                    provider,
+                    Some("anthropic"),
+                    extra_headers,
+                )
+                .await
+            }
+            Some("@ai-sdk/google") => {
+                let auth = AuthInfo::new(api_key, AuthStrategy::Google);
+                Self::check_gemini_stream(
+                    client,
+                    &base_url,
+                    &auth,
+                    model,
+                    test_prompt,
+                    timeout,
+                    extra_headers,
+                )
+                .await
+            }
+            Some("@ai-sdk/amazon-bedrock") => Err(AppError::localized(
+                "opencode_bedrock_not_supported",
+                "AWS Bedrock 需要 SigV4 签名，当前不支持健康检查。请通过 AWS 控制台或 OpenCode 验证连通性。",
+                "AWS Bedrock requires SigV4 signing and is not supported by stream health check. Please verify connectivity via AWS console or OpenCode.",
+            )),
+            Some(other) => Err(AppError::localized(
+                "opencode_npm_not_yet_supported",
+                format!("OpenCode 暂不支持 SDK 包: {other}"),
+                format!("OpenCode SDK package not yet supported: {other}"),
+            )),
+            None => Err(AppError::localized(
+                "opencode_npm_missing",
+                "OpenCode 供应商缺少 npm 字段",
+                "OpenCode provider is missing the `npm` field",
+            )),
+        }
+    }
+
+    /// 按 OpenCode 的实际 SDK 包特性确定 baseURL：
+    /// - 用户显式填写的 `options.baseURL` 总是优先
+    /// - 否则根据 `npm` 返回 AI SDK 包自带的默认端点
+    /// - `@ai-sdk/openai-compatible` 没有默认端点，必须显式填
+    ///
+    /// 注意：这里的默认端点对应 AI SDK 包的行为（例如 `@ai-sdk/openai`
+    /// 自带 `/v1` 路径后缀），与 `proxy/providers/mod.rs` 里的
+    /// `ProviderType::default_endpoint()` 语义不同——后者是代理层的上游
+    /// 默认值，不带 `/v1`。两者维护的是不同系统的默认值，不能简单共享。
+    fn resolve_opencode_base_url(
+        provider: &Provider,
+        npm: Option<&str>,
+    ) -> Result<String, AppError> {
+        if let Some(explicit) = Self::extract_opencode_base_url(provider) {
+            return Ok(explicit);
+        }
+
+        let fallback = match npm {
+            Some("@ai-sdk/openai") => Some("https://api.openai.com/v1"),
+            Some("@ai-sdk/anthropic") => Some("https://api.anthropic.com"),
+            Some("@ai-sdk/google") => Some("https://generativelanguage.googleapis.com"),
+            _ => None,
+        };
+
+        fallback.map(|s| s.to_string()).ok_or_else(|| {
+            AppError::localized(
+                "opencode_base_url_missing",
+                "OpenCode 供应商缺少 options.baseURL，且当前 SDK 包没有默认端点",
+                "OpenCode provider is missing `options.baseURL` and the SDK package has no default endpoint",
+            )
+        })
+    }
+
+    fn extract_opencode_base_url(provider: &Provider) -> Option<String> {
+        provider
+            .settings_config
+            .get("options")
+            .and_then(|v| v.get("baseURL"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// 提取 OpenCode 供应商的自定义 headers（来自 `settings_config.options.headers`）
+    fn extract_opencode_headers(
+        provider: &Provider,
+    ) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        provider
+            .settings_config
+            .get("options")
+            .and_then(|v| v.get("headers"))
+            .and_then(|v| v.as_object())
+            .filter(|m| !m.is_empty())
+    }
+
+    fn extract_opencode_api_key(provider: &Provider) -> Result<String, AppError> {
+        provider
+            .settings_config
+            .get("options")
+            .and_then(|v| v.get("apiKey"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                AppError::localized(
+                    "opencode_api_key_missing",
+                    "OpenCode 供应商缺少 options.apiKey",
+                    "OpenCode provider is missing `options.apiKey`",
+                )
+            })
+    }
+
+    fn extract_opencode_npm(provider: &Provider) -> Option<String> {
+        provider
+            .settings_config
+            .get("npm")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn determine_status(latency_ms: u64, threshold: u64) -> HealthStatus {
+        if latency_ms <= threshold {
+            HealthStatus::Operational
+        } else {
+            HealthStatus::Degraded
+        }
+    }
+
+    /// 解析模型名和推理等级 (支持 model@level 或 model#level 格式)
+    /// 返回 (实际模型名, Option<推理等级>)
+    fn parse_model_with_effort(model: &str) -> (String, Option<String>) {
+        if let Some(pos) = model.find('@').or_else(|| model.find('#')) {
+            let actual_model = model[..pos].to_string();
+            let effort = model[pos + 1..].to_string();
+            if !effort.is_empty() {
+                return (actual_model, Some(effort));
+            }
+        }
+        (model.to_string(), None)
+    }
+
+    fn codex_stream_originator(is_codex_oauth: bool) -> &'static str {
+        if is_codex_oauth {
+            "cc-switch"
+        } else {
+            "codex_cli_rs"
+        }
+    }
+
+    #[allow(dead_code)]
+    fn codex_stream_user_agent(is_codex_oauth: bool, os_name: &str, arch_name: &str) -> String {
+        if is_codex_oauth {
+            format!(
+                "cc-switch/{} ({os_name}; {arch_name})",
+                env!("CARGO_PKG_VERSION")
+            )
+        } else {
+            codex_cli_terminal_user_agent(os_name, arch_name)
+        }
+    }
+
+    fn should_retry(msg: &str) -> bool {
+        let lower = msg.to_lowercase();
+        lower.contains("timeout") || lower.contains("abort") || lower.contains("timed out")
+    }
+
+    fn map_request_error(e: reqwest::Error) -> AppError {
+        if e.is_timeout() {
+            AppError::Message("Request timeout".to_string())
+        } else if e.is_connect() {
+            AppError::Message(format!("Connection failed: {e}"))
+        } else {
+            AppError::Message(e.to_string())
+        }
+    }
+
+    /// 构造 HTTP 状态码错误，截断过长的响应体
+    fn http_status_error(status: u16, body: String) -> AppError {
+        let body = if body.len() > 200 {
+            // 安全截断：找到 200 字节内最近的 char 边界
+            let mut end = 200;
+            while end > 0 && !body.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}…", &body[..end])
+        } else {
+            body
+        };
+        AppError::HttpStatus { status, body }
+    }
+
+    /// 将 HTTP 状态码映射为简短的分类标签
+    pub(crate) fn classify_http_status(status: u16) -> &'static str {
+        match status {
+            400 => "Bad request (400)",
+            401 => "Auth rejected (401)",
+            402 => "Payment required (402)",
+            403 => "Access denied (403)",
+            404 => "Not found (404)",
+            429 => "Rate limited (429)",
+            500 => "Internal server error (500)",
+            502 => "Bad gateway (502)",
+            503 => "Service unavailable (503)",
+            504 => "Gateway timeout (504)",
+            s if (500..600).contains(&s) => "Server error",
+            _ => "HTTP error",
+        }
+    }
+
+    fn resolve_test_model(
+        app_type: &AppType,
+        provider: &Provider,
+        config: &StreamCheckConfig,
+    ) -> String {
+        match app_type {
+            AppType::Claude | AppType::ClaudeDesktop => {
+                Self::extract_env_model(provider, "ANTHROPIC_MODEL")
+                    .unwrap_or_else(|| config.claude_model.clone())
+            }
+            AppType::Codex => {
+                Self::extract_codex_model(provider).unwrap_or_else(|| config.codex_model.clone())
+            }
+            AppType::Gemini => Self::extract_env_model(provider, "GEMINI_MODEL")
+                .unwrap_or_else(|| config.gemini_model.clone()),
+            AppType::OpenCode => {
+                // OpenCode uses models map in settings_config
+                // Try to extract first model from the models object
+                Self::extract_opencode_model(provider).unwrap_or_else(|| "gpt-4o".to_string())
+            }
+            AppType::OpenClaw | AppType::Hermes => {
+                // OpenClaw/Hermes use models array in settings_config
+                // Try to extract first model from the models array
+                Self::extract_openclaw_model(provider).unwrap_or_else(|| "gpt-4o".to_string())
+            }
+        }
+    }
+
+    fn extract_opencode_model(provider: &Provider) -> Option<String> {
+        let models = provider
+            .settings_config
+            .get("models")
+            .and_then(|m| m.as_object())?;
+
+        // Return the first model ID from the models map
+        models.keys().next().map(|s| s.to_string())
+    }
+
+    fn extract_openclaw_model(provider: &Provider) -> Option<String> {
+        // OpenClaw uses models array: [{ "id": "model-id", "name": "Model Name" }]
+        let models = provider
+            .settings_config
+            .get("models")
+            .and_then(|m| m.as_array())?;
+
+        // Return the first model ID from the models array
+        models
+            .first()
+            .and_then(|m| m.get("id"))
+            .and_then(|id| id.as_str())
+            .map(|s| s.to_string())
+    }
+
+    fn extract_env_model(provider: &Provider, key: &str) -> Option<String> {
+        provider
+            .settings_config
+            .get("env")
+            .and_then(|env| env.get(key))
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn extract_codex_model(provider: &Provider) -> Option<String> {
+        let config_text = provider
+            .settings_config
+            .get("config")
+            .and_then(|value| value.as_str())?;
+        if config_text.trim().is_empty() {
+            return None;
+        }
+
+        let table = toml::from_str::<toml::Table>(config_text).ok()?;
+        table
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    /// 获取操作系统名称（映射为 Claude CLI 使用的格式）
+    fn get_os_name() -> &'static str {
+        match std::env::consts::OS {
+            "macos" => "MacOS",
+            "linux" => "Linux",
+            "windows" => "Windows",
+            other => other,
+        }
+    }
+
+    /// 获取 CPU 架构名称（映射为 Claude CLI 使用的格式）
+    fn get_arch_name() -> &'static str {
+        match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86_64" => "x86_64",
+            "x86" => "x86",
+            other => other,
+        }
+    }
+
+    fn resolve_claude_stream_url(
+        base_url: &str,
+        auth_strategy: AuthStrategy,
+        api_format: &str,
+        is_full_url: bool,
+        model: &str,
+    ) -> String {
+        if api_format == "gemini_native" {
+            // Strip an optional `models/` resource-name prefix so that model
+            // identifiers copied from Gemini SDK outputs (e.g.
+            // `models/gemini-2.5-pro`) don't produce a doubled
+            // `/v1beta/models/models/...` URL.
+            let normalized_model = normalize_gemini_model_id(model);
+            let endpoint =
+                format!("/v1beta/models/{normalized_model}:streamGenerateContent?alt=sse");
+            return resolve_gemini_native_url(base_url, &endpoint, is_full_url);
+        }
+
+        if is_full_url {
+            return base_url.to_string();
+        }
+
+        let base = base_url.trim_end_matches('/');
+        let is_github_copilot = auth_strategy == AuthStrategy::GitHubCopilot;
+
+        if is_github_copilot && api_format == "openai_responses" {
+            format!("{base}/v1/responses")
+        } else if is_github_copilot {
+            format!("{base}/chat/completions")
+        } else if api_format == "openai_responses" {
+            if base.ends_with("/v1") {
+                format!("{base}/responses")
+            } else {
+                format!("{base}/v1/responses")
+            }
+        } else if api_format == "openai_chat" {
+            if base.ends_with("/v1") {
+                format!("{base}/chat/completions")
+            } else {
+                format!("{base}/v1/chat/completions")
+            }
+        } else if base.ends_with("/v1") {
+            format!("{base}/messages")
+        } else {
+            format!("{base}/v1/messages")
+        }
+    }
+
+    /// Codex Responses 流式 URL 构造（薄包装，详见 `resolve_codex_endpoint_urls`）。
+    fn resolve_codex_stream_urls(base_url: &str, is_full_url: bool) -> Vec<String> {
+        Self::resolve_codex_endpoint_urls(base_url, is_full_url, "responses")
+    }
+
+    /// Codex Chat Completions 流式 URL 构造（薄包装，详见 `resolve_codex_endpoint_urls`）。
+    fn resolve_codex_chat_stream_urls(base_url: &str, is_full_url: bool) -> Vec<String> {
+        Self::resolve_codex_endpoint_urls(base_url, is_full_url, "chat/completions")
+    }
+
+    /// 与 `CodexAdapter::build_url` 优先级对齐的 stream check URL 列表构造。
+    ///
+    /// 纯 origin 在生产路径上会自动补 `/v1`，所以 Stream Check 必须优先走
+    /// `<base>/v1/<endpoint>`。否则上游对 bare 路径返回 401/400/405（非 404）
+    /// 时不会触发循环里的 fallback，会把可用供应商误判为不可用。
+    fn resolve_codex_endpoint_urls(
+        base_url: &str,
+        is_full_url: bool,
+        endpoint: &str,
+    ) -> Vec<String> {
+        if is_full_url {
+            return vec![base_url.to_string()];
+        }
+
+        let base = base_url.trim_end_matches('/');
+        let lower = base.to_ascii_lowercase();
+        let endpoint_suffix = format!("/{endpoint}");
+        let endpoint_lower = endpoint_suffix.to_ascii_lowercase();
+
+        // 用户在 base_url 里写了完整 endpoint 但忘开 is_full_url 的兜底
+        if lower.ends_with(&endpoint_lower) {
+            return vec![base.to_string()];
+        }
+
+        if base.ends_with("/v1") {
+            return vec![format!("{base}{endpoint_suffix}")];
+        }
+
+        if crate::proxy::providers::is_origin_only_url(base) {
+            vec![
+                format!("{base}/v1{endpoint_suffix}"),
+                format!("{base}{endpoint_suffix}"),
+            ]
+        } else {
+            vec![
+                format!("{base}{endpoint_suffix}"),
+                format!("{base}/v1{endpoint_suffix}"),
+            ]
+        }
+    }
+
+    pub(crate) fn resolve_effective_test_model(
+        app_type: &AppType,
+        provider: &Provider,
+        config: &StreamCheckConfig,
+    ) -> String {
+        let effective_config = Self::merge_provider_config(provider, config);
+        Self::resolve_test_model(app_type, provider, &effective_config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_provider(settings_config: serde_json::Value) -> Provider {
+        Provider::with_id(
+            "test".to_string(),
+            "Test".to_string(),
+            settings_config,
+            None,
+        )
+    }
+
+    fn make_official_provider(app_name: &str, settings_config: serde_json::Value) -> Provider {
+        let mut provider = Provider::with_id(
+            "official".to_string(),
+            app_name.to_string(),
+            settings_config,
+            None,
+        );
+        provider.category = Some("official".to_string());
+        provider
+    }
+
+    #[tokio::test]
+    async fn test_check_once_returns_clear_message_for_claude_official() {
+        let provider = make_official_provider("Claude Official", serde_json::json!({ "env": {} }));
+        let config = StreamCheckConfig::default();
+
+        let result =
+            ModelTestService::check_once(&AppType::Claude, &provider, &config, None, None, None)
+                .await
+                .unwrap();
+
+        assert!(!result.success);
+        assert!(result.message.contains("不支持独立模型测试"));
+        assert_eq!(result.model_used, config.claude_model);
+    }
+
+    #[test]
+    fn test_additive_app_uses_auth_header_true() {
+        let p = make_provider(serde_json::json!({
+            "baseUrl": "https://api.longcat.chat/v1",
+            "apiKey": "k",
+            "api": "openai-completions",
+            "authHeader": true,
+        }));
+        assert!(ModelTestService::additive_app_uses_auth_header(&p));
+    }
+
+    #[test]
+    fn test_additive_app_uses_auth_header_default_false() {
+        let p = make_provider(serde_json::json!({
+            "baseUrl": "https://api.deepseek.com/v1",
+            "apiKey": "k",
+            "api": "openai-completions",
+        }));
+        assert!(!ModelTestService::additive_app_uses_auth_header(&p));
+    }
+
+    #[test]
+    fn test_custom_user_agent_trims_and_filters_empty() {
+        use crate::provider::ProviderMeta;
+
+        let mut p = make_provider(serde_json::json!({
+            "baseUrl": "https://api.kimi.com/coding",
+            "apiKey": "k",
+        }));
+
+        // 未设置 meta → None
+        assert!(ModelTestService::custom_user_agent(&p).is_none());
+
+        // 带首尾空格的 UA → 去空格后返回合法 HeaderValue
+        p.meta = Some(ProviderMeta {
+            custom_user_agent: Some("  claude-cli/2.1.161  ".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            ModelTestService::custom_user_agent(&p)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "claude-cli/2.1.161"
+        );
+
+        // 纯空白 → 视为未设置（与 forwarder 路径口径一致）
+        p.meta = Some(ProviderMeta {
+            custom_user_agent: Some("   ".to_string()),
+            ..Default::default()
+        });
+        assert!(ModelTestService::custom_user_agent(&p).is_none());
+
+        // 非 ASCII 字符其实合法（UTF-8 字节均 ≥ 0x80，HeaderValue 按字节放行）→ 应返回 Some
+        p.meta = Some(ProviderMeta {
+            custom_user_agent: Some("claude-cli/2.1.161 \u{4e2d}".to_string()),
+            ..Default::default()
+        });
+        assert!(ModelTestService::custom_user_agent(&p).is_some());
+
+        // 含控制字符（内嵌换行）才非法 → None（静默忽略，与 forwarder 一致，不让 Stream Check 报错）
+        p.meta = Some(ProviderMeta {
+            custom_user_agent: Some("claude-cli/2.1.161\nX".to_string()),
+            ..Default::default()
+        });
+        assert!(ModelTestService::custom_user_agent(&p).is_none());
+    }
+
+    #[test]
+    fn test_resolve_opencode_base_url_explicit_wins() {
+        let p = make_provider(serde_json::json!({
+            "npm": "@ai-sdk/openai",
+            "options": { "baseURL": "https://proxy.local/v1", "apiKey": "k" },
+            "models": {},
+        }));
+        let resolved =
+            ModelTestService::resolve_opencode_base_url(&p, Some("@ai-sdk/openai")).unwrap();
+        assert_eq!(resolved, "https://proxy.local/v1");
+    }
+
+    #[test]
+    fn test_resolve_opencode_base_url_falls_back_for_known_npm() {
+        let p = make_provider(serde_json::json!({
+            "npm": "@ai-sdk/openai",
+            "options": { "apiKey": "k" },
+            "models": {},
+        }));
+        let resolved =
+            ModelTestService::resolve_opencode_base_url(&p, Some("@ai-sdk/openai")).unwrap();
+        assert_eq!(resolved, "https://api.openai.com/v1");
+
+        let p2 = make_provider(serde_json::json!({
+            "npm": "@ai-sdk/anthropic",
+            "options": { "apiKey": "k" },
+            "models": {},
+        }));
+        let resolved2 =
+            ModelTestService::resolve_opencode_base_url(&p2, Some("@ai-sdk/anthropic")).unwrap();
+        assert_eq!(resolved2, "https://api.anthropic.com");
+    }
+
+    #[test]
+    fn test_resolve_opencode_base_url_errors_for_openai_compatible_without_url() {
+        // @ai-sdk/openai-compatible 没有默认端点，必须显式填
+        let p = make_provider(serde_json::json!({
+            "npm": "@ai-sdk/openai-compatible",
+            "options": { "apiKey": "k" },
+            "models": {},
+        }));
+        let result =
+            ModelTestService::resolve_opencode_base_url(&p, Some("@ai-sdk/openai-compatible"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_gemini_cli_user_agent_matches_code_assist_shape() {
+        let ua = ModelTestService::gemini_cli_user_agent("gemini-3-flash-preview");
+        assert!(ua.starts_with("GeminiCLI/0.31.0/gemini-3-flash-preview ("));
+        assert!(ua.ends_with(')'));
+        assert_eq!(
+            GEMINI_CLI_API_CLIENT_HEADER,
+            "google-genai-sdk/1.41.0 gl-node/v22.19.0"
+        );
+    }
+
+    #[test]
+    fn test_gemini_code_assist_test_models_prefers_requested_then_fallbacks() {
+        assert_eq!(
+            ModelTestService::gemini_code_assist_test_models("gemini-3-flash-preview"),
+            vec![
+                "gemini-3-flash-preview".to_string(),
+                "gemini-3-flash".to_string(),
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.5-flash-lite".to_string(),
+            ]
+        );
+
+        assert_eq!(
+            ModelTestService::gemini_code_assist_test_models("gemini-3-flash"),
+            vec![
+                "gemini-3-flash".to_string(),
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.5-flash-lite".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_check_config_normalizes_legacy_gemini_default_model() {
+        let mut config = StreamCheckConfig::default();
+        config.gemini_model = "gemini-3-flash".to_string();
+
+        assert_eq!(
+            config.normalize_legacy_defaults().gemini_model,
+            GEMINI_DEFAULT_TEST_MODEL
+        );
+    }
+
+    #[test]
+    fn test_extract_openclaw_headers_preserves_map() {
+        let p = make_provider(serde_json::json!({
+            "baseUrl": "https://example.com/v1",
+            "apiKey": "k",
+            "api": "openai-completions",
+            "headers": { "User-Agent": "MyBot/1.0", "X-Trace": "abc" },
+        }));
+        let headers = ModelTestService::extract_openclaw_headers(&p).unwrap();
+        assert_eq!(
+            headers.get("User-Agent").and_then(|v| v.as_str()),
+            Some("MyBot/1.0")
+        );
+        assert_eq!(headers.get("X-Trace").and_then(|v| v.as_str()), Some("abc"));
+    }
+
+    #[test]
+    fn test_extract_openclaw_headers_ignores_empty_map() {
+        let p = make_provider(serde_json::json!({
+            "baseUrl": "https://example.com/v1",
+            "apiKey": "k",
+            "api": "openai-completions",
+            "headers": {},
+        }));
+        assert!(ModelTestService::extract_openclaw_headers(&p).is_none());
+    }
+
+    #[test]
+    fn test_extract_opencode_headers_from_options() {
+        let p = make_provider(serde_json::json!({
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {
+                "baseURL": "https://example.com/v1",
+                "apiKey": "k",
+                "headers": { "X-Custom": "yes" },
+            },
+            "models": {},
+        }));
+        let headers = ModelTestService::extract_opencode_headers(&p).unwrap();
+        assert_eq!(
+            headers.get("X-Custom").and_then(|v| v.as_str()),
+            Some("yes")
+        );
+    }
+
+    #[test]
+    fn test_determine_status() {
+        assert_eq!(
+            ModelTestService::determine_status(3000, 6000),
+            HealthStatus::Operational
+        );
+        assert_eq!(
+            ModelTestService::determine_status(6000, 6000),
+            HealthStatus::Operational
+        );
+        assert_eq!(
+            ModelTestService::determine_status(6001, 6000),
+            HealthStatus::Degraded
+        );
+    }
+
+    #[test]
+    fn test_should_retry() {
+        assert!(ModelTestService::should_retry("Request timeout"));
+        assert!(ModelTestService::should_retry("request timed out"));
+        assert!(ModelTestService::should_retry("connection abort"));
+        assert!(!ModelTestService::should_retry("API Key invalid"));
+    }
+
+    #[test]
+    fn test_default_config() {
+        let config = StreamCheckConfig::default();
+        assert_eq!(config.timeout_secs, 45);
+        assert_eq!(config.max_retries, 2);
+        assert_eq!(config.degraded_threshold_ms, 6000);
+    }
+
+    #[test]
+    fn test_parse_model_with_effort() {
+        // 带 @ 分隔符
+        let (model, effort) = ModelTestService::parse_model_with_effort("gpt-5.1-codex@low");
+        assert_eq!(model, "gpt-5.1-codex");
+        assert_eq!(effort, Some("low".to_string()));
+
+        // 带 # 分隔符
+        let (model, effort) = ModelTestService::parse_model_with_effort("o1-preview#high");
+        assert_eq!(model, "o1-preview");
+        assert_eq!(effort, Some("high".to_string()));
+
+        // 无分隔符
+        let (model, effort) = ModelTestService::parse_model_with_effort("gpt-4o-mini");
+        assert_eq!(model, "gpt-4o-mini");
+        assert_eq!(effort, None);
+    }
+
+    #[test]
+    fn test_codex_oauth_stream_identity_matches_forwarder() {
+        assert_eq!(ModelTestService::codex_stream_originator(true), "cc-switch");
+        let ua = ModelTestService::codex_stream_user_agent(true, "linux", "x86_64");
+        assert!(ua.starts_with("cc-switch/"));
+        assert!(ua.contains("(linux; x86_64)"));
+    }
+
+    #[test]
+    fn test_regular_codex_stream_identity_stays_cli_like() {
+        assert_eq!(
+            ModelTestService::codex_stream_originator(false),
+            "codex_cli_rs"
+        );
+        let ua = ModelTestService::codex_stream_user_agent(false, "macOS", "arm64");
+        assert!(ua.starts_with("codex_cli_rs/0.139.0"));
+        assert!(ua.contains("(macOS 15.7.2; arm64) Terminal"));
+    }
+
+    #[test]
+    fn test_detect_model_not_found() {
+        use crate::provider::{AuthBinding, AuthBindingSource, ProviderMeta};
+
+        // OpenAI 典型响应：404 + model_not_found 错误码
+        let openai_404 = r#"{"error":{"message":"The model `gpt-5.1-codex` does not exist or you do not have access to it","type":"invalid_request_error","param":null,"code":"model_not_found"}}"#;
+        assert_eq!(
+            ModelTestService::detect_error_category(404, openai_404),
+            Some("modelNotFound")
+        );
+
+        // Anthropic 典型响应：404 + not_found_error + 提到 model
+        let anthropic_404 = r#"{"type":"error","error":{"type":"not_found_error","message":"model: claude-deprecated"}}"#;
+        assert_eq!(
+            ModelTestService::detect_error_category(404, anthropic_404),
+            Some("modelNotFound")
+        );
+
+        // 400 + invalid model 也算
+        let bad_req = r#"{"error":{"message":"invalid model specified"}}"#;
+        assert_eq!(
+            ModelTestService::detect_error_category(400, bad_req),
+            Some("modelNotFound")
+        );
+
+        // 通用 404（比如 Base URL 错误），body 里没有 model 字样 → 不应误判
+        let generic_404 = r#"{"error":"Not Found"}"#;
+        assert_eq!(
+            ModelTestService::detect_error_category(404, generic_404),
+            None
+        );
+
+        // Google Code Assist 的模型不存在响应不一定包含 model 字样
+        let code_assist_404 = r#"{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}"#;
+        assert_eq!(
+            ModelTestService::detect_error_category(404, code_assist_404),
+            Some("modelNotFound")
+        );
+
+        // 5xx 就算 body 里有 "model does not exist" 也不分类（避免误判）
+        let server_error = r#"{"error":"model does not exist"}"#;
+        assert_eq!(
+            ModelTestService::detect_error_category(500, server_error),
+            None
+        );
+
+        // 401 鉴权错误（body 里没有 model 字样）
+        let auth_err = r#"{"error":"Invalid API key"}"#;
+        assert_eq!(ModelTestService::detect_error_category(401, auth_err), None);
+
+        let token_invalidated = r#"{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","type":"invalid_request_error","code":"token_invalidated"}}"#;
+        assert_eq!(
+            ModelTestService::detect_error_category(401, token_invalidated),
+            Some("tokenInvalidated")
+        );
+        assert_eq!(
+            ModelTestService::format_http_status_message(401, token_invalidated),
+            "Auth rejected (401): OpenAI authentication token has been invalidated. Refresh the managed account sign-in and try again."
+        );
+
+        let mut session_provider = make_provider(serde_json::json!({}));
+        session_provider.meta = Some(ProviderMeta {
+            provider_type: Some("openai_official_session".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            ModelTestService::detect_provider_error_category(
+                &session_provider,
+                401,
+                token_invalidated
+            ),
+            Some("openaiSessionTokenInvalidated")
+        );
+
+        let mut oauth_provider = make_provider(serde_json::json!({}));
+        oauth_provider.meta = Some(ProviderMeta {
+            provider_type: Some("codex_oauth".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            ModelTestService::detect_provider_error_category(
+                &oauth_provider,
+                401,
+                token_invalidated
+            ),
+            Some("codexOauthTokenInvalidated")
+        );
+
+        let mut official_oauth_provider =
+            make_official_provider("OpenAI Official (OAuth)", serde_json::json!({}));
+        official_oauth_provider.meta = Some(ProviderMeta {
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("acct-1".to_string()),
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            ModelTestService::detect_provider_error_category(
+                &official_oauth_provider,
+                401,
+                token_invalidated
+            ),
+            Some("codexOauthTokenInvalidated")
+        );
+    }
+
+    #[test]
+    fn test_detect_qianfan_coding_plan_quota_errors() {
+        let cases = [
+            r#"{"error":{"code":"coding_plan_hour_quota_exceeded","message":"hour quota exceeded"}}"#,
+            r#"{"error":{"code":"coding_plan_week_quota_exceeded","message":"week quota exceeded"}}"#,
+            r#"{"error":{"code":"coding_plan_month_quota_exceeded","message":"month quota exceeded"}}"#,
+        ];
+
+        for body in cases {
+            assert_eq!(
+                ModelTestService::detect_error_category(429, body),
+                Some("quotaExceeded")
+            );
+        }
+    }
+
+    #[test]
+    fn test_get_os_name() {
+        let os_name = ModelTestService::get_os_name();
+        // 确保返回非空字符串
+        assert!(!os_name.is_empty());
+        // 在 macOS 上应该返回 "MacOS"
+        #[cfg(target_os = "macos")]
+        assert_eq!(os_name, "MacOS");
+        // 在 Linux 上应该返回 "Linux"
+        #[cfg(target_os = "linux")]
+        assert_eq!(os_name, "Linux");
+        // 在 Windows 上应该返回 "Windows"
+        #[cfg(target_os = "windows")]
+        assert_eq!(os_name, "Windows");
+    }
+
+    #[test]
+    fn test_get_arch_name() {
+        let arch_name = ModelTestService::get_arch_name();
+        // 确保返回非空字符串
+        assert!(!arch_name.is_empty());
+        // 在 ARM64 上应该返回 "arm64"
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(arch_name, "arm64");
+        // 在 x86_64 上应该返回 "x86_64"
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(arch_name, "x86_64");
+    }
+
+    #[test]
+    fn test_auth_strategy_imports() {
+        // 验证 AuthStrategy 枚举可以正常使用
+        let anthropic = AuthStrategy::Anthropic;
+        let claude_auth = AuthStrategy::ClaudeAuth;
+        let bearer = AuthStrategy::Bearer;
+
+        // 验证不同的策略是不相等的
+        assert_ne!(anthropic, claude_auth);
+        assert_ne!(anthropic, bearer);
+        assert_ne!(claude_auth, bearer);
+
+        // 验证相同策略是相等的
+        assert_eq!(anthropic, AuthStrategy::Anthropic);
+        assert_eq!(claude_auth, AuthStrategy::ClaudeAuth);
+        assert_eq!(bearer, AuthStrategy::Bearer);
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_full_url_mode() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://relay.example/v1/chat/completions",
+            AuthStrategy::Bearer,
+            "openai_chat",
+            true,
+            "gpt-5.5",
+        );
+
+        assert_eq!(url, "https://relay.example/v1/chat/completions");
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_github_copilot() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://api.githubcopilot.com",
+            AuthStrategy::GitHubCopilot,
+            "openai_chat",
+            false,
+            "gpt-5.5",
+        );
+
+        assert_eq!(url, "https://api.githubcopilot.com/chat/completions");
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_github_copilot_responses() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://api.githubcopilot.com",
+            AuthStrategy::GitHubCopilot,
+            "openai_responses",
+            false,
+            "gpt-5.5",
+        );
+
+        assert_eq!(url, "https://api.githubcopilot.com/v1/responses");
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_openai_chat() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://example.com/v1",
+            AuthStrategy::Bearer,
+            "openai_chat",
+            false,
+            "gpt-5.5",
+        );
+
+        assert_eq!(url, "https://example.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_openai_responses() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://example.com/v1",
+            AuthStrategy::Bearer,
+            "openai_responses",
+            false,
+            "gpt-5.5",
+        );
+
+        assert_eq!(url, "https://example.com/v1/responses");
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_anthropic() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://api.anthropic.com",
+            AuthStrategy::Anthropic,
+            "anthropic",
+            false,
+            "claude-sonnet-4-6",
+        );
+
+        assert_eq!(url, "https://api.anthropic.com/v1/messages");
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_gemini_native() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://generativelanguage.googleapis.com",
+            AuthStrategy::Google,
+            "gemini_native",
+            false,
+            "gemini-2.5-flash",
+        );
+
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_gemini_native_full_url_openai_compat_base() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            AuthStrategy::Google,
+            "gemini_native",
+            true,
+            "gemini-2.5-flash",
+        );
+
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_gemini_native_opaque_full_url() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://relay.example/custom/generate-content",
+            AuthStrategy::Google,
+            "gemini_native",
+            true,
+            "gemini-2.5-flash",
+        );
+
+        assert_eq!(url, "https://relay.example/custom/generate-content?alt=sse");
+    }
+
+    #[test]
+    fn test_resolve_claude_stream_url_for_gemini_native_cloudflare_vertex_full_url() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://gateway.ai.cloudflare.com/v1/account/gateway/google-vertex-ai/v1/projects/project/locations/us-central1/publishers/google/models/gemini-3.5-flash:streamGenerateContent",
+            AuthStrategy::Google,
+            "gemini_native",
+            true,
+            "gemini-2.5-flash",
+        );
+
+        assert_eq!(
+            url,
+            "https://gateway.ai.cloudflare.com/v1/account/gateway/google-vertex-ai/v1/projects/project/locations/us-central1/publishers/google/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
+        );
+    }
+
+    /// Regression: Gemini SDK outputs commonly surface model ids as the
+    /// resource-name form `models/gemini-2.5-pro`. Interpolating that raw
+    /// value used to produce `/v1beta/models/models/gemini-2.5-pro:...`
+    /// which the upstream rejects and the health check records as a
+    /// false-negative for an otherwise valid provider.
+    #[test]
+    fn test_resolve_claude_stream_url_for_gemini_native_strips_models_prefix() {
+        let url = ModelTestService::resolve_claude_stream_url(
+            "https://generativelanguage.googleapis.com",
+            AuthStrategy::Google,
+            "gemini_native",
+            false,
+            "models/gemini-2.5-pro",
+        );
+
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn gemini_native_test_models_include_code_assist_fallbacks() {
+        let models = ModelTestService::gemini_native_test_models("gemini-custom");
+
+        assert_eq!(models.first().map(String::as_str), Some("gemini-custom"));
+        assert!(models.iter().any(|model| model == "gemini-3-flash"));
+        assert!(models.iter().any(|model| model == "gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn stream_check_http_status_message_includes_error_body_summary() {
+        let result = ModelTestService::build_stream_check_result(
+            None,
+            Err(AppError::HttpStatus {
+                status: 400,
+                body: r#"{"error":{"message":"Invalid Gemini request shape from share proxy"}}"#
+                    .to_string(),
+            }),
+            123,
+            5_000,
+            "gemini-3-flash",
+        );
+
+        assert_eq!(
+            result.message,
+            "Bad request (400): Invalid Gemini request shape from share proxy"
+        );
+        assert_eq!(result.http_status, Some(400));
+    }
+
+    #[test]
+    fn codex_stream_check_parses_responses_usage() {
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":4}}}}\n\n"
+        );
+
+        let events = ModelTestService::parse_sse_json_events(sse).unwrap();
+        let usage = TokenUsage::from_codex_stream_events_auto(&events).unwrap();
+
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.cache_read_tokens, 4);
+        assert_eq!(usage.model.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn test_resolve_codex_stream_urls_for_full_url_mode() {
+        let urls = ModelTestService::resolve_codex_stream_urls(
+            "https://relay.example/custom/responses",
+            true,
+        );
+
+        assert_eq!(urls, vec!["https://relay.example/custom/responses"]);
+    }
+
+    #[test]
+    fn test_resolve_codex_stream_urls_for_v1_base() {
+        let urls = ModelTestService::resolve_codex_stream_urls("https://api.openai.com/v1", false);
+
+        assert_eq!(urls, vec!["https://api.openai.com/v1/responses"]);
+    }
+
+    /// 纯 origin 必须优先 /v1/responses（与 CodexAdapter::build_url 一致）。
+    /// OpenAI 官方 /responses 实际挂在 /v1 下，bare 路径只在用户配置错误的
+    /// 反代上才可能命中，作为 fallback 保留即可。
+    #[test]
+    fn test_resolve_codex_stream_urls_for_chatgpt_codex_base_prefers_non_v1() {
+        let urls = ModelTestService::resolve_codex_stream_urls(
+            "https://chatgpt.com/backend-api/codex",
+            false,
+        );
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://chatgpt.com/backend-api/codex/responses",
+                "https://chatgpt.com/backend-api/codex/v1/responses"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_codex_stream_urls_for_origin_base_prioritizes_v1() {
+        let urls = ModelTestService::resolve_codex_stream_urls("https://api.openai.com", false);
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://api.openai.com/v1/responses",
+                "https://api.openai.com/responses",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_codex_stream_urls_for_share_origin_prefers_v1() {
+        let urls =
+            ModelTestService::resolve_codex_stream_urls("https://alpha.share.example.com", false);
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://alpha.share.example.com/v1/responses",
+                "https://alpha.share.example.com/responses",
+            ]
+        );
+    }
+
+    /// 自定义前缀（如 /openai）生产路径不会自动补 /v1，Stream Check 应先打
+    /// 不带 /v1 的版本与之对齐；/v1 作为 misconfigured 兜底。
+    #[test]
+    fn test_resolve_codex_stream_urls_for_custom_prefix() {
+        let urls =
+            ModelTestService::resolve_codex_stream_urls("https://relay.example/openai", false);
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://relay.example/openai/responses",
+                "https://relay.example/openai/v1/responses",
+            ]
+        );
+    }
+
+    #[test]
+    fn detects_share_tunnel_subdomain_from_configured_domain() {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.share_router_domain = Some("share.example.com".to_string());
+        crate::settings::update_settings(settings).unwrap();
+
+        assert!(crate::tunnel::config::is_share_tunnel_url(
+            "https://alpha.share.example.com/v1"
+        ));
+        assert!(!crate::tunnel::config::is_share_tunnel_url(
+            "https://api.openai.com/v1"
+        ));
+    }
+
+    #[test]
+    fn test_resolve_codex_stream_urls_recognizes_full_endpoint_without_flag() {
+        let urls = ModelTestService::resolve_codex_stream_urls(
+            "https://api.openai.com/v1/responses",
+            false,
+        );
+
+        assert_eq!(urls, vec!["https://api.openai.com/v1/responses"]);
+    }
+
+    #[test]
+    fn test_resolve_codex_chat_stream_urls_for_v1_base() {
+        let urls =
+            ModelTestService::resolve_codex_chat_stream_urls("https://api.deepseek.com/v1", false);
+
+        assert_eq!(urls, vec!["https://api.deepseek.com/v1/chat/completions"]);
+    }
+
+    /// 纯 origin 必须优先 /v1/chat/completions，与 CodexAdapter::build_url 一致；
+    /// bare /chat/completions 仅作为 fallback。如果颠倒了优先级，上游对 bare
+    /// 路径返回 401/400/405 时（非 404）fallback 不会触发，会误判为不可用。
+    #[test]
+    fn test_resolve_codex_chat_stream_urls_for_origin_base_prioritizes_v1() {
+        let urls =
+            ModelTestService::resolve_codex_chat_stream_urls("https://api.deepseek.com", false);
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://api.deepseek.com/v1/chat/completions",
+                "https://api.deepseek.com/chat/completions",
+            ]
+        );
+    }
+
+    /// 自定义前缀（路径中已经包含段如 `/openai`）生产路径不会自动补 /v1。
+    /// Stream Check 应先打不带 /v1 的版本，与 build_url 行为一致。
+    #[test]
+    fn test_resolve_codex_chat_stream_urls_for_custom_prefix() {
+        let urls =
+            ModelTestService::resolve_codex_chat_stream_urls("https://example.com/openai", false);
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/openai/chat/completions",
+                "https://example.com/openai/v1/chat/completions",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_codex_chat_stream_urls_for_full_url_mode() {
+        let urls = ModelTestService::resolve_codex_chat_stream_urls(
+            "https://relay.example/custom/chat/completions",
+            true,
+        );
+
+        assert_eq!(urls, vec!["https://relay.example/custom/chat/completions"]);
+    }
+
+    /// 用户在 base_url 里直接写完整 chat/completions endpoint 但忘开 is_full_url 时，
+    /// 不应该再追加 `/chat/completions` 后缀。
+    #[test]
+    fn test_resolve_codex_chat_stream_urls_recognizes_full_endpoint_without_flag() {
+        let urls = ModelTestService::resolve_codex_chat_stream_urls(
+            "https://api.deepseek.com/v1/chat/completions",
+            false,
+        );
+
+        assert_eq!(urls, vec!["https://api.deepseek.com/v1/chat/completions"]);
+    }
+}

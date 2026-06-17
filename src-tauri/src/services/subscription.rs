@@ -458,6 +458,7 @@ pub async fn query_antigravity_quota_with_token(
     access_token: &str,
     project_id: Option<&str>,
     tool_name: &str,
+    profile: crate::services::antigravity_models::AntigravityClientProfile,
 ) -> SubscriptionQuota {
     // Fetch plan tier via loadCodeAssist (integer enums required for Antigravity).
     let plan_label =
@@ -466,6 +467,7 @@ pub async fn query_antigravity_quota_with_token(
     match crate::services::antigravity_models::fetch_antigravity_available_models(
         access_token,
         project_id,
+        profile,
     )
     .await
     {

@@ -924,7 +924,7 @@ fn with_quota_dispatch_limit(
     let mut quota = quota?;
     if !provider.is_google_gemini_oauth_provider()
         && !provider.is_google_gemini_official_with_managed_auth()
-        && !provider.is_antigravity_oauth_provider()
+        && !provider.is_antigravity_family_provider()
     {
         quota.dispatch_limit_percent = provider_quota_dispatch_limit_percent(provider);
     }
@@ -966,7 +966,7 @@ fn managed_oauth_provider_for_app(app: &AppType, provider: &Provider) -> Option<
         AppType::Claude | AppType::Codex if provider.is_cursor_oauth_provider() => {
             Some("cursor_oauth")
         }
-        AppType::Claude | AppType::Gemini if provider.is_antigravity_oauth_provider() => {
+        AppType::Claude | AppType::Gemini if provider.is_antigravity_family_provider() => {
             Some("antigravity_oauth")
         }
         _ => None,

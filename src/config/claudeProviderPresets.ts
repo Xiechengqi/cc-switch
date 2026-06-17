@@ -70,6 +70,7 @@ export interface ProviderPreset {
     | "claude_oauth"
     | "google_gemini_oauth"
     | "antigravity_oauth"
+    | "agy_oauth"
     | "cursor_oauth"
     | "kiro_oauth"
     | "deepseek_account";
@@ -208,11 +209,11 @@ export const providerPresets: ProviderPreset[] = [
     settingsConfig: {
       env: {
         ANTHROPIC_BASE_URL: "https://daily-cloudcode-pa.googleapis.com",
-        ANTHROPIC_MODEL: "gemini-3.5-flash-medium",
+        ANTHROPIC_MODEL: "claude-sonnet-4-6",
         ANTHROPIC_DEFAULT_HAIKU_MODEL: "gemini-3.5-flash-low",
         ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Gemini 3.5 Flash (Low)",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6-thinking",
-        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Claude Sonnet 4.6 (Thinking)",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6",
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Claude Sonnet 4.6",
         ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-6-thinking",
         ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "Claude Opus 4.6 (Thinking)",
       },
@@ -229,6 +230,34 @@ export const providerPresets: ProviderPreset[] = [
     },
     icon: "gemini",
     iconColor: "#1A73E8",
+  },
+  {
+    name: "Antigravity CLI (agy)",
+    websiteUrl: "https://antigravity.google",
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: "https://daily-cloudcode-pa.googleapis.com",
+        ANTHROPIC_MODEL: "claude-sonnet-4-6",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gemini-3.5-flash-low",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Gemini 3.5 Flash (Low)",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6",
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Claude Sonnet 4.6",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-6-thinking",
+        ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "Claude Opus 4.6 (Thinking)",
+      },
+    },
+    isOfficial: true,
+    category: "official",
+    providerType: "agy_oauth",
+    requiresOAuth: true,
+    apiFormat: "gemini_native",
+    theme: {
+      icon: "gemini",
+      backgroundColor: "#111827",
+      textColor: "#FFFFFF",
+    },
+    icon: "gemini",
+    iconColor: "#111827",
   },
   {
     name: "GitHub Copilot",

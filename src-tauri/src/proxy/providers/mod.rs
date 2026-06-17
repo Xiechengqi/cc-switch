@@ -102,6 +102,8 @@ pub enum ProviderType {
     CursorOAuth,
     /// Antigravity OAuth (Google OAuth + Antigravity Cloud Code internal API)
     AntigravityOAuth,
+    /// Antigravity CLI / agy (same OAuth account pool, CLI/harness profile)
+    AgyOAuth,
 }
 
 impl ProviderType {
@@ -119,7 +121,7 @@ impl ProviderType {
             ProviderType::DeepSeekAccount => false,
             ProviderType::KiroOAuth => false,
             ProviderType::CursorOAuth => false,
-            ProviderType::AntigravityOAuth => true,
+            ProviderType::AntigravityOAuth | ProviderType::AgyOAuth => true,
             _ => false,
         }
     }
@@ -141,7 +143,9 @@ impl ProviderType {
             ProviderType::DeepSeekAccount => "https://chat.deepseek.com",
             ProviderType::KiroOAuth => "https://q.us-east-1.amazonaws.com",
             ProviderType::CursorOAuth => "https://api2.cursor.sh",
-            ProviderType::AntigravityOAuth => "https://daily-cloudcode-pa.googleapis.com",
+            ProviderType::AntigravityOAuth | ProviderType::AgyOAuth => {
+                "https://daily-cloudcode-pa.googleapis.com"
+            }
         }
     }
 
@@ -155,6 +159,9 @@ impl ProviderType {
                 if let Some(meta) = provider.meta.as_ref() {
                     if meta.provider_type.as_deref() == Some("antigravity_oauth") {
                         return ProviderType::AntigravityOAuth;
+                    }
+                    if meta.provider_type.as_deref() == Some("agy_oauth") {
+                        return ProviderType::AgyOAuth;
                     }
                 }
 
@@ -249,6 +256,14 @@ impl ProviderType {
                     .meta
                     .as_ref()
                     .and_then(|meta| meta.provider_type.as_deref())
+                    == Some("agy_oauth")
+                {
+                    return ProviderType::AgyOAuth;
+                }
+                if provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.provider_type.as_deref())
                     == Some("google_gemini_oauth")
                 {
                     return ProviderType::GeminiCli;
@@ -291,6 +306,7 @@ impl ProviderType {
             ProviderType::KiroOAuth => "kiro_oauth",
             ProviderType::CursorOAuth => "cursor_oauth",
             ProviderType::AntigravityOAuth => "antigravity_oauth",
+            ProviderType::AgyOAuth => "agy_oauth",
         }
     }
 }
@@ -325,6 +341,7 @@ impl std::str::FromStr for ProviderType {
             "antigravity_oauth" | "antigravity-oauth" | "antigravityoauth" => {
                 Ok(ProviderType::AntigravityOAuth)
             }
+            "agy_oauth" | "agy-oauth" | "agyoauth" | "agy" => Ok(ProviderType::AgyOAuth),
             _ => Err(format!("Invalid provider type: {s}")),
         }
     }
@@ -356,7 +373,8 @@ pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> Box<dyn Pr
         | ProviderType::DeepSeekAccount
         | ProviderType::KiroOAuth
         | ProviderType::CursorOAuth
-        | ProviderType::AntigravityOAuth => Box::new(ClaudeAdapter::new()),
+        | ProviderType::AntigravityOAuth
+        | ProviderType::AgyOAuth => Box::new(ClaudeAdapter::new()),
         ProviderType::Codex => Box::new(CodexAdapter::new()),
         ProviderType::Gemini | ProviderType::GeminiCli => Box::new(GeminiAdapter::new()),
     }
@@ -482,6 +500,10 @@ mod tests {
             "antigravity_oauth".parse::<ProviderType>().unwrap(),
             ProviderType::AntigravityOAuth
         );
+        assert_eq!(
+            "agy_oauth".parse::<ProviderType>().unwrap(),
+            ProviderType::AgyOAuth
+        );
         assert!("invalid".parse::<ProviderType>().is_err());
     }
 
@@ -495,6 +517,7 @@ mod tests {
         assert_eq!(ProviderType::OpenRouter.as_str(), "openrouter");
         assert_eq!(ProviderType::GitHubCopilot.as_str(), "github_copilot");
         assert_eq!(ProviderType::AntigravityOAuth.as_str(), "antigravity_oauth");
+        assert_eq!(ProviderType::AgyOAuth.as_str(), "agy_oauth");
     }
 
     #[test]
@@ -624,6 +647,28 @@ mod tests {
         assert_eq!(claude_type, ProviderType::AntigravityOAuth);
         assert_eq!(desktop_type, ProviderType::AntigravityOAuth);
         assert_eq!(gemini_type, ProviderType::AntigravityOAuth);
+    }
+
+    #[test]
+    fn test_from_app_type_agy_oauth_prefers_metadata() {
+        let mut provider = create_provider(json!({
+            "env": {
+                "GEMINI_API_KEY": "ya29.test-access-token"
+            }
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("agy_oauth".to_string()),
+            ..Default::default()
+        });
+
+        let claude_type = ProviderType::from_app_type_and_config(&AppType::Claude, &provider);
+        let desktop_type =
+            ProviderType::from_app_type_and_config(&AppType::ClaudeDesktop, &provider);
+        let gemini_type = ProviderType::from_app_type_and_config(&AppType::Gemini, &provider);
+
+        assert_eq!(claude_type, ProviderType::AgyOAuth);
+        assert_eq!(desktop_type, ProviderType::AgyOAuth);
+        assert_eq!(gemini_type, ProviderType::AgyOAuth);
     }
 
     #[test]

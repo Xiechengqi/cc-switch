@@ -2437,7 +2437,7 @@ impl ProviderService {
                     ));
                 }
 
-                if provider.is_antigravity_oauth_provider()
+                if provider.is_antigravity_family_provider()
                     && !provider.has_managed_auth_binding("antigravity_oauth")
                 {
                     return Err(AppError::localized(

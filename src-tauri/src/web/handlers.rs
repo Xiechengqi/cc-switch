@@ -804,6 +804,7 @@ async fn invoke_local_admin_scoped(
             let antigravity = required_state::<AntigravityOAuthState>(state, "antigravity oauth")?;
             Ok(json!(crate::commands::get_antigravity_oauth_models(
                 optional_string_arg(&args, "accountId"),
+                optional_string_arg(&args, "providerType"),
                 antigravity,
             )
             .await
@@ -2218,6 +2219,7 @@ async fn oauth_quota_command(
             required_app_handle(state)?.clone(),
             string_arg(&args, "authProvider")?,
             optional_string_arg(&args, "accountId"),
+            optional_string_arg(&args, "providerType"),
             required_app_state(state)?,
             quota,
             codex,

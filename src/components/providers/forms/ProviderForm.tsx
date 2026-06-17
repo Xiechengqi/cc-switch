@@ -126,6 +126,12 @@ import { useOpenClawLiveProviderIds } from "@/hooks/useOpenClaw";
 import { PROVIDER_TYPES, TEMPLATE_TYPES } from "@/config/constants";
 import { useHermesLiveProviderIds } from "@/hooks/useHermes";
 
+const isAntigravityFamilyType = (providerType?: string | null) =>
+  providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+  providerType === PROVIDER_TYPES.AGY_OAUTH ||
+  providerType === "antigravity_oauth" ||
+  providerType === "agy_oauth";
+
 type PresetEntry = {
   id: string;
   preset:
@@ -821,11 +827,10 @@ function ProviderFormFull({
     appId === "gemini" &&
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH;
   const isGeminiAntigravityOauthPreset =
-    appId === "gemini" &&
-    currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH;
+    appId === "gemini" && isAntigravityFamilyType(currentProviderType);
   const excludesQuotaDispatchLimit =
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
-    currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH;
+    isAntigravityFamilyType(currentProviderType);
   const supportsQuotaDispatchLimit =
     !excludesQuotaDispatchLimit &&
     (currentProviderType === PROVIDER_TYPES.GITHUB_COPILOT ||
@@ -841,7 +846,7 @@ function ProviderFormFull({
     currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
     currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
-    currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    isAntigravityFamilyType(currentProviderType) ||
     currentProviderType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
     currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
     currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
@@ -940,7 +945,7 @@ function ProviderFormFull({
 
   useEffect(() => {
     if (
-      currentProviderType !== PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+      !isAntigravityFamilyType(currentProviderType) ||
       selectedAntigravityAccountId
     ) {
       return;
@@ -1382,9 +1387,9 @@ function ProviderFormFull({
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
     const isAntigravityOauthProvider =
-      currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
-      templatePreset?.providerType === "antigravity_oauth" ||
-      initialData?.meta?.providerType === "antigravity_oauth";
+      isAntigravityFamilyType(currentProviderType) ||
+      isAntigravityFamilyType(templatePreset?.providerType) ||
+      isAntigravityFamilyType(initialData?.meta?.providerType);
     const isCursorOauthProvider =
       currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
       templatePreset?.providerType === "cursor_oauth" ||
@@ -1678,9 +1683,9 @@ function ProviderFormFull({
       templatePreset?.providerType === "google_gemini_oauth" ||
       initialData?.meta?.providerType === "google_gemini_oauth";
     const isAntigravityOauthProvider =
-      currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
-      templatePreset?.providerType === "antigravity_oauth" ||
-      initialData?.meta?.providerType === "antigravity_oauth";
+      isAntigravityFamilyType(currentProviderType) ||
+      isAntigravityFamilyType(templatePreset?.providerType) ||
+      isAntigravityFamilyType(initialData?.meta?.providerType);
     const isCursorOauthProvider =
       currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
       templatePreset?.providerType === "cursor_oauth" ||
@@ -2603,8 +2608,13 @@ function ProviderFormFull({
                 initialData?.meta?.providerType === "claude_oauth"
               }
               isAntigravityOauthPreset={
-                templatePreset?.providerType === "antigravity_oauth" ||
-                initialData?.meta?.providerType === "antigravity_oauth"
+                isAntigravityFamilyType(templatePreset?.providerType) ||
+                isAntigravityFamilyType(initialData?.meta?.providerType)
+              }
+              antigravityProviderType={
+                isAntigravityFamilyType(currentProviderType)
+                  ? currentProviderType
+                  : undefined
               }
               isKiroOauthPreset={
                 templatePreset?.providerType === "kiro_oauth" ||
@@ -2628,8 +2638,8 @@ function ProviderFormFull({
                 isOpenAISessionPreset ||
                 templatePreset?.providerType === "claude_oauth" ||
                 initialData?.meta?.providerType === "claude_oauth" ||
-                templatePreset?.providerType === "antigravity_oauth" ||
-                initialData?.meta?.providerType === "antigravity_oauth" ||
+                isAntigravityFamilyType(templatePreset?.providerType) ||
+                isAntigravityFamilyType(initialData?.meta?.providerType) ||
                 templatePreset?.providerType === "kiro_oauth" ||
                 initialData?.meta?.providerType === "kiro_oauth" ||
                 templatePreset?.providerType === "cursor_oauth" ||

@@ -260,7 +260,9 @@ fn auth_provider_for_model_health(app_type: &AppType, provider: &Provider) -> Op
         AppType::Claude if provider_type == Some("claude_oauth") => Some("claude_oauth"),
         AppType::Claude if provider_type == Some("kiro_oauth") => Some("kiro_oauth"),
         AppType::Claude if provider_type == Some("github_copilot") => Some("github_copilot"),
-        AppType::Claude if provider_type == Some("antigravity_oauth") => Some("antigravity_oauth"),
+        AppType::Claude if matches!(provider_type, Some("antigravity_oauth" | "agy_oauth")) => {
+            Some("antigravity_oauth")
+        }
         AppType::Claude if provider_type == Some("cursor_oauth") => Some("cursor_oauth"),
         AppType::Codex
             if provider_type == Some("codex_oauth")
@@ -275,7 +277,9 @@ fn auth_provider_for_model_health(app_type: &AppType, provider: &Provider) -> Op
         {
             Some("google_gemini_oauth")
         }
-        AppType::Gemini if provider_type == Some("antigravity_oauth") => Some("antigravity_oauth"),
+        AppType::Gemini if matches!(provider_type, Some("antigravity_oauth" | "agy_oauth")) => {
+            Some("antigravity_oauth")
+        }
         _ => None,
     }
 }

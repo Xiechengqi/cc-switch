@@ -104,13 +104,17 @@ export function isManagedOauthProvider(
   provider: Pick<Provider, "category" | "meta">,
   appId: AppId,
 ): boolean {
+  const isAntigravityFamily =
+    provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.AGY_OAUTH;
+
   return (
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
     provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
-    provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    isAntigravityFamily ||
     isCursorOauthWithManagedAuth(provider) ||
     provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
@@ -123,6 +127,10 @@ export function canTestProvider(
   provider: Pick<Provider, "category" | "meta">,
   appId: AppId,
 ): boolean {
+  const isAntigravityFamily =
+    provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.AGY_OAUTH;
+
   if (provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH) {
     return true;
   }
@@ -135,7 +143,7 @@ export function canTestProvider(
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
-    provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    isAntigravityFamily ||
     isCursorOauthWithManagedAuth(provider) ||
     provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH
   ) {
@@ -151,7 +159,7 @@ export function canTestProvider(
 
   if (
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
-    provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    isAntigravityFamily ||
     (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider))
   ) {
     return true;
@@ -203,7 +211,10 @@ export function getProviderQuotaSource(
     return "google_gemini_oauth";
   }
 
-  if (provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH) {
+  if (
+    provider.meta?.providerType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH ||
+    provider.meta?.providerType === PROVIDER_TYPES.AGY_OAUTH
+  ) {
     return "antigravity_oauth";
   }
 

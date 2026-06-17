@@ -1339,7 +1339,7 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
             // Write user's env vars as-is (e.g. GEMINI_MODEL, custom vars).
             write_gemini_env_atomic(&env_map)?;
 
-            let is_antigravity = provider.is_antigravity_oauth_provider();
+            let is_antigravity = provider.is_antigravity_family_provider();
             let auth_binding_key = if is_antigravity {
                 "antigravity_oauth"
             } else {

@@ -1894,10 +1894,15 @@ impl RequestForwarder {
             }
 
             if is_antigravity_oauth_provider(app_type, provider) {
+                let antigravity_ua = if provider.antigravity_client_profile() == "harness" {
+                    antigravity_harness_user_agent()
+                } else {
+                    antigravity_desktop_user_agent()
+                };
                 upsert_header(
                     &mut auth_headers,
                     http::HeaderName::from_static("user-agent"),
-                    http::HeaderValue::from_str(&antigravity_user_agent()).map_err(|e| {
+                    http::HeaderValue::from_str(&antigravity_ua).map_err(|e| {
                         ProxyError::Internal(format!("Invalid Antigravity User-Agent: {e}"))
                     })?,
                 );
@@ -1906,6 +1911,27 @@ impl RequestForwarder {
                     http::HeaderName::from_static("x-request-source"),
                     http::HeaderValue::from_static("local"),
                 );
+                if provider.antigravity_client_profile() == "ide" {
+                    upsert_header(
+                        &mut auth_headers,
+                        http::HeaderName::from_static("x-client-name"),
+                        http::HeaderValue::from_static("antigravity"),
+                    );
+                    upsert_header(
+                        &mut auth_headers,
+                        http::HeaderName::from_static("x-client-version"),
+                        http::HeaderValue::from_static("1.107.0"),
+                    );
+                } else {
+                    auth_headers.retain(|(name, _)| {
+                        let name = name.as_str();
+                        !name.eq_ignore_ascii_case("x-client-name")
+                            && !name.eq_ignore_ascii_case("x-client-version")
+                            && !name.eq_ignore_ascii_case("x-machine-id")
+                            && !name.eq_ignore_ascii_case("x-vscode-sessionid")
+                            && !name.eq_ignore_ascii_case("client-metadata")
+                    });
+                }
                 if self.session_client_provided {
                     upsert_header(
                         &mut auth_headers,
@@ -2533,7 +2559,7 @@ impl RequestForwarder {
         body: &Value,
         is_copilot: bool,
     ) -> String {
-        if provider.is_antigravity_oauth_provider() {
+        if provider.is_antigravity_family_provider() {
             return "gemini_native".to_string();
         }
         if !is_copilot {
@@ -3004,7 +3030,7 @@ fn is_antigravity_oauth_provider(app_type: &AppType, provider: &Provider) -> boo
     matches!(
         app_type,
         AppType::Claude | AppType::ClaudeDesktop | AppType::Gemini
-    ) && provider.is_antigravity_oauth_provider()
+    ) && provider.is_antigravity_family_provider()
 }
 
 fn extract_forward_base_url(
@@ -3544,12 +3570,27 @@ fn gemini_cli_user_agent(model: &str) -> String {
     )
 }
 
-pub(crate) fn antigravity_user_agent() -> String {
+pub(crate) fn antigravity_harness_user_agent() -> String {
     format!(
         "antigravity/1.107.0 {}/{}",
         std::env::consts::OS,
         std::env::consts::ARCH
     )
+}
+
+pub(crate) fn antigravity_desktop_user_agent() -> String {
+    format!(
+        "Antigravity/1.107.0 ({}) Chrome/132.0.6834.160 Electron/39.2.3",
+        antigravity_desktop_platform()
+    )
+}
+
+fn antigravity_desktop_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "Macintosh; Intel Mac OS X 10_15_7",
+        "windows" => "Windows NT 10.0; Win64; x64",
+        _ => "X11; Linux x86_64",
+    }
 }
 
 fn gemini_cli_platform() -> &'static str {

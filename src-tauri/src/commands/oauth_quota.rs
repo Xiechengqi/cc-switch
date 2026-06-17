@@ -51,6 +51,7 @@ pub async fn refresh_oauth_quota(
     app_handle: tauri::AppHandle,
     auth_provider: String,
     account_id: Option<String>,
+    provider_type: Option<String>,
     app_state: State<'_, AppState>,
     state: State<'_, OauthQuotaState>,
     codex_state: State<'_, CodexOAuthState>,
@@ -82,6 +83,7 @@ pub async fn refresh_oauth_quota(
             &managers,
             &auth_provider,
             &resolved_account_id,
+            provider_type.as_deref(),
         )
         .await?;
     for app_type in share_runtime_apps_for_auth_provider(&auth_provider) {

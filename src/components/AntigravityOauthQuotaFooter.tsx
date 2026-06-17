@@ -28,9 +28,13 @@ const AntigravityOauthQuotaFooter: React.FC<
     PROVIDER_TYPES.ANTIGRAVITY_OAUTH,
   );
   const handleRefresh = React.useCallback(async () => {
-    await subscriptionApi.refreshOauthQuota("antigravity_oauth", accountId);
+    await subscriptionApi.refreshOauthQuota(
+      "antigravity_oauth",
+      accountId,
+      meta?.providerType,
+    );
     await refetch();
-  }, [accountId, refetch]);
+  }, [accountId, meta?.providerType, refetch]);
 
   return (
     <SubscriptionQuotaView

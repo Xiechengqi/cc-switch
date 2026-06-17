@@ -147,6 +147,25 @@ impl Provider {
             == Some("antigravity_oauth")
     }
 
+    pub fn is_agy_oauth_provider(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("agy_oauth")
+    }
+
+    pub fn is_antigravity_family_provider(&self) -> bool {
+        self.is_antigravity_oauth_provider() || self.is_agy_oauth_provider()
+    }
+
+    pub fn antigravity_client_profile(&self) -> &'static str {
+        if self.is_agy_oauth_provider() {
+            "harness"
+        } else {
+            "ide"
+        }
+    }
+
     pub fn is_deepseek_account_provider(&self) -> bool {
         self.meta
             .as_ref()
@@ -181,7 +200,7 @@ impl Provider {
             || self.is_openai_session_provider()
             || self.is_claude_oauth_provider()
             || self.is_google_gemini_oauth_provider()
-            || self.is_antigravity_oauth_provider()
+            || self.is_antigravity_family_provider()
             || self.is_deepseek_account_provider()
             || self.is_kiro_oauth_provider()
             || self.is_cursor_oauth_provider()
@@ -204,7 +223,7 @@ impl Provider {
                 self.is_claude_oauth_provider()
                     || self.is_kiro_oauth_provider()
                     || self.is_cursor_oauth_provider()
-                    || self.is_antigravity_oauth_provider()
+                    || self.is_antigravity_family_provider()
                     || self.is_openai_session_provider()
                     || self.is_codex_official_with_managed_auth()
             }
@@ -216,7 +235,7 @@ impl Provider {
             AppType::Gemini => {
                 self.is_google_gemini_oauth_provider()
                     || self.is_google_gemini_official_with_managed_auth()
-                    || self.is_antigravity_oauth_provider()
+                    || self.is_antigravity_family_provider()
             }
             _ => false,
         }
@@ -230,7 +249,7 @@ impl Provider {
             }
             AppType::Claude if self.is_cursor_oauth_provider() => Some("https://api2.cursor.sh"),
             AppType::Codex if self.is_cursor_oauth_provider() => Some("https://api2.cursor.sh"),
-            AppType::Claude if self.is_antigravity_oauth_provider() => {
+            AppType::Claude if self.is_antigravity_family_provider() => {
                 Some("https://daily-cloudcode-pa.googleapis.com")
             }
             AppType::Codex if self.is_codex_official_with_managed_auth() => {
@@ -245,7 +264,7 @@ impl Provider {
             {
                 Some("https://generativelanguage.googleapis.com")
             }
-            AppType::Gemini if self.is_antigravity_oauth_provider() => {
+            AppType::Gemini if self.is_antigravity_family_provider() => {
                 Some("https://daily-cloudcode-pa.googleapis.com")
             }
             _ => None,
@@ -1410,37 +1429,39 @@ mod tests {
 
     #[test]
     fn antigravity_oauth_provider_supports_claude_and_gemini_stream_check() {
-        let provider = Provider {
-            id: "antigravity-oauth".to_string(),
-            name: "Antigravity OAuth".to_string(),
-            settings_config: json!({}),
-            website_url: None,
-            category: Some("official".to_string()),
-            created_at: None,
-            sort_index: None,
-            notes: None,
-            meta: Some(ProviderMeta {
-                provider_type: Some("antigravity_oauth".to_string()),
-                ..Default::default()
-            }),
-            icon: None,
-            icon_color: None,
-            in_failover_queue: false,
-        };
+        for provider_type in ["antigravity_oauth", "agy_oauth"] {
+            let provider = Provider {
+                id: provider_type.to_string(),
+                name: "Antigravity OAuth".to_string(),
+                settings_config: json!({}),
+                website_url: None,
+                category: Some("official".to_string()),
+                created_at: None,
+                sort_index: None,
+                notes: None,
+                meta: Some(ProviderMeta {
+                    provider_type: Some(provider_type.to_string()),
+                    ..Default::default()
+                }),
+                icon: None,
+                icon_color: None,
+                in_failover_queue: false,
+            };
 
-        assert!(provider.is_antigravity_oauth_provider());
-        assert!(provider.is_managed_oauth_provider());
-        assert!(provider.supports_stream_check(&AppType::Claude));
-        assert!(provider.supports_stream_check(&AppType::Gemini));
-        assert_eq!(
-            provider.stream_check_base_url_override(&AppType::Claude),
-            Some("https://daily-cloudcode-pa.googleapis.com")
-        );
-        assert_eq!(
-            provider.stream_check_base_url_override(&AppType::Gemini),
-            Some("https://daily-cloudcode-pa.googleapis.com")
-        );
-        assert!(!provider.supports_stream_check(&AppType::Codex));
+            assert!(provider.is_antigravity_family_provider());
+            assert!(provider.is_managed_oauth_provider());
+            assert!(provider.supports_stream_check(&AppType::Claude));
+            assert!(provider.supports_stream_check(&AppType::Gemini));
+            assert_eq!(
+                provider.stream_check_base_url_override(&AppType::Claude),
+                Some("https://daily-cloudcode-pa.googleapis.com")
+            );
+            assert_eq!(
+                provider.stream_check_base_url_override(&AppType::Gemini),
+                Some("https://daily-cloudcode-pa.googleapis.com")
+            );
+            assert!(!provider.supports_stream_check(&AppType::Codex));
+        }
     }
 
     #[test]

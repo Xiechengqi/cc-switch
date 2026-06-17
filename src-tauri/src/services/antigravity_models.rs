@@ -12,6 +12,32 @@ const FETCH_AVAILABLE_MODELS_ENDPOINTS: &[&str] = &[
 
 const FETCH_TIMEOUT_SECS: u64 = 15;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AntigravityClientProfile {
+    Ide,
+    Harness,
+}
+
+impl AntigravityClientProfile {
+    pub fn from_provider_type(provider_type: Option<&str>) -> Self {
+        match provider_type {
+            Some("agy_oauth") => Self::Harness,
+            _ => Self::Ide,
+        }
+    }
+
+    pub fn from_str(value: Option<&str>) -> Self {
+        match value {
+            Some("agy_oauth" | "agy" | "cli" | "harness") => Self::Harness,
+            _ => Self::Ide,
+        }
+    }
+
+    pub fn is_harness(self) -> bool {
+        matches!(self, Self::Harness)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct AntigravityModelDef {
     pub id: &'static str,
@@ -87,6 +113,84 @@ pub const ANTIGRAVITY_FREE_MODELS: &[AntigravityModelDef] = &[
     },
 ];
 
+pub const AGY_MODELS: &[AntigravityModelDef] = &[
+    AntigravityModelDef {
+        id: "claude-opus-4-6-thinking",
+        display_name: "Claude Opus 4.6 (Thinking)",
+        owned_by: "anthropic",
+    },
+    AntigravityModelDef {
+        id: "claude-sonnet-4-6",
+        display_name: "Claude Sonnet 4.6",
+        owned_by: "anthropic",
+    },
+    AntigravityModelDef {
+        id: "gemini-3.1-pro-high",
+        display_name: "Gemini 3.1 Pro (High)",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-3.1-pro-low",
+        display_name: "Gemini 3.1 Pro (Low)",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-pro-agent",
+        display_name: "Gemini 3.1 Pro (Agent)",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-3.5-flash-low",
+        display_name: "Gemini 3.5 Flash (Low)",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-3.5-flash-medium",
+        display_name: "Gemini 3.5 Flash (Medium)",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-3.5-flash-high",
+        display_name: "Gemini 3.5 Flash (High)",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-3.1-flash-lite",
+        display_name: "Gemini 3.1 Flash Lite",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-3.1-flash-image",
+        display_name: "Gemini 3.1 Flash Image",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-2.5-pro",
+        display_name: "Gemini 2.5 Pro",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-2.5-flash",
+        display_name: "Gemini 2.5 Flash",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-2.5-flash-thinking",
+        display_name: "Gemini 2.5 Flash Thinking",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gemini-2.5-flash-lite",
+        display_name: "Gemini 2.5 Flash Lite",
+        owned_by: "google",
+    },
+    AntigravityModelDef {
+        id: "gpt-oss-120b-medium",
+        display_name: "GPT-OSS 120B (Medium)",
+        owned_by: "openai",
+    },
+];
+
 #[derive(Debug, Clone)]
 pub struct AntigravityAvailableModel {
     pub id: String,
@@ -148,15 +252,23 @@ pub fn normalize_antigravity_model_id(model: &str) -> String {
 
 pub fn antigravity_model_display_name(model: &str) -> String {
     let canonical = normalize_antigravity_model_id(model);
-    ANTIGRAVITY_FREE_MODELS
+    AGY_MODELS
         .iter()
+        .chain(ANTIGRAVITY_FREE_MODELS.iter())
         .find(|def| def.id == canonical)
         .map(|def| def.display_name.to_string())
         .unwrap_or(canonical)
 }
 
-pub fn static_antigravity_models() -> Vec<FetchedModel> {
-    ANTIGRAVITY_FREE_MODELS
+pub fn static_antigravity_models_for_profile(
+    profile: AntigravityClientProfile,
+) -> Vec<FetchedModel> {
+    let models = if profile.is_harness() {
+        AGY_MODELS
+    } else {
+        ANTIGRAVITY_FREE_MODELS
+    };
+    models
         .iter()
         .map(|model| FetchedModel {
             id: model.id.to_string(),
@@ -167,12 +279,13 @@ pub fn static_antigravity_models() -> Vec<FetchedModel> {
 }
 
 pub fn merge_static_and_dynamic_models(
+    profile: AntigravityClientProfile,
     dynamic: Vec<AntigravityAvailableModel>,
 ) -> Vec<FetchedModel> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
 
-    for model in static_antigravity_models() {
+    for model in static_antigravity_models_for_profile(profile) {
         seen.insert(model.id.clone());
         out.push(model);
     }
@@ -236,14 +349,15 @@ pub fn antigravity_models_to_quota_tiers(models: &[AntigravityAvailableModel]) -
 pub async fn fetch_antigravity_available_models(
     access_token: &str,
     project_id: Option<&str>,
+    profile: AntigravityClientProfile,
 ) -> Result<Vec<AntigravityAvailableModel>, String> {
     if access_token.trim().is_empty() {
         return Err("Antigravity OAuth access token is required".to_string());
     }
 
-    let mut body = serde_json::json!({});
+    let mut body_candidates = vec![serde_json::json!({})];
     if let Some(project_id) = project_id.map(str::trim).filter(|id| !id.is_empty()) {
-        body["project"] = serde_json::Value::String(project_id.to_string());
+        body_candidates.push(serde_json::json!({ "project": project_id }));
     }
 
     let client = crate::proxy::http_client::get();
@@ -251,14 +365,19 @@ pub async fn fetch_antigravity_available_models(
 
     for (index, endpoint) in FETCH_AVAILABLE_MODELS_ENDPOINTS.iter().enumerate() {
         let has_next = index + 1 < FETCH_AVAILABLE_MODELS_ENDPOINTS.len();
-        let mut current_body = body.clone();
-        let mut retried_without_project = false;
+        let mut body_index = 0usize;
 
         loop {
+            let current_body = body_candidates
+                .get(body_index)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let user_agent = antigravity_fetch_models_user_agent(profile);
             let response = client
                 .post(*endpoint)
                 .bearer_auth(access_token)
                 .header("Content-Type", "application/json")
+                .header("User-Agent", user_agent)
                 .json(&current_body)
                 .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
                 .send()
@@ -294,12 +413,11 @@ pub async fn fetch_antigravity_available_models(
                     .collect());
             }
 
-            if status == reqwest::StatusCode::FORBIDDEN
-                && current_body.get("project").is_some()
-                && !retried_without_project
+            if (status == reqwest::StatusCode::FORBIDDEN
+                || status == reqwest::StatusCode::NOT_FOUND)
+                && body_index + 1 < body_candidates.len()
             {
-                current_body = serde_json::json!({});
-                retried_without_project = true;
+                body_index += 1;
                 continue;
             }
 
@@ -323,6 +441,18 @@ pub async fn fetch_antigravity_available_models(
     }
 
     Err(last_error.unwrap_or_else(|| "Antigravity model list failed".to_string()))
+}
+
+fn antigravity_fetch_models_user_agent(profile: AntigravityClientProfile) -> String {
+    if profile.is_harness() {
+        format!(
+            "antigravity/1.107.0 {}/{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    } else {
+        "Antigravity/1.107.0 (X11; Linux x86_64) Chrome/132.0.6834.160 Electron/39.2.3".to_string()
+    }
 }
 
 fn owner_for_model(model: &str) -> &'static str {
@@ -400,7 +530,7 @@ mod tests {
 
     #[test]
     fn static_catalog_contains_free_account_models() {
-        let ids: Vec<_> = static_antigravity_models()
+        let ids: Vec<_> = static_antigravity_models_for_profile(AntigravityClientProfile::Ide)
             .into_iter()
             .map(|model| model.id)
             .collect();
@@ -413,6 +543,18 @@ mod tests {
         assert!(ids.contains(&"gemini-3.1-flash-lite".to_string()));
         assert!(ids.contains(&"claude-sonnet-4-6".to_string()));
         assert!(ids.contains(&"claude-opus-4-6-thinking".to_string()));
+        assert!(ids.contains(&"gpt-oss-120b-medium".to_string()));
+    }
+
+    #[test]
+    fn agy_catalog_contains_cli_models() {
+        let ids: Vec<_> = static_antigravity_models_for_profile(AntigravityClientProfile::Harness)
+            .into_iter()
+            .map(|model| model.id)
+            .collect();
+        assert!(ids.contains(&"claude-opus-4-6-thinking".to_string()));
+        assert!(ids.contains(&"claude-sonnet-4-6".to_string()));
+        assert!(ids.contains(&"gemini-2.5-pro".to_string()));
         assert!(ids.contains(&"gpt-oss-120b-medium".to_string()));
     }
 

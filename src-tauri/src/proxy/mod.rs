@@ -45,7 +45,10 @@ pub use circuit_breaker::{
 };
 #[allow(unused_imports)]
 pub use error::ProxyError;
-pub(crate) use forwarder::{antigravity_user_agent, build_antigravity_forward_request};
+pub(crate) use forwarder::{
+    antigravity_desktop_user_agent, antigravity_harness_user_agent,
+    build_antigravity_forward_request,
+};
 #[allow(unused_imports)]
 pub use provider_router::ProviderRouter;
 #[allow(unused_imports)]

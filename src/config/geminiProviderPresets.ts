@@ -26,7 +26,7 @@ export interface GeminiProviderPreset {
   partnerPromotionKey?: string;
   endpointCandidates?: string[];
   theme?: GeminiPresetTheme;
-  providerType?: "google_gemini_oauth" | "antigravity_oauth";
+  providerType?: "google_gemini_oauth" | "antigravity_oauth" | "agy_oauth";
   requiresOAuth?: boolean;
   // 图标配置
   icon?: string; // 图标名称
@@ -82,6 +82,35 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     },
     icon: "gemini",
     iconColor: "#1A73E8",
+  },
+  {
+    name: "Antigravity CLI (agy)",
+    websiteUrl: "https://antigravity.google",
+    settingsConfig: {
+      env: {
+        GOOGLE_GEMINI_BASE_URL: "https://daily-cloudcode-pa.googleapis.com",
+        GEMINI_MODEL: "gemini-3.5-flash-medium",
+      },
+      config: {
+        general: {
+          previewFeatures: true,
+        },
+      },
+    },
+    baseURL: "https://daily-cloudcode-pa.googleapis.com",
+    model: "gemini-3.5-flash-medium",
+    description: "Antigravity CLI (agy)",
+    category: "official",
+    providerType: "agy_oauth",
+    requiresOAuth: true,
+    partnerPromotionKey: "antigravity-oauth",
+    theme: {
+      icon: "gemini",
+      backgroundColor: "#111827",
+      textColor: "#FFFFFF",
+    },
+    icon: "gemini",
+    iconColor: "#111827",
   },
   {
     name: "OpenRouter",

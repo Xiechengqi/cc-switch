@@ -19,6 +19,7 @@ export const subscriptionKeys = {
 async function fetchOauthQuotaWithFallback(
   authProvider: string,
   accountId: string | null,
+  providerType?: string | null,
 ) {
   const cached = await subscriptionApi.getCachedOauthQuota(
     authProvider,
@@ -28,6 +29,7 @@ async function fetchOauthQuotaWithFallback(
   const refreshed = await subscriptionApi.refreshOauthQuota(
     authProvider,
     accountId,
+    providerType,
   );
   return refreshed?.quota;
 }
@@ -181,7 +183,11 @@ export function useAntigravityOauthQuota(
   return useQuery({
     queryKey: ["antigravity_oauth", "quota", accountId ?? "default"],
     queryFn: async () =>
-      fetchOauthQuotaWithFallback("antigravity_oauth", accountId),
+      fetchOauthQuotaWithFallback(
+        "antigravity_oauth",
+        accountId,
+        meta?.providerType,
+      ),
     enabled,
     refetchInterval: false,
     refetchOnWindowFocus: false,

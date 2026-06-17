@@ -78,7 +78,7 @@ pub async fn model_test_provider(
     }
 
     if matches!(app_type, AppType::Claude | AppType::Gemini)
-        && provider.is_antigravity_oauth_provider()
+        && provider.is_antigravity_family_provider()
     {
         let result = check_antigravity_oauth_provider(
             &app_type,
@@ -158,7 +158,7 @@ pub(crate) async fn run_model_test_for_provider(
     }
 
     if matches!(app_type, AppType::Claude | AppType::Gemini)
-        && provider.is_antigravity_oauth_provider()
+        && provider.is_antigravity_family_provider()
     {
         return Ok(check_antigravity_oauth_provider(
             app_type,
@@ -263,7 +263,7 @@ pub async fn model_test_all_providers(
         }
 
         if matches!(app_type, AppType::Claude | AppType::Gemini)
-            && provider.is_antigravity_oauth_provider()
+            && provider.is_antigravity_family_provider()
         {
             let result = check_antigravity_oauth_provider(
                 &app_type,
@@ -633,6 +633,7 @@ async fn check_antigravity_oauth_provider_once(
             timeout,
             &token,
             &project_id,
+            provider.antigravity_client_profile(),
         )
         .await
         {
@@ -650,6 +651,7 @@ async fn check_antigravity_oauth_provider_once(
                     timeout,
                     &token,
                     &project_id,
+                    provider.antigravity_client_profile(),
                 )
                 .await
             }
@@ -765,6 +767,7 @@ async fn send_antigravity_oauth_stream_check(
     timeout: std::time::Duration,
     access_token: &str,
     project_id: &str,
+    client_profile: &str,
 ) -> Result<u16, AppError> {
     let model = crate::services::antigravity_models::normalize_antigravity_model_id(model);
     let request = json!({
@@ -783,16 +786,29 @@ async fn send_antigravity_oauth_stream_check(
             .map_err(proxy_error_to_app_error)?;
     body["project"] = json!(project_id);
 
-    let response = crate::proxy::http_client::get()
+    let user_agent = if client_profile == "ide" {
+        crate::proxy::antigravity_desktop_user_agent()
+    } else {
+        crate::proxy::antigravity_harness_user_agent()
+    };
+    let mut request_builder = crate::proxy::http_client::get()
         .post(&url)
         .timeout(timeout)
         .header("authorization", format!("Bearer {access_token}"))
-        .header("user-agent", crate::proxy::antigravity_user_agent())
+        .header("user-agent", user_agent)
         .header("x-request-source", "local")
         .header("content-type", "application/json")
         .header("accept", "text/event-stream")
         .header("accept-encoding", "identity")
-        .json(&body)
+        .json(&body);
+
+    if client_profile == "ide" {
+        request_builder = request_builder
+            .header("x-client-name", "antigravity")
+            .header("x-client-version", "1.107.0");
+    }
+
+    let response = request_builder
         .send()
         .await
         .map_err(|e| AppError::Message(format!("Antigravity OAuth 请求失败: {e}")))?;

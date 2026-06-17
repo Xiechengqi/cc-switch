@@ -16,8 +16,12 @@ pub struct AntigravityOAuthState(pub Arc<RwLock<AntigravityOAuthManager>>);
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_antigravity_oauth_models(
     account_id: Option<String>,
+    provider_type: Option<String>,
     state: State<'_, AntigravityOAuthState>,
 ) -> Result<Vec<FetchedModel>, String> {
+    let profile = crate::services::antigravity_models::AntigravityClientProfile::from_str(
+        provider_type.as_deref(),
+    );
     let manager = state.0.read().await;
     let resolved = match account_id
         .as_deref()
@@ -29,14 +33,18 @@ pub async fn get_antigravity_oauth_models(
     };
 
     let Some(id) = resolved else {
-        return Ok(crate::services::antigravity_models::static_antigravity_models());
+        return Ok(
+            crate::services::antigravity_models::static_antigravity_models_for_profile(profile),
+        );
     };
 
     let token = match manager.get_valid_token_for_account(&id).await {
         Ok(token) => token,
         Err(err) => {
             log::warn!("Antigravity OAuth token unavailable, using static catalog: {err}");
-            return Ok(crate::services::antigravity_models::static_antigravity_models());
+            return Ok(
+                crate::services::antigravity_models::static_antigravity_models_for_profile(profile),
+            );
         }
     };
     let project_id = manager.project_id_for_account(&id).await.ok();
@@ -45,15 +53,16 @@ pub async fn get_antigravity_oauth_models(
     match crate::services::antigravity_models::fetch_antigravity_available_models(
         &token,
         project_id.as_deref(),
+        profile,
     )
     .await
     {
-        Ok(dynamic) => {
-            Ok(crate::services::antigravity_models::merge_static_and_dynamic_models(dynamic))
-        }
+        Ok(dynamic) => Ok(
+            crate::services::antigravity_models::merge_static_and_dynamic_models(profile, dynamic),
+        ),
         Err(err) => {
             log::warn!("Antigravity model discovery failed, using static catalog: {err}");
-            Ok(crate::services::antigravity_models::static_antigravity_models())
+            Ok(crate::services::antigravity_models::static_antigravity_models_for_profile(profile))
         }
     }
 }

@@ -62,6 +62,7 @@ pub struct OauthQuotaTarget {
     pub provider_name: String,
     pub auth_provider: String,
     pub account_id: String,
+    pub provider_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,6 +192,7 @@ impl OauthQuotaService {
         managers: &OauthQuotaManagers,
         auth_provider: &str,
         account_id: &str,
+        provider_type: Option<&str>,
     ) -> Result<CachedOauthQuota, String> {
         let target = OauthQuotaTarget {
             app_type: String::new(),
@@ -198,6 +200,7 @@ impl OauthQuotaService {
             provider_name: String::new(),
             auth_provider: auth_provider.to_string(),
             account_id: account_id.to_string(),
+            provider_type: provider_type.map(ToString::to_string),
         };
         self.refresh_target(app, managers, target, "manual", None, true)
             .await
@@ -286,6 +289,10 @@ impl OauthQuotaService {
             provider_name: provider.name.clone(),
             auth_provider,
             account_id,
+            provider_type: provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.provider_type.clone()),
         })
     }
 
@@ -355,7 +362,13 @@ impl OauthQuotaService {
             "google_gemini_oauth" => refresh_gemini_quota(managers, &target.account_id).await,
             "github_copilot" => refresh_copilot_quota(managers, &target.account_id).await,
             "kiro_oauth" => refresh_kiro_quota(managers, &target.account_id).await,
-            "antigravity_oauth" => refresh_antigravity_quota(managers, &target.account_id).await,
+            "antigravity_oauth" => {
+                let profile =
+                    crate::services::antigravity_models::AntigravityClientProfile::from_provider_type(
+                        target.provider_type.as_deref(),
+                    );
+                refresh_antigravity_quota(managers, &target.account_id, profile).await
+            }
             "cursor_oauth" => refresh_cursor_quota(managers, &target.account_id).await,
             other => SubscriptionQuota::error(
                 other,
@@ -538,7 +551,7 @@ fn provider_auth_provider(app_type: &AppType, provider: &Provider) -> Option<Str
         return Some("google_gemini_oauth".to_string());
     }
     if matches!(app_type, AppType::Claude | AppType::Gemini)
-        && provider_type == Some("antigravity_oauth")
+        && matches!(provider_type, Some("antigravity_oauth" | "agy_oauth"))
     {
         return Some("antigravity_oauth".to_string());
     }
@@ -698,6 +711,7 @@ async fn refresh_kiro_quota(managers: &OauthQuotaManagers, account_id: &str) -> 
 async fn refresh_antigravity_quota(
     managers: &OauthQuotaManagers,
     account_id: &str,
+    profile: crate::services::antigravity_models::AntigravityClientProfile,
 ) -> SubscriptionQuota {
     let manager = managers.antigravity.read().await;
     let token = match manager.get_valid_token_for_account(account_id).await {
@@ -716,6 +730,7 @@ async fn refresh_antigravity_quota(
         &token,
         project_id.as_deref(),
         "antigravity_oauth",
+        profile,
     )
     .await
 }

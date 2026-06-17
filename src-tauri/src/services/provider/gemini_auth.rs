@@ -7,6 +7,7 @@ use crate::provider::Provider;
 
 const GOOGLE_GEMINI_OAUTH_PROVIDER_TYPE: &str = "google_gemini_oauth";
 const ANTIGRAVITY_OAUTH_PROVIDER_TYPE: &str = "antigravity_oauth";
+const AGY_OAUTH_PROVIDER_TYPE: &str = "agy_oauth";
 
 /// Gemini authentication type enumeration
 ///
@@ -42,7 +43,10 @@ pub(crate) fn detect_gemini_auth_type(provider: &Provider) -> GeminiAuthType {
         .as_ref()
         .and_then(|meta| meta.provider_type.as_deref())
     {
-        if pt == GOOGLE_GEMINI_OAUTH_PROVIDER_TYPE || pt == ANTIGRAVITY_OAUTH_PROVIDER_TYPE {
+        if pt == GOOGLE_GEMINI_OAUTH_PROVIDER_TYPE
+            || pt == ANTIGRAVITY_OAUTH_PROVIDER_TYPE
+            || pt == AGY_OAUTH_PROVIDER_TYPE
+        {
             return GeminiAuthType::GoogleOfficial;
         }
     }

@@ -118,6 +118,7 @@ interface ClaudeFormFieldsProps {
 
   // Antigravity OAuth
   isAntigravityOauthPreset?: boolean;
+  antigravityProviderType?: string | null;
   selectedAntigravityAccountId?: string | null;
   onAntigravityAccountSelect?: (accountId: string | null) => void;
 
@@ -212,6 +213,7 @@ export function ClaudeFormFields({
   selectedClaudeAccountId,
   onClaudeAccountSelect,
   isAntigravityOauthPreset,
+  antigravityProviderType,
   selectedAntigravityAccountId,
   onAntigravityAccountSelect,
   isCursorOauthPreset,
@@ -425,7 +427,10 @@ export function ClaudeFormFields({
     const requestId = antigravityOauthModelsRequestRef.current + 1;
     antigravityOauthModelsRequestRef.current = requestId;
     setAntigravityOauthModelsLoading(true);
-    fetchAntigravityOauthModels(selectedAntigravityAccountId)
+    fetchAntigravityOauthModels(
+      selectedAntigravityAccountId,
+      antigravityProviderType,
+    )
       .then((models) => {
         if (antigravityOauthModelsRequestRef.current !== requestId) return;
         setAntigravityOauthModels(models);
@@ -441,7 +446,12 @@ export function ClaudeFormFields({
           setAntigravityOauthModelsLoading(false);
         }
       });
-  }, [selectedAntigravityAccountId, showModelFetchResult, t]);
+  }, [
+    antigravityProviderType,
+    selectedAntigravityAccountId,
+    showModelFetchResult,
+    t,
+  ]);
 
   useEffect(() => {
     copilotModelsRequestRef.current += 1;

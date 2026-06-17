@@ -51,9 +51,11 @@ export async function fetchCodexOauthModels(
  */
 export async function fetchAntigravityOauthModels(
   accountId?: string | null,
+  providerType?: string | null,
 ): Promise<FetchedModel[]> {
   return invokeCommand("get_antigravity_oauth_models", {
     accountId: accountId || null,
+    providerType: providerType || null,
   });
 }
 

@@ -379,7 +379,7 @@ export function ProviderCard({
         )}
       />
       <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-1 items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <button
             type="button"
             className={cn(
@@ -403,7 +403,7 @@ export function ProviderCard({
             />
           </div>
 
-          <div className="space-y-1">
+          <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2 min-h-7">
               <h3 className="text-base font-semibold leading-none">
                 {provider.name}
@@ -479,9 +479,9 @@ export function ProviderCard({
           </div>
         </div>
 
-        <div className="flex items-center ml-auto min-w-0 gap-3">
-          <div className="ml-auto">
-            <div className="flex items-center gap-1">
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-1 gap-y-1">
               {quotaSource === "copilot" ? (
                 <CopilotQuotaFooter
                   meta={provider.meta}

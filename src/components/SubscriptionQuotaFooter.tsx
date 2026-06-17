@@ -224,7 +224,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   // ── inline 模式：紧凑两行显示 ──
   if (inline) {
     return (
-      <div className="flex flex-col items-end gap-1 text-xs whitespace-nowrap flex-shrink-0">
+      <div className="flex min-w-0 max-w-full flex-col items-end gap-1 text-xs">
         {/* 第一行：查询时间 + 刷新 */}
         <div className="flex items-center gap-2 justify-end">
           <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
@@ -247,7 +247,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
         </div>
 
         {/* 第二行：plan badge + 各 tier 使用百分比 */}
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
           {quota.credentialMessage && (
             <span className="inline-flex items-center rounded-md bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-700 whitespace-nowrap">
               {quota.credentialMessage}
@@ -334,7 +334,7 @@ export const TierBadge: React.FC<{
   const hasUsd = tier.usedValueUsd != null && tier.maxValueUsd != null;
 
   return (
-    <div className="flex items-center gap-0.5">
+    <div className="inline-flex items-center gap-0.5 whitespace-nowrap">
       <span className="text-gray-500 dark:text-gray-400">{label}:</span>
       <span
         className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}

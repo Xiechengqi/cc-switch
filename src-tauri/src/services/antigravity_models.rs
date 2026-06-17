@@ -230,14 +230,26 @@ pub fn normalize_antigravity_model_id(model: &str) -> String {
         | "claude-sonnet-4-6-thinking" => "claude-sonnet-4-6".to_string(),
         "claude-4.6-opus-thinking" => "claude-opus-4-6-thinking".to_string(),
         "claude-opus-4.6-thinking" => "claude-opus-4-6-thinking".to_string(),
+        "claude-opus-4.7"
+        | "claude-opus-4-7"
+        | "claude-opus-4.7-thinking"
+        | "claude-opus-4-7-thinking" => "claude-opus-4-6-thinking".to_string(),
         "claude-opus-4.5"
         | "claude-opus-4.5-thinking"
         | "claude-opus-4-5"
         | "claude-opus-4-5-thinking" => "claude-opus-4-6-thinking".to_string(),
+        "claude-sonnet-4.7"
+        | "claude-sonnet-4-7"
+        | "claude-sonnet-4.7-thinking"
+        | "claude-sonnet-4-7-thinking" => "claude-sonnet-4-6".to_string(),
         "claude-sonnet-4.5"
         | "claude-sonnet-4.5-thinking"
         | "claude-sonnet-4-5"
         | "claude-sonnet-4-5-thinking" => "claude-sonnet-4-6".to_string(),
+        // Public Antigravity selector ids differ from the Cloud Code wire ids.
+        "gemini-3.5-flash-low" => "gemini-3.5-flash-extra-low".to_string(),
+        "gemini-3.5-flash-medium" => "gemini-3.5-flash-low".to_string(),
+        "gemini-3.5-flash-high" => "gemini-3-flash-agent".to_string(),
         "gemini-3-pro-low" => "gemini-3.1-pro-low".to_string(),
         "gemini-3-pro-high"
         | "gemini-3-pro-preview"
@@ -250,14 +262,81 @@ pub fn normalize_antigravity_model_id(model: &str) -> String {
     }
 }
 
+fn catalog_antigravity_model_id(model: &str) -> String {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "claude-4.6-sonnet-thinking"
+        | "claude-sonnet-4.6-thinking"
+        | "claude-sonnet-4-6-thinking"
+        | "claude-sonnet-4.7"
+        | "claude-sonnet-4-7"
+        | "claude-sonnet-4.7-thinking"
+        | "claude-sonnet-4-7-thinking"
+        | "claude-sonnet-4.5"
+        | "claude-sonnet-4.5-thinking"
+        | "claude-sonnet-4-5"
+        | "claude-sonnet-4-5-thinking" => "claude-sonnet-4-6".to_string(),
+        "claude-4.6-opus-thinking"
+        | "claude-opus-4.6-thinking"
+        | "claude-opus-4.7"
+        | "claude-opus-4-7"
+        | "claude-opus-4.7-thinking"
+        | "claude-opus-4-7-thinking"
+        | "claude-opus-4.5"
+        | "claude-opus-4.5-thinking"
+        | "claude-opus-4-5"
+        | "claude-opus-4-5-thinking" => "claude-opus-4-6-thinking".to_string(),
+        "gemini-3-pro-low" => "gemini-3.1-pro-low".to_string(),
+        "gemini-3-pro-high"
+        | "gemini-3-pro-preview"
+        | "gemini-3-pro-preview-customtools"
+        | "gemini-3.1-pro-preview"
+        | "gemini-3.1-pro-preview-customtools"
+        | "gemini-3-1-pro-preview"
+        | "gemini-3-1-pro-preview-customtools" => "gemini-3.1-pro-high".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn public_antigravity_model_id_for_available_model(model: &str) -> String {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "gemini-3.5-flash-extra-low" => "gemini-3.5-flash-low".to_string(),
+        "gemini-3.5-flash-low" => "gemini-3.5-flash-medium".to_string(),
+        "gemini-3-flash-agent" => "gemini-3.5-flash-high".to_string(),
+        other => match other {
+            "claude-4.6-sonnet-thinking"
+            | "claude-sonnet-4.6-thinking"
+            | "claude-sonnet-4-6-thinking" => "claude-sonnet-4-6".to_string(),
+            "claude-4.6-opus-thinking" | "claude-opus-4.6-thinking" => {
+                "claude-opus-4-6-thinking".to_string()
+            }
+            _ => other.to_string(),
+        },
+    }
+}
+
 pub fn antigravity_model_display_name(model: &str) -> String {
-    let canonical = normalize_antigravity_model_id(model);
+    let canonical = catalog_antigravity_model_id(model);
     AGY_MODELS
         .iter()
         .chain(ANTIGRAVITY_FREE_MODELS.iter())
         .find(|def| def.id == canonical)
         .map(|def| def.display_name.to_string())
         .unwrap_or(canonical)
+}
+
+fn antigravity_available_model_display_name(
+    public_id: &str,
+    upstream_display_name: Option<&str>,
+) -> String {
+    let local = antigravity_model_display_name(public_id);
+    if local != public_id {
+        return local;
+    }
+    upstream_display_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or(local)
 }
 
 pub fn static_antigravity_models_for_profile(
@@ -291,15 +370,16 @@ pub fn merge_static_and_dynamic_models(
     }
 
     for model in dynamic {
-        let id = normalize_antigravity_model_id(&model.id);
+        let id = public_antigravity_model_id_for_available_model(&model.id);
         if id.trim().is_empty() || !seen.insert(id.clone()) {
             continue;
         }
         out.push(FetchedModel {
             owned_by: Some(owner_for_model(&id).to_string()),
-            display_name: model
-                .display_name
-                .or_else(|| Some(antigravity_model_display_name(&id))),
+            display_name: Some(antigravity_available_model_display_name(
+                &id,
+                model.display_name.as_deref(),
+            )),
             id,
         });
     }
@@ -325,12 +405,12 @@ pub fn antigravity_models_to_quota_tiers(models: &[AntigravityAvailableModel]) -
                     }
                 })
                 .clamp(0.0, 1.0);
-            let canonical = normalize_antigravity_model_id(&model.id);
+            let canonical = public_antigravity_model_id_for_available_model(&model.id);
             Some(QuotaTier {
-                name: model
-                    .display_name
-                    .clone()
-                    .unwrap_or_else(|| antigravity_model_display_name(&canonical)),
+                name: antigravity_available_model_display_name(
+                    &canonical,
+                    model.display_name.as_deref(),
+                ),
                 utilization: (1.0 - remaining) * 100.0,
                 resets_at: model.reset_time.clone(),
                 used: None,
@@ -565,6 +645,10 @@ mod tests {
             "claude-sonnet-4-6"
         );
         assert_eq!(
+            normalize_antigravity_model_id("claude-opus-4-7"),
+            "claude-opus-4-6-thinking"
+        );
+        assert_eq!(
             normalize_antigravity_model_id("claude-sonnet-4-5-thinking"),
             "claude-sonnet-4-6"
         );
@@ -576,18 +660,22 @@ mod tests {
             normalize_antigravity_model_id("gemini-3-pro-preview-customtools"),
             "gemini-3.1-pro-high"
         );
+        assert_eq!(
+            normalize_antigravity_model_id("gemini-3.5-flash-high"),
+            "gemini-3-flash-agent"
+        );
     }
 
     #[test]
     fn converts_available_models_to_utilization_tiers() {
         let tiers = antigravity_models_to_quota_tiers(&[AntigravityAvailableModel {
-            id: "gemini-3.5-flash-medium".to_string(),
-            display_name: Some("Gemini 3.5 Flash (Medium)".to_string()),
+            id: "gemini-2.5-flash".to_string(),
+            display_name: Some("Gemini 3.1 Flash Lite".to_string()),
             remaining_fraction: Some(0.75),
             reset_time: Some("2026-06-05T00:00:00Z".to_string()),
         }]);
         assert_eq!(tiers.len(), 1);
-        assert_eq!(tiers[0].name, "Gemini 3.5 Flash (Medium)");
+        assert_eq!(tiers[0].name, "Gemini 2.5 Flash");
         assert_eq!(tiers[0].utilization, 25.0);
     }
 

@@ -3163,7 +3163,10 @@ fn build_antigravity_forward_url(base_url: &str, endpoint: &str, request_body: &
     }
 }
 
-fn build_antigravity_forward_url_candidates(endpoint: &str, request_body: &Value) -> Vec<String> {
+pub(crate) fn build_antigravity_forward_url_candidates(
+    endpoint: &str,
+    request_body: &Value,
+) -> Vec<String> {
     ANTIGRAVITY_BASE_URLS
         .iter()
         .map(|base_url| build_antigravity_forward_url(base_url, endpoint, request_body))

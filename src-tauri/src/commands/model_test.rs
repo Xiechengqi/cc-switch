@@ -621,7 +621,7 @@ async fn check_antigravity_oauth_provider_once(
     >,
 ) -> StreamCheckResult {
     let start = Instant::now();
-    let model = ModelTestService::resolve_effective_test_model(app_type, provider, config);
+    let model = resolve_mapped_antigravity_test_model(app_type, provider, config);
     let timeout = std::time::Duration::from_secs(config.timeout_secs);
 
     let probe = async {
@@ -729,6 +729,27 @@ async fn check_antigravity_oauth_provider_once(
     }
 }
 
+fn resolve_mapped_antigravity_test_model(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+    config: &StreamCheckConfig,
+) -> String {
+    let model = ModelTestService::resolve_effective_test_model(app_type, provider, config);
+    let (mapped_body, _, mapped_model) = crate::proxy::model_mapper::apply_model_mapping(
+        json!({ "model": model.clone() }),
+        provider,
+    );
+
+    mapped_model
+        .or_else(|| {
+            mapped_body
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string)
+        })
+        .unwrap_or(model)
+}
+
 async fn resolve_antigravity_oauth_credentials(
     provider: &crate::provider::Provider,
     manager: std::sync::Arc<
@@ -791,48 +812,65 @@ async fn send_antigravity_oauth_stream_check(
     } else {
         crate::proxy::antigravity_harness_user_agent()
     };
-    let mut request_builder = crate::proxy::http_client::get()
-        .post(&url)
-        .timeout(timeout)
-        .header("authorization", format!("Bearer {access_token}"))
-        .header("user-agent", user_agent)
-        .header("x-request-source", "local")
-        .header("content-type", "application/json")
-        .header("accept", "text/event-stream")
-        .header("accept-encoding", "identity")
-        .json(&body);
+    let mut urls = crate::proxy::build_antigravity_forward_url_candidates(&endpoint, &request);
+    if urls.is_empty() {
+        urls.push(url);
+    }
+    let mut last_error: Option<AppError> = None;
 
-    if client_profile == "ide" {
-        request_builder = request_builder
-            .header("x-client-name", "antigravity")
-            .header("x-client-version", "1.107.0");
+    for url in urls {
+        let mut request_builder = crate::proxy::http_client::get()
+            .post(&url)
+            .timeout(timeout)
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("user-agent", user_agent.clone())
+            .header("x-request-source", "local")
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .header("accept-encoding", "identity")
+            .json(&body);
+
+        if client_profile == "ide" {
+            request_builder = request_builder
+                .header("x-client-name", "antigravity")
+                .header("x-client-version", "1.107.0");
+        }
+
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|e| AppError::Message(format!("Antigravity OAuth 请求失败: {e}")))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let error = AppError::HttpStatus {
+                status: status.as_u16(),
+                body,
+            };
+            if matches!(status.as_u16(), 403 | 404 | 500..=599) {
+                last_error = Some(error);
+                continue;
+            }
+            return Err(error);
+        }
+
+        let status_code = status.as_u16();
+        let mut stream = response.bytes_stream();
+        return match stream.next().await {
+            Some(Ok(_)) => Ok(status_code),
+            Some(Err(err)) => Err(AppError::Message(format!(
+                "Antigravity OAuth 读取响应失败: {err}"
+            ))),
+            None => Err(AppError::Message(
+                "Antigravity OAuth 检查出错: No response data received".to_string(),
+            )),
+        };
     }
 
-    let response = request_builder
-        .send()
-        .await
-        .map_err(|e| AppError::Message(format!("Antigravity OAuth 请求失败: {e}")))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(AppError::HttpStatus {
-            status: status.as_u16(),
-            body,
-        });
-    }
-
-    let status_code = status.as_u16();
-    let mut stream = response.bytes_stream();
-    match stream.next().await {
-        Some(Ok(_)) => Ok(status_code),
-        Some(Err(err)) => Err(AppError::Message(format!(
-            "Antigravity OAuth 读取响应失败: {err}"
-        ))),
-        None => Err(AppError::Message(
-            "Antigravity OAuth 检查出错: No response data received".to_string(),
-        )),
-    }
+    Err(last_error.unwrap_or_else(|| {
+        AppError::Message("Antigravity OAuth 检查出错: no endpoint attempted".to_string())
+    }))
 }
 
 async fn check_kiro_oauth_provider(
@@ -1556,10 +1594,13 @@ async fn resolve_claude_api_format_override(
 mod tests {
     use super::{
         is_claude_oauth_provider, is_copilot_provider, resolve_claude_oauth_base_url_override,
-        resolve_codex_oauth_base_url_override, uses_codex_oauth_auth,
+        resolve_codex_oauth_base_url_override, resolve_mapped_antigravity_test_model,
+        uses_codex_oauth_auth,
     };
     use crate::app_config::AppType;
-    use crate::provider::{AuthBinding, AuthBindingSource, Provider, ProviderMeta};
+    use crate::provider::{
+        AuthBinding, AuthBindingSource, Provider, ProviderMeta, ProviderTestConfig,
+    };
     use serde_json::json;
 
     #[test]
@@ -1602,6 +1643,46 @@ mod tests {
             in_failover_queue: false,
         };
         assert!(is_copilot_provider(&url_provider));
+    }
+
+    #[test]
+    fn antigravity_test_model_applies_provider_model_mapping() {
+        let provider = Provider {
+            id: "agy".to_string(),
+            name: "Antigravity CLI (agy)".to_string(),
+            settings_config: json!({
+                "env": {
+                    "ANTHROPIC_MODEL": "claude-opus-4-7",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-6-thinking"
+                }
+            }),
+            website_url: None,
+            category: Some("official".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: Some(ProviderMeta {
+                provider_type: Some("agy_oauth".to_string()),
+                test_config: Some(ProviderTestConfig {
+                    enabled: true,
+                    test_model: Some("claude-opus-4-7".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert_eq!(
+            resolve_mapped_antigravity_test_model(
+                &AppType::Claude,
+                &provider,
+                &crate::services::model_test::StreamCheckConfig::default(),
+            ),
+            "claude-opus-4-6-thinking"
+        );
     }
 
     #[test]

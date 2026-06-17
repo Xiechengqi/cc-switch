@@ -20,6 +20,7 @@ interface ProviderPricingConfig {
   enabled: boolean;
   costMultiplier?: string;
   pricingModelSource: PricingModelSourceOption;
+  quotaDispatchLimitPercent?: number;
 }
 
 interface ProviderAdvancedConfigProps {
@@ -27,6 +28,7 @@ interface ProviderAdvancedConfigProps {
   pricingConfig: ProviderPricingConfig;
   onTestConfigChange: (config: ProviderTestConfig) => void;
   onPricingConfigChange: (config: ProviderPricingConfig) => void;
+  showQuotaDispatchLimit?: boolean;
 }
 
 export function ProviderAdvancedConfig({
@@ -34,6 +36,7 @@ export function ProviderAdvancedConfig({
   pricingConfig,
   onTestConfigChange,
   onPricingConfigChange,
+  showQuotaDispatchLimit = false,
 }: ProviderAdvancedConfigProps) {
   const { t } = useTranslation();
   const [isTestConfigOpen, setIsTestConfigOpen] = useState(testConfig.enabled);
@@ -235,7 +238,7 @@ export function ProviderAdvancedConfig({
           className={cn(
             "overflow-hidden transition-all duration-200",
             isPricingConfigOpen
-              ? "max-h-[500px] opacity-100"
+              ? "max-h-[700px] opacity-100"
               : "max-h-0 opacity-0",
           )}
         >
@@ -320,6 +323,48 @@ export function ProviderAdvancedConfig({
                   })}
                 </p>
               </div>
+              {showQuotaDispatchLimit && (
+                <div className="space-y-2">
+                  <Label htmlFor="quota-dispatch-limit-percent">
+                    {t("providerAdvanced.quotaDispatchLimitPercent", {
+                      defaultValue: "调度用量上限",
+                    })}
+                  </Label>
+                  <Input
+                    id="quota-dispatch-limit-percent"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    inputMode="numeric"
+                    value={pricingConfig.quotaDispatchLimitPercent ?? ""}
+                    onChange={(e) =>
+                      onPricingConfigChange({
+                        ...pricingConfig,
+                        quotaDispatchLimitPercent: e.target.value
+                          ? Math.max(
+                              0,
+                              Math.min(100, parseInt(e.target.value, 10) || 0),
+                            )
+                          : undefined,
+                      })
+                    }
+                    placeholder={t(
+                      "providerAdvanced.quotaDispatchLimitPercentPlaceholder",
+                      {
+                        defaultValue: "0 表示无上限",
+                      },
+                    )}
+                    disabled={!pricingConfig.enabled}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("providerAdvanced.quotaDispatchLimitPercentHint", {
+                      defaultValue:
+                        "设置为非 0 后，router 会在任一重置周期达到该百分比时停止把此供应商调度给 Market。",
+                    })}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>

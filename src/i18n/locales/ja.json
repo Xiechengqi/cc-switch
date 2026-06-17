@@ -1253,7 +1253,10 @@
     "pricingModelSourceInherit": "グローバル設定を継承",
     "pricingModelSourceRequest": "リクエストモデル",
     "pricingModelSourceResponse": "レスポンスモデル",
-    "pricingModelSourceHint": "リクエストモデルまたはレスポンスモデルで価格を照合するかを選択"
+    "pricingModelSourceHint": "リクエストモデルまたはレスポンスモデルで価格を照合するかを選択",
+    "quotaDispatchLimitPercent": "ディスパッチ使用上限",
+    "quotaDispatchLimitPercentPlaceholder": "0 は上限なし",
+    "quotaDispatchLimitPercentHint": "0 以外に設定すると、いずれかのリセット周期の使用率がこの割合に達した時点で router はこのプロバイダーを Market にディスパッチしません。"
   },
   "codexConfig": {
     "authJson": "auth.json (JSON) *",

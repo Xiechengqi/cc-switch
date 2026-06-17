@@ -711,7 +711,7 @@ async fn build_app_provider_snapshot(
             account_email = managed_account_email;
         }
         if quota.is_none() {
-            quota = managed_quota;
+            quota = with_quota_dispatch_limit(managed_quota, &provider);
         }
     }
 
@@ -741,10 +741,10 @@ async fn build_all_upstream_provider_snapshots(
     share: &ShareRecord,
 ) -> ShareAppRuntimes {
     let (kiro, cursor, antigravity, copilot) = tokio::join!(
-        build_oauth_provider_snapshot("kiro_oauth"),
-        build_oauth_provider_snapshot("cursor_oauth"),
-        build_oauth_provider_snapshot("antigravity_oauth"),
-        build_oauth_provider_snapshot("github_copilot"),
+        build_oauth_provider_snapshot(db, "kiro_oauth"),
+        build_oauth_provider_snapshot(db, "cursor_oauth"),
+        build_oauth_provider_snapshot(db, "antigravity_oauth"),
+        build_oauth_provider_snapshot(db, "github_copilot"),
     );
     // P11：每个 app 的 runtime 必须按 share.bindings[app] 取，避免所有 share 都拿到
     // "全局 current provider"的同一份数据。slot 没绑定时该 app 的 runtime 留空。
@@ -779,7 +779,10 @@ async fn build_all_upstream_provider_snapshots(
 /// Build a `ShareUpstreamProvider` snapshot for a standalone OAuth provider
 /// (kiro / cursor / antigravity / copilot) by reading the cached quota.
 /// Returns `None` if no account is configured or no quota has been fetched yet.
-async fn build_oauth_provider_snapshot(auth_provider: &str) -> Option<ShareUpstreamProvider> {
+async fn build_oauth_provider_snapshot(
+    db: &Database,
+    auth_provider: &str,
+) -> Option<ShareUpstreamProvider> {
     let service = crate::services::oauth_quota::global_oauth_quota_service()?;
     let cached = service.get_first_for_provider(auth_provider).await?;
     // Only surface providers with a successful quota fetch.
@@ -789,7 +792,8 @@ async fn build_oauth_provider_snapshot(auth_provider: &str) -> Option<ShareUpstr
     let account_email = oauth_account_label(auth_provider, &cached.account_id)
         .await
         .or(Some(cached.account_id));
-    let quota = subscription_quota_to_upstream(cached.quota);
+    let mut quota = subscription_quota_to_upstream(cached.quota);
+    quota.dispatch_limit_percent = quota_dispatch_limit_for_auth_provider(db, auth_provider);
     Some(ShareUpstreamProvider {
         kind: "official_oauth".to_string(),
         app: auth_provider.to_string(),
@@ -875,7 +879,7 @@ async fn build_upstream_provider_snapshot_for_app(
         let (account_email, quota) = managed_oauth_account_summary(auth_provider, &provider).await;
         snapshot.kind = "official_oauth".to_string();
         snapshot.account_email = account_email;
-        snapshot.quota = quota;
+        snapshot.quota = with_quota_dispatch_limit(quota, &provider);
     }
 
     Some(snapshot)
@@ -899,6 +903,61 @@ fn provider_sale_percent(provider: &Provider) -> Option<u16> {
         .meta
         .as_ref()
         .and_then(|meta| meta.for_sale_official_price_percent)
+}
+
+fn provider_quota_dispatch_limit_percent(provider: &Provider) -> Option<f64> {
+    let value = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.quota_dispatch_limit_percent)?;
+    if value == 0 {
+        None
+    } else {
+        Some(f64::from(value.min(100)))
+    }
+}
+
+fn with_quota_dispatch_limit(
+    quota: Option<ShareUpstreamQuota>,
+    provider: &Provider,
+) -> Option<ShareUpstreamQuota> {
+    let mut quota = quota?;
+    if !provider.is_google_gemini_oauth_provider()
+        && !provider.is_google_gemini_official_with_managed_auth()
+        && !provider.is_antigravity_oauth_provider()
+    {
+        quota.dispatch_limit_percent = provider_quota_dispatch_limit_percent(provider);
+    }
+    Some(quota)
+}
+
+fn quota_dispatch_limit_for_auth_provider(db: &Database, auth_provider: &str) -> Option<f64> {
+    if matches!(auth_provider, "google_gemini_oauth" | "antigravity_oauth") {
+        return None;
+    }
+    for app in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+        let providers = match db.get_all_providers(app.as_str()) {
+            Ok(providers) => providers,
+            Err(_) => continue,
+        };
+        for provider in providers.values() {
+            let Some(meta) = provider.meta.as_ref() else {
+                continue;
+            };
+            let provider_matches = meta.provider_type.as_deref() == Some(auth_provider)
+                || meta
+                    .auth_binding
+                    .as_ref()
+                    .and_then(|binding| binding.auth_provider.as_deref())
+                    == Some(auth_provider);
+            if provider_matches {
+                if let Some(limit) = provider_quota_dispatch_limit_percent(provider) {
+                    return Some(limit);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn managed_oauth_provider_for_app(app: &AppType, provider: &Provider) -> Option<&'static str> {
@@ -1210,6 +1269,7 @@ async fn build_codex_oauth_snapshot(provider: &Provider) -> Option<ShareUpstream
         Some(id) => cached_upstream_quota("codex_oauth", id).await,
         None => None,
     };
+    let quota = with_quota_dispatch_limit(quota, provider);
 
     Some(ShareUpstreamProvider {
         kind: "official_oauth".to_string(),
@@ -1243,6 +1303,7 @@ async fn build_claude_oauth_snapshot(provider: &Provider) -> Option<ShareUpstrea
         Some(id) => cached_upstream_quota("claude_oauth", id).await,
         None => None,
     };
+    let quota = with_quota_dispatch_limit(quota, provider);
 
     Some(ShareUpstreamProvider {
         kind: "official_oauth".to_string(),
@@ -1276,6 +1337,7 @@ async fn build_github_copilot_snapshot(provider: &Provider) -> Option<ShareUpstr
         Some(id) => cached_upstream_quota("github_copilot", id).await,
         None => None,
     };
+    let quota = with_quota_dispatch_limit(quota, provider);
 
     Some(ShareUpstreamProvider {
         kind: "official_oauth".to_string(),
@@ -1377,6 +1439,7 @@ fn subscription_quota_to_upstream(
         blocked_until: block.as_ref().and_then(|item| item.blocked_until.clone()),
         blocked_reason: block.as_ref().map(|item| item.blocked_reason.clone()),
         blocked_scope: block.as_ref().map(|item| item.blocked_scope.clone()),
+        dispatch_limit_percent: None,
         tiers: quota
             .tiers
             .into_iter()

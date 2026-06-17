@@ -588,6 +588,12 @@ pub struct ProviderMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub for_sale_official_price_percent: Option<u16>,
+    /// Market 调度用量上限百分比；0/None 表示无上限。
+    #[serde(
+        rename = "quotaDispatchLimitPercent",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub quota_dispatch_limit_percent: Option<u8>,
     /// 每日消费限额（USD）
     #[serde(rename = "limitDailyUsd", skip_serializing_if = "Option::is_none")]
     pub limit_daily_usd: Option<String>,

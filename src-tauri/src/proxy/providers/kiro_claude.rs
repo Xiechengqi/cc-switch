@@ -17,13 +17,11 @@ use std::{
 };
 use tauri::Manager;
 
-use super::kiro_oauth_auth::{machine_id_from_refresh_token, KiroAccountData};
+use super::kiro_oauth_auth::{machine_id_from_refresh_token, resolve_profile_arn, KiroAccountData};
 
 const DEFAULT_KIRO_VERSION: &str = "2.3.0";
 const DEFAULT_SYSTEM_VERSION: &str = "macos";
 const DEFAULT_NODE_VERSION: &str = "22.22.0";
-const BUILDER_ID_PROFILE_ARN: &str =
-    "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
 const TOOL_NAME_MAX_LEN: usize = 63;
 const WRITE_TOOL_DESCRIPTION_SUFFIX: &str = "- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using this tool, then use `Edit` tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. Do NOT attempt to write all content at once.";
 const EDIT_TOOL_DESCRIPTION_SUFFIX: &str = "- IMPORTANT: If the `new_string` content exceeds 50 lines, you MUST split it into multiple Edit calls, each replacing no more than 50 lines at a time. If used to append content, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder.";
@@ -67,7 +65,7 @@ pub async fn forward_kiro_claude(
     let mut attempted_account_ids = HashSet::new();
 
     let (response, request) = loop {
-        let resolved_account = match bound_account_id.as_deref() {
+        let mut resolved_account = match bound_account_id.as_deref() {
             Some(id) => manager.get_account(id).await,
             None => {
                 manager
@@ -82,6 +80,11 @@ pub async fn forward_kiro_claude(
             .get_valid_token_for_account(&resolved_account.account_id)
             .await
             .map_err(|e| ProxyError::AuthError(format!("Kiro OAuth 认证失败: {e}")))?;
+        if resolved_account.profile_arn.is_none() {
+            resolved_account.profile_arn = manager
+                .ensure_profile_arn_for_account(&resolved_account.account_id, &token)
+                .await;
+        }
 
         let request = anthropic_to_kiro_request(body, &resolved_account)?;
         let response = send_kiro_request(&resolved_account, &token, request.body.clone()).await?;
@@ -255,10 +258,7 @@ fn anthropic_to_kiro_request(
         }
     });
 
-    let profile_arn = account
-        .profile_arn
-        .clone()
-        .unwrap_or_else(|| BUILDER_ID_PROFILE_ARN.to_string());
+    let profile_arn = resolve_profile_arn(account);
     let mut request_body = json!({
         "conversationState": {
             "agentTaskType": "vibe",
@@ -281,7 +281,16 @@ fn anthropic_to_kiro_request(
 }
 
 fn additional_model_request_fields(body: &Value, model_id: &str) -> Option<Value> {
-    if model_id != "claude-opus-4.6" || thinking_type(body) != Some("adaptive") {
+    if thinking_type(body) == Some("disabled") {
+        return None;
+    }
+    let config = thinking_config_for_model(model_id)?;
+    let wants_adaptive = thinking_type(body) == Some("adaptive")
+        || body
+            .get("output_config")
+            .and_then(|v| v.get("effort"))
+            .is_some();
+    if !wants_adaptive {
         return None;
     }
     let effort = body
@@ -289,13 +298,47 @@ fn additional_model_request_fields(body: &Value, model_id: &str) -> Option<Value
         .and_then(|v| v.get("effort"))
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|v| !v.is_empty())?;
+        .filter(|v| !v.is_empty())
+        .unwrap_or(config.default_effort);
+    let effort = config.normalize_effort(effort);
 
     Some(json!({
+        "thinking": {
+            "type": "adaptive",
+            "display": "summarized"
+        },
         "output_config": {
             "effort": effort
         }
     }))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KiroThinkingConfig {
+    efforts: &'static [&'static str],
+    default_effort: &'static str,
+}
+
+impl KiroThinkingConfig {
+    fn normalize_effort(&self, effort: &str) -> &'static str {
+        let effort = effort.to_ascii_lowercase();
+        self.efforts
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == effort)
+            .unwrap_or_else(|| self.efforts.last().copied().unwrap_or(self.default_effort))
+    }
+}
+
+fn thinking_config_for_model(model_id: &str) -> Option<KiroThinkingConfig> {
+    let lower = model_id.to_ascii_lowercase();
+    let supports_output_config = ["4.6", "4-6", "4.7", "4-7", "4.8", "4-8"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    supports_output_config.then_some(KiroThinkingConfig {
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+        default_effort: "high",
+    })
 }
 
 fn map_model(model: &str) -> Option<&'static str> {
@@ -1076,6 +1119,209 @@ fn frame_message_type(frame: &KiroFrame) -> Option<&str> {
     frame.headers.get(":message-type").map(String::as_str)
 }
 
+#[derive(Debug, Clone)]
+struct LeakedToolUse {
+    name: String,
+    input: Value,
+}
+
+#[derive(Default)]
+struct ToolLeakFilter {
+    carry: String,
+    leaked_tools: Vec<LeakedToolUse>,
+}
+
+impl ToolLeakFilter {
+    fn push_text(&mut self, text: &str, flush: bool) -> Vec<String> {
+        self.carry.push_str(text);
+        let mut visible = Vec::new();
+
+        loop {
+            let Some(invoke_start) = self.carry.find("<invoke name=\"") else {
+                break;
+            };
+            let Some(invoke_end_rel) = self.carry[invoke_start..].find("</invoke>") else {
+                if flush {
+                    if !self.carry.is_empty() {
+                        visible.push(std::mem::take(&mut self.carry));
+                    }
+                } else {
+                    let prefix = strip_tool_prefix(&self.carry[..invoke_start]);
+                    if !prefix.is_empty() {
+                        visible.push(prefix);
+                    }
+                    self.carry = self.carry[invoke_start..].to_string();
+                }
+                return visible;
+            };
+
+            let invoke_end = invoke_start + invoke_end_rel + "</invoke>".len();
+            let prefix = strip_tool_prefix(&self.carry[..invoke_start]);
+            if !prefix.is_empty() {
+                visible.push(prefix);
+            }
+
+            if let Some(tool) = parse_leaked_invoke(&self.carry[invoke_start..invoke_end]) {
+                self.leaked_tools.push(tool);
+            } else {
+                visible.push(self.carry[invoke_start..invoke_end].to_string());
+            }
+
+            let mut consumed_end = invoke_end;
+            if let Some(close_len) = leading_function_calls_close_len(&self.carry[consumed_end..]) {
+                consumed_end += close_len;
+            }
+            self.carry = self.carry[consumed_end..].to_string();
+        }
+
+        if flush {
+            if !self.carry.is_empty() {
+                visible.push(std::mem::take(&mut self.carry));
+            }
+            return visible;
+        }
+
+        let hold = pending_tool_tail_len(&self.carry);
+        let emit_len = self.carry.len().saturating_sub(hold);
+        if emit_len > 0 {
+            visible.push(self.carry[..emit_len].to_string());
+            self.carry = self.carry[emit_len..].to_string();
+        }
+        visible
+    }
+
+    fn take_deduped(&mut self, seen_signatures: &mut HashSet<String>) -> Vec<LeakedToolUse> {
+        let mut out = Vec::new();
+        for leaked in self.leaked_tools.drain(..) {
+            let sig = tool_signature(&leaked.name, &leaked.input);
+            if seen_signatures.insert(sig) {
+                out.push(leaked);
+            }
+        }
+        out
+    }
+}
+
+fn parse_leaked_invoke(value: &str) -> Option<LeakedToolUse> {
+    let name_start = value.find("<invoke name=\"")? + "<invoke name=\"".len();
+    let name_end = value[name_start..].find('"')? + name_start;
+    let name = value[name_start..name_end].to_string();
+    let body_start = value[name_end..].find('>')? + name_end + 1;
+    let body_end = value.rfind("</invoke>")?;
+    let body = &value[body_start..body_end];
+    let mut input = serde_json::Map::new();
+    let mut rest = body;
+
+    while let Some(param_start_rel) = rest.find("<parameter name=\"") {
+        rest = &rest[param_start_rel + "<parameter name=\"".len()..];
+        let Some(key_end) = rest.find('"') else {
+            break;
+        };
+        let key = rest[..key_end].to_string();
+        let Some(open_end) = rest[key_end..].find('>') else {
+            break;
+        };
+        rest = &rest[key_end + open_end + 1..];
+        let Some(value_end) = rest.find("</parameter>") else {
+            break;
+        };
+        let raw = &rest[..value_end];
+        input.insert(key, leaked_parameter_value(raw));
+        rest = &rest[value_end + "</parameter>".len()..];
+    }
+
+    Some(LeakedToolUse {
+        name,
+        input: Value::Object(input),
+    })
+}
+
+fn leaked_parameter_value(raw: &str) -> Value {
+    let decoded = xml_unescape(raw);
+    let trimmed = decoded.trim();
+    match trimmed {
+        "true" => json!(true),
+        "false" => json!(false),
+        "null" => Value::Null,
+        _ => {
+            if let Ok(value) = trimmed.parse::<i64>() {
+                json!(value)
+            } else if let Ok(value) = trimmed.parse::<f64>() {
+                if value.is_finite() {
+                    json!(value)
+                } else {
+                    json!(decoded)
+                }
+            } else {
+                json!(decoded)
+            }
+        }
+    }
+}
+
+fn xml_unescape(raw: &str) -> String {
+    raw.replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+fn strip_tool_prefix(prefix: &str) -> String {
+    let trimmed_end = prefix.trim_end();
+    for marker in ["<function_calls>", "count"] {
+        if let Some(stripped) = trimmed_end.strip_suffix(marker) {
+            let keep_len = stripped.len();
+            return prefix[..keep_len].to_string();
+        }
+    }
+    prefix.to_string()
+}
+
+fn leading_function_calls_close_len(value: &str) -> Option<usize> {
+    let trimmed = value.trim_start();
+    let ws_len = value.len().saturating_sub(trimmed.len());
+    trimmed
+        .strip_prefix("</function_calls>")
+        .map(|_| ws_len + "</function_calls>".len())
+}
+
+fn pending_tool_tail_len(value: &str) -> usize {
+    let markers = [
+        "<function_calls>",
+        "<invoke name=\"",
+        "</invoke>",
+        "</function_calls>",
+        "<parameter name=\"",
+        "</parameter>",
+        "count",
+    ];
+    let mut hold = 0;
+    for marker in markers {
+        let max = marker.len().saturating_sub(1).min(value.len());
+        for len in (1..=max).rev() {
+            if value.ends_with(&marker[..len]) {
+                hold = hold.max(len);
+                break;
+            }
+        }
+    }
+    if let Some(pos) = value.rfind("count") {
+        if value[pos..].trim_start().starts_with("count") && value[pos..].contains('<') {
+            hold = hold.max(value.len() - pos);
+        }
+    }
+    hold
+}
+
+fn tool_signature(name: &str, input: &Value) -> String {
+    format!("{name}|{}", canonical_tool_input(input))
+}
+
+fn canonical_tool_input(input: &Value) -> String {
+    serde_json::to_string(&canonical_prompt_cache_value(input)).unwrap_or_default()
+}
+
 #[derive(Default)]
 struct SseBuilder {
     message_id: String,
@@ -1088,6 +1334,10 @@ struct SseBuilder {
     pending_thinking_signature: Option<String>,
     next_index: i32,
     tool_indices: HashMap<String, i32>,
+    tool_names: HashMap<String, String>,
+    tool_inputs: HashMap<String, String>,
+    seen_tool_signatures: HashSet<String>,
+    tool_leak_filter: ToolLeakFilter,
     output_tokens: i32,
     usage: KiroUsageAccumulator,
 }
@@ -1122,6 +1372,14 @@ impl SseBuilder {
     }
 
     fn assistant_delta(&mut self, text: &str) -> Vec<Bytes> {
+        let mut out = Vec::new();
+        for visible in self.tool_leak_filter.push_text(text, false) {
+            out.extend(self.visible_assistant_delta(&visible));
+        }
+        out
+    }
+
+    fn visible_assistant_delta(&mut self, text: &str) -> Vec<Bytes> {
         if text.is_empty() {
             return Vec::new();
         }
@@ -1156,6 +1414,33 @@ impl SseBuilder {
             self.pending_thinking_signature = Some(signature.to_string());
         }
         self.thinking_delta(reasoning_text(payload).unwrap_or(""))
+    }
+
+    fn redacted_thinking_block(&mut self, data: &str) -> Vec<Bytes> {
+        if data.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if self.text_index.is_some() && !self.text_stopped {
+            self.text_stopped = true;
+            let index = self.text_index.unwrap_or(0);
+            out.push(sse(
+                "content_block_stop",
+                json!({"type":"content_block_stop","index":index}),
+            ));
+        }
+        out.extend(self.stop_thinking_block());
+        let index = self.next_index;
+        self.next_index += 1;
+        out.push(sse(
+            "content_block_start",
+            json!({"type":"content_block_start","index":index,"content_block":{"type":"redacted_thinking","data":data}}),
+        ));
+        out.push(sse(
+            "content_block_stop",
+            json!({"type":"content_block_stop","index":index}),
+        ));
+        out
     }
 
     fn thinking_delta(&mut self, text: &str) -> Vec<Bytes> {
@@ -1205,7 +1490,8 @@ impl SseBuilder {
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("tool");
-        let name = original_tool_name(name, &self.tool_name_map);
+        let kiro_name = name;
+        let name = original_tool_name(kiro_name, &self.tool_name_map);
         let input = payload.get("input").and_then(|v| v.as_str()).unwrap_or("");
         let stop = payload
             .get("stop")
@@ -1229,6 +1515,7 @@ impl SseBuilder {
             let index = self.next_index;
             self.next_index += 1;
             self.tool_indices.insert(id.to_string(), index);
+            self.tool_names.insert(id.to_string(), name.clone());
             out.push(sse(
                 "content_block_start",
                 json!({"type":"content_block_start","index":index,"content_block":{"type":"tool_use","id":id,"name":name,"input":{}}}),
@@ -1237,12 +1524,22 @@ impl SseBuilder {
         };
 
         if !input.is_empty() {
+            self.tool_inputs
+                .entry(id.to_string())
+                .or_default()
+                .push_str(input);
             out.push(sse(
                 "content_block_delta",
                 json!({"type":"content_block_delta","index":index,"delta":{"type":"input_json_delta","partial_json":input}}),
             ));
         }
         if stop {
+            if let (Some(name), Some(input)) = (self.tool_names.get(id), self.tool_inputs.get(id)) {
+                if let Ok(parsed_input) = serde_json::from_str::<Value>(input) {
+                    self.seen_tool_signatures
+                        .insert(tool_signature(name, &parsed_input));
+                }
+            }
             out.push(sse(
                 "content_block_stop",
                 json!({"type":"content_block_stop","index":index}),
@@ -1253,6 +1550,46 @@ impl SseBuilder {
 
     fn final_events(&mut self) -> Vec<Bytes> {
         let mut out = Vec::new();
+        for visible in self.tool_leak_filter.push_text("", true) {
+            out.extend(self.visible_assistant_delta(&visible));
+        }
+        for leaked in self
+            .tool_leak_filter
+            .take_deduped(&mut self.seen_tool_signatures)
+        {
+            out.extend(self.stop_thinking_block());
+            if self.text_index.is_some() && !self.text_stopped {
+                self.text_stopped = true;
+                let index = self.text_index.unwrap_or(0);
+                out.push(sse(
+                    "content_block_stop",
+                    json!({"type":"content_block_stop","index":index}),
+                ));
+            }
+            let index = self.next_index;
+            self.next_index += 1;
+            let id = format!(
+                "toolleakfix_{}_{}",
+                unix_timestamp_secs(),
+                self.tool_indices.len() + 1
+            );
+            self.tool_indices.insert(id.clone(), index);
+            out.push(sse(
+                "content_block_start",
+                json!({"type":"content_block_start","index":index,"content_block":{"type":"tool_use","id":id,"name":leaked.name,"input":{}}}),
+            ));
+            let input = serde_json::to_string(&leaked.input).unwrap_or_else(|_| "{}".to_string());
+            if input != "{}" {
+                out.push(sse(
+                    "content_block_delta",
+                    json!({"type":"content_block_delta","index":index,"delta":{"type":"input_json_delta","partial_json":input}}),
+                ));
+            }
+            out.push(sse(
+                "content_block_stop",
+                json!({"type":"content_block_stop","index":index}),
+            ));
+        }
         out.extend(self.stop_thinking_block());
         if self.text_index.is_some() && !self.text_stopped {
             self.text_stopped = true;
@@ -1375,13 +1712,21 @@ fn process_frame_to_sse(builder: &mut SseBuilder, frame: &KiroFrame) -> Vec<Byte
             }
             Some("reasoningContentEvent") => {
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
-                builder.reasoning_delta(&payload)
+                let mut out = builder.reasoning_delta(&payload);
+                if let Some(redacted) = reasoning_redacted_content(&payload) {
+                    out.extend(builder.redacted_thinking_block(redacted));
+                }
+                out
             }
             Some("toolUseEvent") => {
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
                 builder.tool_delta(&payload)
             }
-            Some("contextUsageEvent") | Some("metricsEvent") | Some("meteringEvent") => {
+            Some("contextUsageEvent")
+            | Some("metricsEvent")
+            | Some("messageMetadataEvent")
+            | Some("metadataEvent")
+            | Some("meteringEvent") => {
                 let event_type = frame_event_type(frame).unwrap_or_default();
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
                 builder.usage_event(event_type, &payload);
@@ -1402,7 +1747,10 @@ fn kiro_event_bytes_to_anthropic_json(
     let mut text = String::new();
     let mut thinking = String::new();
     let mut thinking_signature = None;
+    let mut redacted_thinking = Vec::new();
     let mut tools: HashMap<String, (String, String)> = HashMap::new();
+    let mut seen_tool_signatures = HashSet::new();
+    let mut tool_leak_filter = ToolLeakFilter::default();
     let mut usage = KiroUsageAccumulator::default();
     usage.set_prompt_cache_usage(prompt_cache_usage);
     for frame in parse_frames(&mut buffer) {
@@ -1410,13 +1758,17 @@ fn kiro_event_bytes_to_anthropic_json(
             Some("assistantResponseEvent") => {
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
                 if let Some(chunk) = payload.get("content").and_then(|v| v.as_str()) {
-                    text.push_str(chunk);
+                    for visible in tool_leak_filter.push_text(chunk, false) {
+                        text.push_str(&visible);
+                    }
                 }
             }
             Some("codeEvent") => {
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
                 if let Some(chunk) = payload.get("content").and_then(|v| v.as_str()) {
-                    text.push_str(chunk);
+                    for visible in tool_leak_filter.push_text(chunk, false) {
+                        text.push_str(&visible);
+                    }
                 }
             }
             Some("reasoningContentEvent") => {
@@ -1426,6 +1778,9 @@ fn kiro_event_bytes_to_anthropic_json(
                 }
                 if let Some(chunk) = reasoning_text(&payload) {
                     thinking.push_str(chunk);
+                }
+                if let Some(redacted) = reasoning_redacted_content(&payload) {
+                    redacted_thinking.push(redacted.to_string());
                 }
             }
             Some("toolUseEvent") => {
@@ -1448,14 +1803,30 @@ fn kiro_event_bytes_to_anthropic_json(
                     .to_string();
                 let entry = tools.entry(id).or_insert((name, String::new()));
                 entry.1.push_str(&input);
+                if payload
+                    .get("stop")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    if let Ok(parsed_input) = serde_json::from_str::<Value>(&entry.1) {
+                        seen_tool_signatures.insert(tool_signature(&entry.0, &parsed_input));
+                    }
+                }
             }
-            Some("contextUsageEvent") | Some("metricsEvent") | Some("meteringEvent") => {
+            Some("contextUsageEvent")
+            | Some("metricsEvent")
+            | Some("messageMetadataEvent")
+            | Some("metadataEvent")
+            | Some("meteringEvent") => {
                 let event_type = frame_event_type(&frame).unwrap_or_default();
                 let payload: Value = serde_json::from_slice(&frame.payload).unwrap_or(Value::Null);
                 usage.apply_event(event_type, &payload, model);
             }
             _ => {}
         }
+    }
+    for visible in tool_leak_filter.push_text("", true) {
+        text.push_str(&visible);
     }
 
     let mut content = Vec::new();
@@ -1466,12 +1837,23 @@ fn kiro_event_bytes_to_anthropic_json(
             "signature": thinking_signature.unwrap_or_else(|| THINKING_SIGNATURE_FALLBACK.to_string())
         }));
     }
+    for data in redacted_thinking {
+        content.push(json!({"type":"redacted_thinking","data":data}));
+    }
     if !text.is_empty() {
         content.push(json!({"type":"text","text":text}));
     }
     for (id, (name, input)) in tools {
         let parsed_input = serde_json::from_str::<Value>(&input).unwrap_or_else(|_| json!({}));
         content.push(json!({"type":"tool_use","id":id,"name":name,"input":parsed_input}));
+    }
+    for leaked in tool_leak_filter.take_deduped(&mut seen_tool_signatures) {
+        content.push(json!({
+            "type":"tool_use",
+            "id": format!("toolleakfix_{}_{}", unix_timestamp_secs(), content.len() + 1),
+            "name": leaked.name,
+            "input": leaked.input
+        }));
     }
     let stop_reason = if content
         .iter()
@@ -1835,8 +2217,82 @@ impl KiroUsageAccumulator {
                 }
             }
             "metricsEvent" => self.apply_metrics(payload),
+            "messageMetadataEvent" | "metadataEvent" => self.apply_metadata(payload, model),
             "meteringEvent" => {}
             _ => {}
+        }
+    }
+
+    fn apply_metadata(&mut self, payload: &Value, model: &str) {
+        let metadata = payload
+            .get("messageMetadataEvent")
+            .or_else(|| payload.get("metadataEvent"))
+            .unwrap_or(payload);
+        if let Some(token_usage) = metadata.get("tokenUsage") {
+            let uncached = number_field(
+                token_usage,
+                &[
+                    "uncachedInputTokens",
+                    "uncached_input_tokens",
+                    "inputTokens",
+                    "input_tokens",
+                ],
+            )
+            .unwrap_or(0);
+            let cache_read = number_field(
+                token_usage,
+                &[
+                    "cacheReadInputTokens",
+                    "cache_read_input_tokens",
+                    "cacheReadTokens",
+                ],
+            )
+            .unwrap_or(0);
+            let cache_creation = number_field(
+                token_usage,
+                &[
+                    "cacheWriteInputTokens",
+                    "cache_write_input_tokens",
+                    "cacheCreationInputTokens",
+                    "cache_creation_input_tokens",
+                ],
+            )
+            .unwrap_or(0);
+            let input_total = uncached
+                .saturating_add(cache_read)
+                .saturating_add(cache_creation);
+            if input_total > 0 {
+                self.metrics_input_tokens = Some(input_total);
+            }
+            if cache_read > 0 {
+                self.cache_read_tokens = Some(cache_read);
+            }
+            if cache_creation > 0 {
+                self.cache_creation_tokens = Some(cache_creation);
+            }
+            if let Some(tokens) = number_field(
+                token_usage,
+                &[
+                    "outputTokens",
+                    "output_tokens",
+                    "completionTokens",
+                    "completion_tokens",
+                ],
+            ) {
+                self.output_tokens = Some(tokens);
+            }
+            if let Some(percentage) = number_f64_field(
+                token_usage,
+                &["contextUsagePercentage", "context_usage_percentage"],
+            ) {
+                let tokens =
+                    (percentage * context_window_size(model) as f64 / 100.0).floor() as i32;
+                if tokens > 0 && self.metrics_input_tokens.is_none() {
+                    self.context_input_tokens = Some(tokens);
+                }
+            }
+        } else {
+            self.apply_metrics(metadata);
         }
     }
 
@@ -1931,6 +2387,15 @@ fn reasoning_signature(payload: &Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+fn reasoning_redacted_content(payload: &Value) -> Option<&str> {
+    let value = payload.get("reasoningContentEvent").unwrap_or(payload);
+    value
+        .get("redactedContent")
+        .or_else(|| value.get("redacted_content"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+}
+
 fn sse(event: &str, data: Value) -> Bytes {
     Bytes::from(format!(
         "event: {event}\ndata: {}\n\n",
@@ -2018,7 +2483,7 @@ fn is_account_throttled(status: reqwest::StatusCode, body: &str) -> bool {
 
 #[allow(dead_code)]
 fn default_profile_arn_for_builder_id() -> &'static str {
-    BUILDER_ID_PROFILE_ARN
+    "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
 }
 
 #[cfg(test)]
@@ -2039,6 +2504,7 @@ mod tests {
             client_secret_expires_at: None,
             start_url: None,
             auth_method: Some("builder-id".to_string()),
+            provider: Some("BuilderId".to_string()),
             authenticated_at: 1,
         }
     }
@@ -2152,12 +2618,36 @@ mod tests {
                 .pointer("/additionalModelRequestFields/output_config/effort"),
             Some(&json!("high"))
         );
+        assert_eq!(
+            request
+                .body
+                .pointer("/additionalModelRequestFields/thinking/type"),
+            Some(&json!("adaptive"))
+        );
+    }
+
+    #[test]
+    fn conversion_emits_output_config_for_new_4_8_models() {
+        let body = json!({
+            "model": "claude-sonnet-4-8-thinking",
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": "max" },
+            "messages": [{ "role": "user", "content": "think" }]
+        });
+
+        let request = anthropic_to_kiro_request(&body, &test_account()).unwrap();
+        assert_eq!(
+            request
+                .body
+                .pointer("/additionalModelRequestFields/output_config/effort"),
+            Some(&json!("max"))
+        );
     }
 
     #[test]
     fn conversion_skips_output_config_for_unsupported_models() {
         let body = json!({
-            "model": "claude-sonnet-4-8-thinking",
+            "model": "claude-sonnet-4-5-thinking",
             "thinking": { "type": "adaptive" },
             "output_config": { "effort": "high" },
             "messages": [{ "role": "user", "content": "think" }]
@@ -2227,6 +2717,75 @@ mod tests {
     }
 
     #[test]
+    fn tool_leak_filter_rescues_cross_frame_invoke_and_hides_xml() {
+        let mut filter = ToolLeakFilter::default();
+        let first = filter.push_text(
+            "before <function_calls><invoke name=\"Read\"><parameter name=\"file_",
+            false,
+        );
+        let second = filter.push_text(
+            "path\">Cargo.toml</parameter><parameter name=\"query\">a &amp; b &lt;c&gt;</parameter></invoke></function_calls> after",
+            false,
+        );
+        let flush = filter.push_text("", true);
+        let visible = first
+            .into_iter()
+            .chain(second)
+            .chain(flush)
+            .collect::<String>();
+        let leaked = filter.take_deduped(&mut HashSet::new());
+
+        assert_eq!(visible, "before  after");
+        assert_eq!(leaked.len(), 1);
+        assert_eq!(leaked[0].name, "Read");
+        assert_eq!(leaked[0].input["file_path"], json!("Cargo.toml"));
+        assert_eq!(leaked[0].input["query"], json!("a & b <c>"));
+    }
+
+    #[test]
+    fn sse_builder_injects_rescued_tool_and_dedupes_native_tool() {
+        let mut builder = SseBuilder::new("claude-sonnet-4-8".to_string(), HashMap::new());
+        let native = builder.tool_delta(&json!({
+            "toolUseId": "toolu_native",
+            "name": "Read",
+            "input": "{\"file_path\":\"Cargo.toml\"}",
+            "stop": true
+        }));
+        assert!(!native.is_empty());
+        let leaked_text = "visible <function_calls><invoke name=\"Read\"><parameter name=\"file_path\">Cargo.toml</parameter></invoke></function_calls>";
+        let bytes = builder
+            .assistant_delta(leaked_text)
+            .into_iter()
+            .chain(builder.final_events())
+            .map(|b| String::from_utf8(b.to_vec()).unwrap())
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(bytes.contains("\"text\":\"visible \""));
+        assert!(!bytes.contains("<invoke"));
+        assert!(!bytes.contains("toolleakfix"));
+    }
+
+    #[test]
+    fn sse_builder_injects_rescued_tool_when_native_event_missing() {
+        let mut builder = SseBuilder::new("claude-sonnet-4-8".to_string(), HashMap::new());
+        let bytes = builder
+            .assistant_delta("run <invoke name=\"Bash\"><parameter name=\"command\">pwd</parameter><parameter name=\"timeout\">30</parameter></invoke>")
+            .into_iter()
+            .chain(builder.final_events())
+            .map(|b| String::from_utf8(b.to_vec()).unwrap())
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(!bytes.contains("<invoke"));
+        assert!(bytes.contains("toolleakfix"));
+        assert!(bytes.contains("\"name\":\"Bash\""));
+        assert!(bytes.contains("\\\"command\\\":\\\"pwd\\\""));
+        assert!(bytes.contains("\\\"timeout\\\":30"));
+        assert!(bytes.contains("\"stop_reason\":\"tool_use\""));
+    }
+
+    #[test]
     fn non_streaming_reasoning_block_includes_signature() {
         let bytes = event_stream_bytes(vec![(
             "reasoningContentEvent",
@@ -2276,6 +2835,58 @@ mod tests {
             message.pointer("/content/0/signature"),
             Some(&json!(THINKING_SIGNATURE_FALLBACK))
         );
+    }
+
+    #[test]
+    fn non_streaming_rescues_leaked_tool_and_preserves_visible_text() {
+        let bytes = event_stream_bytes(vec![
+            (
+                "assistantResponseEvent",
+                json!({ "content": "before <function_calls><invoke name=\"Read\"><parameter name=\"file_path\">Cargo.toml</parameter>" }),
+            ),
+            (
+                "assistantResponseEvent",
+                json!({ "content": "</invoke></function_calls> after" }),
+            ),
+        ]);
+
+        let message = kiro_event_bytes_to_anthropic_json(
+            &bytes,
+            "claude-sonnet-4-8",
+            &HashMap::new(),
+            KiroPromptCacheUsage::default(),
+        );
+        assert_eq!(
+            message.pointer("/content/0/text"),
+            Some(&json!("before  after"))
+        );
+        assert_eq!(message.pointer("/content/1/type"), Some(&json!("tool_use")));
+        assert_eq!(message.pointer("/content/1/name"), Some(&json!("Read")));
+        assert_eq!(
+            message.pointer("/content/1/input/file_path"),
+            Some(&json!("Cargo.toml"))
+        );
+        assert_eq!(message.get("stop_reason"), Some(&json!("tool_use")));
+    }
+
+    #[test]
+    fn redacted_thinking_is_preserved() {
+        let bytes = event_stream_bytes(vec![(
+            "reasoningContentEvent",
+            json!({ "reasoningContentEvent": { "redactedContent": "opaque" } }),
+        )]);
+
+        let message = kiro_event_bytes_to_anthropic_json(
+            &bytes,
+            "claude-opus-4-6",
+            &HashMap::new(),
+            KiroPromptCacheUsage::default(),
+        );
+        assert_eq!(
+            message.pointer("/content/0/type"),
+            Some(&json!("redacted_thinking"))
+        );
+        assert_eq!(message.pointer("/content/0/data"), Some(&json!("opaque")));
     }
 
     #[test]
@@ -2438,6 +3049,31 @@ mod tests {
         let usage = usage.final_usage(1);
         assert_eq!(usage.input_tokens, 123);
         assert_eq!(usage.output_tokens, 9);
+    }
+
+    #[test]
+    fn kiro_metadata_token_usage_is_parsed() {
+        let mut usage = KiroUsageAccumulator::default();
+        usage.apply_event(
+            "messageMetadataEvent",
+            &json!({
+                "messageMetadataEvent": {
+                    "tokenUsage": {
+                        "uncachedInputTokens": 200,
+                        "cacheReadInputTokens": 70,
+                        "cacheWriteInputTokens": 30,
+                        "outputTokens": 12
+                    }
+                }
+            }),
+            "claude-sonnet-4-8",
+        );
+
+        let usage = usage.final_usage(1);
+        assert_eq!(usage.input_tokens, 200);
+        assert_eq!(usage.cache_read_tokens, 70);
+        assert_eq!(usage.cache_creation_tokens, 30);
+        assert_eq!(usage.output_tokens, 12);
     }
 
     #[test]

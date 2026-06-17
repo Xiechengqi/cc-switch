@@ -1201,7 +1201,10 @@
     "pricingModelSourceInherit": "繼承全域預設",
     "pricingModelSourceRequest": "請求模型",
     "pricingModelSourceResponse": "回傳模型",
-    "pricingModelSourceHint": "選擇依請求模型還是回傳模型進行定價比對"
+    "pricingModelSourceHint": "選擇依請求模型還是回傳模型進行定價比對",
+    "quotaDispatchLimitPercent": "調度用量上限",
+    "quotaDispatchLimitPercentPlaceholder": "0 表示無上限",
+    "quotaDispatchLimitPercentHint": "設定為非 0 後，router 會在任一重置週期達到該百分比時停止將此供應商調度給 Market。"
   },
   "codexConfig": {
     "authJson": "auth.json (JSON) *",

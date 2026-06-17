@@ -123,7 +123,7 @@ import {
 import { HERMES_DEFAULT_CONFIG } from "./hooks/useHermesFormState";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { useOpenClawLiveProviderIds } from "@/hooks/useOpenClaw";
-import { PROVIDER_TYPES } from "@/config/constants";
+import { PROVIDER_TYPES, TEMPLATE_TYPES } from "@/config/constants";
 import { useHermesLiveProviderIds } from "@/hooks/useHermes";
 
 type PresetEntry = {
@@ -330,12 +330,15 @@ function ProviderFormFull({
     costMultiplier?: string;
     pricingModelSource: PricingModelSourceOption;
     forSaleOfficialPricePercent?: number;
+    quotaDispatchLimitPercent?: number;
   }>(() => ({
     enabled:
       initialData?.meta?.costMultiplier !== undefined ||
-      initialData?.meta?.pricingModelSource !== undefined,
+      initialData?.meta?.pricingModelSource !== undefined ||
+      initialData?.meta?.quotaDispatchLimitPercent !== undefined,
     costMultiplier: initialData?.meta?.costMultiplier,
     forSaleOfficialPricePercent: initialData?.meta?.forSaleOfficialPricePercent,
+    quotaDispatchLimitPercent: initialData?.meta?.quotaDispatchLimitPercent,
     pricingModelSource: normalizePricingSource(
       initialData?.meta?.pricingModelSource,
     ),
@@ -369,10 +372,12 @@ function ProviderFormFull({
     setPricingConfig({
       enabled:
         initialData?.meta?.costMultiplier !== undefined ||
-        initialData?.meta?.pricingModelSource !== undefined,
+        initialData?.meta?.pricingModelSource !== undefined ||
+        initialData?.meta?.quotaDispatchLimitPercent !== undefined,
       costMultiplier: initialData?.meta?.costMultiplier,
       forSaleOfficialPricePercent:
         initialData?.meta?.forSaleOfficialPricePercent,
+      quotaDispatchLimitPercent: initialData?.meta?.quotaDispatchLimitPercent,
       pricingModelSource: normalizePricingSource(
         initialData?.meta?.pricingModelSource,
       ),
@@ -818,6 +823,19 @@ function ProviderFormFull({
   const isGeminiAntigravityOauthPreset =
     appId === "gemini" &&
     currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH;
+  const excludesQuotaDispatchLimit =
+    currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
+    currentProviderType === PROVIDER_TYPES.ANTIGRAVITY_OAUTH;
+  const supportsQuotaDispatchLimit =
+    !excludesQuotaDispatchLimit &&
+    (currentProviderType === PROVIDER_TYPES.GITHUB_COPILOT ||
+      currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
+      currentProviderType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
+      currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
+      currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
+      currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
+      initialData?.meta?.usage_script?.templateType ===
+        TEMPLATE_TYPES.TOKEN_PLAN);
   const isManagedOauthNameReadOnly =
     currentProviderType === PROVIDER_TYPES.GITHUB_COPILOT ||
     currentProviderType === PROVIDER_TYPES.CODEX_OAUTH ||
@@ -1848,6 +1866,14 @@ function ProviderFormFull({
       forSaleOfficialPricePercent !== undefined &&
       forSaleOfficialPricePercent >= 1 &&
       forSaleOfficialPricePercent <= 100;
+    const quotaDispatchLimitPercent = pricingConfig.quotaDispatchLimitPercent;
+    const validQuotaDispatchLimitPercent =
+      supportsQuotaDispatchLimit &&
+      pricingConfig.enabled &&
+      Number.isInteger(quotaDispatchLimitPercent) &&
+      quotaDispatchLimitPercent !== undefined &&
+      quotaDispatchLimitPercent >= 1 &&
+      quotaDispatchLimitPercent <= 100;
 
     // 确定 providerType（新建时从预设获取，编辑时从现有数据获取）
     const providerType =
@@ -1887,43 +1913,43 @@ function ProviderFormFull({
                 authProvider: "openai_official_session",
                 accountId: selectedOpenAISessionAccountId ?? undefined,
               }
-          : isCodexOauthProvider || isCodexOfficialPreset
-            ? {
-                source: "managed_account",
-                authProvider: "codex_oauth",
-                accountId: selectedCodexAccountId ?? undefined,
-              }
-            : isClaudeOauthProvider
+            : isCodexOauthProvider || isCodexOfficialPreset
               ? {
                   source: "managed_account",
-                  authProvider: "claude_oauth",
-                  accountId: selectedClaudeAccountId ?? undefined,
+                  authProvider: "codex_oauth",
+                  accountId: selectedCodexAccountId ?? undefined,
                 }
-              : isGeminiOauthProvider || isGeminiOfficialPreset
+              : isClaudeOauthProvider
                 ? {
                     source: "managed_account",
-                    authProvider: "google_gemini_oauth",
-                    accountId: selectedGeminiAccountId ?? undefined,
+                    authProvider: "claude_oauth",
+                    accountId: selectedClaudeAccountId ?? undefined,
                   }
-                : isAntigravityOauthProvider || isGeminiAntigravityOauthPreset
+                : isGeminiOauthProvider || isGeminiOfficialPreset
                   ? {
                       source: "managed_account",
-                      authProvider: "antigravity_oauth",
-                      accountId: selectedAntigravityAccountId ?? undefined,
+                      authProvider: "google_gemini_oauth",
+                      accountId: selectedGeminiAccountId ?? undefined,
                     }
-                  : isKiroOauthProvider
+                  : isAntigravityOauthProvider || isGeminiAntigravityOauthPreset
                     ? {
                         source: "managed_account",
-                        authProvider: "kiro_oauth",
-                        accountId: selectedKiroAccountId ?? undefined,
+                        authProvider: "antigravity_oauth",
+                        accountId: selectedAntigravityAccountId ?? undefined,
                       }
-                    : isDeepSeekAccountProvider
+                    : isKiroOauthProvider
                       ? {
                           source: "managed_account",
-                          authProvider: "deepseek_account",
-                          accountId: selectedDeepSeekAccountId ?? undefined,
+                          authProvider: "kiro_oauth",
+                          accountId: selectedKiroAccountId ?? undefined,
                         }
-                      : undefined,
+                      : isDeepSeekAccountProvider
+                        ? {
+                            source: "managed_account",
+                            authProvider: "deepseek_account",
+                            accountId: selectedDeepSeekAccountId ?? undefined,
+                          }
+                        : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         isCopilotProvider && selectedGitHubAccountId
@@ -1953,6 +1979,9 @@ function ProviderFormFull({
           : undefined,
       forSaleOfficialPricePercent: validForSaleOfficialPricePercent
         ? forSaleOfficialPricePercent
+        : undefined,
+      quotaDispatchLimitPercent: validQuotaDispatchLimitPercent
+        ? quotaDispatchLimitPercent
         : undefined,
       apiFormat:
         appId === "claude" && category !== "official"
@@ -2993,6 +3022,7 @@ function ProviderFormFull({
                 pricingConfig={pricingConfig}
                 onTestConfigChange={setTestConfig}
                 onPricingConfigChange={setPricingConfig}
+                showQuotaDispatchLimit={supportsQuotaDispatchLimit}
               />
             )}
 

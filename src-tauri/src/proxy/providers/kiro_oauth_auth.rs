@@ -33,6 +33,8 @@ const BUILDER_ID_PROFILE_ARN: &str =
     "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
 const SOCIAL_PROFILE_ARN: &str =
     "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK";
+const ENTERPRISE_FALLBACK_PROFILE_ACCOUNT_ID: &str = "610548660232";
+const ENTERPRISE_FALLBACK_PROFILE_ID: &str = "VNECVYCYYAWN";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KiroOAuthError {
@@ -380,6 +382,8 @@ pub struct KiroAccountData {
     pub start_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub authenticated_at: i64,
 }
 
@@ -397,20 +401,64 @@ impl KiroAccountData {
     }
 }
 
-fn default_profile_arn(account: &KiroAccountData) -> &'static str {
-    let is_social = account
+pub fn is_enterprise_account(account: &KiroAccountData) -> bool {
+    account
         .auth_method
         .as_deref()
-        .map(|method| {
+        .into_iter()
+        .chain(account.provider.as_deref())
+        .any(|value| {
+            let value = value.to_ascii_lowercase();
+            value == "enterprise" || value == "external_idp" || value == "externalidp"
+        })
+}
+
+fn is_social_account(account: &KiroAccountData) -> bool {
+    account
+        .auth_method
+        .as_deref()
+        .into_iter()
+        .chain(account.provider.as_deref())
+        .any(|method| {
             let method = method.to_ascii_lowercase();
             method == "social" || method == "google" || method == "github"
         })
-        .unwrap_or(false);
-    if is_social {
-        SOCIAL_PROFILE_ARN
+}
+
+pub fn enterprise_fallback_profile_arn(region: &str) -> String {
+    let region = if region.starts_with("eu-") {
+        "eu-central-1"
     } else {
-        BUILDER_ID_PROFILE_ARN
+        "us-east-1"
+    };
+    format!(
+        "arn:aws:codewhisperer:{region}:{ENTERPRISE_FALLBACK_PROFILE_ACCOUNT_ID}:profile/{ENTERPRISE_FALLBACK_PROFILE_ID}"
+    )
+}
+
+pub fn default_profile_arn(account: &KiroAccountData) -> String {
+    if is_enterprise_account(account) {
+        let region = if account.api_region.trim().is_empty() {
+            DEFAULT_REGION
+        } else {
+            account.api_region.as_str()
+        };
+        enterprise_fallback_profile_arn(region)
+    } else if is_social_account(account) {
+        SOCIAL_PROFILE_ARN.to_string()
+    } else {
+        BUILDER_ID_PROFILE_ARN.to_string()
     }
+}
+
+pub fn resolve_profile_arn(account: &KiroAccountData) -> String {
+    account
+        .profile_arn
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| default_profile_arn(account))
 }
 
 impl From<&KiroAccountData> for GitHubAccount {
@@ -706,6 +754,7 @@ impl KiroOAuthManager {
             client_secret_expires_at: flow.client_secret_expires_at,
             start_url: Some(flow.start_url),
             auth_method: Some(KIRO_AUTH_METHOD_BUILDER_ID.to_string()),
+            provider: Some("BuilderId".to_string()),
             authenticated_at: chrono::Utc::now().timestamp(),
         };
 
@@ -1063,14 +1112,10 @@ impl KiroOAuthManager {
         let amz_user_agent = format!("aws-sdk-js/1.0.0 KiroIDE-2.3.0-{machine_id}");
 
         let q_host = format!("q.{region}.amazonaws.com");
-        let profile_arn = account
-            .profile_arn
-            .as_deref()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| default_profile_arn(account));
+        let profile_arn = resolve_profile_arn(account);
 
         for url in [
-            usage_limits_url(&q_host, Some(profile_arn)),
+            usage_limits_url(&q_host, Some(&profile_arn)),
             usage_limits_url(&q_host, None),
         ] {
             let resp = self
@@ -1116,6 +1161,120 @@ impl KiroOAuthManager {
             .send()
             .await
             .map_err(KiroOAuthError::from)
+    }
+
+    pub async fn ensure_profile_arn_for_account(
+        &self,
+        account_id: &str,
+        token: &str,
+    ) -> Option<String> {
+        let account = self.get_account(account_id).await?;
+        if account
+            .profile_arn
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Some(resolve_profile_arn(&account));
+        }
+
+        if !is_enterprise_account(&account) {
+            return Some(resolve_profile_arn(&account));
+        }
+
+        match self.fetch_enterprise_profile_arn(&account, token).await {
+            Ok(Some(profile_arn)) => {
+                let mut changed = false;
+                {
+                    let mut accounts = self.accounts.write().await;
+                    if let Some(existing) = accounts.get_mut(account_id) {
+                        existing.profile_arn = Some(profile_arn.clone());
+                        changed = true;
+                    }
+                }
+                if changed {
+                    if let Err(err) = self.save_to_disk().await {
+                        log::warn!("[KiroOAuth] Enterprise profileArn 持久化失败: {err}");
+                    }
+                }
+                Some(profile_arn)
+            }
+            Ok(None) => Some(resolve_profile_arn(&account)),
+            Err(err) => {
+                log::warn!("[KiroOAuth] Enterprise profileArn 获取失败: {err}");
+                Some(resolve_profile_arn(&account))
+            }
+        }
+    }
+
+    async fn fetch_enterprise_profile_arn(
+        &self,
+        account: &KiroAccountData,
+        token: &str,
+    ) -> Result<Option<String>, KiroOAuthError> {
+        let region = if account.api_region.trim().is_empty() {
+            DEFAULT_REGION
+        } else {
+            account.api_region.as_str()
+        };
+        let host = if region.starts_with("eu-") {
+            "codewhisperer.eu-central-1.amazonaws.com".to_string()
+        } else {
+            "codewhisperer.us-east-1.amazonaws.com".to_string()
+        };
+        let machine_id = account
+            .machine_id
+            .clone()
+            .unwrap_or_else(|| machine_id_from_refresh_token(&account.refresh_token));
+        let user_agent = format!(
+            "aws-sdk-js/1.0.34 ua/2.1 os/macos lang/js md/nodejs#22.22.0 api/codewhispererruntime#1.0.34 m/E KiroIDE-2.3.0-{machine_id}"
+        );
+        let amz_user_agent = format!("aws-sdk-js/1.0.34 KiroIDE-2.3.0-{machine_id}");
+
+        let response = self
+            .http_client
+            .post(format!("https://{host}/ListAvailableProfiles"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("x-amz-user-agent", amz_user_agent)
+            .header("user-agent", user_agent)
+            .header("host", host)
+            .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+            .header("amz-sdk-request", "attempt=1; max=1")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Connection", "close")
+            .json(&serde_json::json!({}))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            log::warn!(
+                "[KiroOAuth] ListAvailableProfiles failed: {status} {}",
+                body.chars().take(200).collect::<String>()
+            );
+            return Ok(None);
+        }
+
+        let value = response
+            .json::<Value>()
+            .await
+            .map_err(|err| KiroOAuthError::ParseError(err.to_string()))?;
+        Ok(value
+            .get("profiles")
+            .and_then(Value::as_array)
+            .and_then(|profiles| {
+                profiles.iter().find_map(|profile| {
+                    profile
+                        .get("arn")
+                        .or_else(|| profile.get("profileArn"))
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|arn| !arn.is_empty())
+                        .map(str::to_string)
+                })
+            }))
     }
 
     pub async fn update_account_email_if_missing(
@@ -1492,6 +1651,7 @@ mod tests {
             client_secret_expires_at: None,
             start_url: Some(DEFAULT_START_URL.to_string()),
             auth_method: Some(KIRO_AUTH_METHOD_BUILDER_ID.to_string()),
+            provider: Some("BuilderId".to_string()),
             authenticated_at: 1,
         }
     }
@@ -1545,5 +1705,29 @@ mod tests {
         assert!(url.contains("resourceType=AGENTIC_REQUEST"));
         assert!(url.contains("isEmailRequired=true"));
         assert!(url.contains("profileArn=arn%3Aaws%3Acodewhisperer"));
+    }
+
+    #[test]
+    fn profile_arn_resolution_uses_social_and_enterprise_defaults() {
+        let mut social = builder_account(Some("user@example.com"));
+        social.auth_method = Some("social".to_string());
+        social.provider = Some("Github".to_string());
+        assert_eq!(resolve_profile_arn(&social), SOCIAL_PROFILE_ARN);
+
+        let mut enterprise = builder_account(Some("user@example.com"));
+        enterprise.auth_method = Some("external_idp".to_string());
+        enterprise.provider = Some("Enterprise".to_string());
+        enterprise.api_region = "eu-west-1".to_string();
+        assert_eq!(
+            resolve_profile_arn(&enterprise),
+            "arn:aws:codewhisperer:eu-central-1:610548660232:profile/VNECVYCYYAWN"
+        );
+
+        enterprise.profile_arn =
+            Some("arn:aws:codewhisperer:us-east-1:123:profile/REAL".to_string());
+        assert_eq!(
+            resolve_profile_arn(&enterprise),
+            "arn:aws:codewhisperer:us-east-1:123:profile/REAL"
+        );
     }
 }

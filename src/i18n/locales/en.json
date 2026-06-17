@@ -1253,7 +1253,10 @@
     "pricingModelSourceInherit": "Inherit global default",
     "pricingModelSourceRequest": "Request model",
     "pricingModelSourceResponse": "Response model",
-    "pricingModelSourceHint": "Choose whether to match pricing by request model or response model"
+    "pricingModelSourceHint": "Choose whether to match pricing by request model or response model",
+    "quotaDispatchLimitPercent": "Dispatch usage cap",
+    "quotaDispatchLimitPercentPlaceholder": "0 means no cap",
+    "quotaDispatchLimitPercentHint": "When non-zero, router stops dispatching this provider to Market once any reset-window usage reaches this percentage."
   },
   "codexConfig": {
     "authJson": "auth.json (JSON) *",

@@ -28,9 +28,10 @@ pub async fn stream_check_provider(
         .get(&provider_id)
         .ok_or_else(|| AppError::Message(format!("供应商 {provider_id} 不存在")))?;
 
-    // Copilot 端点是动态的（随 OAuth token 解析），需预先取出 host 再探测；
-    // 其余供应商传 None，由服务层从 settings_config 提取 base_url。无需鉴权。
-    let base_url_override = resolve_copilot_base_url_override(provider, &copilot_state).await?;
+    // 托管 OAuth 供应商没有本地 base_url，使用各自的官方可达性端点；
+    // Copilot 端点是动态的（随 OAuth token 解析），需预先取出 host 再探测。
+    let base_url_override =
+        resolve_stream_check_base_url_override(&app_type, provider, &copilot_state).await?;
     let result =
         StreamCheckService::check_with_retry(&app_type, provider, &config, base_url_override)
             .await?;
@@ -79,7 +80,7 @@ pub async fn stream_check_all_providers(
         }
 
         let base_url_override =
-            resolve_copilot_base_url_override(&provider, &copilot_state).await?;
+            resolve_stream_check_base_url_override(&app_type, &provider, &copilot_state).await?;
         let result =
             StreamCheckService::check_with_retry(&app_type, &provider, &config, base_url_override)
                 .await
@@ -126,7 +127,8 @@ pub fn save_stream_check_config(
 
 /// Copilot 供应商的 base_url 需要从 OAuth 管理器动态解析（按账号或默认端点）。
 /// `is_full_url` 的供应商已是完整地址，无需解析。
-async fn resolve_copilot_base_url_override(
+async fn resolve_stream_check_base_url_override(
+    app_type: &AppType,
     provider: &crate::provider::Provider,
     copilot_state: &State<'_, CopilotAuthState>,
 ) -> Result<Option<String>, AppError> {
@@ -137,8 +139,14 @@ async fn resolve_copilot_base_url_override(
         .and_then(|meta| meta.is_full_url)
         .unwrap_or(false);
 
-    if !is_copilot || is_full_url {
+    if is_full_url {
         return Ok(None);
+    }
+
+    if !is_copilot {
+        return Ok(provider
+            .stream_check_base_url_override(app_type)
+            .map(str::to_string));
     }
 
     let auth_manager = copilot_state.0.read().await;

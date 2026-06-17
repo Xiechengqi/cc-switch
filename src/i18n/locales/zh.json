@@ -1253,7 +1253,10 @@
     "pricingModelSourceInherit": "继承全局默认",
     "pricingModelSourceRequest": "请求模型",
     "pricingModelSourceResponse": "返回模型",
-    "pricingModelSourceHint": "选择按请求模型还是返回模型进行定价匹配"
+    "pricingModelSourceHint": "选择按请求模型还是返回模型进行定价匹配",
+    "quotaDispatchLimitPercent": "调度用量上限",
+    "quotaDispatchLimitPercentPlaceholder": "0 表示无上限",
+    "quotaDispatchLimitPercentHint": "设置为非 0 后，router 会在任一重置周期达到该百分比时停止把此供应商调度给 Market。"
   },
   "codexConfig": {
     "authJson": "auth.json (JSON) *",

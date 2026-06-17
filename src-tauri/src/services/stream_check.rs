@@ -19,6 +19,7 @@
 use reqwest::header::HeaderValue;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::time::Instant;
 
 use crate::app_config::AppType;
@@ -254,6 +255,7 @@ impl StreamCheckService {
             }
             AppType::OpenClaw => Self::extract_openclaw_base_url(provider),
             AppType::Hermes => Self::extract_hermes_base_url(provider),
+            AppType::Claude => Self::extract_claude_base_url(provider),
             AppType::ClaudeDesktop => ClaudeAdapter::new()
                 .extract_base_url(provider)
                 .map_err(|e| AppError::Message(format!("Failed to extract base_url: {e}"))),
@@ -400,6 +402,26 @@ impl StreamCheckService {
                     "hermes_base_url_missing",
                     "Hermes 供应商缺少 base_url",
                     "Hermes provider is missing `base_url`",
+                )
+            })
+    }
+
+    fn extract_claude_base_url(provider: &Provider) -> Result<String, AppError> {
+        provider
+            .settings_config
+            .pointer("/env/ANTHROPIC_BASE_URL")
+            .or_else(|| provider.settings_config.get("base_url"))
+            .or_else(|| provider.settings_config.get("baseURL"))
+            .or_else(|| provider.settings_config.get("apiEndpoint"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|url| url.trim_end_matches('/').to_string())
+            .ok_or_else(|| {
+                AppError::localized(
+                    "claude_base_url_missing",
+                    "Claude 供应商缺少 ANTHROPIC_BASE_URL",
+                    "Claude provider is missing `ANTHROPIC_BASE_URL`",
                 )
             })
     }

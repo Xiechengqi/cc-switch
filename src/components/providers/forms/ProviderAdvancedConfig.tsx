@@ -101,7 +101,7 @@ export function ProviderAdvancedConfig({
           className={cn(
             "overflow-hidden transition-all duration-200",
             isTestConfigOpen
-              ? "max-h-[500px] opacity-100"
+              ? "max-h-[700px] opacity-100"
               : "max-h-0 opacity-0",
           )}
         >
@@ -113,6 +113,27 @@ export function ProviderAdvancedConfig({
               })}
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="test-model">
+                  {t("providerAdvanced.testModel", {
+                    defaultValue: "测试模型",
+                  })}
+                </Label>
+                <Input
+                  id="test-model"
+                  value={testConfig.testModel || ""}
+                  onChange={(e) =>
+                    onTestConfigChange({
+                      ...testConfig,
+                      testModel: e.target.value || undefined,
+                    })
+                  }
+                  placeholder={t("providerAdvanced.testModelPlaceholder", {
+                    defaultValue: "留空使用全局配置",
+                  })}
+                  disabled={!testConfig.enabled}
+                />
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="test-timeout">
                   {t("providerAdvanced.timeoutSecs", {
@@ -134,6 +155,25 @@ export function ProviderAdvancedConfig({
                     })
                   }
                   placeholder="8"
+                  disabled={!testConfig.enabled}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="test-prompt">
+                  {t("providerAdvanced.testPrompt", {
+                    defaultValue: "测试提示词",
+                  })}
+                </Label>
+                <Input
+                  id="test-prompt"
+                  value={testConfig.testPrompt || ""}
+                  onChange={(e) =>
+                    onTestConfigChange({
+                      ...testConfig,
+                      testPrompt: e.target.value || undefined,
+                    })
+                  }
+                  placeholder="Who are you?"
                   disabled={!testConfig.enabled}
                 />
               </div>

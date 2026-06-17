@@ -201,10 +201,22 @@ impl StreamCheckService {
                 degraded_threshold_ms: tc
                     .degraded_threshold_ms
                     .unwrap_or(global.degraded_threshold_ms),
-                claude_model: global.claude_model.clone(),
-                codex_model: global.codex_model.clone(),
-                gemini_model: global.gemini_model.clone(),
-                test_prompt: global.test_prompt.clone(),
+                claude_model: tc
+                    .test_model
+                    .clone()
+                    .unwrap_or_else(|| global.claude_model.clone()),
+                codex_model: tc
+                    .test_model
+                    .clone()
+                    .unwrap_or_else(|| global.codex_model.clone()),
+                gemini_model: tc
+                    .test_model
+                    .clone()
+                    .unwrap_or_else(|| global.gemini_model.clone()),
+                test_prompt: tc
+                    .test_prompt
+                    .clone()
+                    .unwrap_or_else(|| global.test_prompt.clone()),
             },
             None => global.clone(),
         }
@@ -572,7 +584,9 @@ mod tests {
         p2.meta = Some(ProviderMeta {
             test_config: Some(ProviderTestConfig {
                 enabled: true,
+                test_model: Some("provider-test-model".to_string()),
                 timeout_secs: Some(20),
+                test_prompt: Some("provider prompt".to_string()),
                 degraded_threshold_ms: Some(3000),
                 max_retries: None,
             }),
@@ -582,13 +596,19 @@ mod tests {
         assert_eq!(merged2.timeout_secs, 20);
         assert_eq!(merged2.degraded_threshold_ms, 3000);
         assert_eq!(merged2.max_retries, global.max_retries); // 未覆盖 → 全局
+        assert_eq!(merged2.claude_model, "provider-test-model");
+        assert_eq!(merged2.codex_model, "provider-test-model");
+        assert_eq!(merged2.gemini_model, "provider-test-model");
+        assert_eq!(merged2.test_prompt, "provider prompt");
 
         // testConfig 存在但未启用 → 忽略，用全局
         let mut p3 = make_provider(serde_json::json!({}));
         p3.meta = Some(ProviderMeta {
             test_config: Some(ProviderTestConfig {
                 enabled: false,
+                test_model: Some("ignored-model".to_string()),
                 timeout_secs: Some(99),
+                test_prompt: Some("ignored prompt".to_string()),
                 degraded_threshold_ms: None,
                 max_retries: None,
             }),

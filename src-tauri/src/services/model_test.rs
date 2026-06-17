@@ -317,10 +317,22 @@ impl ModelTestService {
                 degraded_threshold_ms: tc
                     .degraded_threshold_ms
                     .unwrap_or(global_config.degraded_threshold_ms),
-                claude_model: global_config.claude_model.clone(),
-                codex_model: global_config.codex_model.clone(),
-                gemini_model: global_config.gemini_model.clone(),
-                test_prompt: global_config.test_prompt.clone(),
+                claude_model: tc
+                    .test_model
+                    .clone()
+                    .unwrap_or_else(|| global_config.claude_model.clone()),
+                codex_model: tc
+                    .test_model
+                    .clone()
+                    .unwrap_or_else(|| global_config.codex_model.clone()),
+                gemini_model: tc
+                    .test_model
+                    .clone()
+                    .unwrap_or_else(|| global_config.gemini_model.clone()),
+                test_prompt: tc
+                    .test_prompt
+                    .clone()
+                    .unwrap_or_else(|| global_config.test_prompt.clone()),
             }
             .normalize_legacy_defaults(),
             None => global_config.clone().normalize_legacy_defaults(),

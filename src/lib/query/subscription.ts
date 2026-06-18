@@ -80,6 +80,18 @@ export interface UseKiroOauthQuotaOptions {
   autoQuery?: boolean;
 }
 
+export function resolveCodexQuotaAuthProvider(
+  meta: ProviderMeta | undefined,
+): string {
+  if (
+    meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
+    meta?.authBinding?.authProvider === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION
+  ) {
+    return PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION;
+  }
+  return PROVIDER_TYPES.CODEX_OAUTH;
+}
+
 export function useClaudeOauthQuota(
   meta: ProviderMeta | undefined,
   options: UseClaudeOauthQuotaOptions = {},
@@ -111,10 +123,12 @@ export function useCodexOauthQuota(
   options: UseCodexOauthQuotaOptions = {},
 ) {
   const { enabled = true } = options;
-  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CODEX_OAUTH);
+  const authProvider = resolveCodexQuotaAuthProvider(meta);
+  const accountId = resolveManagedAccountId(meta, authProvider);
   return useQuery({
-    queryKey: ["codex_oauth", "quota", accountId ?? "default"],
-    queryFn: async () => fetchOauthQuotaWithFallback("codex_oauth", accountId),
+    queryKey: [authProvider, "quota", accountId ?? "default"],
+    queryFn: async () =>
+      fetchOauthQuotaWithFallback(authProvider, accountId, meta?.providerType),
     enabled,
     refetchInterval: false,
     refetchOnWindowFocus: false,

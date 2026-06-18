@@ -1,6 +1,11 @@
 import React from "react";
 import type { ProviderMeta } from "@/types";
-import { useCodexOauthQuota } from "@/lib/query/subscription";
+import {
+  resolveCodexQuotaAuthProvider,
+  useCodexOauthQuota,
+} from "@/lib/query/subscription";
+import { subscriptionApi } from "@/lib/api/subscription";
+import { resolveManagedAccountId } from "@/lib/authBinding";
 import type { AppId } from "@/lib/api";
 import { SubscriptionQuotaView } from "@/components/SubscriptionQuotaFooter";
 
@@ -28,16 +33,23 @@ const CodexOauthQuotaFooter: React.FC<CodexOauthQuotaFooterProps> = ({
     isFetching: loading,
     refetch,
   } = useCodexOauthQuota(meta, { enabled: true });
+  const authProvider = resolveCodexQuotaAuthProvider(meta);
+  const accountId = resolveManagedAccountId(meta, authProvider);
   const handleRefresh = React.useCallback(async () => {
+    await subscriptionApi.refreshOauthQuota(
+      authProvider,
+      accountId,
+      meta?.providerType,
+    );
     await refetch();
-  }, [refetch]);
+  }, [accountId, authProvider, meta?.providerType, refetch]);
 
   return (
     <SubscriptionQuotaView
       quota={quota}
       loading={loading}
       refetch={handleRefresh}
-      appIdForExpiredHint="codex_oauth"
+      appIdForExpiredHint={authProvider}
       inline={inline}
     />
   );

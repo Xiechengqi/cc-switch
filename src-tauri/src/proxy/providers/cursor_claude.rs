@@ -10,8 +10,8 @@ use serde_json::Value;
 use tauri::Manager;
 
 use super::cursor_protocol::{
-    requested_model, response_to_json, response_to_sse_stream, send_cursor_request,
-    CursorRequestContext, CursorResponseFormat,
+    requested_model, response_error_body, response_to_json, response_to_sse_stream,
+    send_cursor_request, CursorRequestContext, CursorResponseFormat,
 };
 
 pub async fn forward_cursor_claude(
@@ -51,7 +51,7 @@ pub async fn forward_cursor_claude(
         conversation_id: None,
     };
     let response = send_cursor_request(&ctx).await?;
-    let response = if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+    let response = if response.status() == StatusCode::UNAUTHORIZED {
         manager
             .invalidate_cached_token(&resolved_account.account_id)
             .await;
@@ -70,7 +70,7 @@ pub async fn forward_cursor_claude(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let body = response.text().await.ok();
+        let body = response_error_body(response).await;
         return Err(ProxyError::UpstreamError { status, body });
     }
 

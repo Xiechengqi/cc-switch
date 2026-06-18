@@ -5,12 +5,16 @@
 //! outward SSE shape in one place so Claude and Codex providers can share it.
 
 use super::cursor_oauth_auth::CursorAccountData;
-use crate::proxy::ProxyError;
+use crate::proxy::{hyper_client::ProxyResponse, ProxyError};
 use async_stream::stream;
 use bytes::{Bytes, BytesMut};
 use flate2::read::GzDecoder;
 use futures::{Stream, StreamExt};
+use http::header::HeaderName;
 use http::StatusCode;
+use http_body_util::Full;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -34,33 +38,54 @@ pub struct CursorRequestContext {
     pub conversation_id: Option<String>,
 }
 
-pub async fn send_cursor_request(
-    ctx: &CursorRequestContext,
-) -> Result<reqwest::Response, ProxyError> {
+pub async fn send_cursor_request(ctx: &CursorRequestContext) -> Result<ProxyResponse, ProxyError> {
     let url = format!("{DEFAULT_API_BASE_URL}{CHAT_PATH}");
     let encoded = encode_cursor_chat_request(&ctx.body, ctx.conversation_id.as_deref());
     let content_length = encoded.len().to_string();
+
     // Cursor's Connect-RPC endpoint returns AWS ALB 464 over HTTP/1.1 for this
-    // protobuf stream. Force reqwest into h2-only mode instead of allowing an
-    // HTTP/1.1 fallback after TLS negotiation.
-    let client = reqwest::Client::builder()
-        .http2_prior_knowledge()
-        .http2_adaptive_window(true)
-        .build()
-        .map_err(|e| ProxyError::ForwardFailed(format!("创建 Cursor HTTP client 失败: {e}")))?;
-    let mut req = client.post(url);
+    // protobuf stream. Use a hyper client that advertises h2 via ALPN and then
+    // refuses HTTP/1.1, instead of h2 prior knowledge which fails with this ALB.
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_webpki_roots()
+        .https_only()
+        .enable_http2()
+        .build();
+    let mut builder = Client::builder(TokioExecutor::new());
+    builder.http2_only(true);
+    builder.http2_adaptive_window(true);
+    let client: Client<_, Full<Bytes>> = builder.build(https);
+
+    let uri = url
+        .parse::<http::Uri>()
+        .map_err(|e| ProxyError::ForwardFailed(format!("解析 Cursor URL 失败: {e}")))?;
+    let mut req = http::Request::builder()
+        .method(http::Method::POST)
+        .uri(uri)
+        .body(Full::new(encoded))
+        .map_err(|e| ProxyError::ForwardFailed(format!("创建 Cursor 请求失败: {e}")))?;
     for (key, value) in build_cursor_headers(&ctx.account, &ctx.access_token) {
-        req = req.header(key, value);
+        let name = HeaderName::from_bytes(key.as_bytes())
+            .map_err(|e| ProxyError::ForwardFailed(format!("Cursor 请求头名称无效: {e}")))?;
+        let value = http::HeaderValue::from_str(&value)
+            .map_err(|e| ProxyError::ForwardFailed(format!("Cursor 请求头值无效: {e}")))?;
+        req.headers_mut().insert(name, value);
     }
-    req.header(reqwest::header::CONTENT_LENGTH, content_length)
-        .body(encoded)
-        .send()
+    req.headers_mut().insert(
+        http::header::CONTENT_LENGTH,
+        http::HeaderValue::from_str(&content_length)
+            .map_err(|e| ProxyError::ForwardFailed(format!("Cursor Content-Length 无效: {e}")))?,
+    );
+
+    client
+        .request(req)
         .await
+        .map(ProxyResponse::Hyper)
         .map_err(|e| ProxyError::ForwardFailed(format!("Cursor HTTP/2 请求失败: {e}")))
 }
 
 pub fn response_to_sse_stream(
-    response: reqwest::Response,
+    response: ProxyResponse,
     model: String,
     format: CursorResponseFormat,
 ) -> impl Stream<Item = IoResult<Bytes>> + Send + 'static {
@@ -114,8 +139,16 @@ pub fn response_to_sse_stream(
     }
 }
 
+pub async fn response_error_body(response: ProxyResponse) -> Option<String> {
+    response
+        .bytes()
+        .await
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
 pub async fn response_to_json(
-    response: reqwest::Response,
+    response: ProxyResponse,
     model: &str,
     format: CursorResponseFormat,
 ) -> Result<(StatusCode, Bytes), ProxyError> {

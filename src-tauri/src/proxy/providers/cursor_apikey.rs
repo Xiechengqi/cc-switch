@@ -17,8 +17,8 @@ use tokio::sync::Mutex;
 
 use super::cursor_oauth_auth::{CursorAccountData, DEFAULT_CURSOR_CLIENT_VERSION};
 use super::cursor_protocol::{
-    requested_model, response_to_json, response_to_sse_stream, send_cursor_request,
-    CursorRequestContext, CursorResponseFormat,
+    requested_model, response_error_body, response_to_json, response_to_sse_stream,
+    send_cursor_request, CursorRequestContext, CursorResponseFormat,
 };
 
 const DEFAULT_CURSOR_BACKEND_BASE_URL: &str = "https://api2.cursor.sh";
@@ -93,7 +93,7 @@ async fn forward_cursor_apikey(
         conversation_id: conversation_id.clone(),
     })
     .await?;
-    let response = if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+    let response = if response.status() == StatusCode::UNAUTHORIZED {
         invalidate_cached_access_token(&api_key).await;
         let access_token = get_cursor_access_token(&api_key, true).await?;
         send_cursor_request(&CursorRequestContext {
@@ -109,7 +109,7 @@ async fn forward_cursor_apikey(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let body = response.text().await.ok();
+        let body = response_error_body(response).await;
         return Err(ProxyError::UpstreamError { status, body });
     }
 

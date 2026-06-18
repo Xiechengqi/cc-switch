@@ -228,6 +228,17 @@ describe("getProviderQuotaSource", () => {
     expect(getProviderQuotaSource(provider, "claude")).toBe("copilot");
   });
 
+  it("uses cursor apikey quota source for Cursor API Key providers", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "official",
+      meta: {
+        providerType: "cursor_apikey",
+      },
+    };
+
+    expect(getProviderQuotaSource(provider, "claude")).toBe("cursor_apikey");
+  });
+
   it("falls back to official quota source for plain official providers", () => {
     const provider: Pick<Provider, "category" | "meta"> = {
       category: "official",
@@ -356,6 +367,16 @@ describe("canTestProvider", () => {
         "claude",
       ),
     ).toBe(true);
+  });
+
+  it("allows Cursor API Key providers even when marked official", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "official",
+      meta: { providerType: "cursor_apikey" },
+    };
+
+    expect(canTestProvider(provider, "claude")).toBe(true);
+    expect(canTestProvider(provider, "codex")).toBe(true);
   });
 
   it("allows third-party Claude providers", () => {

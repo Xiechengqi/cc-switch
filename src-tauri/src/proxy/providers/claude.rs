@@ -511,6 +511,7 @@ impl ClaudeAdapter {
     /// - CodexOAuth: meta.provider_type 为 codex_oauth
     /// - KiroOAuth: meta.provider_type 为 kiro_oauth
     /// - CursorOAuth: meta.provider_type 为 cursor_oauth
+    /// - CursorApiKey: meta.provider_type 为 cursor_apikey
     /// - OpenRouter: base_url 包含 openrouter.ai
     /// - ClaudeAuth: auth_mode 为 bearer_only
     /// - Claude: 默认 Anthropic 官方
@@ -531,6 +532,14 @@ impl ClaudeAdapter {
             == Some("cursor_oauth")
         {
             return ProviderType::CursorOAuth;
+        }
+        if provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.provider_type.as_deref())
+            == Some("cursor_apikey")
+        {
+            return ProviderType::CursorApiKey;
         }
 
         // 检测 Gemini Native 格式

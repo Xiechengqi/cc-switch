@@ -2405,6 +2405,7 @@ impl ProviderService {
                     && !provider.is_codex_official_with_managed_auth()
                     && !provider.is_openai_session_provider()
                     && !provider.is_cursor_oauth_provider()
+                    && !provider.is_cursor_apikey_provider()
                 {
                     return Err(AppError::localized(
                         "provider.codex.official.account_required",

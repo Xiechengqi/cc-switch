@@ -66,7 +66,9 @@ pub async fn model_test_provider(
         return Ok(result);
     }
 
-    if matches!(app_type, AppType::Claude | AppType::Codex) && provider.is_cursor_oauth_provider() {
+    if matches!(app_type, AppType::Claude | AppType::Codex)
+        && (provider.is_cursor_oauth_provider() || provider.is_cursor_apikey_provider())
+    {
         let result = check_cursor_oauth_provider(&app_handle, &app_type, provider, &config).await;
         let _ = state.db.save_stream_check_log(
             &provider_id,
@@ -153,7 +155,9 @@ pub(crate) async fn run_model_test_for_provider(
         return Ok(check_kiro_oauth_provider(app_handle, provider, &config).await);
     }
 
-    if matches!(app_type, AppType::Claude | AppType::Codex) && provider.is_cursor_oauth_provider() {
+    if matches!(app_type, AppType::Claude | AppType::Codex)
+        && (provider.is_cursor_oauth_provider() || provider.is_cursor_apikey_provider())
+    {
         return Ok(check_cursor_oauth_provider(app_handle, app_type, provider, &config).await);
     }
 
@@ -251,7 +255,7 @@ pub async fn model_test_all_providers(
         }
 
         if matches!(app_type, AppType::Claude | AppType::Codex)
-            && provider.is_cursor_oauth_provider()
+            && (provider.is_cursor_oauth_provider() || provider.is_cursor_apikey_provider())
         {
             let result =
                 check_cursor_oauth_provider(&app_handle, &app_type, &provider, &config).await;
@@ -1100,12 +1104,19 @@ async fn check_cursor_oauth_provider_once(
                         "content": config.test_prompt
                     }]
                 });
-                crate::proxy::providers::cursor_claude::forward_cursor_claude(
-                    Some(app_handle),
-                    provider,
-                    &body,
-                )
-                .await
+                if provider.is_cursor_apikey_provider() {
+                    crate::proxy::providers::cursor_apikey::forward_cursor_apikey_claude(
+                        provider, None, &body,
+                    )
+                    .await
+                } else {
+                    crate::proxy::providers::cursor_claude::forward_cursor_claude(
+                        Some(app_handle),
+                        provider,
+                        &body,
+                    )
+                    .await
+                }
             }
             AppType::Codex => {
                 let body = json!({
@@ -1114,13 +1125,23 @@ async fn check_cursor_oauth_provider_once(
                     "stream": true,
                     "input": config.test_prompt
                 });
-                crate::proxy::providers::cursor_codex::forward_cursor_codex(
-                    Some(app_handle),
-                    provider,
-                    "/v1/responses",
-                    &body,
-                )
-                .await
+                if provider.is_cursor_apikey_provider() {
+                    crate::proxy::providers::cursor_apikey::forward_cursor_apikey_codex(
+                        provider,
+                        None,
+                        "/v1/responses",
+                        &body,
+                    )
+                    .await
+                } else {
+                    crate::proxy::providers::cursor_codex::forward_cursor_codex(
+                        Some(app_handle),
+                        provider,
+                        "/v1/responses",
+                        &body,
+                    )
+                    .await
+                }
             }
             _ => Err(crate::proxy::ProxyError::InvalidRequest(
                 "Cursor OAuth stream check only supports Claude/Codex".to_string(),

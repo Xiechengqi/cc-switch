@@ -31,13 +31,14 @@ pub struct CursorRequestContext {
     pub account: CursorAccountData,
     pub access_token: String,
     pub body: Value,
+    pub conversation_id: Option<String>,
 }
 
 pub async fn send_cursor_request(
     ctx: &CursorRequestContext,
 ) -> Result<reqwest::Response, ProxyError> {
     let url = format!("{DEFAULT_API_BASE_URL}{CHAT_PATH}");
-    let encoded = encode_cursor_chat_request(&ctx.body);
+    let encoded = encode_cursor_chat_request(&ctx.body, ctx.conversation_id.as_deref());
     // 让 reqwest 走默认 ALPN 协商再选 HTTP/2，不要 .http2_prior_knowledge()——
     // 后者在 HTTPS 上跳过 ALPN，AWS ELB 会拒掉，导致 reqwest 报 "error sending request"。
     // ALPN 模式 curl 已实测可与 api2.cursor.sh 正常握手 h2。
@@ -169,14 +170,17 @@ pub fn requested_model(body: &Value) -> String {
         .to_string()
 }
 
-fn encode_cursor_chat_request(body: &Value) -> Bytes {
+fn encode_cursor_chat_request(body: &Value, conversation_id: Option<&str>) -> Bytes {
     let model = normalise_model(
         body.get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("default"),
     );
     let messages = messages_from_body(body);
-    let conversation_id = uuid::Uuid::new_v4().to_string();
+    let conversation_id = conversation_id
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mut request = Vec::new();
     let mut entries = Vec::new();
 

@@ -633,6 +633,8 @@ function ProviderFormFull({
     category === "official" &&
     (selectedCodexPresetProviderType || initialData?.meta?.providerType) !==
       PROVIDER_TYPES.CURSOR_OAUTH &&
+    (selectedCodexPresetProviderType || initialData?.meta?.providerType) !==
+      PROVIDER_TYPES.CURSOR_APIKEY &&
     !isCodexOpenAISessionPreset;
 
   useEffect(() => {

@@ -1228,8 +1228,7 @@ async fn build_official_oauth_snapshot(
 ) -> Option<ShareUpstreamProvider> {
     match app {
         AppType::Codex
-            if provider.is_codex_official_with_managed_auth()
-                || provider.is_codex_oauth_provider() =>
+            if provider.is_codex_official_with_managed_auth() || provider.is_codex_oauth() =>
         {
             build_codex_oauth_snapshot(provider).await
         }

@@ -553,6 +553,14 @@ pub async fn query_cursor_quota(
     account: &crate::proxy::providers::cursor_oauth_auth::CursorAccountData,
     access_token: &str,
 ) -> SubscriptionQuota {
+    query_cursor_quota_with_tool(account, access_token, "cursor_oauth").await
+}
+
+pub async fn query_cursor_quota_with_tool(
+    account: &crate::proxy::providers::cursor_oauth_auth::CursorAccountData,
+    access_token: &str,
+    tool: &str,
+) -> SubscriptionQuota {
     let client = crate::proxy::http_client::get();
 
     // Parallel: Stripe status + GetCurrentPeriodUsage
@@ -574,7 +582,7 @@ pub async fn query_cursor_quota(
     };
 
     SubscriptionQuota {
-        tool: "cursor_oauth".to_string(),
+        tool: tool.to_string(),
         credential_status: CredentialStatus::Valid,
         credential_message,
         success: true,

@@ -48,6 +48,7 @@ pub async fn forward_cursor_claude(
         account: resolved_account.clone(),
         access_token: token,
         body: normalize_stream_body(body),
+        conversation_id: None,
     };
     let response = send_cursor_request(&ctx).await?;
     let response = if response.status() == reqwest::StatusCode::UNAUTHORIZED {

@@ -53,6 +53,7 @@ pub async fn forward_cursor_codex(
         account: resolved_account.clone(),
         access_token: token,
         body: normalize_cursor_body(body),
+        conversation_id: None,
     };
     let response = send_cursor_request(&ctx).await?;
     let response = if response.status() == reqwest::StatusCode::UNAUTHORIZED {

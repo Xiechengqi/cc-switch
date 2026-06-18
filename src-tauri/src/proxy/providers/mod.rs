@@ -23,6 +23,7 @@ pub mod codex_image_generation;
 pub mod codex_oauth_auth;
 pub mod copilot_auth;
 pub mod copilot_model_map;
+pub mod cursor_apikey;
 pub mod cursor_claude;
 pub mod cursor_codex;
 pub mod cursor_oauth_auth;
@@ -100,6 +101,8 @@ pub enum ProviderType {
     KiroOAuth,
     /// Cursor OAuth (Cursor 订阅，Claude/Codex API 本地适配)
     CursorOAuth,
+    /// Cursor API Key (Cursor Composer private API via user API key exchange)
+    CursorApiKey,
     /// Antigravity OAuth (Google OAuth + Antigravity Cloud Code internal API)
     AntigravityOAuth,
     /// Antigravity CLI / agy (same OAuth account pool, CLI/harness profile)
@@ -121,6 +124,7 @@ impl ProviderType {
             ProviderType::DeepSeekAccount => false,
             ProviderType::KiroOAuth => false,
             ProviderType::CursorOAuth => false,
+            ProviderType::CursorApiKey => false,
             ProviderType::AntigravityOAuth | ProviderType::AgyOAuth => true,
             _ => false,
         }
@@ -143,6 +147,7 @@ impl ProviderType {
             ProviderType::DeepSeekAccount => "https://chat.deepseek.com",
             ProviderType::KiroOAuth => "https://q.us-east-1.amazonaws.com",
             ProviderType::CursorOAuth => "https://api2.cursor.sh",
+            ProviderType::CursorApiKey => "https://api.cursor.com",
             ProviderType::AntigravityOAuth | ProviderType::AgyOAuth => {
                 "https://daily-cloudcode-pa.googleapis.com"
             }
@@ -196,6 +201,9 @@ impl ProviderType {
                     if meta.provider_type.as_deref() == Some("cursor_oauth") {
                         return ProviderType::CursorOAuth;
                     }
+                    if meta.provider_type.as_deref() == Some("cursor_apikey") {
+                        return ProviderType::CursorApiKey;
+                    }
                 }
 
                 // 检测 base_url 是否为 GitHub Copilot
@@ -233,13 +241,17 @@ impl ProviderType {
                 ProviderType::Claude
             }
             AppType::Codex => {
-                if provider
+                if let Some(provider_type) = provider
                     .meta
                     .as_ref()
                     .and_then(|meta| meta.provider_type.as_deref())
-                    == Some("cursor_oauth")
                 {
-                    return ProviderType::CursorOAuth;
+                    if provider_type == "cursor_oauth" {
+                        return ProviderType::CursorOAuth;
+                    }
+                    if provider_type == "cursor_apikey" {
+                        return ProviderType::CursorApiKey;
+                    }
                 }
                 ProviderType::Codex
             }
@@ -305,6 +317,7 @@ impl ProviderType {
             ProviderType::DeepSeekAccount => "deepseek_account",
             ProviderType::KiroOAuth => "kiro_oauth",
             ProviderType::CursorOAuth => "cursor_oauth",
+            ProviderType::CursorApiKey => "cursor_apikey",
             ProviderType::AntigravityOAuth => "antigravity_oauth",
             ProviderType::AgyOAuth => "agy_oauth",
         }
@@ -338,6 +351,9 @@ impl std::str::FromStr for ProviderType {
             }
             "kiro_oauth" | "kiro-oauth" | "kirooauth" => Ok(ProviderType::KiroOAuth),
             "cursor_oauth" | "cursor-oauth" | "cursoroauth" => Ok(ProviderType::CursorOAuth),
+            "cursor_apikey" | "cursor-api-key" | "cursor-apikey" | "cursorapikey" => {
+                Ok(ProviderType::CursorApiKey)
+            }
             "antigravity_oauth" | "antigravity-oauth" | "antigravityoauth" => {
                 Ok(ProviderType::AntigravityOAuth)
             }
@@ -373,6 +389,7 @@ pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> Box<dyn Pr
         | ProviderType::DeepSeekAccount
         | ProviderType::KiroOAuth
         | ProviderType::CursorOAuth
+        | ProviderType::CursorApiKey
         | ProviderType::AntigravityOAuth
         | ProviderType::AgyOAuth => Box::new(ClaudeAdapter::new()),
         ProviderType::Codex => Box::new(CodexAdapter::new()),
@@ -497,6 +514,10 @@ mod tests {
             ProviderType::GitHubCopilot
         );
         assert_eq!(
+            "cursor_apikey".parse::<ProviderType>().unwrap(),
+            ProviderType::CursorApiKey
+        );
+        assert_eq!(
             "antigravity_oauth".parse::<ProviderType>().unwrap(),
             ProviderType::AntigravityOAuth
         );
@@ -516,6 +537,7 @@ mod tests {
         assert_eq!(ProviderType::GeminiCli.as_str(), "gemini_cli");
         assert_eq!(ProviderType::OpenRouter.as_str(), "openrouter");
         assert_eq!(ProviderType::GitHubCopilot.as_str(), "github_copilot");
+        assert_eq!(ProviderType::CursorApiKey.as_str(), "cursor_apikey");
         assert_eq!(ProviderType::AntigravityOAuth.as_str(), "antigravity_oauth");
         assert_eq!(ProviderType::AgyOAuth.as_str(), "agy_oauth");
     }

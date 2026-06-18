@@ -23,11 +23,15 @@ pub struct FetchedModel {
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     data: Option<Vec<ModelEntry>>,
+    items: Option<Vec<ModelEntry>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ModelEntry {
     id: String,
+    #[serde(default, rename = "displayName", alias = "display_name")]
+    display_name: Option<String>,
+    #[serde(default)]
     owned_by: Option<String>,
 }
 
@@ -79,6 +83,12 @@ pub async fn fetch_models(
         if is_share_tunnel {
             request = request.header("X-API-Key", api_key);
         }
+        if is_cursor_models_endpoint(url) {
+            request = request
+                .header("x-cursor-client-type", "sdk")
+                .header("x-cursor-client-version", "cc-switch-3.16.3")
+                .header("x-ghost-mode", "true");
+        }
         // 自定义 User-Agent：部分 /models 端点同样有 UA 白名单（如 Kimi Coding Plan），
         // 与转发 / 检测路径共用同一 UA，避免"代理可用但取模型失败"。
         if let Some(ua) = &user_agent {
@@ -94,6 +104,7 @@ pub async fn fetch_models(
         let status = response.status();
 
         if status.is_success() {
+            let is_cursor_endpoint = is_cursor_models_endpoint(url);
             let resp: ModelsResponse = response
                 .json()
                 .await
@@ -101,12 +112,15 @@ pub async fn fetch_models(
 
             let mut models: Vec<FetchedModel> = resp
                 .data
+                .or(resp.items)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|m| FetchedModel {
                     id: m.id,
-                    owned_by: m.owned_by,
-                    display_name: None,
+                    owned_by: m
+                        .owned_by
+                        .or_else(|| is_cursor_endpoint.then(|| "cursor".to_string())),
+                    display_name: m.display_name,
                 })
                 .collect();
 
@@ -128,6 +142,17 @@ pub async fn fetch_models(
         "All candidates failed: {}",
         last_err.unwrap_or_else(|| "no candidates".to_string())
     ))
+}
+
+fn is_cursor_models_endpoint(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .host_str()
+                .map(|host| host.eq_ignore_ascii_case("api.cursor.com"))
+        })
+        .unwrap_or(false)
 }
 
 /// 构造「模型列表端点」的候选 URL 列表
@@ -474,6 +499,15 @@ mod tests {
         let data = resp.data.unwrap();
         assert_eq!(data[0].id, "my-model");
         assert!(data[0].owned_by.is_none());
+    }
+
+    #[test]
+    fn test_parse_cursor_items_response() {
+        let json = r#"{"items":[{"id":"composer-2.5","displayName":"Composer 2.5"}]}"#;
+        let resp: ModelsResponse = serde_json::from_str(json).unwrap();
+        let items = resp.items.unwrap();
+        assert_eq!(items[0].id, "composer-2.5");
+        assert_eq!(items[0].display_name.as_deref(), Some("Composer 2.5"));
     }
 
     #[test]

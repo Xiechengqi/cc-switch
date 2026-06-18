@@ -143,6 +143,7 @@ export function canTestProvider(
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
+    provider.meta?.providerType === PROVIDER_TYPES.CURSOR_APIKEY ||
     isAntigravityFamily ||
     isCursorOauthWithManagedAuth(provider) ||
     provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH
@@ -179,6 +180,7 @@ export type ProviderQuotaSource =
   | "google_gemini_oauth"
   | "antigravity_oauth"
   | "cursor_oauth"
+  | "cursor_apikey"
   | "kiro_oauth"
   | "official"
   | "none";
@@ -220,6 +222,10 @@ export function getProviderQuotaSource(
 
   if (isCursorOauthWithManagedAuth(provider)) {
     return "cursor_oauth";
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.CURSOR_APIKEY) {
+    return "cursor_apikey";
   }
 
   if (provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH) {

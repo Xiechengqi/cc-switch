@@ -61,6 +61,7 @@ export interface ProviderPreset {
   // - "codex_oauth": OpenAI Codex via ChatGPT Plus/Pro 反代（需要 OAuth 认证）
   // - "claude_oauth": Claude 官方订阅 OAuth（Anthropic 官方）
   // - "cursor_oauth": Cursor OAuth 订阅反代 Anthropic/Codex API
+  // - "cursor_apikey": Cursor API Key 反代 Anthropic/Codex API
   // - "kiro_oauth": Kiro OAuth 账号反代 Anthropic API
   // - "deepseek_account": DeepSeek 账号
   providerType?:
@@ -72,6 +73,7 @@ export interface ProviderPreset {
     | "antigravity_oauth"
     | "agy_oauth"
     | "cursor_oauth"
+    | "cursor_apikey"
     | "kiro_oauth"
     | "deepseek_account";
 
@@ -197,6 +199,29 @@ export const providerPresets: ProviderPreset[] = [
     category: "official",
     providerType: "cursor_oauth",
     requiresOAuth: true,
+    theme: {
+      backgroundColor: "#111111",
+      textColor: "#FFFFFF",
+    },
+    icon: "cursor",
+  },
+  {
+    name: "Cursor API Key",
+    websiteUrl: "https://cursor.com/dashboard/cloud-agents",
+    apiKeyUrl: "https://cursor.com/dashboard/cloud-agents",
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: "https://api.cursor.com",
+        ANTHROPIC_AUTH_TOKEN: "",
+        ANTHROPIC_MODEL: "composer-2.5",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "composer-2.5",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "composer-2.5",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "composer-2.5-fast",
+      },
+    },
+    isOfficial: true,
+    category: "official",
+    providerType: "cursor_apikey",
     theme: {
       backgroundColor: "#111111",
       textColor: "#FFFFFF",

@@ -187,6 +187,13 @@ impl Provider {
             == Some("cursor_oauth")
     }
 
+    pub fn is_cursor_apikey_provider(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            == Some("cursor_apikey")
+    }
+
     /// 是否为通过代理访问的托管 OAuth 官方订阅。
     pub fn is_managed_oauth_provider(&self) -> bool {
         self.is_codex_official_with_managed_auth()
@@ -249,6 +256,8 @@ impl Provider {
             }
             AppType::Claude if self.is_cursor_oauth_provider() => Some("https://api2.cursor.sh"),
             AppType::Codex if self.is_cursor_oauth_provider() => Some("https://api2.cursor.sh"),
+            AppType::Claude if self.is_cursor_apikey_provider() => Some("https://api.cursor.com"),
+            AppType::Codex if self.is_cursor_apikey_provider() => Some("https://api.cursor.com"),
             AppType::Claude if self.is_antigravity_family_provider() => {
                 Some("https://daily-cloudcode-pa.googleapis.com")
             }

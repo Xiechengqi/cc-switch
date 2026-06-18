@@ -32,7 +32,7 @@ export interface CodexProviderPreset {
   // Codex API 格式
   apiFormat?: CodexApiFormat;
   // 特殊供应商类型
-  providerType?: "cursor_oauth" | "openai_official_session";
+  providerType?: "cursor_oauth" | "cursor_apikey" | "openai_official_session";
   requiresOAuth?: boolean;
   // Codex Chat 本地路由模式下的模型目录
   modelCatalog?: CodexCatalogModel[];
@@ -118,6 +118,26 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     },
     icon: "openai",
     iconColor: "#00A67E",
+  },
+  {
+    name: "Cursor API Key",
+    websiteUrl: "https://cursor.com/dashboard/cloud-agents",
+    apiKeyUrl: "https://cursor.com/dashboard/cloud-agents",
+    isOfficial: true,
+    category: "official",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "cursor",
+      "https://api.cursor.com",
+      "composer-2.5",
+    ),
+    providerType: "cursor_apikey",
+    theme: {
+      icon: "codex",
+      backgroundColor: "#111111",
+      textColor: "#FFFFFF",
+    },
+    icon: "cursor",
   },
   {
     name: "OpenRouter",

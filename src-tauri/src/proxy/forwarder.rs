@@ -1161,10 +1161,31 @@ impl RequestForwarder {
             return Ok((response, Some("anthropic".to_string()), None));
         }
 
+        if matches!(app_type, AppType::Claude) && provider.is_cursor_apikey_provider() {
+            let response = super::providers::cursor_apikey::forward_cursor_apikey_claude(
+                provider,
+                Some(headers),
+                body,
+            )
+            .await?;
+            return Ok((response, Some("anthropic".to_string()), None));
+        }
+
         if matches!(app_type, AppType::Codex) && provider.is_cursor_oauth_provider() {
             let response = super::providers::cursor_codex::forward_cursor_codex(
                 self.app_handle.as_ref(),
                 provider,
+                endpoint,
+                body,
+            )
+            .await?;
+            return Ok((response, Some("openai".to_string()), None));
+        }
+
+        if matches!(app_type, AppType::Codex) && provider.is_cursor_apikey_provider() {
+            let response = super::providers::cursor_apikey::forward_cursor_apikey_codex(
+                provider,
+                Some(headers),
                 endpoint,
                 body,
             )

@@ -24,19 +24,33 @@ interface CursorOauthQuotaFooterProps {
 
 const CursorOauthQuotaFooter: React.FC<CursorOauthQuotaFooterProps> = ({
   meta,
+  appId,
+  providerId,
   inline = false,
 }) => {
   const { t, i18n } = useTranslation();
+  const isCursorApiKey = meta?.providerType === PROVIDER_TYPES.CURSOR_APIKEY;
+  const authProvider = isCursorApiKey
+    ? PROVIDER_TYPES.CURSOR_APIKEY
+    : PROVIDER_TYPES.CURSOR_OAUTH;
   const {
     data: quota,
     isFetching: loading,
     refetch,
-  } = useCursorOauthQuota(meta, { enabled: true });
-  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CURSOR_OAUTH);
+  } = useCursorOauthQuota(meta, { enabled: true, appId, providerId });
+  const accountId = isCursorApiKey
+    ? null
+    : resolveManagedAccountId(meta, PROVIDER_TYPES.CURSOR_OAUTH);
   const handleRefresh = React.useCallback(async () => {
-    await subscriptionApi.refreshOauthQuota("cursor_oauth", accountId);
+    await subscriptionApi.refreshOauthQuota(
+      authProvider,
+      accountId,
+      meta?.providerType,
+      appId,
+      providerId,
+    );
     await refetch();
-  }, [accountId, refetch]);
+  }, [accountId, appId, authProvider, meta?.providerType, providerId, refetch]);
 
   const [now, setNow] = React.useState(Date.now());
   React.useEffect(() => {

@@ -170,6 +170,7 @@ const quotaSourceToAuthProvider = (
   if (quotaSource === "antigravity_oauth")
     return PROVIDER_TYPES.ANTIGRAVITY_OAUTH;
   if (quotaSource === "cursor_oauth") return PROVIDER_TYPES.CURSOR_OAUTH;
+  if (quotaSource === "cursor_apikey") return null;
   if (quotaSource === "kiro_oauth") return PROVIDER_TYPES.KIRO_OAUTH;
   return null;
 };
@@ -522,7 +523,8 @@ export function ProviderCard({
                   providerId={provider.id}
                   isCurrent={isCurrent}
                 />
-              ) : quotaSource === "cursor_oauth" ? (
+              ) : quotaSource === "cursor_oauth" ||
+                quotaSource === "cursor_apikey" ? (
                 <CursorOauthQuotaFooter
                   meta={provider.meta}
                   inline={true}

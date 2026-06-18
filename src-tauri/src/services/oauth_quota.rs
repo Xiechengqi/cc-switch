@@ -63,6 +63,7 @@ pub struct OauthQuotaTarget {
     pub auth_provider: String,
     pub account_id: String,
     pub provider_type: Option<String>,
+    pub cursor_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,6 +194,7 @@ impl OauthQuotaService {
         auth_provider: &str,
         account_id: &str,
         provider_type: Option<&str>,
+        cursor_api_key: Option<String>,
     ) -> Result<CachedOauthQuota, String> {
         let target = OauthQuotaTarget {
             app_type: String::new(),
@@ -201,6 +203,7 @@ impl OauthQuotaService {
             auth_provider: auth_provider.to_string(),
             account_id: account_id.to_string(),
             provider_type: provider_type.map(ToString::to_string),
+            cursor_api_key,
         };
         self.refresh_target(app, managers, target, "manual", None, true)
             .await
@@ -282,7 +285,20 @@ impl OauthQuotaService {
         managers: &OauthQuotaManagers,
     ) -> Option<OauthQuotaTarget> {
         let auth_provider = provider_auth_provider(app_type, provider)?;
-        let account_id = resolve_provider_account_id(&auth_provider, provider, managers).await?;
+        let (account_id, cursor_api_key) = if auth_provider == "cursor_apikey" {
+            let api_key =
+                crate::proxy::providers::cursor_apikey::cursor_api_key_from_provider(provider)
+                    .ok()?;
+            (
+                crate::proxy::providers::cursor_apikey::account_id_for_api_key(&api_key),
+                Some(api_key),
+            )
+        } else {
+            (
+                resolve_provider_account_id(&auth_provider, provider, managers).await?,
+                None,
+            )
+        };
         Some(OauthQuotaTarget {
             app_type: app_type.as_str().to_string(),
             provider_id: provider_id.to_string(),
@@ -293,6 +309,7 @@ impl OauthQuotaService {
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.provider_type.clone()),
+            cursor_api_key,
         })
     }
 
@@ -370,6 +387,7 @@ impl OauthQuotaService {
                 refresh_antigravity_quota(managers, &target.account_id, profile).await
             }
             "cursor_oauth" => refresh_cursor_quota(managers, &target.account_id).await,
+            "cursor_apikey" => refresh_cursor_apikey_quota(target.cursor_api_key.as_deref()).await,
             other => SubscriptionQuota::error(
                 other,
                 CredentialStatus::NotFound,
@@ -559,6 +577,11 @@ fn provider_auth_provider(app_type: &AppType, provider: &Provider) -> Option<Str
     {
         return Some("cursor_oauth".to_string());
     }
+    if matches!(app_type, AppType::Claude | AppType::Codex)
+        && provider_type == Some("cursor_apikey")
+    {
+        return Some("cursor_apikey".to_string());
+    }
     None
 }
 
@@ -582,6 +605,7 @@ async fn resolve_provider_account_id(
         "google_gemini_oauth" => managers.gemini.read().await.default_account_id().await,
         "antigravity_oauth" => managers.antigravity.read().await.default_account_id().await,
         "cursor_oauth" => managers.cursor.read().await.default_account_id().await,
+        "cursor_apikey" => None,
         "github_copilot" => managers
             .copilot
             .read()
@@ -611,6 +635,7 @@ pub async fn resolve_account_id_for_auth_provider(
         "google_gemini_oauth" => managers.gemini.read().await.default_account_id().await,
         "antigravity_oauth" => managers.antigravity.read().await.default_account_id().await,
         "cursor_oauth" => managers.cursor.read().await.default_account_id().await,
+        "cursor_apikey" => None,
         "github_copilot" => managers
             .copilot
             .read()
@@ -762,6 +787,35 @@ async fn refresh_cursor_quota(
     };
     drop(manager);
     crate::services::subscription::query_cursor_quota(&account, &token).await
+}
+
+async fn refresh_cursor_apikey_quota(api_key: Option<&str>) -> SubscriptionQuota {
+    let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty()) else {
+        return SubscriptionQuota::error(
+            "cursor_apikey",
+            CredentialStatus::NotFound,
+            "Cursor API Key is not configured".to_string(),
+        );
+    };
+    let access_token =
+        match crate::proxy::providers::cursor_apikey::get_cursor_access_token(api_key, false).await
+        {
+            Ok(token) => token,
+            Err(err) => {
+                return SubscriptionQuota::error(
+                    "cursor_apikey",
+                    CredentialStatus::Expired,
+                    format!("Cursor API Key exchange failed: {err}"),
+                )
+            }
+        };
+    let account = crate::proxy::providers::cursor_apikey::account_for_api_key(api_key);
+    crate::services::subscription::query_cursor_quota_with_tool(
+        &account,
+        &access_token,
+        "cursor_apikey",
+    )
+    .await
 }
 
 fn kiro_usage_to_subscription_quota(usage: KiroUsageLimitsResponse) -> SubscriptionQuota {

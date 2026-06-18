@@ -8,6 +8,7 @@ export const PROVIDER_TYPES = {
   ANTIGRAVITY_OAUTH: "antigravity_oauth",
   AGY_OAUTH: "agy_oauth",
   CURSOR_OAUTH: "cursor_oauth",
+  CURSOR_APIKEY: "cursor_apikey",
   KIRO_OAUTH: "kiro_oauth",
   DEEPSEEK_ACCOUNT: "deepseek_account",
 } as const;

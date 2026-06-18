@@ -335,6 +335,10 @@ impl ProxyServer {
                 "/_ctl/apply_share_settings",
                 post(super::control::apply_share_settings),
             )
+            .route(
+                "/_ctl/refresh_share_usage",
+                post(super::control::refresh_share_usage),
+            )
             // Claude API (支持带前缀和不带前缀两种格式)
             .route("/v1/messages", post(handlers::handle_messages))
             .route("/claude/v1/messages", post(handlers::handle_messages))

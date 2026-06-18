@@ -20,16 +20,22 @@ async function fetchOauthQuotaWithFallback(
   authProvider: string,
   accountId: string | null,
   providerType?: string | null,
+  appId?: AppId | null,
+  providerId?: string | null,
 ) {
   const cached = await subscriptionApi.getCachedOauthQuota(
     authProvider,
     accountId,
+    appId,
+    providerId,
   );
   if (cached?.quota) return cached.quota;
   const refreshed = await subscriptionApi.refreshOauthQuota(
     authProvider,
     accountId,
     providerType,
+    appId,
+    providerId,
   );
   return refreshed?.quota;
 }
@@ -183,6 +189,8 @@ export interface UseAntigravityOauthQuotaOptions {
 export interface UseCursorOauthQuotaOptions {
   enabled?: boolean;
   autoQuery?: boolean;
+  appId?: AppId;
+  providerId?: string;
 }
 
 export function useAntigravityOauthQuota(
@@ -214,11 +222,29 @@ export function useCursorOauthQuota(
   meta: ProviderMeta | undefined,
   options: UseCursorOauthQuotaOptions = {},
 ) {
-  const { enabled = true } = options;
-  const accountId = resolveManagedAccountId(meta, PROVIDER_TYPES.CURSOR_OAUTH);
+  const { enabled = true, appId, providerId } = options;
+  const isCursorApiKey = meta?.providerType === PROVIDER_TYPES.CURSOR_APIKEY;
+  const authProvider = isCursorApiKey
+    ? PROVIDER_TYPES.CURSOR_APIKEY
+    : PROVIDER_TYPES.CURSOR_OAUTH;
+  const accountId = isCursorApiKey
+    ? null
+    : resolveManagedAccountId(meta, PROVIDER_TYPES.CURSOR_OAUTH);
   return useQuery({
-    queryKey: ["cursor_oauth", "quota", accountId ?? "default"],
-    queryFn: async () => fetchOauthQuotaWithFallback("cursor_oauth", accountId),
+    queryKey: [
+      authProvider,
+      "quota",
+      accountId ?? providerId ?? "default",
+      appId ?? "unknown",
+    ],
+    queryFn: async () =>
+      fetchOauthQuotaWithFallback(
+        authProvider,
+        accountId,
+        meta?.providerType,
+        appId,
+        providerId,
+      ),
     enabled,
     refetchInterval: false,
     refetchOnWindowFocus: false,

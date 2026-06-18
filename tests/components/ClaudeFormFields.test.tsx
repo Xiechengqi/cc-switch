@@ -154,6 +154,26 @@ describe("ClaudeFormFields", () => {
     expect(modelFetchApiMock.fetchCodexOauthModels).not.toHaveBeenCalled();
   });
 
+  it("Cursor API Key 官方预设允许编辑 API Key", () => {
+    const onApiKeyChange = vi.fn();
+    renderCopilotForm({
+      shouldShowApiKey: true,
+      apiKey: "",
+      onApiKeyChange,
+      category: "official",
+      isCopilotPreset: false,
+      usesOAuth: false,
+      isCursorApiKeyPreset: true,
+    });
+
+    const input = screen.getByLabelText("API Key");
+    expect(input).toBeEnabled();
+
+    fireEvent.change(input, { target: { value: "cursor-key" } });
+
+    expect(onApiKeyChange).toHaveBeenCalledWith("cursor-key");
+  });
+
   it("点击获取模型列表后才请求当前 Codex OAuth 账号的模型", async () => {
     renderCodexOauthForm();
 

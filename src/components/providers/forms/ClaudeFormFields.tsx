@@ -124,6 +124,7 @@ interface ClaudeFormFieldsProps {
 
   // Kiro OAuth
   isCursorOauthPreset?: boolean;
+  isCursorApiKeyPreset?: boolean;
   selectedCursorAccountId?: string | null;
   onCursorAccountSelect?: (accountId: string | null) => void;
 
@@ -217,6 +218,7 @@ export function ClaudeFormFields({
   selectedAntigravityAccountId,
   onAntigravityAccountSelect,
   isCursorOauthPreset,
+  isCursorApiKeyPreset,
   selectedCursorAccountId,
   onCursorAccountSelect,
   isKiroOauthPreset,
@@ -760,7 +762,7 @@ export function ClaudeFormFields({
         <ApiKeySection
           value={apiKey}
           onChange={onApiKeyChange}
-          category={category}
+          category={isCursorApiKeyPreset ? "third_party" : category}
           shouldShowLink={shouldShowApiKeyLink}
           websiteUrl={websiteUrl}
           isPartner={isPartner}

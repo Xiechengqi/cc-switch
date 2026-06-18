@@ -13,6 +13,7 @@ interface UseApiKeyStateProps {
   category?: ProviderCategory;
   appType?: string;
   apiKeyField?: string;
+  allowOfficialApiKey?: boolean;
 }
 
 /**
@@ -26,6 +27,7 @@ export function useApiKeyState({
   category,
   appType,
   apiKeyField,
+  allowOfficialApiKey = false,
 }: UseApiKeyStateProps) {
   const [apiKey, setApiKey] = useState(() => {
     if (initialConfig) {
@@ -68,7 +70,7 @@ export function useApiKeyState({
           createIfMissing:
             selectedPresetId !== null &&
             category !== undefined &&
-            category !== "official",
+            (category !== "official" || allowOfficialApiKey),
           appType,
           apiKeyField,
         },
@@ -80,6 +82,7 @@ export function useApiKeyState({
       initialConfig,
       selectedPresetId,
       category,
+      allowOfficialApiKey,
       appType,
       apiKeyField,
       onConfigChange,

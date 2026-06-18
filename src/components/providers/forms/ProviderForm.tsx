@@ -362,6 +362,19 @@ function ProviderFormFull({
   const isOmoCategory = appId === "opencode" && category === "omo";
   const isOmoSlimCategory = appId === "opencode" && category === "omo-slim";
   const isAnyOmoCategory = isOmoCategory || isOmoSlimCategory;
+  const selectedClaudePresetProviderType = useMemo(() => {
+    if (appId !== "claude" || !selectedPresetId?.startsWith("claude-")) {
+      return undefined;
+    }
+    const index = Number(selectedPresetId.slice("claude-".length));
+    if (!Number.isInteger(index)) return undefined;
+    return providerPresets.filter((preset) => !preset.hidden)[index]
+      ?.providerType;
+  }, [appId, selectedPresetId]);
+  const allowOfficialClaudeApiKey =
+    appId === "claude" &&
+    (selectedClaudePresetProviderType || initialData?.meta?.providerType) ===
+      PROVIDER_TYPES.CURSOR_APIKEY;
 
   useEffect(() => {
     setSelectedPresetId(initialData ? null : "custom");
@@ -467,6 +480,7 @@ function ProviderFormFull({
     category,
     appType: appId,
     apiKeyField: appId === "claude" ? localApiKeyField : undefined,
+    allowOfficialApiKey: allowOfficialClaudeApiKey,
   });
 
   const { baseUrl, handleClaudeBaseUrlChange } = useBaseUrlState({
@@ -830,6 +844,8 @@ function ProviderFormFull({
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH;
   const isGeminiAntigravityOauthPreset =
     appId === "gemini" && isAntigravityFamilyType(currentProviderType);
+  const isCursorApiKeyPreset =
+    currentProviderType === PROVIDER_TYPES.CURSOR_APIKEY;
   const excludesQuotaDispatchLimit =
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
     isAntigravityFamilyType(currentProviderType);
@@ -851,6 +867,7 @@ function ProviderFormFull({
     isAntigravityFamilyType(currentProviderType) ||
     currentProviderType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
     currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
+    currentProviderType === PROVIDER_TYPES.CURSOR_APIKEY ||
     currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
     currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
     isCodexOfficialPreset;
@@ -1585,6 +1602,18 @@ function ProviderFormFull({
           }),
         );
         return;
+      }
+    }
+
+    if (isCursorApiKeyPreset) {
+      const hasCursorApiKey =
+        appId === "codex" ? codexApiKey.trim() : apiKey.trim();
+      if (!hasCursorApiKey) {
+        issues.push(
+          t("providerForm.apiKeyRequired", {
+            defaultValue: "请填写 API Key",
+          }),
+        );
       }
     }
 
@@ -2626,6 +2655,7 @@ function ProviderFormFull({
                 templatePreset?.providerType === "cursor_oauth" ||
                 initialData?.meta?.providerType === "cursor_oauth"
               }
+              isCursorApiKeyPreset={isCursorApiKeyPreset}
               isDeepSeekAccountPreset={
                 templatePreset?.providerType === "deepseek_account" ||
                 initialData?.meta?.providerType === "deepseek_account"
@@ -2730,6 +2760,7 @@ function ProviderFormFull({
               isCursorOauthPreset={
                 currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH
               }
+              isCursorApiKeyPreset={isCursorApiKeyPreset}
               selectedCursorAccountId={selectedCursorAccountId}
               onCursorAccountSelect={setSelectedCursorAccountId}
               shouldShowSpeedTest={shouldShowSpeedTest}

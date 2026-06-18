@@ -62,6 +62,7 @@ interface CodexFormFieldsProps {
   selectedOpenAISessionAccountId?: string | null;
   onOpenAISessionAccountSelect?: (accountId: string | null) => void;
   isCursorOauthPreset?: boolean;
+  isCursorApiKeyPreset?: boolean;
   selectedCursorAccountId?: string | null;
   onCursorAccountSelect?: (accountId: string | null) => void;
 
@@ -144,6 +145,7 @@ export function CodexFormFields({
   selectedOpenAISessionAccountId,
   onOpenAISessionAccountSelect,
   isCursorOauthPreset = false,
+  isCursorApiKeyPreset = false,
   selectedCursorAccountId,
   onCursorAccountSelect,
   shouldShowSpeedTest,
@@ -369,7 +371,7 @@ export function CodexFormFields({
           label="API Key"
           value={codexApiKey}
           onChange={onApiKeyChange}
-          category={category}
+          category={isCursorApiKeyPreset ? "third_party" : category}
           shouldShowLink={shouldShowApiKeyLink}
           websiteUrl={websiteUrl}
           isPartner={isPartner}
@@ -404,20 +406,22 @@ export function CodexFormFields({
       )}
 
       {/* Codex Base URL 输入框 */}
-      {shouldShowSpeedTest && !isCodexOfficialPreset && !isOpenAISessionPreset && (
-        <EndpointField
-          id="codexBaseUrl"
-          label={t("codexConfig.apiUrlLabel")}
-          value={codexBaseUrl}
-          onChange={onBaseUrlChange}
-          placeholder={t("providerForm.codexApiEndpointPlaceholder")}
-          hint={t("providerForm.codexApiHint")}
-          showFullUrlToggle
-          isFullUrl={isFullUrl}
-          onFullUrlChange={onFullUrlChange}
-          onManageClick={() => onEndpointModalToggle(true)}
-        />
-      )}
+      {shouldShowSpeedTest &&
+        !isCodexOfficialPreset &&
+        !isOpenAISessionPreset && (
+          <EndpointField
+            id="codexBaseUrl"
+            label={t("codexConfig.apiUrlLabel")}
+            value={codexBaseUrl}
+            onChange={onBaseUrlChange}
+            placeholder={t("providerForm.codexApiEndpointPlaceholder")}
+            hint={t("providerForm.codexApiHint")}
+            showFullUrlToggle
+            isFullUrl={isFullUrl}
+            onFullUrlChange={onFullUrlChange}
+            onManageClick={() => onEndpointModalToggle(true)}
+          />
+        )}
 
       {/* 高级选项 —— 本地路由映射/模型映射/思考能力/自定义 UA；预设供应商通常无需展开 */}
       {category !== "official" && (
@@ -716,19 +720,19 @@ export function CodexFormFields({
         !isCodexOfficialPreset &&
         !isOpenAISessionPreset &&
         isEndpointModalOpen && (
-        <EndpointSpeedTest
-          appId="codex"
-          providerId={providerId}
-          value={codexBaseUrl}
-          onChange={onBaseUrlChange}
-          initialEndpoints={speedTestEndpoints}
-          visible={isEndpointModalOpen}
-          onClose={() => onEndpointModalToggle(false)}
-          autoSelect={autoSelect}
-          onAutoSelectChange={onAutoSelectChange}
-          onCustomEndpointsChange={onCustomEndpointsChange}
-        />
-      )}
+          <EndpointSpeedTest
+            appId="codex"
+            providerId={providerId}
+            value={codexBaseUrl}
+            onChange={onBaseUrlChange}
+            initialEndpoints={speedTestEndpoints}
+            visible={isEndpointModalOpen}
+            onClose={() => onEndpointModalToggle(false)}
+            autoSelect={autoSelect}
+            onAutoSelectChange={onAutoSelectChange}
+            onCustomEndpointsChange={onCustomEndpointsChange}
+          />
+        )}
     </>
   );
 }

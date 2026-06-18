@@ -35,13 +35,23 @@ export function useApiKeyLink({
 }: UseApiKeyLinkProps) {
   // 判断是否显示 API Key 获取链接
   const shouldShowApiKeyLink = useMemo(() => {
+    const selectedPreset =
+      selectedPresetId && selectedPresetId !== "custom"
+        ? presetEntries.find((item) => item.id === selectedPresetId)?.preset
+        : undefined;
+    const providerType =
+      selectedPreset && "providerType" in selectedPreset
+        ? selectedPreset.providerType
+        : undefined;
+
     return (
-      category !== "official" &&
-      (category === "cn_official" ||
-        category === "aggregator" ||
-        category === "third_party")
+      providerType === "cursor_apikey" ||
+      (category !== "official" &&
+        (category === "cn_official" ||
+          category === "aggregator" ||
+          category === "third_party"))
     );
-  }, [category]);
+  }, [category, presetEntries, selectedPresetId]);
 
   // 获取当前预设条目
   const currentPresetEntry = useMemo(() => {
@@ -55,6 +65,11 @@ export function useApiKeyLink({
   const getWebsiteUrl = useMemo(() => {
     if (currentPresetEntry) {
       const preset = currentPresetEntry.preset;
+      const providerType =
+        "providerType" in preset ? preset.providerType : undefined;
+      if (providerType === "cursor_apikey") {
+        return preset.apiKeyUrl || preset.websiteUrl || "";
+      }
       // 对于 cn_official、aggregator、third_party，优先使用 apiKeyUrl（可能包含推广参数）
       if (
         preset.category === "cn_official" ||

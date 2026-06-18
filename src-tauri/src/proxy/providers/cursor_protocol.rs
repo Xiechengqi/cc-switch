@@ -40,10 +40,11 @@ pub async fn send_cursor_request(
     let url = format!("{DEFAULT_API_BASE_URL}{CHAT_PATH}");
     let encoded = encode_cursor_chat_request(&ctx.body, ctx.conversation_id.as_deref());
     let content_length = encoded.len().to_string();
-    // 让 reqwest 走默认 ALPN 协商再选 HTTP/2，不要 .http2_prior_knowledge()——
-    // 后者在 HTTPS 上跳过 ALPN，AWS ELB 会拒掉，导致 reqwest 报 "error sending request"。
-    // ALPN 模式 curl 已实测可与 api2.cursor.sh 正常握手 h2。
+    // Cursor's Connect-RPC endpoint returns AWS ALB 464 over HTTP/1.1 for this
+    // protobuf stream. Force reqwest into h2-only mode instead of allowing an
+    // HTTP/1.1 fallback after TLS negotiation.
     let client = reqwest::Client::builder()
+        .http2_prior_knowledge()
         .http2_adaptive_window(true)
         .build()
         .map_err(|e| ProxyError::ForwardFailed(format!("创建 Cursor HTTP client 失败: {e}")))?;

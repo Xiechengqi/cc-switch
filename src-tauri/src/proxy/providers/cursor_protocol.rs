@@ -39,6 +39,7 @@ pub async fn send_cursor_request(
 ) -> Result<reqwest::Response, ProxyError> {
     let url = format!("{DEFAULT_API_BASE_URL}{CHAT_PATH}");
     let encoded = encode_cursor_chat_request(&ctx.body, ctx.conversation_id.as_deref());
+    let content_length = encoded.len().to_string();
     // 让 reqwest 走默认 ALPN 协商再选 HTTP/2，不要 .http2_prior_knowledge()——
     // 后者在 HTTPS 上跳过 ALPN，AWS ELB 会拒掉，导致 reqwest 报 "error sending request"。
     // ALPN 模式 curl 已实测可与 api2.cursor.sh 正常握手 h2。
@@ -50,7 +51,8 @@ pub async fn send_cursor_request(
     for (key, value) in build_cursor_headers(&ctx.account, &ctx.access_token) {
         req = req.header(key, value);
     }
-    req.body(encoded)
+    req.header(reqwest::header::CONTENT_LENGTH, content_length)
+        .body(encoded)
         .send()
         .await
         .map_err(|e| ProxyError::ForwardFailed(format!("Cursor HTTP/2 请求失败: {e}")))

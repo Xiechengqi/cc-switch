@@ -1046,6 +1046,11 @@ async fn check_cursor_oauth_provider(
     config: &StreamCheckConfig,
 ) -> StreamCheckResult {
     let effective_config = ModelTestService::merge_provider_config(provider, config);
+    let provider_label = if provider.is_cursor_apikey_provider() {
+        "Cursor API Key"
+    } else {
+        "Cursor OAuth"
+    };
     let mut last_result = None;
 
     for attempt in 0..=effective_config.max_retries {
@@ -1064,7 +1069,7 @@ async fn check_cursor_oauth_provider(
     last_result.unwrap_or_else(|| StreamCheckResult {
         status: HealthStatus::Failed,
         success: false,
-        message: "Cursor OAuth 检查失败".to_string(),
+        message: format!("{provider_label} 检查失败"),
         response_time_ms: None,
         http_status: None,
         model_used: ModelTestService::resolve_effective_test_model(
@@ -1091,6 +1096,11 @@ async fn check_cursor_oauth_provider_once(
     let start = Instant::now();
     let model = ModelTestService::resolve_effective_test_model(app_type, provider, config);
     let timeout = std::time::Duration::from_secs(config.timeout_secs);
+    let provider_label = if provider.is_cursor_apikey_provider() {
+        "Cursor API Key"
+    } else {
+        "Cursor OAuth"
+    };
 
     let probe = async {
         let response = match app_type {
@@ -1143,9 +1153,9 @@ async fn check_cursor_oauth_provider_once(
                     .await
                 }
             }
-            _ => Err(crate::proxy::ProxyError::InvalidRequest(
-                "Cursor OAuth stream check only supports Claude/Codex".to_string(),
-            )),
+            _ => Err(crate::proxy::ProxyError::InvalidRequest(format!(
+                "{provider_label} stream check only supports Claude/Codex"
+            ))),
         }
         .map_err(proxy_error_to_app_error)?;
 
@@ -1168,11 +1178,11 @@ async fn check_cursor_oauth_provider_once(
         match stream.next().await {
             Some(Ok(_)) => Ok(status_code),
             Some(Err(err)) => Err(AppError::Message(format!(
-                "Cursor OAuth 读取响应失败: {err}"
+                "{provider_label} 读取响应失败: {err}"
             ))),
-            None => Err(AppError::Message(
-                "Cursor OAuth 检查出错: No response data received".to_string(),
-            )),
+            None => Err(AppError::Message(format!(
+                "{provider_label} 检查出错: No response data received"
+            ))),
         }
     };
 
@@ -1180,7 +1190,7 @@ async fn check_cursor_oauth_provider_once(
         .await
         .unwrap_or_else(|_| {
             Err(AppError::Message(format!(
-                "Cursor OAuth 检查超时: {} 秒",
+                "{provider_label} 检查超时: {} 秒",
                 config.timeout_secs
             )))
         });
@@ -1212,9 +1222,9 @@ async fn check_cursor_oauth_provider_once(
             status: HealthStatus::Failed,
             success: false,
             message: if body.trim().is_empty() {
-                format!("Cursor OAuth 检查出错: HTTP {status}")
+                format!("{provider_label} 检查出错: HTTP {status}")
             } else {
-                format!("Cursor OAuth 检查出错: HTTP {status}: {}", body.trim())
+                format!("{provider_label} 检查出错: HTTP {status}: {}", body.trim())
             },
             response_time_ms: Some(response_time),
             http_status: Some(status),
@@ -1231,7 +1241,7 @@ async fn check_cursor_oauth_provider_once(
         Err(error) => StreamCheckResult {
             status: HealthStatus::Failed,
             success: false,
-            message: format!("Cursor OAuth 检查出错: {error}"),
+            message: format!("{provider_label} 检查出错: {error}"),
             response_time_ms: Some(response_time),
             http_status: None,
             model_used: model,

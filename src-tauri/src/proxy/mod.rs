@@ -6,6 +6,7 @@ pub mod body_filter;
 pub mod cache_injector;
 pub mod circuit_breaker;
 pub(crate) mod codex_identity;
+pub(crate) mod codex_responses_ws;
 pub(crate) mod control;
 pub mod copilot_optimizer;
 pub mod error;

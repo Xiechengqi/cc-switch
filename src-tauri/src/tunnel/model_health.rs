@@ -265,8 +265,10 @@ fn auth_provider_for_model_health(app_type: &AppType, provider: &Provider) -> Op
         }
         AppType::Claude if provider_type == Some("cursor_oauth") => Some("cursor_oauth"),
         AppType::Codex
-            if provider_type == Some("codex_oauth")
-                || provider.is_codex_official_with_managed_auth() =>
+            if matches!(
+                provider_type,
+                Some("codex_oauth" | "openai_device" | "openai_cli")
+            ) || provider.is_codex_official_with_managed_auth() =>
         {
             Some("codex_oauth")
         }

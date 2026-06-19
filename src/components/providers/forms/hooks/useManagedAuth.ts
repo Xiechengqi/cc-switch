@@ -55,16 +55,25 @@ export function useManagedAuth(
   }, [stopPolling]);
 
   const startLoginMutation = useMutation({
-    mutationFn: () => authApi.authStartLogin(authProvider, githubDomain),
+    mutationFn: (params?: {
+      oauthFlowMode?: "web_paste" | "localhost" | "cli" | "device";
+    }) =>
+      authApi.authStartLogin(
+        authProvider,
+        githubDomain,
+        params?.oauthFlowMode,
+      ),
     onSuccess: async (response) => {
       setDeviceCode(response);
       setPollingState("polling");
       setError(null);
 
-      try {
-        await copyText(response.user_code);
-      } catch (e) {
-        console.debug("[ManagedAuth] Failed to copy user code:", e);
+      if (response.user_code) {
+        try {
+          await copyText(response.user_code);
+        } catch (e) {
+          console.debug("[ManagedAuth] Failed to copy user code:", e);
+        }
       }
 
       try {
@@ -177,12 +186,25 @@ export function useManagedAuth(
     },
   });
 
-  const startAuth = useCallback(() => {
+  const startAuth = useCallback(
+    (oauthFlowMode?: "web_paste" | "localhost" | "cli" | "device") => {
+      setPollingState("idle");
+      setDeviceCode(null);
+      setError(null);
+      stopPolling();
+      startLoginMutation.mutate(
+        oauthFlowMode ? { oauthFlowMode } : undefined,
+      );
+    },
+    [startLoginMutation, stopPolling],
+  );
+
+  const startDefaultAuth = useCallback(() => {
     setPollingState("idle");
     setDeviceCode(null);
     setError(null);
     stopPolling();
-    startLoginMutation.mutate();
+    startLoginMutation.mutate(undefined);
   }, [startLoginMutation, stopPolling]);
 
   const cancelAuth = useCallback(() => {
@@ -227,8 +249,9 @@ export function useManagedAuth(
     isAddingAccount: startLoginMutation.isPending || pollingState === "polling",
     isRemovingAccount: removeAccountMutation.isPending,
     isSettingDefaultAccount: setDefaultAccountMutation.isPending,
-    startAuth,
-    addAccount: startAuth,
+    startAuth: startDefaultAuth,
+    addAccount: startDefaultAuth,
+    addAccountWithMode: startAuth,
     cancelAuth,
     logout,
     removeAccount,

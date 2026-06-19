@@ -2574,7 +2574,7 @@
     "quotaExceeded": "{{providerName}} Coding Plan 额度已用尽",
     "quotaExceededHint": "百度千帆返回了 Coding Plan 超额错误。请等待 5 小时/每周/每月额度刷新，或在千帆控制台切换套餐。",
     "codexOauthTokenInvalidated": "{{providerName}} OAuth token 已被服务端废止",
-    "codexOauthTokenInvalidatedHint": "cc-switch 已尝试刷新 token 后重试，但 OpenAI 仍然拒绝。请重新执行 OpenAI Official (OAuth) 登录。",
+    "codexOauthTokenInvalidatedHint": "cc-switch 已尝试刷新 token 后重试，但 OpenAI 仍然拒绝。请重新执行 openai device/openai cli 登录。",
     "openaiSessionTokenInvalidated": "{{providerName}} session token 已被服务端废止",
     "openaiSessionTokenInvalidatedHint": "请在同一浏览器配置中重新登录 chatgpt.com，重新打开 /api/auth/session，并再次导入 JSON。",
     "tokenInvalidated": "{{providerName}} authentication token 已被服务端废止",

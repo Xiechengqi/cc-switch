@@ -2,6 +2,9 @@
 export const PROVIDER_TYPES = {
   GITHUB_COPILOT: "github_copilot",
   CODEX_OAUTH: "codex_oauth",
+  OPENAI_DEVICE: "openai_device",
+  OPENAI_CLI: "openai_cli",
+  OPENAI_SESSION: "openai_session",
   OPENAI_OFFICIAL_SESSION: "openai_official_session",
   CLAUDE_OAUTH: "claude_oauth",
   GOOGLE_GEMINI_OAUTH: "google_gemini_oauth",

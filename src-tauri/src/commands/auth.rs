@@ -96,9 +96,10 @@ fn map_device_code_response(
     }
 }
 
-// `oauth_flow_mode` is Claude OAuth-only. `"web_paste"` → redirect_uri uses
-// platform.claude.com (suitable for remote browsers accessing cc-switch via
-// client URL). Anything else / missing → desktop localhost callback flow.
+// `oauth_flow_mode`:
+// - Claude OAuth: `"web_paste"` → redirect_uri uses platform.claude.com.
+// - Codex OAuth: `"cli"` / `"browser"` → Codex CLI browser OAuth; anything else
+//   keeps the existing device-code flow.
 // Other providers ignore the field.
 #[tauri::command(rename_all = "camelCase")]
 pub async fn auth_start_login(
@@ -129,11 +130,29 @@ pub async fn auth_start_login(
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
             let auth_manager = codex_state.0.read().await;
-            let response = auth_manager
-                .start_device_flow()
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(map_device_code_response(auth_provider, response))
+            match oauth_flow_mode.as_deref() {
+                Some("cli") | Some("browser") | Some("cli_oauth") | Some("cliOauth") => {
+                    let response = auth_manager
+                        .start_cli_browser_flow()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(ManagedAuthDeviceCodeResponse {
+                        provider: auth_provider.to_string(),
+                        device_code: format!("cli:{}", response.state),
+                        user_code: String::new(),
+                        verification_uri: response.auth_url,
+                        expires_in: 300,
+                        interval: 2,
+                    })
+                }
+                _ => {
+                    let response = auth_manager
+                        .start_device_flow()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(map_device_code_response(auth_provider, response))
+                }
+            }
         }
         AUTH_PROVIDER_CLAUDE_OAUTH => {
             let auth_manager = claude_oauth_state.0.read().await;
@@ -276,7 +295,12 @@ pub async fn auth_poll_for_account(
         }
         AUTH_PROVIDER_CODEX_OAUTH => {
             let auth_manager = codex_state.0.write().await;
-            match auth_manager.poll_for_token(&device_code).await {
+            let poll_result = if let Some(state) = device_code.strip_prefix("cli:") {
+                auth_manager.poll_cli_callback_result(state).await
+            } else {
+                auth_manager.poll_for_token(&device_code).await
+            };
+            match poll_result {
                 Ok(account) => {
                     let default_account_id = auth_manager.get_status().await.default_account_id;
                     Ok(account.map(|account| {

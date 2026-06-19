@@ -86,17 +86,21 @@ impl Provider {
     }
 
     pub fn is_codex_oauth_provider(&self) -> bool {
-        self.meta
-            .as_ref()
-            .and_then(|meta| meta.provider_type.as_deref())
-            == Some("codex_oauth")
+        matches!(
+            self.meta
+                .as_ref()
+                .and_then(|meta| meta.provider_type.as_deref()),
+            Some("codex_oauth" | "openai_device" | "openai_cli")
+        )
     }
 
     pub fn is_openai_session_provider(&self) -> bool {
-        self.meta
-            .as_ref()
-            .and_then(|meta| meta.provider_type.as_deref())
-            == Some("openai_official_session")
+        matches!(
+            self.meta
+                .as_ref()
+                .and_then(|meta| meta.provider_type.as_deref()),
+            Some("openai_session" | "openai_official_session")
+        )
     }
 
     pub fn is_codex_oauth(&self) -> bool {

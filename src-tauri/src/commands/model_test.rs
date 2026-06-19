@@ -1366,23 +1366,21 @@ async fn resolve_codex_oauth_auth_override(
 
     if provider.is_openai_session_provider() {
         let auth_manager = openai_session_state.0.read().await;
-        let account_id = provider
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.managed_account_id_for("openai_official_session"));
+        let account_id = provider.meta.as_ref().and_then(|meta| {
+            meta.managed_account_id_for("openai_official_session")
+                .or_else(|| meta.managed_account_id_for("openai_session"))
+        });
 
         let (token, resolved_account_id) = match account_id.as_deref() {
             Some(id) => auth_manager
                 .get_valid_token_with_chatgpt_account_id_for_account(id)
                 .await
-                .map_err(|e| AppError::Message(format!("OpenAI Official session 认证失败: {e}")))?,
+                .map_err(|e| AppError::Message(format!("openai session 认证失败: {e}")))?,
             None => {
                 let (token, chatgpt_account_id) = auth_manager
                     .get_valid_token_with_chatgpt_account_id()
                     .await
-                    .map_err(|e| {
-                        AppError::Message(format!("OpenAI Official session 认证失败: {e}"))
-                    })?;
+                    .map_err(|e| AppError::Message(format!("openai session 认证失败: {e}")))?;
                 (token, chatgpt_account_id)
             }
         };

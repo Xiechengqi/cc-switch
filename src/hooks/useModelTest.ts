@@ -86,7 +86,7 @@ export function useModelTest(appId: AppId) {
             {
               description: t("streamCheck.codexOauthTokenInvalidatedHint", {
                 defaultValue:
-                  "cc-switch retried after refreshing the token, but OpenAI still rejected it. Sign in with OpenAI Official (OAuth) again.",
+                  "cc-switch retried after refreshing the token, but OpenAI still rejected it. Sign in with openai device/openai cli again.",
               }),
               duration: 10000,
               closeButton: true,

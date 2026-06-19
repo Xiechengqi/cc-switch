@@ -1133,7 +1133,7 @@ pub async fn handle_images_generations(
         return Ok(codex_image_error_response(
             StatusCode::FORBIDDEN,
             "unsupported_provider",
-            "Image generation requires the Codex OpenAI Official (OAuth) provider with a managed ChatGPT account.",
+            "Image generation requires an openai device/openai cli provider with a managed ChatGPT account.",
         ));
     }
 

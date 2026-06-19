@@ -185,7 +185,13 @@ impl ProviderType {
                     }
                     if matches!(
                         meta.provider_type.as_deref(),
-                        Some("codex_oauth" | "openai_official_session")
+                        Some(
+                            "codex_oauth"
+                                | "openai_device"
+                                | "openai_cli"
+                                | "openai_session"
+                                | "openai_official_session"
+                        )
                     ) {
                         return ProviderType::CodexOAuth;
                     }

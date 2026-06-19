@@ -2409,8 +2409,8 @@ impl ProviderService {
                 {
                     return Err(AppError::localized(
                         "provider.codex.official.account_required",
-                        "OpenAI Official (OAuth) 必须绑定一个 ChatGPT 账号",
-                        "OpenAI Official (OAuth) must be bound to a ChatGPT account",
+                        "openai device/openai cli 必须绑定一个 ChatGPT 账号",
+                        "openai device/openai cli must be bound to a ChatGPT account",
                     ));
                 }
 

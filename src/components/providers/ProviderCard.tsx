@@ -7,7 +7,7 @@ import type {
   DraggableSyntheticListeners,
 } from "@dnd-kit/core";
 import type { Provider } from "@/types";
-import { authApi, type AppId } from "@/lib/api";
+import { authApi, openaiSessionApi, type AppId } from "@/lib/api";
 import type { ManagedAuthProvider, ManagedAuthStatus } from "@/lib/api";
 import { PROVIDER_TYPES } from "@/config/constants";
 import { cn } from "@/lib/utils";
@@ -202,6 +202,46 @@ function useManagedOauthAccountLogin(
   return account?.email || account?.login || null;
 }
 
+function isOpenAISessionProvider(provider: Provider): boolean {
+  return (
+    provider.meta?.providerType === PROVIDER_TYPES.OPENAI_SESSION ||
+    provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
+    provider.meta?.authBinding?.authProvider === PROVIDER_TYPES.OPENAI_SESSION ||
+    provider.meta?.authBinding?.authProvider ===
+      PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION
+  );
+}
+
+function useOpenAISessionAccountLogin(provider: Provider, enabled: boolean) {
+  const { data: sessionStatus } = useQuery({
+    queryKey: ["openai-session-status"],
+    queryFn: openaiSessionApi.getOpenAISessionStatus,
+    enabled,
+    staleTime: 30000,
+  });
+
+  if (!enabled) {
+    return null;
+  }
+
+  const accountId =
+    resolveManagedAccountId(
+      provider.meta,
+      PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION,
+    ) ??
+    resolveManagedAccountId(
+      provider.meta,
+      PROVIDER_TYPES.OPENAI_SESSION,
+    ) ??
+    sessionStatus?.default_account_id ??
+    null;
+  const account = accountId
+    ? sessionStatus?.accounts.find((item) => item.id === accountId)
+    : undefined;
+
+  return account?.email || account?.login || null;
+}
+
 export function ProviderCard({
   provider,
   isCurrent,
@@ -248,7 +288,17 @@ export function ProviderCard({
     defaultValue: "未配置接口地址",
   });
   const quotaSource = getProviderQuotaSource(provider, appId);
-  const oauthAccountLogin = useManagedOauthAccountLogin(provider, quotaSource);
+  const usesOpenAISession = isOpenAISessionProvider(provider);
+  const openAISessionAccountLogin = useOpenAISessionAccountLogin(
+    provider,
+    usesOpenAISession,
+  );
+  const managedOauthAccountLogin = useManagedOauthAccountLogin(
+    provider,
+    usesOpenAISession ? "none" : quotaSource,
+  );
+  const oauthAccountLogin =
+    openAISessionAccountLogin ?? managedOauthAccountLogin;
 
   const displayUrl = useMemo(() => {
     if (isManagedOauthProvider(provider, appId)) {

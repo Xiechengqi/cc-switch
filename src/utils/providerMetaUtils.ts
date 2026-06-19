@@ -100,6 +100,26 @@ export function isCursorOauthWithManagedAuth(
   );
 }
 
+function isOpenAIOAuthProviderType(providerType?: string | null): boolean {
+  return (
+    providerType === PROVIDER_TYPES.CODEX_OAUTH ||
+    providerType === PROVIDER_TYPES.OPENAI_DEVICE ||
+    providerType === PROVIDER_TYPES.OPENAI_CLI ||
+    providerType === "codex_oauth" ||
+    providerType === "openai_device" ||
+    providerType === "openai_cli"
+  );
+}
+
+function isOpenAISessionProviderType(providerType?: string | null): boolean {
+  return (
+    providerType === PROVIDER_TYPES.OPENAI_SESSION ||
+    providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
+    providerType === "openai_session" ||
+    providerType === "openai_official_session"
+  );
+}
+
 export function isManagedOauthProvider(
   provider: Pick<Provider, "category" | "meta">,
   appId: AppId,
@@ -110,8 +130,8 @@ export function isManagedOauthProvider(
 
   return (
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
-    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
-    provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
+    isOpenAIOAuthProviderType(provider.meta?.providerType) ||
+    isOpenAISessionProviderType(provider.meta?.providerType) ||
     provider.meta?.providerType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
     isAntigravityFamily ||
@@ -141,8 +161,8 @@ export function canTestProvider(
 
   if (
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
-    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
-    provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
+    isOpenAIOAuthProviderType(provider.meta?.providerType) ||
+    isOpenAISessionProviderType(provider.meta?.providerType) ||
     provider.meta?.providerType === PROVIDER_TYPES.CURSOR_APIKEY ||
     isAntigravityFamily ||
     isCursorOauthWithManagedAuth(provider) ||
@@ -202,8 +222,8 @@ export function getProviderQuotaSource(
   }
 
   if (
-    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH ||
-    provider.meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
+    isOpenAIOAuthProviderType(provider.meta?.providerType) ||
+    isOpenAISessionProviderType(provider.meta?.providerType) ||
     (appId === "codex" && isCodexOfficialWithManagedAuth(provider))
   ) {
     return "codex_oauth";

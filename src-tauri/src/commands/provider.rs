@@ -338,7 +338,14 @@ pub(crate) fn suggested_claude_desktop_routes(
             .meta
             .as_ref()
             .and_then(|meta| meta.provider_type.as_deref()),
-        Some("github_copilot") | Some("codex_oauth")
+        Some(
+            "github_copilot"
+                | "codex_oauth"
+                | "openai_device"
+                | "openai_cli"
+                | "openai_session"
+                | "openai_official_session"
+        )
     );
 
     fn add_route(

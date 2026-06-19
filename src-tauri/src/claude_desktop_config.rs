@@ -371,7 +371,14 @@ pub fn validate_direct_provider(provider: &Provider) -> Result<(), AppError> {
 
         if matches!(
             meta.provider_type.as_deref(),
-            Some("github_copilot") | Some("codex_oauth")
+            Some(
+                "github_copilot"
+                    | "codex_oauth"
+                    | "openai_device"
+                    | "openai_cli"
+                    | "openai_session"
+                    | "openai_official_session"
+            )
         ) {
             return Err(AppError::localized(
                 "claude_desktop.provider.type_unsupported",
@@ -476,7 +483,17 @@ fn is_managed_oauth_proxy_provider(provider: &Provider) -> bool {
         .meta
         .as_ref()
         .and_then(|meta| meta.provider_type.as_deref())
-        .is_some_and(|provider_type| matches!(provider_type, "github_copilot" | "codex_oauth"))
+        .is_some_and(|provider_type| {
+            matches!(
+                provider_type,
+                "github_copilot"
+                    | "codex_oauth"
+                    | "openai_device"
+                    | "openai_cli"
+                    | "openai_session"
+                    | "openai_official_session"
+            )
+        })
 }
 
 pub fn validate_provider(provider: &Provider) -> Result<(), AppError> {

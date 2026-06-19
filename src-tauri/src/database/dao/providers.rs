@@ -8,6 +8,9 @@ use std::collections::{HashMap, HashSet};
 const OPENAI_OFFICIAL_LEGACY_NAME: &str = "OpenAI Official";
 const OPENAI_OFFICIAL_OAUTH_NAME: &str = "OpenAI Official (OAuth)";
 const OPENAI_OFFICIAL_SESSION_NAME: &str = "OpenAI Official (session)";
+const OPENAI_DEVICE_NAME: &str = "openai device";
+const OPENAI_CLI_NAME: &str = "openai cli";
+const OPENAI_SESSION_NAME: &str = "openai session";
 
 type OmoProviderRow = (
     String,
@@ -36,13 +39,17 @@ fn is_core_catalog_provider_allowed(app_type: &str, provider: &Provider) -> bool
                 provider.category.as_deref() == Some("official")
                     && provider_type.is_none_or(|value| value == "claude_oauth")
             }
-            name if is_openai_official_oauth_name(name) => {
+            name if is_openai_oauth_catalog_name(name) => {
                 provider.category.as_deref() == Some("official")
-                    && provider_type.is_none_or(|value| value == "codex_oauth")
+                    && provider_type.is_none_or(|value| {
+                        matches!(value, "codex_oauth" | "openai_device" | "openai_cli")
+                    })
             }
-            OPENAI_OFFICIAL_SESSION_NAME => {
+            name if is_openai_session_catalog_name(name) => {
                 provider.category.as_deref() == Some("official")
-                    && provider_type.is_none_or(|value| value == "openai_official_session")
+                    && provider_type.is_none_or(|value| {
+                        matches!(value, "openai_official_session" | "openai_session")
+                    })
             }
             "DeepSeek Official" => {
                 provider.category.as_deref() == Some("cn_official")
@@ -56,10 +63,14 @@ fn is_core_catalog_provider_allowed(app_type: &str, provider: &Provider) -> bool
         },
         "codex" => {
             provider.category.as_deref() == Some("official")
-                && ((is_openai_official_oauth_name(&provider.name)
-                    && provider_type.is_none_or(|value| value == "codex_oauth"))
-                    || (provider.name == OPENAI_OFFICIAL_SESSION_NAME
-                        && provider_type.is_none_or(|value| value == "openai_official_session")))
+                && ((is_openai_oauth_catalog_name(&provider.name)
+                    && provider_type.is_none_or(|value| {
+                        matches!(value, "codex_oauth" | "openai_device" | "openai_cli")
+                    }))
+                    || (is_openai_session_catalog_name(&provider.name)
+                        && provider_type.is_none_or(|value| {
+                            matches!(value, "openai_official_session" | "openai_session")
+                        })))
         }
         "gemini" => {
             provider.name == "Google Official"
@@ -82,7 +93,7 @@ fn is_core_catalog_fallback(app_type: &str, provider: &Provider) -> bool {
                     .is_none_or(|value| value == "claude_oauth")
         }
         "codex" => {
-            is_openai_official_oauth_name(&provider.name)
+            is_openai_oauth_catalog_name(&provider.name)
                 && provider.category.as_deref() == Some("official")
         }
         "gemini" => {
@@ -98,8 +109,18 @@ fn is_core_catalog_fallback(app_type: &str, provider: &Provider) -> bool {
     }
 }
 
-fn is_openai_official_oauth_name(name: &str) -> bool {
-    name == OPENAI_OFFICIAL_OAUTH_NAME || name == OPENAI_OFFICIAL_LEGACY_NAME
+fn is_openai_oauth_catalog_name(name: &str) -> bool {
+    matches!(
+        name,
+        OPENAI_DEVICE_NAME
+            | OPENAI_CLI_NAME
+            | OPENAI_OFFICIAL_OAUTH_NAME
+            | OPENAI_OFFICIAL_LEGACY_NAME
+    )
+}
+
+fn is_openai_session_catalog_name(name: &str) -> bool {
+    matches!(name, OPENAI_SESSION_NAME | OPENAI_OFFICIAL_SESSION_NAME)
 }
 
 impl Database {
@@ -504,7 +525,7 @@ impl Database {
         let mut updated = 0_usize;
         let providers = self.get_all_providers("codex")?;
         for mut provider in providers.into_values() {
-            if !is_openai_official_oauth_name(&provider.name)
+            if !is_openai_oauth_catalog_name(&provider.name)
                 || provider.category.as_deref() != Some("official")
                 || provider.settings_config.get("auth").is_none()
             {
@@ -541,24 +562,49 @@ impl Database {
 
     pub fn ensure_openai_official_oauth_display_name(&self) -> Result<usize, AppError> {
         if self
-            .get_bool_flag("openai_official_oauth_display_name_v1")
+            .get_bool_flag("openai_provider_display_names_v2")
             .unwrap_or(false)
         {
             return Ok(0);
         }
 
         let conn = lock_conn!(self.conn);
-        let updated = conn
+        let mut updated = 0_usize;
+        updated += conn
             .execute(
                 "UPDATE providers
-                 SET name = ?1
-                 WHERE app_type = 'codex' AND name = ?2 AND category = 'official'",
-                params![OPENAI_OFFICIAL_OAUTH_NAME, OPENAI_OFFICIAL_LEGACY_NAME],
+                 SET name = ?1,
+                     meta = CASE
+                       WHEN meta IS NULL OR trim(meta) = '' THEN json_object('providerType', 'openai_device')
+                       ELSE json_set(meta, '$.providerType', 'openai_device')
+                     END
+                 WHERE app_type = 'codex'
+                   AND name IN (?2, ?3)
+                   AND category = 'official'",
+                params![
+                    OPENAI_DEVICE_NAME,
+                    OPENAI_OFFICIAL_LEGACY_NAME,
+                    OPENAI_OFFICIAL_OAUTH_NAME
+                ],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        updated += conn
+            .execute(
+                "UPDATE providers
+                 SET name = ?1,
+                     meta = CASE
+                       WHEN meta IS NULL OR trim(meta) = '' THEN json_object('providerType', 'openai_session')
+                       ELSE json_set(meta, '$.providerType', 'openai_session')
+                     END
+                 WHERE app_type = 'codex'
+                   AND name = ?2
+                   AND category = 'official'",
+                params![OPENAI_SESSION_NAME, OPENAI_OFFICIAL_SESSION_NAME],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         drop(conn);
 
-        self.set_setting("openai_official_oauth_display_name_v1", "true")?;
+        self.set_setting("openai_provider_display_names_v2", "true")?;
         Ok(updated)
     }
 
@@ -1244,7 +1290,7 @@ mod openai_official_oauth_display_name_tests {
                 .expect("query codex official")
                 .expect("codex official exists")
                 .name,
-            "OpenAI Official (OAuth)"
+            "openai device"
         );
         assert_eq!(
             db.get_provider_by_id("claude-openai", "claude")

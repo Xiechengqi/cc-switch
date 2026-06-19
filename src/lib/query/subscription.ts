@@ -90,7 +90,9 @@ export function resolveCodexQuotaAuthProvider(
   meta: ProviderMeta | undefined,
 ): string {
   if (
+    meta?.providerType === PROVIDER_TYPES.OPENAI_SESSION ||
     meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
+    meta?.authBinding?.authProvider === PROVIDER_TYPES.OPENAI_SESSION ||
     meta?.authBinding?.authProvider === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION
   ) {
     return PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION;

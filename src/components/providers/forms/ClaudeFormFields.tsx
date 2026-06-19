@@ -104,7 +104,7 @@ interface ClaudeFormFieldsProps {
   codexFastMode?: boolean;
   onCodexFastModeChange?: (enabled: boolean) => void;
 
-  // OpenAI Official session
+  // openai session
   isOpenAISessionPreset?: boolean;
   isOpenAISessionAuthenticated?: boolean;
   selectedOpenAISessionAccountId?: string | null;

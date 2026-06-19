@@ -18,12 +18,14 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
 
 use super::copilot_auth::{GitHubAccount, GitHubDeviceCodeResponse};
 
@@ -39,11 +41,21 @@ const DEVICE_AUTH_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/device
 /// OAuth Token URL（用于 code 换 token 和 refresh token）
 const OAUTH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
+/// Codex CLI browser OAuth 授权 URL
+const OAUTH_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
+
 /// Device Code 验证 URL（向用户展示）
 const DEVICE_VERIFICATION_URL: &str = "https://auth.openai.com/codex/device";
 
 /// Device Code 流程的 redirect_uri（OpenAI 服务端约定）
 const DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
+
+/// Codex CLI browser OAuth 本地回调配置
+const CLI_CALLBACK_PORT: u16 = 1455;
+const CLI_CALLBACK_PATH: &str = "/auth/callback";
+const CLI_CALLBACK_TIMEOUT_SECS: u64 = 300;
+const CLI_OAUTH_SCOPES: &str = "openid profile email offline_access";
+const CLI_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
 
 /// Token 刷新提前量（毫秒）
 const TOKEN_REFRESH_BUFFER_MS: i64 = 60_000;
@@ -177,6 +189,18 @@ struct PendingDeviceCode {
     expires_at_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+struct PendingCliOAuthFlow {
+    code_verifier: String,
+    redirect_uri: String,
+    expires_at_ms: i64,
+}
+
+enum CliOAuthFlowResult {
+    Pending,
+    Ready(Result<GitHubAccount, String>),
+}
+
 /// 持久化的账号数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CodexAccountData {
@@ -189,6 +213,9 @@ struct CodexAccountData {
     pub refresh_token: String,
     /// 认证时间戳（秒）
     pub authenticated_at: i64,
+    /// 登录方式：device 或 cli。旧数据默认 device。
+    #[serde(default = "default_codex_login_method")]
+    pub login_method: String,
 }
 
 /// 公开的账号信息（返回给前端，复用 GitHubAccount 结构）
@@ -221,6 +248,7 @@ struct CodexOAuthStore {
 }
 
 /// Codex OAuth 认证管理器（多账号）
+#[derive(Clone)]
 pub struct CodexOAuthManager {
     accounts: Arc<RwLock<HashMap<String, CodexAccountData>>>,
     default_account_id: Arc<RwLock<Option<String>>>,
@@ -231,6 +259,10 @@ pub struct CodexOAuthManager {
     /// 进行中的 Device Code 流程：device_auth_id -> {user_code, expires_at_ms}
     /// 过期条目会在 start_device_flow 时被清理，防止放弃的登录流程导致无界增长
     pending_device_codes: Arc<RwLock<HashMap<String, PendingDeviceCode>>>,
+    /// 进行中的 Codex CLI browser OAuth 流程：state -> {code_verifier, redirect_uri, expires_at_ms}
+    pending_cli_flows: Arc<RwLock<HashMap<String, PendingCliOAuthFlow>>>,
+    cli_flow_results: Arc<RwLock<HashMap<String, CliOAuthFlowResult>>>,
+    active_cli_flow_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     http_client: Client,
     storage_path: PathBuf,
 }
@@ -245,6 +277,9 @@ impl CodexOAuthManager {
             access_tokens: Arc::new(RwLock::new(HashMap::new())),
             refresh_locks: Arc::new(RwLock::new(HashMap::new())),
             pending_device_codes: Arc::new(RwLock::new(HashMap::new())),
+            pending_cli_flows: Arc::new(RwLock::new(HashMap::new())),
+            cli_flow_results: Arc::new(RwLock::new(HashMap::new())),
+            active_cli_flow_handle: Arc::new(Mutex::new(None)),
             http_client: Client::new(),
             storage_path,
         };
@@ -389,7 +424,11 @@ impl CodexOAuthManager {
 
         // 用 authorization_code + code_verifier 换 token
         let tokens = self
-            .exchange_code_for_tokens(&success.authorization_code, &success.code_verifier)
+            .exchange_code_for_tokens_with_redirect(
+                &success.authorization_code,
+                &success.code_verifier,
+                DEVICE_REDIRECT_URI,
+            )
             .await?;
 
         // 清理 pending device code
@@ -420,17 +459,230 @@ impl CodexOAuthManager {
         }
 
         let account = self
-            .add_account_internal(account_id, refresh_token, email)
+            .add_account_internal(account_id, refresh_token, email, "device")
             .await?;
 
         Ok(Some(account))
     }
 
-    /// 用 authorization_code + code_verifier 换取 tokens
-    async fn exchange_code_for_tokens(
+    // ==================== Codex CLI browser OAuth 流程 ====================
+
+    pub async fn start_cli_browser_flow(
+        &self,
+    ) -> Result<CodexCliOAuthStartResponse, CodexOAuthError> {
+        use tokio::net::TcpListener;
+
+        let code_verifier = generate_base64url_token();
+        let code_challenge = generate_code_challenge(&code_verifier);
+        let state = generate_base64url_token();
+        let redirect_uri = format!("http://localhost:{CLI_CALLBACK_PORT}{CLI_CALLBACK_PATH}");
+        let auth_url = build_cli_oauth_authorize_url(&redirect_uri, &code_challenge, &state);
+
+        {
+            let mut handle_guard = self.active_cli_flow_handle.lock().await;
+            if let Some(prev) = handle_guard.take() {
+                prev.abort();
+                let _ = prev.await;
+            }
+        }
+        {
+            let mut results = self.cli_flow_results.write().await;
+            results.clear();
+        }
+
+        let addr = format!("127.0.0.1:{CLI_CALLBACK_PORT}");
+        let listener = TcpListener::bind(&addr).await.map_err(|e| {
+            CodexOAuthError::TokenFetchFailed(format!(
+                "无法绑定 OpenAI CLI OAuth 回调端口 {CLI_CALLBACK_PORT}: {e}"
+            ))
+        })?;
+
+        let expires_at_ms =
+            chrono::Utc::now().timestamp_millis() + (CLI_CALLBACK_TIMEOUT_SECS as i64) * 1000;
+        {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let mut pending = self.pending_cli_flows.write().await;
+            pending.retain(|_, flow| flow.expires_at_ms > now_ms);
+            pending.insert(
+                state.clone(),
+                PendingCliOAuthFlow {
+                    code_verifier,
+                    redirect_uri,
+                    expires_at_ms,
+                },
+            );
+        }
+        {
+            let mut results = self.cli_flow_results.write().await;
+            results.insert(state.clone(), CliOAuthFlowResult::Pending);
+        }
+
+        let manager = self.clone();
+        let state_for_task = state.clone();
+        let handle = tokio::spawn(async move {
+            let result = manager
+                .run_cli_callback_on_listener(listener, &state_for_task)
+                .await;
+            let mut results = manager.cli_flow_results.write().await;
+            results.insert(
+                state_for_task,
+                CliOAuthFlowResult::Ready(result.map_err(|e| e.to_string())),
+            );
+        });
+        {
+            let mut handle_guard = self.active_cli_flow_handle.lock().await;
+            *handle_guard = Some(handle);
+        }
+
+        Ok(CodexCliOAuthStartResponse {
+            auth_url,
+            state,
+            callback_port: CLI_CALLBACK_PORT,
+        })
+    }
+
+    pub async fn poll_cli_callback_result(
+        &self,
+        state: &str,
+    ) -> Result<Option<GitHubAccount>, CodexOAuthError> {
+        let mut results = self.cli_flow_results.write().await;
+
+        match results.get(state) {
+            None => Err(CodexOAuthError::TokenFetchFailed(
+                "未找到对应的 OpenAI CLI OAuth 流程（state 不匹配或已过期），请重新登录"
+                    .to_string(),
+            )),
+            Some(CliOAuthFlowResult::Pending) => Ok(None),
+            Some(CliOAuthFlowResult::Ready(_)) => {
+                let entry = results.remove(state).unwrap();
+                if let CliOAuthFlowResult::Ready(result) = entry {
+                    match result {
+                        Ok(account) => Ok(Some(account)),
+                        Err(error) => Err(CodexOAuthError::TokenFetchFailed(error)),
+                    }
+                } else {
+                    unreachable!()
+                }
+            }
+        }
+    }
+
+    async fn run_cli_callback_on_listener(
+        &self,
+        listener: tokio::net::TcpListener,
+        expected_state: &str,
+    ) -> Result<GitHubAccount, CodexOAuthError> {
+        let timeout = tokio::time::Duration::from_secs(CLI_CALLBACK_TIMEOUT_SECS);
+        let result = tokio::time::timeout(timeout, Self::accept_cli_callback(&listener)).await;
+
+        match result {
+            Ok(Ok((code, received_state))) => {
+                if received_state != expected_state {
+                    return Err(CodexOAuthError::TokenFetchFailed(format!(
+                        "state 不匹配: 期望 {expected_state}, 收到 {received_state}"
+                    )));
+                }
+                self.handle_cli_callback(&code, &received_state).await
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => {
+                self.pending_cli_flows.write().await.remove(expected_state);
+                Err(CodexOAuthError::ExpiredToken)
+            }
+        }
+    }
+
+    async fn accept_cli_callback(
+        listener: &tokio::net::TcpListener,
+    ) -> Result<(String, String), CodexOAuthError> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|e| CodexOAuthError::TokenFetchFailed(format!("accept 失败: {e}")))?;
+
+        let mut buf = vec![0u8; 4096];
+        let n = stream
+            .read(&mut buf)
+            .await
+            .map_err(|e| CodexOAuthError::TokenFetchFailed(format!("读取回调请求失败: {e}")))?;
+        let request = String::from_utf8_lossy(&buf[..n]);
+        let parsed = parse_cli_callback_request(&request);
+
+        let response_body = match &parsed {
+            Ok(_) => r#"<!DOCTYPE html><html><body><h2>Authorization successful</h2><p>You can close this window and return to cc-switch.</p><script>window.close()</script></body></html>"#.to_string(),
+            Err(error) => format!(
+                "<!DOCTYPE html><html><body><h2>Authorization failed</h2><p>{}</p></body></html>",
+                html_escape(&error.to_string())
+            ),
+        };
+        let status = if parsed.is_ok() {
+            "200 OK"
+        } else {
+            "400 Bad Request"
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.flush().await;
+
+        parsed
+    }
+
+    async fn handle_cli_callback(
+        &self,
+        code: &str,
+        state: &str,
+    ) -> Result<GitHubAccount, CodexOAuthError> {
+        let flow = {
+            let mut pending = self.pending_cli_flows.write().await;
+            pending.remove(state).ok_or_else(|| {
+                CodexOAuthError::TokenFetchFailed(
+                    "未找到对应的 OpenAI CLI OAuth 流程（state 不匹配或已过期），请重新登录"
+                        .to_string(),
+                )
+            })?
+        };
+
+        if flow.expires_at_ms <= chrono::Utc::now().timestamp_millis() {
+            return Err(CodexOAuthError::ExpiredToken);
+        }
+
+        let tokens = self
+            .exchange_code_for_tokens_with_redirect(code, &flow.code_verifier, &flow.redirect_uri)
+            .await?;
+        let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
+            CodexOAuthError::TokenFetchFailed("响应缺少 refresh_token".to_string())
+        })?;
+        let (account_id, email) = extract_identity_from_tokens(&tokens);
+        let account_id = account_id.ok_or_else(|| {
+            CodexOAuthError::ParseError("无法从 token 中提取 account_id".to_string())
+        })?;
+
+        {
+            let mut tokens_cache = self.access_tokens.write().await;
+            tokens_cache.insert(
+                account_id.clone(),
+                CachedAccessToken {
+                    token: tokens.access_token.clone(),
+                    expires_at_ms: compute_expires_at_ms(tokens.expires_in),
+                },
+            );
+        }
+
+        self.add_account_internal(account_id, refresh_token, email, "cli")
+            .await
+    }
+
+    async fn exchange_code_for_tokens_with_redirect(
         &self,
         code: &str,
         code_verifier: &str,
+        redirect_uri: &str,
     ) -> Result<OAuthTokenResponse, CodexOAuthError> {
         let response = self
             .http_client
@@ -440,7 +692,7 @@ impl CodexOAuthManager {
             .form(&[
                 ("grant_type", "authorization_code"),
                 ("code", code),
-                ("redirect_uri", DEVICE_REDIRECT_URI),
+                ("redirect_uri", redirect_uri),
                 ("client_id", CODEX_CLIENT_ID),
                 ("code_verifier", code_verifier),
             ])
@@ -674,6 +926,20 @@ impl CodexOAuthManager {
             let mut pending = self.pending_device_codes.write().await;
             pending.clear();
         }
+        {
+            let mut pending = self.pending_cli_flows.write().await;
+            pending.clear();
+        }
+        {
+            let mut results = self.cli_flow_results.write().await;
+            results.clear();
+        }
+        {
+            let mut handle_guard = self.active_cli_flow_handle.lock().await;
+            if let Some(handle) = handle_guard.take() {
+                handle.abort();
+            }
+        }
 
         if self.storage_path.exists() {
             std::fs::remove_file(&self.storage_path)?;
@@ -714,6 +980,7 @@ impl CodexOAuthManager {
         account_id: String,
         refresh_token: String,
         email: Option<String>,
+        login_method: &str,
     ) -> Result<GitHubAccount, CodexOAuthError> {
         let now = chrono::Utc::now().timestamp();
 
@@ -722,6 +989,7 @@ impl CodexOAuthManager {
             email,
             refresh_token,
             authenticated_at: now,
+            login_method: login_method.to_string(),
         };
 
         let account = GitHubAccount::from(&data);
@@ -911,7 +1179,107 @@ pub struct CodexOAuthStatus {
     pub username: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexCliOAuthStartResponse {
+    pub auth_url: String,
+    pub state: String,
+    pub callback_port: u16,
+}
+
 // ==================== 工具函数 ====================
+
+fn default_codex_login_method() -> String {
+    "device".to_string()
+}
+
+fn generate_base64url_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn generate_code_challenge(code_verifier: &str) -> String {
+    let digest = Sha256::digest(code_verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn build_cli_oauth_authorize_url(redirect_uri: &str, code_challenge: &str, state: &str) -> String {
+    format!(
+        "{OAUTH_AUTHORIZE_URL}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&prompt=login&state={}&originator={}",
+        urlencoding::encode(CODEX_CLIENT_ID),
+        urlencoding::encode(redirect_uri),
+        urlencoding::encode(CLI_OAUTH_SCOPES),
+        urlencoding::encode(code_challenge),
+        urlencoding::encode(state),
+        urlencoding::encode(CLI_OAUTH_ORIGINATOR),
+    )
+}
+
+fn parse_cli_callback_request(request: &str) -> Result<(String, String), CodexOAuthError> {
+    let first_line = request
+        .lines()
+        .next()
+        .ok_or_else(|| CodexOAuthError::TokenFetchFailed("空回调请求".to_string()))?;
+
+    let path = first_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| CodexOAuthError::TokenFetchFailed("无法解析回调请求路径".to_string()))?;
+
+    if !path.starts_with(CLI_CALLBACK_PATH) {
+        return Err(CodexOAuthError::TokenFetchFailed(format!(
+            "无效回调路径: {path}"
+        )));
+    }
+
+    let query = path
+        .split_once('?')
+        .map(|(_, query)| query)
+        .ok_or_else(|| CodexOAuthError::TokenFetchFailed("回调请求缺少查询参数".to_string()))?;
+
+    let params: HashMap<&str, &str> = query
+        .split('&')
+        .filter_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            Some((parts.next()?, parts.next().unwrap_or("")))
+        })
+        .collect();
+
+    if let Some(error) = params.get("error") {
+        let desc = params.get("error_description").copied().unwrap_or("");
+        return Err(CodexOAuthError::TokenFetchFailed(format!(
+            "OAuth 错误: {error} - {desc}"
+        )));
+    }
+
+    let code = params
+        .get("code")
+        .ok_or_else(|| CodexOAuthError::TokenFetchFailed("回调缺少 code 参数".to_string()))?
+        .to_string();
+    let state = params
+        .get("state")
+        .ok_or_else(|| CodexOAuthError::TokenFetchFailed("回调缺少 state 参数".to_string()))?
+        .to_string();
+
+    let code = urlencoding::decode(&code)
+        .unwrap_or_else(|_| code.clone().into())
+        .to_string();
+    let state = urlencoding::decode(&state)
+        .unwrap_or_else(|_| state.clone().into())
+        .to_string();
+
+    Ok((code, state))
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
 
 /// 解析 OpenAI Device Code 响应中的 interval 字段
 ///
@@ -1103,6 +1471,7 @@ mod tests {
                     "acc-123".to_string(),
                     "rt-secret".to_string(),
                     Some("user@example.com".to_string()),
+                    "device",
                 )
                 .await
                 .unwrap();
@@ -1125,6 +1494,7 @@ mod tests {
                 "acc-123".to_string(),
                 "rt".to_string(),
                 Some("a@example.com".to_string()),
+                "device",
             )
             .await
             .unwrap();
@@ -1133,6 +1503,7 @@ mod tests {
                 "acc-456".to_string(),
                 "rt2".to_string(),
                 Some("b@example.com".to_string()),
+                "device",
             )
             .await
             .unwrap();

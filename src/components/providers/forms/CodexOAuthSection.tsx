@@ -26,6 +26,7 @@ import {
 import { useCodexOauth } from "./hooks/useCodexOauth";
 import { copyText } from "@/lib/clipboard";
 import { ENABLE_CODEX_BANKED_RESET } from "@/config/constants";
+import { isRemoteWebMode } from "@/lib/api/auth";
 import CodexBankedResetPanel from "./CodexBankedResetPanel";
 
 interface CodexOAuthSectionProps {
@@ -82,12 +83,18 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
     isRemovingAccount,
     isSettingDefaultAccount,
     defaultAccountId,
-    addAccount,
     cancelAuth,
     logout,
     removeAccount,
     setDefaultAccount,
+    addAccountWithMode,
   } = useCodexOauth();
+  const isRemoteClientWeb = isRemoteWebMode();
+  const cliLoginTitle = isRemoteClientWeb
+    ? t("codexOauth.cliUnavailableInRemoteWeb", {
+        defaultValue: "远程 Web 模式下 localhost 回调不可达，请使用 openai device",
+      })
+    : undefined;
 
   const copyUserCode = async () => {
     if (deviceCode?.user_code) {
@@ -280,28 +287,52 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
 
       {/* 未认证 - 登录按钮 */}
       {!hasAnyAccount && pollingState === "idle" && (
-        <Button
-          type="button"
-          onClick={addAccount}
-          className="w-full"
-          variant="outline"
-        >
-          <Sparkles className="mr-2 h-4 w-4" />
-          {t("codexOauth.loginWithChatGPT", "使用 ChatGPT 登录")}
-        </Button>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <Button
+            type="button"
+            onClick={() => addAccountWithMode?.("cli")}
+            className="w-full"
+            variant="outline"
+            disabled={isRemoteClientWeb || isAddingAccount}
+            title={cliLoginTitle}
+          >
+            <Sparkles className="mr-2 h-4 w-4" />
+            {t("codexOauth.loginWithCli", "openai cli")}
+          </Button>
+          <Button
+            type="button"
+            onClick={() => addAccountWithMode?.("device")}
+            className="w-full"
+            variant="outline"
+            disabled={isAddingAccount}
+          >
+            <ExternalLink className="mr-2 h-4 w-4" />
+            {t("codexOauth.loginWithDevice", "openai device")}
+          </Button>
+        </div>
       )}
 
       {/* 已有账号 - 添加更多按钮 */}
       {hasAnyAccount && pollingState === "idle" && (
-        <div className="grid grid-cols-1 gap-2">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <Button
             type="button"
-            onClick={addAccount}
+            onClick={() => addAccountWithMode?.("cli")}
+            variant="outline"
+            disabled={isAddingAccount || isRemoteClientWeb}
+            title={cliLoginTitle}
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            {t("codexOauth.addCliAccount", "添加 openai cli")}
+          </Button>
+          <Button
+            type="button"
+            onClick={() => addAccountWithMode?.("device")}
             variant="outline"
             disabled={isAddingAccount}
           >
             <Plus className="mr-2 h-4 w-4" />
-            {t("codexOauth.addAnotherAccount", "添加其他账号")}
+            {t("codexOauth.addDeviceAccount", "添加 openai device")}
           </Button>
         </div>
       )}
@@ -314,29 +345,37 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             {t("codexOauth.waitingForAuth", "等待授权中...")}
           </div>
 
-          <div className="text-center">
-            <p className="text-xs text-muted-foreground mb-1">
-              {t("codexOauth.enterCode", "在浏览器中输入以下代码：")}
-            </p>
-            <div className="flex items-center justify-center gap-2">
-              <code className="text-2xl font-mono font-bold tracking-wider bg-background px-4 py-2 rounded border">
-                {deviceCode.user_code}
-              </code>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                onClick={copyUserCode}
-                title={t("codexOauth.copyCode", "复制代码")}
-              >
-                {copied ? (
-                  <Check className="h-4 w-4 text-green-500" />
-                ) : (
-                  <Copy className="h-4 w-4" />
-                )}
-              </Button>
+          {deviceCode.user_code ? (
+            <div className="text-center">
+              <p className="text-xs text-muted-foreground mb-1">
+                {t("codexOauth.enterCode", "在浏览器中输入以下代码：")}
+              </p>
+              <div className="flex items-center justify-center gap-2">
+                <code className="text-2xl font-mono font-bold tracking-wider bg-background px-4 py-2 rounded border">
+                  {deviceCode.user_code}
+                </code>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={copyUserCode}
+                  title={t("codexOauth.copyCode", "复制代码")}
+                >
+                  {copied ? (
+                    <Check className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="text-center text-sm text-muted-foreground">
+              {t("codexOauth.completeBrowserLogin", {
+                defaultValue: "请在打开的浏览器页面中完成 OpenAI 授权。",
+              })}
+            </div>
+          )}
 
           <div className="text-center">
             <a
@@ -370,7 +409,9 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
           <div className="flex gap-2">
             <Button
               type="button"
-              onClick={addAccount}
+              onClick={() =>
+                addAccountWithMode?.(isRemoteClientWeb ? "device" : "cli")
+              }
               variant="outline"
               size="sm"
             >

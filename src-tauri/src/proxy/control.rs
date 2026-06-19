@@ -528,7 +528,10 @@ fn quota_auth_provider(app_type: &AppType, provider: &Provider) -> Option<String
         return Some("github_copilot".to_string());
     }
     if matches!(app_type, AppType::Codex)
-        && (provider_type == Some("codex_oauth") || provider.is_codex_official_with_managed_auth())
+        && (matches!(
+            provider_type,
+            Some("codex_oauth" | "openai_device" | "openai_cli")
+        ) || provider.is_codex_official_with_managed_auth())
     {
         return Some("codex_oauth".to_string());
     }

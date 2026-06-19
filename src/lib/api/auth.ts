@@ -134,7 +134,7 @@ export async function authStartLogin(
    * Backend treats anything else (including undefined) as the classic localhost
    * callback flow.
    */
-  oauthFlowMode?: "web_paste" | "localhost",
+  oauthFlowMode?: "web_paste" | "localhost" | "cli" | "device",
 ): Promise<ManagedAuthDeviceCodeResponse> {
   if (shouldBlockLocalCallbackAuthInClientWeb(authProvider)) {
     throw new Error(localCallbackAuthBlockedMessage());

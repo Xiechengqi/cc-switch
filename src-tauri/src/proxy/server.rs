@@ -310,6 +310,10 @@ impl ProxyServer {
                 post(crate::web::handlers::refresh_session),
             )
             .route(
+                "/web-api/oauth/openai-cli/callback",
+                get(crate::web::handlers::openai_cli_oauth_callback),
+            )
+            .route(
                 "/web-api/invoke/:command",
                 post(crate::web::handlers::invoke),
             )

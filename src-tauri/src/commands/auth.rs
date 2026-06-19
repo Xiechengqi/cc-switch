@@ -106,6 +106,7 @@ pub async fn auth_start_login(
     auth_provider: String,
     github_domain: Option<String>,
     oauth_flow_mode: Option<String>,
+    codex_callback_url: Option<String>,
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     claude_oauth_state: State<'_, ClaudeOAuthState>,
@@ -133,7 +134,7 @@ pub async fn auth_start_login(
             match oauth_flow_mode.as_deref() {
                 Some("cli") | Some("browser") | Some("cli_oauth") | Some("cliOauth") => {
                     let response = auth_manager
-                        .start_cli_browser_flow()
+                        .start_cli_browser_flow(codex_callback_url)
                         .await
                         .map_err(|e| e.to_string())?;
                     Ok(ManagedAuthDeviceCodeResponse {

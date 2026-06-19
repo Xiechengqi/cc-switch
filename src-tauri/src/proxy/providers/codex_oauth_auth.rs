@@ -53,6 +53,7 @@ const DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
 /// Codex CLI browser OAuth 本地回调配置
 const CLI_CALLBACK_PORT: u16 = 1455;
 const CLI_CALLBACK_PATH: &str = "/auth/callback";
+const CLI_REMOTE_CALLBACK_PATH: &str = "/web-api/oauth/openai-cli/callback";
 const CLI_CALLBACK_TIMEOUT_SECS: u64 = 300;
 const CLI_OAUTH_SCOPES: &str = "openid profile email offline_access";
 const CLI_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
@@ -469,13 +470,20 @@ impl CodexOAuthManager {
 
     pub async fn start_cli_browser_flow(
         &self,
+        callback_url: Option<String>,
     ) -> Result<CodexCliOAuthStartResponse, CodexOAuthError> {
         use tokio::net::TcpListener;
 
         let code_verifier = generate_base64url_token();
         let code_challenge = generate_code_challenge(&code_verifier);
         let state = generate_base64url_token();
-        let redirect_uri = format!("http://localhost:{CLI_CALLBACK_PORT}{CLI_CALLBACK_PATH}");
+        let remote_redirect_uri = callback_url
+            .as_deref()
+            .map(normalize_remote_cli_callback_url)
+            .transpose()?;
+        let redirect_uri = remote_redirect_uri
+            .clone()
+            .unwrap_or_else(|| format!("http://localhost:{CLI_CALLBACK_PORT}{CLI_CALLBACK_PATH}"));
         let auth_url = build_cli_oauth_authorize_url(&redirect_uri, &code_challenge, &state);
 
         {
@@ -490,13 +498,6 @@ impl CodexOAuthManager {
             results.clear();
         }
 
-        let addr = format!("127.0.0.1:{CLI_CALLBACK_PORT}");
-        let listener = TcpListener::bind(&addr).await.map_err(|e| {
-            CodexOAuthError::TokenFetchFailed(format!(
-                "无法绑定 OpenAI CLI OAuth 回调端口 {CLI_CALLBACK_PORT}: {e}"
-            ))
-        })?;
-
         let expires_at_ms =
             chrono::Utc::now().timestamp_millis() + (CLI_CALLBACK_TIMEOUT_SECS as i64) * 1000;
         {
@@ -507,7 +508,7 @@ impl CodexOAuthManager {
                 state.clone(),
                 PendingCliOAuthFlow {
                     code_verifier,
-                    redirect_uri,
+                    redirect_uri: redirect_uri.clone(),
                     expires_at_ms,
                 },
             );
@@ -517,28 +518,73 @@ impl CodexOAuthManager {
             results.insert(state.clone(), CliOAuthFlowResult::Pending);
         }
 
-        let manager = self.clone();
-        let state_for_task = state.clone();
-        let handle = tokio::spawn(async move {
-            let result = manager
-                .run_cli_callback_on_listener(listener, &state_for_task)
-                .await;
-            let mut results = manager.cli_flow_results.write().await;
-            results.insert(
-                state_for_task,
-                CliOAuthFlowResult::Ready(result.map_err(|e| e.to_string())),
-            );
-        });
-        {
-            let mut handle_guard = self.active_cli_flow_handle.lock().await;
-            *handle_guard = Some(handle);
+        let callback_port = if remote_redirect_uri.is_some() {
+            0
+        } else {
+            let addr = format!("127.0.0.1:{CLI_CALLBACK_PORT}");
+            let listener = TcpListener::bind(&addr).await.map_err(|e| {
+                CodexOAuthError::TokenFetchFailed(format!(
+                    "无法绑定 OpenAI CLI OAuth 回调端口 {CLI_CALLBACK_PORT}: {e}"
+                ))
+            })?;
+            let manager = self.clone();
+            let state_for_task = state.clone();
+            let handle = tokio::spawn(async move {
+                let result = manager
+                    .run_cli_callback_on_listener(listener, &state_for_task)
+                    .await;
+                let mut results = manager.cli_flow_results.write().await;
+                results.insert(
+                    state_for_task,
+                    CliOAuthFlowResult::Ready(result.map_err(|e| e.to_string())),
+                );
+            });
+            {
+                let mut handle_guard = self.active_cli_flow_handle.lock().await;
+                *handle_guard = Some(handle);
+            }
+            CLI_CALLBACK_PORT
+        };
+
+        if remote_redirect_uri.is_some() {
+            log::info!("[CodexOAuth] 启动远程 OpenAI CLI OAuth 回调: {redirect_uri}");
+        } else {
+            log::info!("[CodexOAuth] 启动本地 OpenAI CLI OAuth 回调: {redirect_uri}");
         }
 
         Ok(CodexCliOAuthStartResponse {
             auth_url,
             state,
-            callback_port: CLI_CALLBACK_PORT,
+            callback_port,
         })
+    }
+
+    pub async fn complete_cli_browser_callback(
+        &self,
+        code: &str,
+        state: &str,
+    ) -> Result<GitHubAccount, CodexOAuthError> {
+        let result = self.handle_cli_callback(code, state).await;
+        let mut results = self.cli_flow_results.write().await;
+        results.insert(
+            state.to_string(),
+            CliOAuthFlowResult::Ready(
+                result
+                    .as_ref()
+                    .map(|account| account.clone())
+                    .map_err(|e| e.to_string()),
+            ),
+        );
+        result
+    }
+
+    pub async fn fail_cli_browser_callback(&self, state: &str, error: &str) {
+        self.pending_cli_flows.write().await.remove(state);
+        let mut results = self.cli_flow_results.write().await;
+        results.insert(
+            state.to_string(),
+            CliOAuthFlowResult::Ready(Err(error.to_string())),
+        );
     }
 
     pub async fn poll_cli_callback_result(
@@ -1216,6 +1262,29 @@ fn build_cli_oauth_authorize_url(redirect_uri: &str, code_challenge: &str, state
     )
 }
 
+fn normalize_remote_cli_callback_url(raw: &str) -> Result<String, CodexOAuthError> {
+    let trimmed = raw.trim();
+    let url = url::Url::parse(trimmed).map_err(|e| {
+        CodexOAuthError::TokenFetchFailed(format!("无效 OpenAI CLI OAuth 回调 URL: {e}"))
+    })?;
+    if url.scheme() != "https" {
+        return Err(CodexOAuthError::TokenFetchFailed(
+            "远程 OpenAI CLI OAuth 回调 URL 必须使用 HTTPS".to_string(),
+        ));
+    }
+    if url.path() != CLI_REMOTE_CALLBACK_PATH {
+        return Err(CodexOAuthError::TokenFetchFailed(format!(
+            "远程 OpenAI CLI OAuth 回调路径必须是 {CLI_REMOTE_CALLBACK_PATH}"
+        )));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(CodexOAuthError::TokenFetchFailed(
+            "远程 OpenAI CLI OAuth 回调 URL 不能包含 query 或 fragment".to_string(),
+        ));
+    }
+    Ok(url.to_string())
+}
+
 fn parse_cli_callback_request(request: &str) -> Result<(String, String), CodexOAuthError> {
     let first_line = request
         .lines()
@@ -1378,6 +1447,36 @@ mod tests {
         let v = serde_json::Value::Number(serde_json::Number::from(0));
         // 0 应被提升到 1
         assert_eq!(parse_interval(Some(&v)), 1 + POLLING_SAFETY_MARGIN_SECS);
+    }
+
+    #[test]
+    fn test_normalize_remote_cli_callback_url_accepts_https_callback_path() {
+        assert_eq!(
+            normalize_remote_cli_callback_url(
+                "https://client.example.com/web-api/oauth/openai-cli/callback"
+            )
+            .unwrap(),
+            "https://client.example.com/web-api/oauth/openai-cli/callback"
+        );
+    }
+
+    #[test]
+    fn test_normalize_remote_cli_callback_url_rejects_http() {
+        assert!(normalize_remote_cli_callback_url(
+            "http://client.example.com/web-api/oauth/openai-cli/callback"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_normalize_remote_cli_callback_url_rejects_wrong_path_or_query() {
+        assert!(
+            normalize_remote_cli_callback_url("https://client.example.com/auth/callback").is_err()
+        );
+        assert!(normalize_remote_cli_callback_url(
+            "https://client.example.com/web-api/oauth/openai-cli/callback?x=1"
+        )
+        .is_err());
     }
 
     #[test]

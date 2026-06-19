@@ -135,6 +135,7 @@ export async function authStartLogin(
    * callback flow.
    */
   oauthFlowMode?: "web_paste" | "localhost" | "cli" | "device",
+  codexCallbackUrl?: string | null,
 ): Promise<ManagedAuthDeviceCodeResponse> {
   if (shouldBlockLocalCallbackAuthInClientWeb(authProvider)) {
     throw new Error(localCallbackAuthBlockedMessage());
@@ -143,6 +144,7 @@ export async function authStartLogin(
     authProvider,
     githubDomain: githubDomain || null,
     oauthFlowMode: oauthFlowMode || null,
+    codexCallbackUrl: codexCallbackUrl || null,
   });
 }
 

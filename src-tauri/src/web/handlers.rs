@@ -126,6 +126,14 @@ pub struct RefreshSessionRequest {
     refresh_token: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct OpenAICliOAuthCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
 pub async fn request_email_code(Json(input): Json<EmailCodeRequest>) -> Response {
     let email = input.email.trim().to_ascii_lowercase();
     if email.is_empty() {
@@ -163,6 +171,85 @@ pub async fn refresh_session(Json(input): Json<RefreshSessionRequest>) -> Respon
     match crate::email_auth::refresh_client_web_session(&config, &refresh_token).await {
         Ok(value) => Json(value).into_response(),
         Err(err) => error_response(StatusCode::UNAUTHORIZED, &err),
+    }
+}
+
+pub async fn openai_cli_oauth_callback(
+    State(state): State<ProxyState>,
+    axum::extract::Query(query): axum::extract::Query<OpenAICliOAuthCallbackQuery>,
+) -> Response {
+    // Public OAuth redirect endpoint: the authorization code is exchanged server-side only
+    // after matching an in-memory pending state created by auth_start_login.
+    let state_value = query.state.as_deref().unwrap_or("").trim();
+    if state_value.is_empty() {
+        return oauth_callback_html_response(
+            StatusCode::BAD_REQUEST,
+            "Authorization failed",
+            "Missing OAuth state. Please return to cc-switch and try again.",
+        );
+    }
+
+    let codex = match required_state::<CodexOAuthState>(&state, "codex oauth") {
+        Ok(value) => value,
+        Err(err) => {
+            return oauth_callback_html_response(
+                err.status,
+                "Authorization failed",
+                &format!("cc-switch is not ready: {}", err.message),
+            );
+        }
+    };
+
+    if let Some(error) = query.error.as_deref() {
+        let message = query
+            .error_description
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(error);
+        let auth_manager = codex.0.read().await;
+        auth_manager
+            .fail_cli_browser_callback(state_value, message)
+            .await;
+        return oauth_callback_html_response(
+            StatusCode::BAD_REQUEST,
+            "Authorization failed",
+            message,
+        );
+    }
+
+    let Some(code) = query
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        let message = "Missing authorization code. Please return to cc-switch and try again.";
+        let auth_manager = codex.0.read().await;
+        auth_manager
+            .fail_cli_browser_callback(state_value, message)
+            .await;
+        return oauth_callback_html_response(
+            StatusCode::BAD_REQUEST,
+            "Authorization failed",
+            message,
+        );
+    };
+
+    let auth_manager = codex.0.read().await;
+    match auth_manager
+        .complete_cli_browser_callback(code, state_value)
+        .await
+    {
+        Ok(_) => oauth_callback_html_response(
+            StatusCode::OK,
+            "Authorization successful",
+            "You can close this window and return to cc-switch.",
+        ),
+        Err(err) => oauth_callback_html_response(
+            StatusCode::BAD_REQUEST,
+            "Authorization failed",
+            &err.to_string(),
+        ),
     }
 }
 
@@ -1966,6 +2053,7 @@ async fn managed_auth_command(
             auth_provider,
             optional_string_arg(&args, "githubDomain"),
             optional_string_arg(&args, "oauthFlowMode"),
+            optional_string_arg(&args, "codexCallbackUrl"),
             copilot,
             codex,
             claude,
@@ -2700,4 +2788,28 @@ fn error_response(status: StatusCode, message: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+fn oauth_callback_html_response(status: StatusCode, title: &str, message: &str) -> Response {
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title></head><body><h2>{}</h2><p>{}</p><script>window.close()</script></body></html>",
+        html_escape(title),
+        html_escape(title),
+        html_escape(message),
+    );
+    (
+        status,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        body,
+    )
+        .into_response()
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }

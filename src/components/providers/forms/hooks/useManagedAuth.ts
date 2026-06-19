@@ -57,11 +57,13 @@ export function useManagedAuth(
   const startLoginMutation = useMutation({
     mutationFn: (params?: {
       oauthFlowMode?: "web_paste" | "localhost" | "cli" | "device";
+      codexCallbackUrl?: string | null;
     }) =>
       authApi.authStartLogin(
         authProvider,
         githubDomain,
         params?.oauthFlowMode,
+        params?.codexCallbackUrl,
       ),
     onSuccess: async (response) => {
       setDeviceCode(response);
@@ -187,13 +189,18 @@ export function useManagedAuth(
   });
 
   const startAuth = useCallback(
-    (oauthFlowMode?: "web_paste" | "localhost" | "cli" | "device") => {
+    (
+      oauthFlowMode?: "web_paste" | "localhost" | "cli" | "device",
+      options?: { codexCallbackUrl?: string | null },
+    ) => {
       setPollingState("idle");
       setDeviceCode(null);
       setError(null);
       stopPolling();
       startLoginMutation.mutate(
-        oauthFlowMode ? { oauthFlowMode } : undefined,
+        oauthFlowMode || options?.codexCallbackUrl
+          ? { oauthFlowMode, codexCallbackUrl: options?.codexCallbackUrl }
+          : undefined,
       );
     },
     [startLoginMutation, stopPolling],

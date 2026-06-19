@@ -25,7 +25,10 @@ import {
 } from "lucide-react";
 import { useCodexOauth } from "./hooks/useCodexOauth";
 import { copyText } from "@/lib/clipboard";
-import { ENABLE_CODEX_BANKED_RESET } from "@/config/constants";
+import {
+  ENABLE_CODEX_BANKED_RESET,
+  ENABLE_CODEX_CLI_REMOTE_CALLBACK,
+} from "@/config/constants";
 import { isRemoteWebMode } from "@/lib/api/auth";
 import CodexBankedResetPanel from "./CodexBankedResetPanel";
 
@@ -90,11 +93,25 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
     addAccountWithMode,
   } = useCodexOauth();
   const isRemoteClientWeb = isRemoteWebMode();
-  const cliLoginTitle = isRemoteClientWeb
-    ? t("codexOauth.cliUnavailableInRemoteWeb", {
-        defaultValue: "远程 Web 模式下 localhost 回调不可达，请使用 openai device",
-      })
-    : undefined;
+  const isHttpsClientOrigin =
+    typeof window !== "undefined" && window.location.protocol === "https:";
+  const canUseRemoteCliCallback =
+    isRemoteClientWeb &&
+    ENABLE_CODEX_CLI_REMOTE_CALLBACK &&
+    isHttpsClientOrigin;
+  const codexCliCallbackUrl =
+    canUseRemoteCliCallback && typeof window !== "undefined"
+      ? `${window.location.origin}/web-api/oauth/openai-cli/callback`
+      : null;
+  const cliLoginTitle =
+    isRemoteClientWeb && !canUseRemoteCliCallback
+      ? t("codexOauth.cliUnavailableInRemoteWeb", {
+          defaultValue:
+            "远程 Web 模式下 localhost 回调不可达，请使用 openai device",
+        })
+      : undefined;
+  const startCliLogin = () =>
+    addAccountWithMode?.("cli", { codexCallbackUrl: codexCliCallbackUrl });
 
   const copyUserCode = async () => {
     if (deviceCode?.user_code) {
@@ -290,10 +307,12 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <Button
             type="button"
-            onClick={() => addAccountWithMode?.("cli")}
+            onClick={startCliLogin}
             className="w-full"
             variant="outline"
-            disabled={isRemoteClientWeb || isAddingAccount}
+            disabled={
+              (isRemoteClientWeb && !canUseRemoteCliCallback) || isAddingAccount
+            }
             title={cliLoginTitle}
           >
             <Sparkles className="mr-2 h-4 w-4" />
@@ -317,9 +336,11 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <Button
             type="button"
-            onClick={() => addAccountWithMode?.("cli")}
+            onClick={startCliLogin}
             variant="outline"
-            disabled={isAddingAccount || isRemoteClientWeb}
+            disabled={
+              isAddingAccount || (isRemoteClientWeb && !canUseRemoteCliCallback)
+            }
             title={cliLoginTitle}
           >
             <Plus className="mr-2 h-4 w-4" />
@@ -410,7 +431,9 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             <Button
               type="button"
               onClick={() =>
-                addAccountWithMode?.(isRemoteClientWeb ? "device" : "cli")
+                isRemoteClientWeb && !canUseRemoteCliCallback
+                  ? addAccountWithMode?.("device")
+                  : startCliLogin()
               }
               variant="outline"
               size="sm"

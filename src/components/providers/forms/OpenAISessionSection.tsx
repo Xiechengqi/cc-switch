@@ -45,7 +45,8 @@ export const OpenAISessionSection: React.FC<OpenAISessionSectionProps> = ({
     if (!trimmed) {
       toast.error(
         t("openaiSession.emptyJson", {
-          defaultValue: "请粘贴 chatgpt.com/api/auth/session 返回的 JSON",
+          defaultValue:
+            "请粘贴 ChatGPT session Cookie、/api/auth/session JSON 或 Codex auth JSON",
         }),
       );
       return;
@@ -99,7 +100,7 @@ export const OpenAISessionSection: React.FC<OpenAISessionSectionProps> = ({
           rows={6}
           placeholder={t("openaiSession.placeholder", {
             defaultValue:
-              "粘贴 https://chatgpt.com/api/auth/session 返回的完整 JSON",
+              "粘贴 __Secure-next-auth.session-token Cookie、https://chatgpt.com/api/auth/session 返回的 JSON，或 Codex auth.json",
           })}
         />
         <Button
@@ -113,7 +114,7 @@ export const OpenAISessionSection: React.FC<OpenAISessionSectionProps> = ({
           ) : (
             <FileDown className="mr-2 h-4 w-4" />
           )}
-          {t("openaiSession.import", "导入 session JSON")}
+          {t("openaiSession.import", "导入 session")}
         </Button>
       </div>
 

@@ -2576,7 +2576,7 @@
     "codexOauthTokenInvalidated": "{{providerName}} の OAuth token はサーバー側で無効化されています",
     "codexOauthTokenInvalidatedHint": "cc-switch は token を更新して再試行しましたが、OpenAI は引き続き拒否しました。openai device/openai cli で再ログインしてください。",
     "openaiSessionTokenInvalidated": "{{providerName}} の session token はサーバー側で無効化されています",
-    "openaiSessionTokenInvalidatedHint": "同じブラウザプロファイルで chatgpt.com に再ログインし、/api/auth/session を再取得して JSON を再インポートしてください。",
+    "openaiSessionTokenInvalidatedHint": "chatgpt.com の __Secure-next-auth.session-token Cookie をインポートするか、openai device/openai cli を使用してください。/api/auth/session JSON の accessToken は Codex に拒否される場合があります。",
     "tokenInvalidated": "{{providerName}} の authentication token はサーバー側で無効化されています",
     "tokenInvalidatedHint": "管理対象アカウントのログイン状態を更新してから再試行してください。",
     "httpHint": {

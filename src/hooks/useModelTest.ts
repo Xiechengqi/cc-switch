@@ -101,7 +101,7 @@ export function useModelTest(appId: AppId) {
             {
               description: t("streamCheck.openaiSessionTokenInvalidatedHint", {
                 defaultValue:
-                  "Sign in to chatgpt.com again, fetch /api/auth/session, and re-import the JSON.",
+                  "Import __Secure-next-auth.session-token Cookie from chatgpt.com, or use openai device/openai cli. /api/auth/session JSON may contain an accessToken that Codex rejects.",
               }),
               duration: 10000,
               closeButton: true,

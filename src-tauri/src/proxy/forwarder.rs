@@ -1556,6 +1556,7 @@ impl RequestForwarder {
         enum OAuthKind {
             Claude,
             Codex,
+            OpenAISession,
             Copilot,
             Gemini,
             Antigravity,
@@ -1664,6 +1665,13 @@ impl RequestForwarder {
                                     auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
                                     should_send_codex_oauth_session_headers = true;
                                     codex_oauth_account_id = Some(chatgpt_account_id);
+                                    let resolved_account_id = match account_id {
+                                        Some(id) => Some(id),
+                                        None => session_auth.default_account_id().await,
+                                    };
+                                    if let Some(id) = resolved_account_id {
+                                        oauth_kind_used = Some((OAuthKind::OpenAISession, id));
+                                    }
                                     log::debug!(
                                         "[OpenAISession] 成功获取 access_token (chatgpt_account={})",
                                         codex_oauth_account_id.as_deref().unwrap_or("default")
@@ -2438,6 +2446,15 @@ impl RequestForwarder {
                             }
                             OAuthKind::Codex => {
                                 let state = app_handle.state::<CodexOAuthState>();
+                                state
+                                    .0
+                                    .read()
+                                    .await
+                                    .invalidate_cached_token(&account_id)
+                                    .await;
+                            }
+                            OAuthKind::OpenAISession => {
+                                let state = app_handle.state::<OpenAISessionState>();
                                 state
                                     .0
                                     .read()

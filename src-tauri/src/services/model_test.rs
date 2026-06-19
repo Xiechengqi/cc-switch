@@ -1330,7 +1330,12 @@ impl ModelTestService {
                                 Self::detect_provider_error_category(provider, *status, body)
                             })
                             .or_else(|| Self::detect_error_category(*status, body));
-                        let message = Self::format_http_status_message(*status, body);
+                        let message = match provider {
+                            Some(provider) => {
+                                Self::format_provider_http_status_message(provider, *status, body)
+                            }
+                            None => Self::format_http_status_message(*status, body),
+                        };
                         (Some(*status), message, category.map(|s| s.to_string()))
                     }
                     _ => (None, e.to_string(), None),
@@ -1411,6 +1416,9 @@ impl ModelTestService {
         status: u16,
         body: &str,
     ) -> Option<&'static str> {
+        if provider.is_openai_session_provider() && status == 401 {
+            return Some("openaiSessionTokenInvalidated");
+        }
         let category = Self::detect_error_category(status, body)?;
         if category != "tokenInvalidated" {
             return Some(category);
@@ -1425,6 +1433,14 @@ impl ModelTestService {
         } else {
             Some(category)
         }
+    }
+
+    fn format_provider_http_status_message(provider: &Provider, status: u16, body: &str) -> String {
+        if provider.is_openai_session_provider() && status == 401 {
+            return "Auth rejected (401): OpenAI session accessToken was rejected by Codex. Import __Secure-next-auth.session-token Cookie or use openai device/openai cli."
+                .to_string();
+        }
+        Self::format_http_status_message(status, body)
     }
 
     fn format_http_status_message(status: u16, body: &str) -> String {

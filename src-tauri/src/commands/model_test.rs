@@ -350,8 +350,7 @@ async fn run_standard_stream_check_with_managed_auth_retry(
             gemini_oauth_state,
         )
         .await?;
-    let codex_oauth_retry_account_id =
-        codex_oauth_retry_account_id(provider, auth_override.as_ref());
+    let retry_account = oauth_retry_account(provider, auth_override.as_ref());
 
     let result = ModelTestService::check_with_retry(
         app_type,
@@ -364,17 +363,29 @@ async fn run_standard_stream_check_with_managed_auth_retry(
     .await?;
 
     if !result.success && result.http_status == Some(401) {
-        if let Some(account_id) = codex_oauth_retry_account_id {
+        if let Some((kind, account_id)) = retry_account {
             log::warn!(
-                "[StreamCheck] Codex OAuth upstream returned 401 for provider={} account={account_id}; invalidating cached access token and retrying once",
-                provider.id
+                "[StreamCheck] OAuth upstream returned 401 for provider={} kind={kind:?} account={account_id}; invalidating cached access token and retrying once",
+                provider.id,
             );
-            codex_oauth_state
-                .0
-                .read()
-                .await
-                .invalidate_cached_token(&account_id)
-                .await;
+            match kind {
+                StreamCheckOAuthKind::Codex => {
+                    codex_oauth_state
+                        .0
+                        .read()
+                        .await
+                        .invalidate_cached_token(&account_id)
+                        .await;
+                }
+                StreamCheckOAuthKind::OpenAISession => {
+                    openai_session_state
+                        .0
+                        .read()
+                        .await
+                        .invalidate_cached_token(&account_id)
+                        .await;
+                }
+            }
 
             let (auth_override, base_url_override, claude_api_format_override) =
                 resolve_standard_stream_check_inputs(
@@ -446,19 +457,36 @@ async fn resolve_standard_stream_check_inputs(
     Ok((auth_override, base_url_override, claude_api_format_override))
 }
 
-fn codex_oauth_retry_account_id(
+#[derive(Debug, Clone, Copy)]
+enum StreamCheckOAuthKind {
+    Codex,
+    OpenAISession,
+}
+
+fn oauth_retry_account(
     provider: &crate::provider::Provider,
     auth_override: Option<&AuthInfo>,
-) -> Option<String> {
-    if provider.is_openai_session_provider() {
-        return None;
-    }
-    if !(provider.is_codex_oauth_provider() || provider.is_codex_official_with_managed_auth()) {
+) -> Option<(StreamCheckOAuthKind, String)> {
+    let auth = auth_override?;
+    if auth.strategy != AuthStrategy::CodexOAuth {
         return None;
     }
 
-    let auth = auth_override?;
-    if auth.strategy != AuthStrategy::CodexOAuth {
+    if provider.is_openai_session_provider() {
+        return auth
+            .managed_account_id
+            .clone()
+            .or_else(|| {
+                provider.meta.as_ref().and_then(|meta| {
+                    meta.managed_account_id_for("openai_official_session")
+                        .or_else(|| meta.managed_account_id_for("openai_session"))
+                })
+            })
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .map(|id| (StreamCheckOAuthKind::OpenAISession, id));
+    }
+    if !(provider.is_codex_oauth_provider() || provider.is_codex_official_with_managed_auth()) {
         return None;
     }
 
@@ -472,6 +500,7 @@ fn codex_oauth_retry_account_id(
         })
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())
+        .map(|id| (StreamCheckOAuthKind::Codex, id))
 }
 
 async fn check_deepseek_account_provider(

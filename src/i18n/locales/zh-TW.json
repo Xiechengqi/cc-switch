@@ -2524,7 +2524,7 @@
     "codexOauthTokenInvalidated": "{{providerName}} OAuth token 已被服務端廢止",
     "codexOauthTokenInvalidatedHint": "cc-switch 已嘗試重新整理 token 後重試，但 OpenAI 仍然拒絕。請重新執行 openai device/openai cli 登入。",
     "openaiSessionTokenInvalidated": "{{providerName}} session token 已被服務端廢止",
-    "openaiSessionTokenInvalidatedHint": "請在同一瀏覽器設定中重新登入 chatgpt.com，重新開啟 /api/auth/session，並再次匯入 JSON。",
+    "openaiSessionTokenInvalidatedHint": "請從 chatgpt.com 匯入 __Secure-next-auth.session-token Cookie，或改用 openai device/openai cli。/api/auth/session JSON 內的 accessToken 可能會被 Codex 拒絕。",
     "tokenInvalidated": "{{providerName}} authentication token 已被服務端廢止",
     "tokenInvalidatedHint": "請重新整理對應託管帳號的登入狀態後重試。",
     "httpHint": {

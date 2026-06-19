@@ -2576,7 +2576,7 @@
     "codexOauthTokenInvalidated": "{{providerName}} OAuth token has been invalidated",
     "codexOauthTokenInvalidatedHint": "cc-switch retried after refreshing the token, but OpenAI still rejected it. Sign in with openai device/openai cli again.",
     "openaiSessionTokenInvalidated": "{{providerName}} session token has been invalidated",
-    "openaiSessionTokenInvalidatedHint": "Sign in to chatgpt.com again with the same browser profile, fetch /api/auth/session again, and re-import the JSON.",
+    "openaiSessionTokenInvalidatedHint": "Import __Secure-next-auth.session-token Cookie from chatgpt.com, or use openai device/openai cli. /api/auth/session JSON may contain an accessToken that Codex rejects.",
     "tokenInvalidated": "{{providerName}} authentication token has been invalidated",
     "tokenInvalidatedHint": "Refresh the managed account sign-in and try again.",
     "httpHint": {

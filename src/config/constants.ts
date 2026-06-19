@@ -33,6 +33,6 @@ export type TemplateType = (typeof TEMPLATE_TYPES)[keyof typeof TEMPLATE_TYPES];
 // the limited-time feature can be hidden before the isolated implementation is removed.
 export const ENABLE_CODEX_BANKED_RESET = true;
 
-// Remote client URL can receive the Codex CLI OAuth callback directly.
-// Set false to immediately roll back to the previous localhost-only CLI flow.
-export const ENABLE_CODEX_CLI_REMOTE_CALLBACK = true;
+// OpenAI currently rejects Codex CLI OAuth redirect_uri values outside the
+// registered localhost callback. Keep this false unless that upstream changes.
+export const ENABLE_CODEX_CLI_REMOTE_CALLBACK = false;

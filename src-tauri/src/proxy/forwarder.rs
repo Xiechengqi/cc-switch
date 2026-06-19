@@ -2361,51 +2361,37 @@ impl RequestForwarder {
                 .parse()
                 .map_err(|e| ProxyError::ForwardFailed(format!("Invalid URL '{url}': {e}")))?;
             // 发送请求
-            let response_result: Result<ProxyResponse, ProxyError> =
-                if should_use_openai_session_codex_ws(provider, &url) {
-                    if upstream_proxy_url.is_some() {
-                        log::warn!(
-                            "[OpenAISession] Codex Responses WebSocket transport currently ignores upstream HTTP/SOCKS proxy settings"
-                        );
-                    }
-                    super::codex_responses_ws::forward_codex_responses_ws(
-                        super::codex_responses_ws::normalize_openai_session_ws_headers(
-                            ordered_headers.clone(),
-                        ),
-                        outbound_body,
-                        timeout,
-                    )
-                } else if is_socks_proxy {
-                    // SOCKS5 代理：只能走 reqwest（不支持 header case 保留）
-                    log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
-                    let client = super::http_client::get();
-                    let mut request = client.post(&url);
-                    if !self.non_streaming_timeout.is_zero() {
-                        request = request.timeout(self.non_streaming_timeout);
-                    }
-                    for (key, value) in &ordered_headers {
-                        request = request.header(key, value);
-                    }
-                    let reqwest_resp = request
-                        .body(body_bytes)
-                        .send()
-                        .await
-                        .map_err(map_reqwest_send_error);
-                    reqwest_resp.map(ProxyResponse::Reqwest)
-                } else {
-                    // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
-                    // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
-                    super::hyper_client::send_request(
-                        uri,
-                        http::Method::POST,
-                        ordered_headers,
-                        extensions.clone(),
-                        body_bytes,
-                        timeout,
-                        upstream_proxy_url.as_deref(),
-                    )
+            let response_result: Result<ProxyResponse, ProxyError> = if is_socks_proxy {
+                // SOCKS5 代理：只能走 reqwest（不支持 header case 保留）
+                log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
+                let client = super::http_client::get();
+                let mut request = client.post(&url);
+                if !self.non_streaming_timeout.is_zero() {
+                    request = request.timeout(self.non_streaming_timeout);
+                }
+                for (key, value) in &ordered_headers {
+                    request = request.header(key, value);
+                }
+                let reqwest_resp = request
+                    .body(body_bytes)
+                    .send()
                     .await
-                };
+                    .map_err(map_reqwest_send_error);
+                reqwest_resp.map(ProxyResponse::Reqwest)
+            } else {
+                // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
+                // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
+                super::hyper_client::send_request(
+                    uri,
+                    http::Method::POST,
+                    ordered_headers,
+                    extensions.clone(),
+                    body_bytes,
+                    timeout,
+                    upstream_proxy_url.as_deref(),
+                )
+                .await
+            };
             let response = match response_result {
                 Ok(response) => response,
                 Err(err) => {
@@ -4033,18 +4019,6 @@ fn normalize_codex_oauth_responses_body(mut body: Value, prompt_cache_key: Optio
     }
 
     body
-}
-
-fn should_use_openai_session_codex_ws(provider: &Provider, url: &str) -> bool {
-    if !provider.is_openai_session_provider() {
-        return false;
-    }
-    let Ok(parsed) = url::Url::parse(url) else {
-        return false;
-    };
-    parsed.scheme() == "https"
-        && parsed.host_str() == Some("chatgpt.com")
-        && parsed.path().trim_end_matches('/') == "/backend-api/codex/responses"
 }
 
 const CODEX_OAUTH_UNSUPPORTED_RESPONSES_FIELDS: &[&str] = &[

@@ -6,6 +6,7 @@ pub mod body_filter;
 pub mod cache_injector;
 pub mod circuit_breaker;
 pub(crate) mod codex_identity;
+#[allow(dead_code)]
 pub(crate) mod codex_responses_ws;
 pub(crate) mod control;
 pub mod copilot_optimizer;

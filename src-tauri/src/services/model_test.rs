@@ -12,9 +12,7 @@ use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::codex_identity::{codex_cli_terminal_user_agent, CODEX_CLI_VERSION};
-use crate::proxy::codex_responses_ws;
 use crate::proxy::gemini_url::{normalize_gemini_model_id, resolve_gemini_native_url};
-use crate::proxy::hyper_client::ProxyResponse;
 use crate::proxy::providers::copilot_auth;
 use crate::proxy::providers::transform::anthropic_to_openai;
 use crate::proxy::providers::transform_gemini::anthropic_to_gemini;
@@ -592,21 +590,6 @@ impl ModelTestService {
             anthropic_body
         };
 
-        if is_openai_responses
-            && auth.strategy == AuthStrategy::CodexOAuth
-            && provider.is_openai_session_provider()
-        {
-            let result = Self::check_openai_session_ws_body(
-                auth,
-                body,
-                model,
-                timeout,
-                codex_oauth_account_id.as_deref(),
-            )
-            .await?;
-            return Ok((result.status_code, result.model));
-        }
-
         let mut request_builder = client.post(&url);
 
         if is_github_copilot {
@@ -858,20 +841,6 @@ impl ModelTestService {
             body["stream"] = json!(true);
         }
 
-        if auth.strategy == AuthStrategy::CodexOAuth
-            && provider.is_openai_session_provider()
-            && !uses_chat
-        {
-            return Self::check_openai_session_ws_body(
-                auth,
-                body,
-                &actual_model,
-                timeout,
-                codex_oauth_account_id,
-            )
-            .await;
-        }
-
         for (i, url) in urls.iter().enumerate() {
             // 严格按照 Codex CLI 请求格式设置 headers
             let mut request_builder = client
@@ -935,68 +904,6 @@ impl ModelTestService {
         Err(AppError::Message(
             "No valid Codex responses endpoint found".to_string(),
         ))
-    }
-
-    async fn check_openai_session_ws_body(
-        auth: &AuthInfo,
-        body: serde_json::Value,
-        model: &str,
-        timeout: std::time::Duration,
-        account_id: Option<&str>,
-    ) -> Result<ModelTestProbeResult, AppError> {
-        let headers = codex_responses_ws::openai_session_ws_headers(&auth.api_key, account_id);
-        let response = codex_responses_ws::forward_codex_responses_ws(headers, body, timeout)
-            .map_err(Self::map_proxy_error)?;
-        Self::collect_openai_session_ws_probe(response, model, timeout).await
-    }
-
-    async fn collect_openai_session_ws_probe(
-        response: ProxyResponse,
-        model: &str,
-        timeout: std::time::Duration,
-    ) -> Result<ModelTestProbeResult, AppError> {
-        let status = response.status().as_u16();
-        let mut stream = Box::pin(response.bytes_stream());
-        let mut chunks = Vec::new();
-
-        loop {
-            let next = tokio::time::timeout(timeout, stream.next())
-                .await
-                .map_err(|_| AppError::Message("Codex WebSocket probe timed out".to_string()))?;
-            let Some(chunk) = next else {
-                break;
-            };
-            let chunk = chunk
-                .map_err(|err| AppError::Message(format!("Codex WebSocket probe failed: {err}")))?;
-            chunks.extend_from_slice(&chunk);
-        }
-
-        if chunks.is_empty() {
-            return Err(AppError::Message(
-                "No response data received from Codex WebSocket".to_string(),
-            ));
-        }
-
-        let usage = std::str::from_utf8(&chunks)
-            .ok()
-            .and_then(Self::parse_sse_json_events)
-            .and_then(|events| TokenUsage::from_codex_stream_events_auto(&events));
-
-        Ok(ModelTestProbeResult {
-            status_code: status,
-            model: model.to_string(),
-            usage,
-        })
-    }
-
-    fn map_proxy_error(error: crate::proxy::ProxyError) -> AppError {
-        match error {
-            crate::proxy::ProxyError::UpstreamError { status, body } => AppError::HttpStatus {
-                status,
-                body: body.unwrap_or_default(),
-            },
-            other => AppError::Message(other.to_string()),
-        }
     }
 
     fn parse_sse_json_events(text: &str) -> Option<Vec<serde_json::Value>> {

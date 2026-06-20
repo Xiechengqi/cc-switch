@@ -1227,9 +1227,6 @@ async fn build_official_oauth_snapshot(
     provider: &Provider,
 ) -> Option<ShareUpstreamProvider> {
     match app {
-        AppType::Codex if provider.is_openai_session_provider() => {
-            build_openai_session_snapshot(provider).await
-        }
         AppType::Codex
             if provider.is_codex_official_with_managed_auth()
                 || provider.is_codex_oauth_provider() =>
@@ -1250,40 +1247,6 @@ async fn build_official_oauth_snapshot(
         }
         _ => None,
     }
-}
-
-async fn build_openai_session_snapshot(provider: &Provider) -> Option<ShareUpstreamProvider> {
-    use crate::proxy::providers::openai_session_auth::OpenAISessionManager;
-
-    let manager = OpenAISessionManager::new(crate::config::get_app_config_dir());
-    let bound_account_id = provider.meta.as_ref().and_then(|meta| {
-        meta.managed_account_id_for("openai_official_session")
-            .or_else(|| meta.managed_account_id_for("openai_session"))
-    });
-    let account_id = match bound_account_id {
-        Some(id) if !id.trim().is_empty() => Some(id),
-        _ => manager.default_account_id().await,
-    };
-    let accounts = manager.list_accounts().await;
-    let account_email = account_id
-        .as_deref()
-        .and_then(|id| account_login(&accounts, id));
-    let quota = match account_id.as_deref() {
-        Some(id) => cached_upstream_quota("openai_official_session", id).await,
-        None => None,
-    };
-    let quota = with_quota_dispatch_limit(quota, provider);
-
-    Some(ShareUpstreamProvider {
-        kind: "official_oauth".to_string(),
-        app: "codex".to_string(),
-        provider_name: Some(provider.name.clone()),
-        for_sale_official_price_percent: provider_sale_percent(provider),
-        account_email,
-        api_url: None,
-        quota,
-        models: Vec::new(),
-    })
 }
 
 async fn build_codex_oauth_snapshot(provider: &Provider) -> Option<ShareUpstreamProvider> {

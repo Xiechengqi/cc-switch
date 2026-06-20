@@ -67,10 +67,6 @@ export interface ProviderPreset {
   providerType?:
     | "github_copilot"
     | "codex_oauth"
-    | "openai_device"
-    | "openai_cli"
-    | "openai_session"
-    | "openai_official_session"
     | "claude_oauth"
     | "google_gemini_oauth"
     | "antigravity_oauth"
@@ -111,7 +107,7 @@ export const providerPresets: ProviderPreset[] = [
     iconColor: "#D4915D",
   },
   {
-    name: "openai device",
+    name: "OpenAI OAuth",
     websiteUrl: "https://chatgpt.com/codex",
     settingsConfig: {
       env: {
@@ -127,61 +123,11 @@ export const providerPresets: ProviderPreset[] = [
     isOfficial: true,
     category: "official",
     apiFormat: "openai_responses",
-    providerType: "openai_device",
+    providerType: "codex_oauth",
     requiresOAuth: true,
     theme: {
       icon: "codex",
       backgroundColor: "#1F2937",
-      textColor: "#FFFFFF",
-    },
-    icon: "openai",
-    iconColor: "#00A67E",
-  },
-  {
-    name: "openai cli",
-    websiteUrl: "https://chatgpt.com/codex",
-    settingsConfig: {
-      env: {
-        ANTHROPIC_BASE_URL: "https://chatgpt.com/backend-api/codex",
-        ANTHROPIC_MODEL: "gpt-5.5",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-5.4",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.5",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.5",
-      },
-    },
-    isOfficial: true,
-    category: "official",
-    apiFormat: "openai_responses",
-    providerType: "openai_cli",
-    requiresOAuth: true,
-    theme: {
-      icon: "codex",
-      backgroundColor: "#111827",
-      textColor: "#FFFFFF",
-    },
-    icon: "openai",
-    iconColor: "#00A67E",
-  },
-  {
-    name: "openai session",
-    websiteUrl: "https://chatgpt.com/api/auth/session",
-    settingsConfig: {
-      env: {
-        ANTHROPIC_BASE_URL: "https://chatgpt.com/backend-api/codex",
-        ANTHROPIC_MODEL: "gpt-5.5",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-5.4",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.5",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.5",
-      },
-    },
-    isOfficial: true,
-    category: "official",
-    apiFormat: "openai_responses",
-    providerType: "openai_session",
-    requiresOAuth: true,
-    theme: {
-      icon: "codex",
-      backgroundColor: "#111827",
       textColor: "#FFFFFF",
     },
     icon: "openai",

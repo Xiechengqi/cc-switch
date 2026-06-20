@@ -23,7 +23,6 @@ use super::{
 };
 use crate::commands::{
     AntigravityOAuthState, ClaudeOAuthState, CodexOAuthState, CopilotAuthState, GeminiOAuthState,
-    OpenAISessionState,
 };
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
@@ -1556,7 +1555,6 @@ impl RequestForwarder {
         enum OAuthKind {
             Claude,
             Codex,
-            OpenAISession,
             Copilot,
             Gemini,
             Antigravity,
@@ -1638,101 +1636,56 @@ impl RequestForwarder {
                     }
                 }
 
-                // Codex OAuth / imported ChatGPT session: 获取真实 access_token。
+                // Codex OAuth: 获取真实 access_token。
                 if auth.strategy == AuthStrategy::CodexOAuth {
                     if let Some(app_handle) = &self.app_handle {
-                        if provider.is_openai_session_provider() {
-                            let session_state = app_handle.state::<OpenAISessionState>();
-                            let session_auth = session_state.0.read().await;
-                            let account_id = provider.meta.as_ref().and_then(|m| {
-                                m.managed_account_id_for("openai_official_session")
-                                    .or_else(|| m.managed_account_id_for("openai_session"))
-                            });
-                            let token_result = match &account_id {
-                                Some(id) => {
-                                    log::debug!("[OpenAISession] 使用指定账号 {id} 获取 token");
-                                    session_auth
-                                        .get_valid_token_with_chatgpt_account_id_for_account(id)
-                                        .await
-                                }
-                                None => {
-                                    log::debug!("[OpenAISession] 使用默认账号获取 token");
-                                    session_auth.get_valid_token_with_chatgpt_account_id().await
-                                }
-                            };
-                            match token_result {
-                                Ok((token, chatgpt_account_id)) => {
-                                    auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
-                                    should_send_codex_oauth_session_headers = true;
-                                    codex_oauth_account_id = Some(chatgpt_account_id);
-                                    let resolved_account_id = match account_id {
-                                        Some(id) => Some(id),
-                                        None => session_auth.default_account_id().await,
-                                    };
-                                    if let Some(id) = resolved_account_id {
-                                        oauth_kind_used = Some((OAuthKind::OpenAISession, id));
-                                    }
-                                    log::debug!(
-                                        "[OpenAISession] 成功获取 access_token (chatgpt_account={})",
-                                        codex_oauth_account_id.as_deref().unwrap_or("default")
-                                    );
-                                }
-                                Err(e) => {
-                                    log::error!("[OpenAISession] 获取 access_token 失败: {e}");
-                                    return Err(ProxyError::AuthError(format!(
-                                        "openai session 认证失败: {e}"
-                                    )));
-                                }
+                        let codex_state = app_handle.state::<CodexOAuthState>();
+                        let codex_auth: tokio::sync::RwLockReadGuard<'_, CodexOAuthManager> =
+                            codex_state.0.read().await;
+
+                        // 从 provider.meta 获取关联的 ChatGPT 账号 ID
+                        let account_id = provider
+                            .meta
+                            .as_ref()
+                            .and_then(|m| m.managed_account_id_for("codex_oauth"));
+
+                        let token_result = match &account_id {
+                            Some(id) => {
+                                log::debug!("[CodexOAuth] 使用指定账号 {id} 获取 token");
+                                codex_auth.get_valid_token_for_account(id).await
                             }
-                        } else {
-                            let codex_state = app_handle.state::<CodexOAuthState>();
-                            let codex_auth: tokio::sync::RwLockReadGuard<'_, CodexOAuthManager> =
-                                codex_state.0.read().await;
+                            None => {
+                                log::debug!("[CodexOAuth] 使用默认账号获取 token");
+                                codex_auth.get_valid_token().await
+                            }
+                        };
 
-                            // 从 provider.meta 获取关联的 ChatGPT 账号 ID
-                            let account_id = provider
-                                .meta
-                                .as_ref()
-                                .and_then(|m| m.managed_account_id_for("codex_oauth"));
-
-                            let token_result = match &account_id {
-                                Some(id) => {
-                                    log::debug!("[CodexOAuth] 使用指定账号 {id} 获取 token");
-                                    codex_auth.get_valid_token_for_account(id).await
+                        match token_result {
+                            Ok(token) => {
+                                auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
+                                should_send_codex_oauth_session_headers = true;
+                                // 解析使用的 account_id（用于注入 ChatGPT-Account-Id header）
+                                codex_oauth_account_id = match account_id {
+                                    Some(id) => Some(id),
+                                    None => codex_auth.default_account_id().await,
+                                };
+                                if let Some(ref id) = codex_oauth_account_id {
+                                    oauth_kind_used = Some((OAuthKind::Codex, id.clone()));
                                 }
-                                None => {
-                                    log::debug!("[CodexOAuth] 使用默认账号获取 token");
-                                    codex_auth.get_valid_token().await
-                                }
-                            };
-
-                            match token_result {
-                                Ok(token) => {
-                                    auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
-                                    should_send_codex_oauth_session_headers = true;
-                                    // 解析使用的 account_id（用于注入 ChatGPT-Account-Id header）
-                                    codex_oauth_account_id = match account_id {
-                                        Some(id) => Some(id),
-                                        None => codex_auth.default_account_id().await,
-                                    };
-                                    if let Some(ref id) = codex_oauth_account_id {
-                                        oauth_kind_used = Some((OAuthKind::Codex, id.clone()));
-                                    }
-                                    log::debug!(
-                                        "[CodexOAuth] 成功获取 access_token (account={})",
-                                        codex_oauth_account_id.as_deref().unwrap_or("default")
-                                    );
-                                }
-                                Err(e) => {
-                                    log::error!("[CodexOAuth] 获取 access_token 失败: {e}");
-                                    return Err(ProxyError::AuthError(format!(
-                                        "Codex OAuth 认证失败: {e}"
-                                    )));
-                                }
+                                log::debug!(
+                                    "[CodexOAuth] 成功获取 access_token (account={})",
+                                    codex_oauth_account_id.as_deref().unwrap_or("default")
+                                );
+                            }
+                            Err(e) => {
+                                log::error!("[CodexOAuth] 获取 access_token 失败: {e}");
+                                return Err(ProxyError::AuthError(format!(
+                                    "Codex OAuth 认证失败: {e}"
+                                )));
                             }
                         }
                     } else {
-                        log::error!("[CodexOAuth/OpenAISession] AppHandle 不可用");
+                        log::error!("[CodexOAuth] AppHandle 不可用");
                         return Err(ProxyError::AuthError(
                             "OpenAI 官方认证不可用（无 AppHandle）".to_string(),
                         ));
@@ -2446,15 +2399,6 @@ impl RequestForwarder {
                             }
                             OAuthKind::Codex => {
                                 let state = app_handle.state::<CodexOAuthState>();
-                                state
-                                    .0
-                                    .read()
-                                    .await
-                                    .invalidate_cached_token(&account_id)
-                                    .await;
-                            }
-                            OAuthKind::OpenAISession => {
-                                let state = app_handle.state::<OpenAISessionState>();
                                 state
                                     .0
                                     .read()

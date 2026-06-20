@@ -2574,9 +2574,7 @@
     "quotaExceeded": "{{providerName}} の Coding Plan 利用枠を超過しました",
     "quotaExceededHint": "Baidu Qianfan が Coding Plan の利用枠超過エラーを返しました。5時間・週次・月次の利用枠更新を待つか、Qianfan コンソールでプランを確認してください。",
     "codexOauthTokenInvalidated": "{{providerName}} の OAuth token はサーバー側で無効化されています",
-    "codexOauthTokenInvalidatedHint": "cc-switch は token を更新して再試行しましたが、OpenAI は引き続き拒否しました。openai device/openai cli で再ログインしてください。",
-    "openaiSessionTokenInvalidated": "{{providerName}} の session token はサーバー側で無効化されています",
-    "openaiSessionTokenInvalidatedHint": "chatgpt.com の __Secure-next-auth.session-token Cookie をインポートするか、openai device/openai cli を使用してください。/api/auth/session JSON の accessToken は Codex に拒否される場合があります。",
+    "codexOauthTokenInvalidatedHint": "cc-switch は token を更新して再試行しましたが、OpenAI は引き続き拒否しました。OpenAI OAuth で再ログインしてください。",
     "tokenInvalidated": "{{providerName}} の authentication token はサーバー側で無効化されています",
     "tokenInvalidatedHint": "管理対象アカウントのログイン状態を更新してから再試行してください。",
     "httpHint": {

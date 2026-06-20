@@ -107,7 +107,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
     isRemoteClientWeb && !canUseRemoteCliCallback
       ? t("codexOauth.cliUnavailableInRemoteWeb", {
           defaultValue:
-            "远程 Web 模式下 localhost 回调不可达，请使用 openai device",
+            "远程 Web 模式下 localhost 回调不可达，请使用 Device Code",
         })
       : undefined;
   const startCliLogin = () =>
@@ -316,7 +316,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             title={cliLoginTitle}
           >
             <Sparkles className="mr-2 h-4 w-4" />
-            {t("codexOauth.loginWithCli", "openai cli")}
+            {t("codexOauth.loginWithCli", "CLI OAuth")}
           </Button>
           <Button
             type="button"
@@ -326,7 +326,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             disabled={isAddingAccount}
           >
             <ExternalLink className="mr-2 h-4 w-4" />
-            {t("codexOauth.loginWithDevice", "openai device")}
+            {t("codexOauth.loginWithDevice", "Device Code")}
           </Button>
         </div>
       )}
@@ -344,7 +344,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             title={cliLoginTitle}
           >
             <Plus className="mr-2 h-4 w-4" />
-            {t("codexOauth.addCliAccount", "添加 openai cli")}
+            {t("codexOauth.addCliAccount", "添加 CLI OAuth")}
           </Button>
           <Button
             type="button"
@@ -353,7 +353,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
             disabled={isAddingAccount}
           >
             <Plus className="mr-2 h-4 w-4" />
-            {t("codexOauth.addDeviceAccount", "添加 openai device")}
+            {t("codexOauth.addDeviceAccount", "添加 Device Code")}
           </Button>
         </div>
       )}

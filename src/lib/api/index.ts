@@ -9,7 +9,6 @@ export { usageApi } from "./usage";
 export { subscriptionApi } from "./subscription";
 export { vscodeApi } from "./vscode";
 export { proxyApi } from "./proxy";
-export { openaiSessionApi } from "./openaiSession";
 export { codexBankedResetApi } from "./codexBankedReset";
 export { openclawApi } from "./openclaw";
 export { sessionsApi } from "./sessions";
@@ -70,10 +69,6 @@ export type {
   DeepSeekAccount,
   DeepSeekAccountStatus,
 } from "./auth";
-export type {
-  OpenAISessionImportOutcome,
-  OpenAISessionStatus,
-} from "./openaiSession";
 export type {
   CodexBankedResetConsumeResult,
   CodexBankedResetCredit,

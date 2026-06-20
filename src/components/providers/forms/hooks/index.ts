@@ -20,7 +20,6 @@ export { useOpenclawFormState } from "./useOpenclawFormState";
 export { useHermesFormState } from "./useHermesFormState";
 export { useCopilotAuth } from "./useCopilotAuth";
 export { useCodexOauth } from "./useCodexOauth";
-export { useOpenAISession } from "./useOpenAISession";
 export { useClaudeOauth } from "./useClaudeOauth";
 export { useGeminiOauth } from "./useGeminiOauth";
 export { useAntigravityOauth } from "./useAntigravityOauth";

@@ -40,7 +40,6 @@ pub mod gemini_shadow;
 pub mod kiro_claude;
 pub mod kiro_oauth_auth;
 pub mod models;
-pub mod openai_session_auth;
 pub mod streaming;
 pub mod streaming_codex_chat;
 pub mod streaming_gemini;
@@ -183,16 +182,7 @@ impl ProviderType {
                     if meta.provider_type.as_deref() == Some("github_copilot") {
                         return ProviderType::GitHubCopilot;
                     }
-                    if matches!(
-                        meta.provider_type.as_deref(),
-                        Some(
-                            "codex_oauth"
-                                | "openai_device"
-                                | "openai_cli"
-                                | "openai_session"
-                                | "openai_official_session"
-                        )
-                    ) {
+                    if meta.provider_type.as_deref() == Some("codex_oauth") {
                         return ProviderType::CodexOAuth;
                     }
                     if meta.provider_type.as_deref() == Some("claude_oauth") {

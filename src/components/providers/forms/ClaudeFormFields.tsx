@@ -41,7 +41,6 @@ import { AntigravityOAuthSection } from "./AntigravityOAuthSection";
 import { CursorOAuthSection } from "./CursorOAuthSection";
 import { KiroOAuthSection } from "./KiroOAuthSection";
 import { DeepSeekAccountSection } from "./DeepSeekAccountSection";
-import { OpenAISessionSection } from "./OpenAISessionSection";
 import {
   copilotGetModels,
   copilotGetModelsForAccount,
@@ -103,12 +102,6 @@ interface ClaudeFormFieldsProps {
   onCodexAccountSelect?: (accountId: string | null) => void;
   codexFastMode?: boolean;
   onCodexFastModeChange?: (enabled: boolean) => void;
-
-  // openai session
-  isOpenAISessionPreset?: boolean;
-  isOpenAISessionAuthenticated?: boolean;
-  selectedOpenAISessionAccountId?: string | null;
-  onOpenAISessionAccountSelect?: (accountId: string | null) => void;
 
   // Claude OAuth (Anthropic 官方订阅)
   isClaudeOauthPreset?: boolean;
@@ -207,9 +200,6 @@ export function ClaudeFormFields({
   isCodexOauthAuthenticated,
   selectedCodexAccountId,
   onCodexAccountSelect,
-  isOpenAISessionPreset,
-  selectedOpenAISessionAccountId,
-  onOpenAISessionAccountSelect,
   isClaudeOauthPreset,
   selectedClaudeAccountId,
   onClaudeAccountSelect,
@@ -711,13 +701,6 @@ export function ClaudeFormFields({
           onAccountSelect={onCodexAccountSelect}
           fastModeEnabled={codexFastMode}
           onFastModeChange={onCodexFastModeChange}
-        />
-      )}
-
-      {isOpenAISessionPreset && (
-        <OpenAISessionSection
-          selectedAccountId={selectedOpenAISessionAccountId}
-          onAccountSelect={onOpenAISessionAccountSelect}
         />
       )}
 

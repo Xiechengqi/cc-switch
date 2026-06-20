@@ -26,7 +26,6 @@ import { CursorOAuthSection } from "@/components/providers/forms/CursorOAuthSect
 import { DeepSeekAccountSection } from "@/components/providers/forms/DeepSeekAccountSection";
 import { GeminiOAuthSection } from "@/components/providers/forms/GeminiOAuthSection";
 import { KiroOAuthSection } from "@/components/providers/forms/KiroOAuthSection";
-import { OpenAISessionSection } from "@/components/providers/forms/OpenAISessionSection";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { settingsApi } from "@/lib/api";
 import { useSettingsQuery } from "@/lib/query";
@@ -219,7 +218,7 @@ export function AuthCenterPanel() {
             <CodexIcon size={20} />
           </div>
           <div>
-            <h4 className="font-medium">openai device / openai cli</h4>
+            <h4 className="font-medium">OpenAI OAuth</h4>
             <p className="text-sm text-muted-foreground">
               {t("settings.authCenter.codexOauthDescription", {
                 defaultValue: "管理 ChatGPT 账号",
@@ -229,24 +228,6 @@ export function AuthCenterPanel() {
         </div>
 
         <CodexOAuthSection showLoggedInAccounts />
-      </section>
-
-      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
-        <div className="mb-4 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-            <CodexIcon size={20} />
-          </div>
-          <div>
-            <h4 className="font-medium">openai session</h4>
-            <p className="text-sm text-muted-foreground">
-              {t("settings.authCenter.openaiSessionDescription", {
-                defaultValue: "管理导入的 ChatGPT session 账号",
-              })}
-            </p>
-          </div>
-        </div>
-
-        <OpenAISessionSection />
       </section>
 
       <section className="rounded-xl border border-border/60 bg-card/60 p-6">

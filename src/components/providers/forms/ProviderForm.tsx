@@ -102,7 +102,6 @@ import {
   useHermesFormState,
   useCopilotAuth,
   useCodexOauth,
-  useOpenAISession,
   useClaudeOauth,
   useGeminiOauth,
   useAntigravityOauth,
@@ -133,18 +132,7 @@ const isAntigravityFamilyType = (providerType?: string | null) =>
   providerType === "agy_oauth";
 
 const isOpenAIOAuthProviderType = (providerType?: string | null) =>
-  providerType === PROVIDER_TYPES.CODEX_OAUTH ||
-  providerType === PROVIDER_TYPES.OPENAI_DEVICE ||
-  providerType === PROVIDER_TYPES.OPENAI_CLI ||
-  providerType === "codex_oauth" ||
-  providerType === "openai_device" ||
-  providerType === "openai_cli";
-
-const isOpenAISessionProviderType = (providerType?: string | null) =>
-  providerType === PROVIDER_TYPES.OPENAI_SESSION ||
-  providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
-  providerType === "openai_session" ||
-  providerType === "openai_official_session";
+  providerType === PROVIDER_TYPES.CODEX_OAUTH || providerType === "codex_oauth";
 
 type PresetEntry = {
   id: string;
@@ -564,11 +552,6 @@ function ProviderFormFull({
     accounts: codexOauthAccounts,
     defaultAccountId: defaultCodexAccountId,
   } = useCodexOauth();
-  const {
-    isAuthenticated: isOpenAISessionAuthenticated,
-    accounts: openaiSessionAccounts,
-    defaultAccountId: defaultOpenAISessionAccountId,
-  } = useOpenAISession();
 
   // Claude OAuth 认证状态（Anthropic 官方订阅）
   const { isAuthenticated: isClaudeOauthAuthenticated } = useClaudeOauth();
@@ -607,11 +590,6 @@ function ProviderFormFull({
   const [selectedCodexAccountId, setSelectedCodexAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "codex_oauth"));
-  const [selectedOpenAISessionAccountId, setSelectedOpenAISessionAccountId] =
-    useState<string | null>(() =>
-      resolveManagedAccountId(initialData?.meta, "openai_official_session") ??
-      resolveManagedAccountId(initialData?.meta, "openai_session"),
-    );
   const [codexFastMode, setCodexFastMode] = useState<boolean>(
     () => initialData?.meta?.codexFastMode ?? false,
   );
@@ -653,19 +631,13 @@ function ProviderFormFull({
       ? codexProviderPresets[Number(selectedPresetId.slice("codex-".length))]
           ?.providerType
       : undefined;
-  const isCodexOpenAISessionPreset =
-    appId === "codex" &&
-    isOpenAISessionProviderType(
-      selectedCodexPresetProviderType || initialData?.meta?.providerType,
-    );
   const isCodexOfficialPreset =
     appId === "codex" &&
     category === "official" &&
     (selectedCodexPresetProviderType || initialData?.meta?.providerType) !==
       PROVIDER_TYPES.CURSOR_OAUTH &&
     (selectedCodexPresetProviderType || initialData?.meta?.providerType) !==
-      PROVIDER_TYPES.CURSOR_APIKEY &&
-    !isCodexOpenAISessionPreset;
+      PROVIDER_TYPES.CURSOR_APIKEY;
 
   useEffect(() => {
     if (!isCodexOfficialPreset || selectedCodexAccountId) {
@@ -839,22 +811,13 @@ function ProviderFormFull({
     initialData?.meta,
     PROVIDER_TYPES.CURSOR_OAUTH,
   );
-  const hasOpenAISessionAuthBinding = hasManagedAuthBinding(
-    initialData?.meta,
-    PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION,
-  ) || hasManagedAuthBinding(initialData?.meta, PROVIDER_TYPES.OPENAI_SESSION);
   const currentProviderType =
     currentPresetProviderType ||
     initialData?.meta?.providerType ||
-    (hasOpenAISessionAuthBinding
-      ? PROVIDER_TYPES.OPENAI_SESSION
-      : undefined) ||
     (hasCursorOauthAuthBinding ? PROVIDER_TYPES.CURSOR_OAUTH : undefined) ||
     (appId === "gemini" && category === "official" && hasGoogleGeminiAuthBinding
       ? PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH
       : undefined);
-  const isOpenAISessionPreset =
-    isOpenAISessionProviderType(currentProviderType);
   const isGeminiOfficialPreset =
     appId === "gemini" &&
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH;
@@ -869,7 +832,6 @@ function ProviderFormFull({
     !excludesQuotaDispatchLimit &&
     (currentProviderType === PROVIDER_TYPES.GITHUB_COPILOT ||
       isOpenAIOAuthProviderType(currentProviderType) ||
-      isOpenAISessionProviderType(currentProviderType) ||
       currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
       currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
       currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
@@ -881,29 +843,11 @@ function ProviderFormFull({
     currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
     isAntigravityFamilyType(currentProviderType) ||
-    isOpenAISessionProviderType(currentProviderType) ||
     currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
     currentProviderType === PROVIDER_TYPES.CURSOR_APIKEY ||
     currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
     currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
     isCodexOfficialPreset;
-
-  useEffect(() => {
-    if (!isOpenAISessionPreset || selectedOpenAISessionAccountId) {
-      return;
-    }
-
-    const preferredAccountId =
-      defaultOpenAISessionAccountId ?? openaiSessionAccounts[0]?.id ?? null;
-    if (preferredAccountId) {
-      setSelectedOpenAISessionAccountId(preferredAccountId);
-    }
-  }, [
-    defaultOpenAISessionAccountId,
-    isOpenAISessionPreset,
-    openaiSessionAccounts,
-    selectedOpenAISessionAccountId,
-  ]);
 
   useEffect(() => {
     const isKiroOauthPreset = currentProviderType === PROVIDER_TYPES.KIRO_OAUTH;
@@ -1409,10 +1353,6 @@ function ProviderFormFull({
       isOpenAIOAuthProviderType(currentProviderType) ||
       isOpenAIOAuthProviderType(templatePreset?.providerType) ||
       isOpenAIOAuthProviderType(initialData?.meta?.providerType);
-    const isOpenAISessionProvider =
-      isOpenAISessionProviderType(currentProviderType) ||
-      isOpenAISessionProviderType(templatePreset?.providerType) ||
-      isOpenAISessionProviderType(initialData?.meta?.providerType);
     const isClaudeOauthProvider =
       currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
       templatePreset?.providerType === "claude_oauth" ||
@@ -1454,24 +1394,6 @@ function ProviderFormFull({
       );
       return;
     }
-    if (isOpenAISessionProvider) {
-      if (!isOpenAISessionAuthenticated) {
-        toast.error(
-          t("openaiSession.loginRequired", {
-            defaultValue: "请先导入 OpenAI session JSON",
-          }),
-        );
-        return;
-      }
-      if (!selectedOpenAISessionAccountId) {
-        toast.error(
-          t("openaiSession.selectAccountRequired", {
-            defaultValue: "openai session 必须绑定一个 session 账号",
-          }),
-        );
-        return;
-      }
-    }
     if (isCursorOauthProvider) {
       if (!isCursorOauthAuthenticated) {
         toast.error(
@@ -1502,7 +1424,7 @@ function ProviderFormFull({
       if (!selectedCodexAccountId) {
         toast.error(
           t("codexOauth.selectAccountRequired", {
-            defaultValue: "openai device/openai cli 必须绑定一个 ChatGPT 账号",
+            defaultValue: "OpenAI OAuth 必须绑定一个 ChatGPT 账号",
           }),
         );
         return;
@@ -1639,7 +1561,6 @@ function ProviderFormFull({
       if (appId === "claude") {
         if (
           !isCodexOauthProvider &&
-          !isOpenAISessionProvider &&
           !isCursorOauthProvider &&
           !isDeepSeekAccountProvider &&
           !baseUrl.trim()
@@ -1653,7 +1574,6 @@ function ProviderFormFull({
         if (
           !isCopilotProvider &&
           !isCodexOauthProvider &&
-          !isOpenAISessionProvider &&
           !isCursorOauthProvider &&
           !isDeepSeekAccountProvider &&
           !apiKey.trim()
@@ -1717,10 +1637,6 @@ function ProviderFormFull({
       isOpenAIOAuthProviderType(currentProviderType) ||
       isOpenAIOAuthProviderType(templatePreset?.providerType) ||
       isOpenAIOAuthProviderType(initialData?.meta?.providerType);
-    const isOpenAISessionProvider =
-      isOpenAISessionProviderType(currentProviderType) ||
-      isOpenAISessionProviderType(templatePreset?.providerType) ||
-      isOpenAISessionProviderType(initialData?.meta?.providerType);
     const isClaudeOauthProvider =
       currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
       templatePreset?.providerType === "claude_oauth" ||
@@ -1959,49 +1875,43 @@ function ProviderFormFull({
               authProvider: "cursor_oauth",
               accountId: selectedCursorAccountId ?? undefined,
             }
-          : isOpenAISessionProvider
+          : isCodexOauthProvider || isCodexOfficialPreset
             ? {
                 source: "managed_account",
-                authProvider: "openai_official_session",
-                accountId: selectedOpenAISessionAccountId ?? undefined,
+                authProvider: "codex_oauth",
+                accountId: selectedCodexAccountId ?? undefined,
               }
-            : isCodexOauthProvider || isCodexOfficialPreset
+            : isClaudeOauthProvider
               ? {
                   source: "managed_account",
-                  authProvider: "codex_oauth",
-                  accountId: selectedCodexAccountId ?? undefined,
+                  authProvider: "claude_oauth",
+                  accountId: selectedClaudeAccountId ?? undefined,
                 }
-              : isClaudeOauthProvider
+              : isGeminiOauthProvider || isGeminiOfficialPreset
                 ? {
                     source: "managed_account",
-                    authProvider: "claude_oauth",
-                    accountId: selectedClaudeAccountId ?? undefined,
+                    authProvider: "google_gemini_oauth",
+                    accountId: selectedGeminiAccountId ?? undefined,
                   }
-                : isGeminiOauthProvider || isGeminiOfficialPreset
+                : isAntigravityOauthProvider || isGeminiAntigravityOauthPreset
                   ? {
                       source: "managed_account",
-                      authProvider: "google_gemini_oauth",
-                      accountId: selectedGeminiAccountId ?? undefined,
+                      authProvider: "antigravity_oauth",
+                      accountId: selectedAntigravityAccountId ?? undefined,
                     }
-                  : isAntigravityOauthProvider || isGeminiAntigravityOauthPreset
+                  : isKiroOauthProvider
                     ? {
                         source: "managed_account",
-                        authProvider: "antigravity_oauth",
-                        accountId: selectedAntigravityAccountId ?? undefined,
+                        authProvider: "kiro_oauth",
+                        accountId: selectedKiroAccountId ?? undefined,
                       }
-                    : isKiroOauthProvider
+                    : isDeepSeekAccountProvider
                       ? {
                           source: "managed_account",
-                          authProvider: "kiro_oauth",
-                          accountId: selectedKiroAccountId ?? undefined,
+                          authProvider: "deepseek_account",
+                          accountId: selectedDeepSeekAccountId ?? undefined,
                         }
-                      : isDeepSeekAccountProvider
-                        ? {
-                            source: "managed_account",
-                            authProvider: "deepseek_account",
-                            accountId: selectedDeepSeekAccountId ?? undefined,
-                          }
-                        : undefined,
+                      : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         isCopilotProvider && selectedGitHubAccountId
@@ -2649,7 +2559,6 @@ function ProviderFormFull({
                 isOpenAIOAuthProviderType(templatePreset?.providerType) ||
                 isOpenAIOAuthProviderType(initialData?.meta?.providerType)
               }
-              isOpenAISessionPreset={isOpenAISessionPreset}
               isClaudeOauthPreset={
                 templatePreset?.providerType === "claude_oauth" ||
                 initialData?.meta?.providerType === "claude_oauth"
@@ -2683,7 +2592,6 @@ function ProviderFormFull({
                 baseUrl.includes("githubcopilot.com") ||
                 isOpenAIOAuthProviderType(templatePreset?.providerType) ||
                 isOpenAIOAuthProviderType(initialData?.meta?.providerType) ||
-                isOpenAISessionPreset ||
                 templatePreset?.providerType === "claude_oauth" ||
                 initialData?.meta?.providerType === "claude_oauth" ||
                 isAntigravityFamilyType(templatePreset?.providerType) ||
@@ -2701,9 +2609,6 @@ function ProviderFormFull({
               isCodexOauthAuthenticated={isCodexOauthAuthenticated}
               selectedCodexAccountId={selectedCodexAccountId}
               onCodexAccountSelect={setSelectedCodexAccountId}
-              isOpenAISessionAuthenticated={isOpenAISessionAuthenticated}
-              selectedOpenAISessionAccountId={selectedOpenAISessionAccountId}
-              onOpenAISessionAccountSelect={setSelectedOpenAISessionAccountId}
               isClaudeOauthAuthenticated={isClaudeOauthAuthenticated}
               selectedClaudeAccountId={selectedClaudeAccountId}
               onClaudeAccountSelect={setSelectedClaudeAccountId}
@@ -2769,10 +2674,6 @@ function ProviderFormFull({
               isCodexOauthAuthenticated={isCodexOauthAuthenticated}
               selectedCodexAccountId={selectedCodexAccountId}
               onCodexAccountSelect={setSelectedCodexAccountId}
-              isOpenAISessionPreset={isOpenAISessionPreset}
-              isOpenAISessionAuthenticated={isOpenAISessionAuthenticated}
-              selectedOpenAISessionAccountId={selectedOpenAISessionAccountId}
-              onOpenAISessionAccountSelect={setSelectedOpenAISessionAccountId}
               isCursorOauthPreset={
                 currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH
               }

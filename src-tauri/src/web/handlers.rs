@@ -25,7 +25,6 @@ use crate::{
         },
         AntigravityOAuthState, ClaudeOAuthState, CodexOAuthState, CopilotAuthState,
         CursorOAuthState, DeepSeekAccountState, GeminiOAuthState, KiroOAuthState, OauthQuotaState,
-        OpenAISessionState,
     },
     error::AppError,
     provider::{Provider, UniversalProvider},
@@ -1205,11 +1204,6 @@ async fn invoke_local_admin_scoped(
         "auth_remove_account" => managed_auth_command(state, command, args).await,
         "auth_set_default_account" => managed_auth_command(state, command, args).await,
         "auth_logout" => managed_auth_command(state, command, args).await,
-        "openai_session_import" => openai_session_command(state, command, args).await,
-        "openai_session_status" => openai_session_command(state, command, args).await,
-        "openai_session_remove" => openai_session_command(state, command, args).await,
-        "openai_session_set_default" => openai_session_command(state, command, args).await,
-        "openai_session_clear" => openai_session_command(state, command, args).await,
         "copilot_list_accounts" => copilot_command(state, command, args).await,
         "copilot_get_auth_status" => copilot_command(state, command, args).await,
         "copilot_start_device_flow" => copilot_command(state, command, args).await,
@@ -2156,47 +2150,6 @@ fn local_callback_auth_blocked_message() -> &'static str {
     "当前通过 client URL 访问，无法添加需要 localhost 回调的 OAuth 账号。请在 cc-switch 桌面端本机添加该账号后再回到 client URL 使用。Codex/Copilot/Kiro/Cursor 等非 localhost 回调登录不受影响。"
 }
 
-async fn openai_session_command(
-    state: &ProxyState,
-    command: &str,
-    args: Value,
-) -> Result<Value, WebError> {
-    let session = required_state::<OpenAISessionState>(state, "openai session")?;
-    let manager = session.0.read().await;
-
-    match command {
-        "openai_session_import" => Ok(json!(manager
-            .import_session_json(&string_arg(&args, "sessionJson")?)
-            .await
-            .map_err(|err| WebError::bad_request(err.to_string()))?)),
-        "openai_session_status" => Ok(json!(manager.get_status().await)),
-        "openai_session_remove" => {
-            manager
-                .remove_account(&string_arg(&args, "accountId")?)
-                .await
-                .map_err(|err| WebError::bad_request(err.to_string()))?;
-            Ok(json!(null))
-        }
-        "openai_session_set_default" => {
-            manager
-                .set_default_account(&string_arg(&args, "accountId")?)
-                .await
-                .map_err(|err| WebError::bad_request(err.to_string()))?;
-            Ok(json!(null))
-        }
-        "openai_session_clear" => {
-            manager
-                .clear_auth()
-                .await
-                .map_err(|err| WebError::internal(err.to_string()))?;
-            Ok(json!(null))
-        }
-        _ => Err(WebError::not_found(format!(
-            "openai session web command is not exposed: {command}"
-        ))),
-    }
-}
-
 async fn copilot_command(
     state: &ProxyState,
     command: &str,
@@ -2576,11 +2529,6 @@ fn is_local_admin_command_allowed(command: &str) -> bool {
             | "auth_remove_account"
             | "auth_set_default_account"
             | "auth_logout"
-            | "openai_session_import"
-            | "openai_session_status"
-            | "openai_session_remove"
-            | "openai_session_set_default"
-            | "openai_session_clear"
             | "copilot_start_device_flow"
             | "copilot_poll_for_auth"
             | "copilot_poll_for_account"

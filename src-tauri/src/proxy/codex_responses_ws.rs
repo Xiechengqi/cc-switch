@@ -7,7 +7,6 @@ use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 
 const CODEX_RESPONSES_WS_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
 const CODEX_RESPONSES_WS_PROTOCOL: &str = "responses_websockets=2026-02-06";
-const CODEX_CLI_WS_UA: &str = "codex-cli/0.132.0 (Linux 5.15.0; x86_64)";
 
 pub(crate) fn forward_codex_responses_ws(
     headers: HeaderMap,
@@ -30,39 +29,6 @@ pub(crate) fn forward_codex_responses_ws(
     };
 
     Ok(ProxyResponse::local_sse(Box::pin(stream)))
-}
-
-pub(crate) fn openai_session_ws_headers(api_key: &str, account_id: Option<&str>) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    if let Ok(value) = HeaderValue::from_str(&format!("Bearer {api_key}")) {
-        headers.insert(http::header::AUTHORIZATION, value);
-    }
-    if let Some(account_id) = account_id.map(str::trim).filter(|value| !value.is_empty()) {
-        if let Ok(value) = HeaderValue::from_str(account_id) {
-            headers.insert(HeaderName::from_static("chatgpt-account-id"), value);
-        }
-    }
-    normalize_openai_session_ws_headers(headers)
-}
-
-pub(crate) fn normalize_openai_session_ws_headers(mut headers: HeaderMap) -> HeaderMap {
-    headers.insert(
-        HeaderName::from_static("originator"),
-        HeaderValue::from_static("codex_cli_rs"),
-    );
-    headers.insert(
-        http::header::USER_AGENT,
-        HeaderValue::from_static(CODEX_CLI_WS_UA),
-    );
-    headers.insert(
-        HeaderName::from_static("version"),
-        HeaderValue::from_static("0.132.0"),
-    );
-    headers.insert(
-        HeaderName::from_static("x-codex-beta-features"),
-        HeaderValue::from_static("responses_websockets"),
-    );
-    headers
 }
 
 fn build_response_create_payload(mut body: Value) -> Result<String, ProxyError> {

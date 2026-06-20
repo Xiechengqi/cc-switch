@@ -531,7 +531,7 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
-        if provider.is_codex_official_with_managed_auth() || provider.is_openai_session_provider() {
+        if provider.is_codex_official_with_managed_auth() {
             return Some(AuthInfo::new(
                 "codex_oauth_placeholder".to_string(),
                 AuthStrategy::CodexOAuth,

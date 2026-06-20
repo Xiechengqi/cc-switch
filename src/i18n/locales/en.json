@@ -2574,9 +2574,7 @@
     "quotaExceeded": "{{providerName}} Coding Plan quota has been exceeded",
     "quotaExceededHint": "Baidu Qianfan returned a Coding Plan quota-limit error. Wait for the 5-hour, weekly, or monthly quota refresh, or adjust the plan in the Qianfan console.",
     "codexOauthTokenInvalidated": "{{providerName}} OAuth token has been invalidated",
-    "codexOauthTokenInvalidatedHint": "cc-switch retried after refreshing the token, but OpenAI still rejected it. Sign in with openai device/openai cli again.",
-    "openaiSessionTokenInvalidated": "{{providerName}} session token has been invalidated",
-    "openaiSessionTokenInvalidatedHint": "Import __Secure-next-auth.session-token Cookie from chatgpt.com, or use openai device/openai cli. /api/auth/session JSON may contain an accessToken that Codex rejects.",
+    "codexOauthTokenInvalidatedHint": "cc-switch retried after refreshing the token, but OpenAI still rejected it. Sign in with OpenAI OAuth again.",
     "tokenInvalidated": "{{providerName}} authentication token has been invalidated",
     "tokenInvalidatedHint": "Refresh the managed account sign-in and try again.",
     "httpHint": {

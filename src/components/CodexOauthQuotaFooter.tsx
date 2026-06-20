@@ -33,7 +33,7 @@ const CodexOauthQuotaFooter: React.FC<CodexOauthQuotaFooterProps> = ({
     isFetching: loading,
     refetch,
   } = useCodexOauthQuota(meta, { enabled: true });
-  const authProvider = resolveCodexQuotaAuthProvider(meta);
+  const authProvider = resolveCodexQuotaAuthProvider();
   const accountId = resolveManagedAccountId(meta, authProvider);
   const handleRefresh = React.useCallback(async () => {
     await subscriptionApi.refreshOauthQuota(

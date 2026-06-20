@@ -86,17 +86,7 @@ export interface UseKiroOauthQuotaOptions {
   autoQuery?: boolean;
 }
 
-export function resolveCodexQuotaAuthProvider(
-  meta: ProviderMeta | undefined,
-): string {
-  if (
-    meta?.providerType === PROVIDER_TYPES.OPENAI_SESSION ||
-    meta?.providerType === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION ||
-    meta?.authBinding?.authProvider === PROVIDER_TYPES.OPENAI_SESSION ||
-    meta?.authBinding?.authProvider === PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION
-  ) {
-    return PROVIDER_TYPES.OPENAI_OFFICIAL_SESSION;
-  }
+export function resolveCodexQuotaAuthProvider(): string {
   return PROVIDER_TYPES.CODEX_OAUTH;
 }
 
@@ -131,7 +121,7 @@ export function useCodexOauthQuota(
   options: UseCodexOauthQuotaOptions = {},
 ) {
   const { enabled = true } = options;
-  const authProvider = resolveCodexQuotaAuthProvider(meta);
+  const authProvider = resolveCodexQuotaAuthProvider();
   const accountId = resolveManagedAccountId(meta, authProvider);
   return useQuery({
     queryKey: [authProvider, "quota", accountId ?? "default"],

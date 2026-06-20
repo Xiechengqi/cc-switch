@@ -215,7 +215,7 @@ impl ModelTestService {
                 "Claude Official 使用 Claude Code 官方登录流程，不支持独立模型测试。请直接在 Claude Code 中验证。"
             }
             AppType::Codex => {
-                "openai device/openai cli 使用官方 OAuth 登录流程，不支持独立模型测试。请直接在 Codex CLI 中验证。"
+                "OpenAI OAuth 使用官方 OAuth 登录流程，不支持独立模型测试。请直接在 Codex CLI 中验证。"
             }
             AppType::Gemini => {
                 "Google Official 使用官方 OAuth 登录流程，不支持独立模型测试。请直接在 Gemini CLI 中验证。"
@@ -419,14 +419,10 @@ impl ModelTestService {
             AppType::Codex => {
                 let codex_oauth_account_id = if auth.strategy == AuthStrategy::CodexOAuth {
                     auth.managed_account_id.clone().or_else(|| {
-                        provider.meta.as_ref().and_then(|meta| {
-                            if provider.is_openai_session_provider() {
-                                meta.managed_account_id_for("openai_official_session")
-                                    .or_else(|| meta.managed_account_id_for("openai_session"))
-                            } else {
-                                meta.managed_account_id_for("codex_oauth")
-                            }
-                        })
+                        provider
+                            .meta
+                            .as_ref()
+                            .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
                     })
                 } else {
                     None
@@ -514,14 +510,10 @@ impl ModelTestService {
                 .as_deref()
                 .map(str::to_string)
                 .or_else(|| {
-                    provider.meta.as_ref().and_then(|meta| {
-                        if provider.is_openai_session_provider() {
-                            meta.managed_account_id_for("openai_official_session")
-                                .or_else(|| meta.managed_account_id_for("openai_session"))
-                        } else {
-                            meta.managed_account_id_for("codex_oauth")
-                        }
-                    })
+                    provider
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
                 })
         } else {
             None
@@ -1416,30 +1408,23 @@ impl ModelTestService {
         status: u16,
         body: &str,
     ) -> Option<&'static str> {
-        if provider.is_openai_session_provider() && status == 401 {
-            return Some("openaiSessionTokenInvalidated");
-        }
         let category = Self::detect_error_category(status, body)?;
         if category != "tokenInvalidated" {
             return Some(category);
         }
 
-        if provider.is_openai_session_provider() {
-            Some("openaiSessionTokenInvalidated")
-        } else if provider.is_codex_oauth_provider()
-            || provider.is_codex_official_with_managed_auth()
-        {
+        if provider.is_codex_oauth_provider() || provider.is_codex_official_with_managed_auth() {
             Some("codexOauthTokenInvalidated")
         } else {
             Some(category)
         }
     }
 
-    fn format_provider_http_status_message(provider: &Provider, status: u16, body: &str) -> String {
-        if provider.is_openai_session_provider() && status == 401 {
-            return "Auth rejected (401): OpenAI session accessToken was rejected by Codex. Import __Secure-next-auth.session-token Cookie or use openai device/openai cli."
-                .to_string();
-        }
+    fn format_provider_http_status_message(
+        _provider: &Provider,
+        status: u16,
+        body: &str,
+    ) -> String {
         Self::format_http_status_message(status, body)
     }
 
@@ -2634,20 +2619,6 @@ mod tests {
         assert_eq!(
             ModelTestService::format_http_status_message(401, token_invalidated),
             "Auth rejected (401): OpenAI authentication token has been invalidated. Refresh the managed account sign-in and try again."
-        );
-
-        let mut session_provider = make_provider(serde_json::json!({}));
-        session_provider.meta = Some(ProviderMeta {
-            provider_type: Some("openai_official_session".to_string()),
-            ..Default::default()
-        });
-        assert_eq!(
-            ModelTestService::detect_provider_error_category(
-                &session_provider,
-                401,
-                token_invalidated
-            ),
-            Some("openaiSessionTokenInvalidated")
         );
 
         let mut oauth_provider = make_provider(serde_json::json!({}));

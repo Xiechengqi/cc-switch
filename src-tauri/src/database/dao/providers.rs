@@ -7,10 +7,9 @@ use std::collections::{HashMap, HashSet};
 
 const OPENAI_OFFICIAL_LEGACY_NAME: &str = "OpenAI Official";
 const OPENAI_OFFICIAL_OAUTH_NAME: &str = "OpenAI Official (OAuth)";
-const OPENAI_OFFICIAL_SESSION_NAME: &str = "OpenAI Official (session)";
+const OPENAI_OAUTH_NAME: &str = "OpenAI OAuth";
 const OPENAI_DEVICE_NAME: &str = "openai device";
 const OPENAI_CLI_NAME: &str = "openai cli";
-const OPENAI_SESSION_NAME: &str = "openai session";
 
 type OmoProviderRow = (
     String,
@@ -41,15 +40,7 @@ fn is_core_catalog_provider_allowed(app_type: &str, provider: &Provider) -> bool
             }
             name if is_openai_oauth_catalog_name(name) => {
                 provider.category.as_deref() == Some("official")
-                    && provider_type.is_none_or(|value| {
-                        matches!(value, "codex_oauth" | "openai_device" | "openai_cli")
-                    })
-            }
-            name if is_openai_session_catalog_name(name) => {
-                provider.category.as_deref() == Some("official")
-                    && provider_type.is_none_or(|value| {
-                        matches!(value, "openai_official_session" | "openai_session")
-                    })
+                    && provider_type.is_none_or(|value| value == "codex_oauth")
             }
             "DeepSeek Official" => {
                 provider.category.as_deref() == Some("cn_official")
@@ -63,14 +54,8 @@ fn is_core_catalog_provider_allowed(app_type: &str, provider: &Provider) -> bool
         },
         "codex" => {
             provider.category.as_deref() == Some("official")
-                && ((is_openai_oauth_catalog_name(&provider.name)
-                    && provider_type.is_none_or(|value| {
-                        matches!(value, "codex_oauth" | "openai_device" | "openai_cli")
-                    }))
-                    || (is_openai_session_catalog_name(&provider.name)
-                        && provider_type.is_none_or(|value| {
-                            matches!(value, "openai_official_session" | "openai_session")
-                        })))
+                && is_openai_oauth_catalog_name(&provider.name)
+                && provider_type.is_none_or(|value| value == "codex_oauth")
         }
         "gemini" => {
             provider.name == "Google Official"
@@ -112,15 +97,12 @@ fn is_core_catalog_fallback(app_type: &str, provider: &Provider) -> bool {
 fn is_openai_oauth_catalog_name(name: &str) -> bool {
     matches!(
         name,
-        OPENAI_DEVICE_NAME
+        OPENAI_OAUTH_NAME
+            | OPENAI_DEVICE_NAME
             | OPENAI_CLI_NAME
             | OPENAI_OFFICIAL_OAUTH_NAME
             | OPENAI_OFFICIAL_LEGACY_NAME
     )
-}
-
-fn is_openai_session_catalog_name(name: &str) -> bool {
-    matches!(name, OPENAI_SESSION_NAME | OPENAI_OFFICIAL_SESSION_NAME)
 }
 
 impl Database {
@@ -562,49 +544,139 @@ impl Database {
 
     pub fn ensure_openai_official_oauth_display_name(&self) -> Result<usize, AppError> {
         if self
-            .get_bool_flag("openai_provider_display_names_v2")
+            .get_bool_flag("openai_oauth_unified_v1")
             .unwrap_or(false)
         {
             return Ok(0);
         }
 
-        let conn = lock_conn!(self.conn);
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
         let mut updated = 0_usize;
-        updated += conn
+        updated += tx
             .execute(
                 "UPDATE providers
                  SET name = ?1,
                      meta = CASE
-                       WHEN meta IS NULL OR trim(meta) = '' THEN json_object('providerType', 'openai_device')
-                       ELSE json_set(meta, '$.providerType', 'openai_device')
+                       WHEN meta IS NULL OR trim(meta) = '' THEN json_object('providerType', 'codex_oauth')
+                       WHEN json_valid(meta) THEN json_set(meta, '$.providerType', 'codex_oauth')
+                       ELSE json_object('providerType', 'codex_oauth')
                      END
-                 WHERE app_type = 'codex'
-                   AND name IN (?2, ?3)
-                   AND category = 'official'",
+                 WHERE app_type IN ('claude', 'codex')
+                   AND category = 'official'
+                   AND (
+                     name IN (?2, ?3, ?4, ?5)
+                     OR (
+                       json_valid(meta)
+                       AND json_extract(meta, '$.providerType') IN ('openai_device', 'openai_cli')
+                     )
+                   )",
                 params![
-                    OPENAI_DEVICE_NAME,
+                    OPENAI_OAUTH_NAME,
                     OPENAI_OFFICIAL_LEGACY_NAME,
-                    OPENAI_OFFICIAL_OAUTH_NAME
+                    OPENAI_OFFICIAL_OAUTH_NAME,
+                    OPENAI_DEVICE_NAME,
+                    OPENAI_CLI_NAME,
                 ],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
-        updated += conn
+        updated += tx
             .execute(
                 "UPDATE providers
                  SET name = ?1,
                      meta = CASE
-                       WHEN meta IS NULL OR trim(meta) = '' THEN json_object('providerType', 'openai_session')
-                       ELSE json_set(meta, '$.providerType', 'openai_session')
+                       WHEN meta IS NULL OR trim(meta) = '' THEN json_object('providerType', 'codex_oauth')
+                       WHEN json_valid(meta) THEN
+                         json_remove(
+                           json_set(
+                             json_set(meta, '$.providerType', 'codex_oauth'),
+                             '$.authBinding.authProvider',
+                             'codex_oauth'
+                           ),
+                           '$.authBinding.accountId'
+                         )
+                       ELSE json_object('providerType', 'codex_oauth')
                      END
-                 WHERE app_type = 'codex'
-                   AND name = ?2
-                   AND category = 'official'",
-                params![OPENAI_SESSION_NAME, OPENAI_OFFICIAL_SESSION_NAME],
+                 WHERE app_type IN ('claude', 'codex')
+                   AND category = 'official'
+                   AND (
+                     name IN ('openai session', 'OpenAI Official (session)')
+                     OR (
+                       json_valid(meta)
+                       AND json_extract(meta, '$.providerType') IN ('openai_session', 'openai_official_session')
+                     )
+                     OR (
+                       json_valid(meta)
+                       AND json_extract(meta, '$.authBinding.authProvider') IN ('openai_session', 'openai_official_session')
+                     )
+                   )",
+                params![OPENAI_OAUTH_NAME],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
+
+        tx.execute(
+            "UPDATE share_provider_bindings
+             SET provider_id = 'codex-official'
+             WHERE app_type = 'codex'
+               AND provider_id IN ('codex-official-cli', 'codex-official-session')",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute(
+            "UPDATE providers
+             SET is_current = 1
+             WHERE id = 'codex-official'
+               AND app_type = 'codex'
+               AND EXISTS (
+                 SELECT 1 FROM providers old
+                 WHERE old.app_type = 'codex'
+                   AND old.id IN ('codex-official-cli', 'codex-official-session')
+                   AND old.is_current = 1
+               )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute(
+            "UPDATE providers
+             SET is_current = 0
+             WHERE app_type = 'codex'
+               AND id IN ('codex-official-cli', 'codex-official-session')",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        updated += tx
+            .execute(
+                "DELETE FROM provider_endpoints
+                 WHERE app_type = 'codex'
+                   AND provider_id IN ('codex-official-cli', 'codex-official-session')",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        updated += tx
+            .execute(
+                "DELETE FROM provider_health
+                 WHERE app_type = 'codex'
+                   AND provider_id IN ('codex-official-cli', 'codex-official-session')",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        updated += tx
+            .execute(
+                "DELETE FROM providers
+                 WHERE app_type = 'codex'
+                   AND category = 'official'
+                   AND id IN ('codex-official-cli', 'codex-official-session')",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         drop(conn);
 
         self.set_setting("openai_provider_display_names_v2", "true")?;
+        self.set_setting("openai_oauth_unified_v1", "true")?;
         Ok(updated)
     }
 
@@ -1262,7 +1334,7 @@ mod openai_official_oauth_display_name_tests {
     }
 
     #[test]
-    fn rename_legacy_name_only_for_codex_official_provider() {
+    fn rename_legacy_name_for_openai_official_providers() {
         let db = Database::memory().expect("memory db");
         db.save_provider(
             "codex",
@@ -1283,21 +1355,29 @@ mod openai_official_oauth_display_name_tests {
         let updated = db
             .ensure_openai_official_oauth_display_name()
             .expect("rename succeeds");
-        assert_eq!(updated, 1);
+        assert_eq!(updated, 2);
 
         assert_eq!(
             db.get_provider_by_id("codex-official", "codex")
                 .expect("query codex official")
                 .expect("codex official exists")
                 .name,
-            "openai device"
+            "OpenAI OAuth"
         );
         assert_eq!(
             db.get_provider_by_id("claude-openai", "claude")
                 .expect("query claude provider")
                 .expect("claude provider exists")
                 .name,
-            "OpenAI Official"
+            "OpenAI OAuth"
+        );
+        assert_eq!(
+            db.get_provider_by_id("claude-openai", "claude")
+                .expect("query claude provider")
+                .expect("claude provider exists")
+                .meta
+                .and_then(|meta| meta.provider_type),
+            Some("codex_oauth".to_string())
         );
         assert_eq!(
             db.get_provider_by_id("custom-openai", "codex")

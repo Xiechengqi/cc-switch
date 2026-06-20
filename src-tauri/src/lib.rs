@@ -1073,20 +1073,6 @@ pub fn run() {
                 log::info!("✓ CodexOAuthManager initialized");
             }
 
-            // 初始化 OpenAISessionManager (ChatGPT session JSON 导入)
-            {
-                use crate::proxy::providers::openai_session_auth::OpenAISessionManager;
-                use commands::OpenAISessionState;
-                use tokio::sync::RwLock;
-
-                let app_config_dir = crate::config::get_app_config_dir();
-                let openai_session_manager = OpenAISessionManager::new(app_config_dir);
-                app.manage(OpenAISessionState(Arc::new(RwLock::new(
-                    openai_session_manager,
-                ))));
-                log::info!("✓ OpenAISessionManager initialized");
-            }
-
             // 初始化 ClaudeOAuthManager (Claude 官方订阅 OAuth 反代)
             {
                 use crate::proxy::providers::claude_oauth_auth::ClaudeOAuthManager;
@@ -1508,11 +1494,6 @@ pub fn run() {
             commands::codex_banked_reset_status,
             commands::codex_banked_reset_invite,
             commands::codex_banked_reset_consume,
-            commands::openai_session_import,
-            commands::openai_session_status,
-            commands::openai_session_remove,
-            commands::openai_session_set_default,
-            commands::openai_session_clear,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // DeepSeek account management

@@ -21,7 +21,6 @@ import {
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { CursorOAuthSection } from "./CursorOAuthSection";
-import { OpenAISessionSection } from "./OpenAISessionSection";
 import { ApiKeySection, EndpointField, ModelDropdown } from "./shared";
 import {
   fetchModelsForConfig,
@@ -57,10 +56,6 @@ interface CodexFormFieldsProps {
   onCodexAccountSelect?: (accountId: string | null) => void;
   codexImageGenerationEnabled?: boolean;
   onCodexImageGenerationChange?: (enabled: boolean) => void;
-  isOpenAISessionPreset?: boolean;
-  isOpenAISessionAuthenticated?: boolean;
-  selectedOpenAISessionAccountId?: string | null;
-  onOpenAISessionAccountSelect?: (accountId: string | null) => void;
   isCursorOauthPreset?: boolean;
   isCursorApiKeyPreset?: boolean;
   selectedCursorAccountId?: string | null;
@@ -140,10 +135,6 @@ export function CodexFormFields({
   onCodexAccountSelect,
   codexImageGenerationEnabled,
   onCodexImageGenerationChange,
-  isOpenAISessionPreset = false,
-  isOpenAISessionAuthenticated = false,
-  selectedOpenAISessionAccountId,
-  onOpenAISessionAccountSelect,
   isCursorOauthPreset = false,
   isCursorApiKeyPreset = false,
   selectedCursorAccountId,
@@ -357,15 +348,8 @@ export function CodexFormFields({
         />
       )}
 
-      {isOpenAISessionPreset && (
-        <OpenAISessionSection
-          selectedAccountId={selectedOpenAISessionAccountId}
-          onAccountSelect={onOpenAISessionAccountSelect}
-        />
-      )}
-
       {/* Codex API Key 输入框 */}
-      {!isCursorOauthPreset && !isOpenAISessionPreset && (
+      {!isCursorOauthPreset && (
         <ApiKeySection
           id="codexApiKey"
           label="API Key"
@@ -397,31 +381,21 @@ export function CodexFormFields({
           </p>
         )}
 
-      {isOpenAISessionPreset && !isOpenAISessionAuthenticated && (
-        <p className="text-xs text-destructive">
-          {t("openaiSession.loginRequired", {
-            defaultValue: "请先导入 OpenAI session JSON",
-          })}
-        </p>
-      )}
-
       {/* Codex Base URL 输入框 */}
-      {shouldShowSpeedTest &&
-        !isCodexOfficialPreset &&
-        !isOpenAISessionPreset && (
-          <EndpointField
-            id="codexBaseUrl"
-            label={t("codexConfig.apiUrlLabel")}
-            value={codexBaseUrl}
-            onChange={onBaseUrlChange}
-            placeholder={t("providerForm.codexApiEndpointPlaceholder")}
-            hint={t("providerForm.codexApiHint")}
-            showFullUrlToggle
-            isFullUrl={isFullUrl}
-            onFullUrlChange={onFullUrlChange}
-            onManageClick={() => onEndpointModalToggle(true)}
-          />
-        )}
+      {shouldShowSpeedTest && !isCodexOfficialPreset && (
+        <EndpointField
+          id="codexBaseUrl"
+          label={t("codexConfig.apiUrlLabel")}
+          value={codexBaseUrl}
+          onChange={onBaseUrlChange}
+          placeholder={t("providerForm.codexApiEndpointPlaceholder")}
+          hint={t("providerForm.codexApiHint")}
+          showFullUrlToggle
+          isFullUrl={isFullUrl}
+          onFullUrlChange={onFullUrlChange}
+          onManageClick={() => onEndpointModalToggle(true)}
+        />
+      )}
 
       {/* 高级选项 —— 本地路由映射/模型映射/思考能力/自定义 UA；预设供应商通常无需展开 */}
       {category !== "official" && (
@@ -716,23 +690,20 @@ export function CodexFormFields({
       )}
 
       {/* 端点测速弹窗 - Codex */}
-      {shouldShowSpeedTest &&
-        !isCodexOfficialPreset &&
-        !isOpenAISessionPreset &&
-        isEndpointModalOpen && (
-          <EndpointSpeedTest
-            appId="codex"
-            providerId={providerId}
-            value={codexBaseUrl}
-            onChange={onBaseUrlChange}
-            initialEndpoints={speedTestEndpoints}
-            visible={isEndpointModalOpen}
-            onClose={() => onEndpointModalToggle(false)}
-            autoSelect={autoSelect}
-            onAutoSelectChange={onAutoSelectChange}
-            onCustomEndpointsChange={onCustomEndpointsChange}
-          />
-        )}
+      {shouldShowSpeedTest && !isCodexOfficialPreset && isEndpointModalOpen && (
+        <EndpointSpeedTest
+          appId="codex"
+          providerId={providerId}
+          value={codexBaseUrl}
+          onChange={onBaseUrlChange}
+          initialEndpoints={speedTestEndpoints}
+          visible={isEndpointModalOpen}
+          onClose={() => onEndpointModalToggle(false)}
+          autoSelect={autoSelect}
+          onAutoSelectChange={onAutoSelectChange}
+          onCustomEndpointsChange={onCustomEndpointsChange}
+        />
+      )}
     </>
   );
 }

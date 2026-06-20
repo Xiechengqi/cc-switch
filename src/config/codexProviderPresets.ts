@@ -73,7 +73,13 @@ requires_openai_auth = true`;
 
 function modelCatalog(
   models: Array<
-    string | { model: string; displayName?: string; contextWindow?: number }
+    | string
+    | {
+        model: string;
+        upstreamModel?: string;
+        displayName?: string;
+        contextWindow?: number;
+      }
   >,
 ): CodexCatalogModel[] {
   return models.map((entry) =>
@@ -81,11 +87,70 @@ function modelCatalog(
       ? { model: entry }
       : {
           model: entry.model,
+          upstreamModel: entry.upstreamModel,
           displayName: entry.displayName,
           contextWindow: entry.contextWindow,
         },
   );
 }
+
+const CURSOR_CODEX_UPSTREAM_MODEL = "composer-2.5";
+const cursorCodexModelCatalog = modelCatalog([
+  {
+    model: "gpt-5.5",
+    upstreamModel: CURSOR_CODEX_UPSTREAM_MODEL,
+    displayName: "GPT-5.5",
+    contextWindow: 128000,
+  },
+  {
+    model: "gpt-5.5-low",
+    upstreamModel: CURSOR_CODEX_UPSTREAM_MODEL,
+    displayName: "GPT-5.5 Low",
+    contextWindow: 128000,
+  },
+  {
+    model: "gpt-5.5-medium",
+    upstreamModel: CURSOR_CODEX_UPSTREAM_MODEL,
+    displayName: "GPT-5.5 Medium",
+    contextWindow: 128000,
+  },
+  {
+    model: "gpt-5.5-high",
+    upstreamModel: CURSOR_CODEX_UPSTREAM_MODEL,
+    displayName: "GPT-5.5 High",
+    contextWindow: 128000,
+  },
+  {
+    model: "gpt-5.5-xhigh",
+    upstreamModel: CURSOR_CODEX_UPSTREAM_MODEL,
+    displayName: "GPT-5.5 XHigh",
+    contextWindow: 128000,
+  },
+  {
+    model: "gpt-5.5-minimal",
+    upstreamModel: CURSOR_CODEX_UPSTREAM_MODEL,
+    displayName: "GPT-5.5 Minimal",
+    contextWindow: 128000,
+  },
+  {
+    model: "gpt-5.4",
+    upstreamModel: CURSOR_CODEX_UPSTREAM_MODEL,
+    displayName: "GPT-5.4",
+    contextWindow: 128000,
+  },
+  {
+    model: "gpt-5.4-mini",
+    upstreamModel: CURSOR_CODEX_UPSTREAM_MODEL,
+    displayName: "GPT-5.4 Mini",
+    contextWindow: 128000,
+  },
+  {
+    model: "gpt-5.4-nano",
+    upstreamModel: CURSOR_CODEX_UPSTREAM_MODEL,
+    displayName: "GPT-5.4 Nano",
+    contextWindow: 128000,
+  },
+]);
 
 export const codexProviderPresets: CodexProviderPreset[] = [
   {
@@ -114,9 +179,33 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     config: generateThirdPartyConfig(
       "cursor",
       "https://api.cursor.com",
-      "composer-2.5",
+      "gpt-5.5",
     ),
     providerType: "cursor_apikey",
+    apiFormat: "openai_chat",
+    modelCatalog: cursorCodexModelCatalog,
+    theme: {
+      icon: "codex",
+      backgroundColor: "#111111",
+      textColor: "#FFFFFF",
+    },
+    icon: "cursor",
+  },
+  {
+    name: "Cursor OAuth",
+    websiteUrl: "https://cursor.com",
+    isOfficial: true,
+    category: "official",
+    auth: {},
+    config: generateThirdPartyConfig(
+      "cursor",
+      "https://api2.cursor.sh",
+      "gpt-5.5",
+    ),
+    providerType: "cursor_oauth",
+    requiresOAuth: true,
+    apiFormat: "openai_chat",
+    modelCatalog: cursorCodexModelCatalog,
     theme: {
       icon: "codex",
       backgroundColor: "#111111",

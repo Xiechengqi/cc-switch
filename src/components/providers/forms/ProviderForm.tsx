@@ -179,6 +179,7 @@ export const normalizeCodexCatalogModelsForSave = (
     if (!model || seen.has(model)) continue;
     seen.add(model);
 
+    const upstreamModel = item.upstreamModel?.trim();
     const displayName = item.displayName?.trim();
     const rawContextWindow = String(item.contextWindow ?? "").replace(
       /[^\d]/g,
@@ -190,6 +191,7 @@ export const normalizeCodexCatalogModelsForSave = (
 
     normalized.push({
       model,
+      ...(upstreamModel && upstreamModel !== model ? { upstreamModel } : {}),
       ...(displayName ? { displayName } : {}),
       ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
     });
@@ -1667,12 +1669,17 @@ function ProviderFormFull({
     if (appId === "codex") {
       try {
         const authJson = JSON.parse(codexAuth);
+        const shouldPersistCodexLocalRouting =
+          category !== "official" ||
+          isCursorApiKeyPreset ||
+          currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH;
         let normalizedCodexConfig =
-          category !== "official" && (codexConfig ?? "").trim()
+          shouldPersistCodexLocalRouting && (codexConfig ?? "").trim()
             ? setCodexWireApi(codexConfig ?? "", "responses")
             : (codexConfig ?? "");
         const normalizedCatalogModels =
-          category !== "official" && localCodexApiFormat === "openai_chat"
+          shouldPersistCodexLocalRouting &&
+          localCodexApiFormat === "openai_chat"
             ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
             : [];
         // Sync first catalog row's model into config.toml so Codex uses it as default
@@ -1923,12 +1930,18 @@ function ProviderFormFull({
         : undefined,
       codexChatReasoning:
         appId === "codex" &&
-        category !== "official" &&
+        (category !== "official" ||
+          isCursorApiKeyPreset ||
+          currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH) &&
         localCodexApiFormat === "openai_chat"
           ? normalizeCodexChatReasoningForSave(codexChatReasoning)
           : undefined,
       customUserAgent:
-        (appId === "claude" || appId === "codex") && category !== "official"
+        (appId === "claude" && category !== "official") ||
+        (appId === "codex" &&
+          (category !== "official" ||
+            isCursorApiKeyPreset ||
+            currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH))
           ? customUserAgent.trim() || undefined
           : undefined,
       testConfig: testConfig.enabled ? testConfig : undefined,
@@ -1948,7 +1961,10 @@ function ProviderFormFull({
       apiFormat:
         appId === "claude" && category !== "official"
           ? localApiFormat
-          : appId === "codex" && category !== "official"
+          : appId === "codex" &&
+              (category !== "official" ||
+                isCursorApiKeyPreset ||
+                currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH)
             ? localCodexApiFormat
             : undefined,
       apiKeyField:

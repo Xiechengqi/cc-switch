@@ -427,6 +427,157 @@ fn migration_v10_to_v11_rebuilds_rollups_with_request_model_dimension() {
 }
 
 #[test]
+fn migration_v28_to_v29_aligns_cursor_oauth_model_mapping() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    Database::create_tables_on_conn(&conn).expect("create current schema tables");
+
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            "claude-cursor-oauth",
+            "claude",
+            "Cursor OAuth",
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api2.cursor.sh",
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-5",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7"
+                }
+            })
+            .to_string(),
+            json!({ "providerType": "cursor_oauth" }).to_string()
+        ],
+    )
+    .expect("insert claude cursor oauth provider");
+
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            "codex-cursor-oauth",
+            "codex",
+            "Cursor OAuth",
+            json!({
+                "auth": {},
+                "config": "model_provider = \"custom\"\nmodel = \"old-model\"\n[model_providers.custom]\nbase_url = \"https://api2.cursor.sh\""
+            })
+            .to_string(),
+            json!({ "providerType": "cursor_oauth" }).to_string()
+        ],
+    )
+    .expect("insert codex cursor oauth provider");
+
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            "codex-cursor-apikey",
+            "codex",
+            "Cursor API Key",
+            json!({
+                "auth": { "OPENAI_API_KEY": "cursor-key" },
+                "config": "model_provider = \"cursor\"\nmodel = \"composer-2.5\"\n[model_providers.cursor]\nbase_url = \"https://api.cursor.com\""
+            })
+            .to_string(),
+            json!({ "providerType": "cursor_apikey" }).to_string()
+        ],
+    )
+    .expect("insert cursor api key provider");
+
+    Database::set_user_version(&conn, 28).expect("set v28");
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    let claude_settings: String = conn
+        .query_row(
+            "SELECT settings_config FROM providers WHERE id = 'claude-cursor-oauth'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read claude settings");
+    let claude_settings: serde_json::Value =
+        serde_json::from_str(&claude_settings).expect("parse claude settings");
+    let env = claude_settings
+        .get("env")
+        .and_then(|value| value.as_object())
+        .expect("claude env");
+    assert_eq!(
+        env.get("ANTHROPIC_MODEL").and_then(|value| value.as_str()),
+        Some("composer-2.5")
+    );
+    assert_eq!(
+        env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+            .and_then(|value| value.as_str()),
+        Some("composer-2.5")
+    );
+    assert_eq!(
+        env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+            .and_then(|value| value.as_str()),
+        Some("composer-2.5")
+    );
+    assert_eq!(
+        env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+            .and_then(|value| value.as_str()),
+        Some("composer-2.5")
+    );
+    assert_eq!(
+        env.get("ANTHROPIC_DEFAULT_FABLE_MODEL")
+            .and_then(|value| value.as_str()),
+        Some("composer-2.5")
+    );
+
+    let codex_settings: String = conn
+        .query_row(
+            "SELECT settings_config FROM providers WHERE id = 'codex-cursor-oauth'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read codex settings");
+    let codex_settings: serde_json::Value =
+        serde_json::from_str(&codex_settings).expect("parse codex settings");
+    assert!(codex_settings
+        .get("config")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .contains("model = \"gpt-5.5\""));
+    assert_eq!(
+        codex_settings
+            .pointer("/modelCatalog/models/0/model")
+            .and_then(|value| value.as_str()),
+        Some("gpt-5.5")
+    );
+    assert_eq!(
+        codex_settings
+            .pointer("/modelCatalog/models/0/upstreamModel")
+            .and_then(|value| value.as_str()),
+        Some("composer-2.5")
+    );
+
+    let cursor_apikey_meta: String = conn
+        .query_row(
+            "SELECT meta FROM providers WHERE id = 'codex-cursor-apikey'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read cursor apikey meta");
+    let cursor_apikey_meta: serde_json::Value =
+        serde_json::from_str(&cursor_apikey_meta).expect("parse cursor apikey meta");
+    assert_eq!(
+        cursor_apikey_meta
+            .get("apiFormat")
+            .and_then(|value| value.as_str()),
+        Some("openai_chat")
+    );
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("post-migration version"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
 fn schema_create_tables_repairs_legacy_proxy_config_singleton_to_per_app() {
     let conn = Connection::open_in_memory().expect("open memory db");
 

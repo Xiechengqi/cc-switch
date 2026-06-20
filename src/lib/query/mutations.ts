@@ -1,7 +1,12 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { providersApi, sessionsApi, settingsApi, type AppId } from "@/lib/api";
+import { subscriptionApi } from "@/lib/api/subscription";
 import type { DeleteSessionOptions } from "@/lib/api/sessions";
 import type { SwitchResult } from "@/lib/api/providers";
 import type { Provider, SessionMeta, Settings } from "@/types";
@@ -9,6 +14,47 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 import { generateUUID } from "@/utils/uuid";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import { invalidateHermesProviderCaches } from "@/hooks/useHermes";
+import { PROVIDER_TYPES } from "@/config/constants";
+
+const isCursorApiKeyProvider = (
+  provider: Provider | undefined,
+): provider is Provider =>
+  provider?.meta?.providerType === PROVIDER_TYPES.CURSOR_APIKEY;
+
+async function refreshCursorApiKeyQuotaAfterProviderSave(
+  provider: Provider | undefined,
+  appId: AppId,
+  queryClient: QueryClient,
+) {
+  if (!isCursorApiKeyProvider(provider)) {
+    return;
+  }
+  const cursorProvider = provider;
+
+  try {
+    await subscriptionApi.refreshOauthQuota(
+      PROVIDER_TYPES.CURSOR_APIKEY,
+      null,
+      PROVIDER_TYPES.CURSOR_APIKEY,
+      appId,
+      cursorProvider.id,
+    );
+    await queryClient.invalidateQueries({
+      queryKey: [
+        PROVIDER_TYPES.CURSOR_APIKEY,
+        "quota",
+        cursorProvider.id,
+        appId,
+      ],
+    });
+  } catch (error) {
+    console.warn("Failed to refresh Cursor API Key quota after provider save", {
+      appId,
+      providerId: cursorProvider.id,
+      error,
+    });
+  }
+}
 
 export const useAddProviderMutation = (appId: AppId) => {
   const queryClient = useQueryClient();
@@ -68,8 +114,13 @@ export const useAddProviderMutation = (appId: AppId) => {
       await providersApi.add(newProvider, appId, addToLive);
       return newProvider;
     },
-    onSuccess: async () => {
+    onSuccess: async (provider) => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await refreshCursorApiKeyQuotaAfterProviderSave(
+        provider,
+        appId,
+        queryClient,
+      );
 
       if (appId === "opencode") {
         await queryClient.invalidateQueries({
@@ -141,8 +192,13 @@ export const useUpdateProviderMutation = (appId: AppId) => {
       await providersApi.update(provider, appId, originalId);
       return provider;
     },
-    onSuccess: async () => {
+    onSuccess: async (provider) => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await refreshCursorApiKeyQuotaAfterProviderSave(
+        provider,
+        appId,
+        queryClient,
+      );
       if (appId === "openclaw") {
         await queryClient.invalidateQueries({
           queryKey: openclawKeys.health,

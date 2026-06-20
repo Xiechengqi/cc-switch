@@ -131,6 +131,8 @@ interface SyncStatusUpdatedPayload {
 interface OauthQuotaUpdatedPayload {
   authProvider?: string;
   accountId?: string;
+  providerId?: string | null;
+  appType?: string | null;
 }
 
 const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
@@ -422,6 +424,20 @@ function DesktopApp() {
         ? ["copilot", "quota", accountId]
         : [authProvider, "quota", accountId];
     queryClient.invalidateQueries({ queryKey: key });
+    if (
+      authProvider === "cursor_apikey" &&
+      payload?.providerId &&
+      payload?.appType
+    ) {
+      queryClient.invalidateQueries({
+        queryKey: [
+          "cursor_apikey",
+          "quota",
+          payload.providerId,
+          payload.appType,
+        ],
+      });
+    }
     if (accountId !== "default") {
       const defaultKey =
         authProvider === "github_copilot"

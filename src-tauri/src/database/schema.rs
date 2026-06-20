@@ -646,6 +646,13 @@ impl Database {
                         Self::migrate_v27_to_v28(conn)?;
                         Self::set_user_version(conn, 28)?;
                     }
+                    28 => {
+                        log::info!(
+                            "迁移数据库从 v28 到 v29（Cursor OAuth 模型映射对齐 Cursor API Key）"
+                        );
+                        Self::migrate_v28_to_v29(conn)?;
+                        Self::set_user_version(conn, 29)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -2038,6 +2045,223 @@ impl Database {
 
         log::info!("v27 -> v28 迁移完成：shares 增加 app_settings_json");
         Ok(())
+    }
+
+    /// v28 -> v29：Cursor 的模型映射改为 Composer 路由。
+    fn migrate_v28_to_v29(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "providers")? {
+            return Ok(());
+        }
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, app_type, settings_config, meta
+                 FROM providers
+                 WHERE app_type IN ('claude', 'codex')",
+            )
+            .map_err(|e| AppError::Database(format!("读取 Cursor OAuth provider 失败: {e}")))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| AppError::Database(format!("遍历 Cursor OAuth provider 失败: {e}")))?;
+
+        let mut updates = Vec::new();
+        for row in rows {
+            let (id, app_type, settings_config, meta_str) =
+                row.map_err(|e| AppError::Database(e.to_string()))?;
+            let mut meta = serde_json::from_str::<serde_json::Value>(&meta_str)
+                .unwrap_or_else(|_| serde_json::Value::Null);
+            let provider_type = meta
+                .get("providerType")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if provider_type != "cursor_oauth" && provider_type != "cursor_apikey" {
+                continue;
+            }
+
+            let mut settings = match serde_json::from_str::<serde_json::Value>(&settings_config) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let mut updated = false;
+
+            if app_type == "claude" {
+                if let Some(env) = settings.get_mut("env").and_then(|v| v.as_object_mut()) {
+                    let desired = [
+                        ("ANTHROPIC_MODEL", "composer-2.5"),
+                        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "composer-2.5"),
+                        ("ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME", "Claude Haiku"),
+                        ("ANTHROPIC_DEFAULT_SONNET_MODEL", "composer-2.5"),
+                        ("ANTHROPIC_DEFAULT_SONNET_MODEL_NAME", "Claude Sonnet"),
+                        ("ANTHROPIC_DEFAULT_OPUS_MODEL", "composer-2.5"),
+                        ("ANTHROPIC_DEFAULT_OPUS_MODEL_NAME", "Claude Opus"),
+                        ("ANTHROPIC_DEFAULT_FABLE_MODEL", "composer-2.5"),
+                        ("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME", "Claude Fable"),
+                    ];
+                    for (key, value) in desired {
+                        if env.get(key).and_then(|v| v.as_str()) != Some(value) {
+                            env.insert(
+                                key.to_string(),
+                                serde_json::Value::String(value.to_string()),
+                            );
+                            updated = true;
+                        }
+                    }
+                }
+            } else if app_type == "codex" {
+                if let Some(config) = settings.get_mut("config").and_then(|v| v.as_str()) {
+                    let next_config = Self::replace_codex_model_in_config(config, "gpt-5.5");
+                    if next_config != config {
+                        settings["config"] = serde_json::Value::String(next_config);
+                        updated = true;
+                    }
+                }
+                if settings.get("modelCatalog") != Some(&Self::cursor_codex_model_catalog_value()) {
+                    if let Some(root) = settings.as_object_mut() {
+                        root.insert(
+                            "modelCatalog".to_string(),
+                            Self::cursor_codex_model_catalog_value(),
+                        );
+                        updated = true;
+                    }
+                }
+                if meta.get("apiFormat").and_then(|v| v.as_str()) != Some("openai_chat") {
+                    if !meta.is_object() {
+                        meta = serde_json::json!({});
+                    }
+                    if let Some(root) = meta.as_object_mut() {
+                        root.insert(
+                            "apiFormat".to_string(),
+                            serde_json::Value::String("openai_chat".to_string()),
+                        );
+                        updated = true;
+                    }
+                }
+            }
+
+            if updated {
+                let new_settings = serde_json::to_string(&settings)
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                let new_meta =
+                    serde_json::to_string(&meta).map_err(|e| AppError::Database(e.to_string()))?;
+                updates.push((id, app_type, new_settings, new_meta));
+            }
+        }
+
+        for (id, app_type, new_settings, new_meta) in &updates {
+            conn.execute(
+                "UPDATE providers
+                 SET settings_config = ?1, meta = ?4
+                 WHERE id = ?2 AND app_type = ?3",
+                params![new_settings, id, app_type, new_meta],
+            )
+            .map_err(|e| {
+                AppError::Database(format!(
+                    "更新 Cursor OAuth provider {id}/{app_type} 失败: {e}"
+                ))
+            })?;
+        }
+
+        log::info!(
+            "v28 -> v29 迁移完成：已对齐 {} 个 Cursor OAuth provider 的模型映射",
+            updates.len()
+        );
+        Ok(())
+    }
+
+    fn cursor_codex_model_catalog_value() -> serde_json::Value {
+        const UPSTREAM_MODEL: &str = "composer-2.5";
+        serde_json::json!({
+            "models": [
+                {
+                    "model": "gpt-5.5",
+                    "upstreamModel": UPSTREAM_MODEL,
+                    "displayName": "GPT-5.5",
+                    "contextWindow": 128000
+                },
+                {
+                    "model": "gpt-5.5-low",
+                    "upstreamModel": UPSTREAM_MODEL,
+                    "displayName": "GPT-5.5 Low",
+                    "contextWindow": 128000
+                },
+                {
+                    "model": "gpt-5.5-medium",
+                    "upstreamModel": UPSTREAM_MODEL,
+                    "displayName": "GPT-5.5 Medium",
+                    "contextWindow": 128000
+                },
+                {
+                    "model": "gpt-5.5-high",
+                    "upstreamModel": UPSTREAM_MODEL,
+                    "displayName": "GPT-5.5 High",
+                    "contextWindow": 128000
+                },
+                {
+                    "model": "gpt-5.5-xhigh",
+                    "upstreamModel": UPSTREAM_MODEL,
+                    "displayName": "GPT-5.5 XHigh",
+                    "contextWindow": 128000
+                },
+                {
+                    "model": "gpt-5.5-minimal",
+                    "upstreamModel": UPSTREAM_MODEL,
+                    "displayName": "GPT-5.5 Minimal",
+                    "contextWindow": 128000
+                },
+                {
+                    "model": "gpt-5.4",
+                    "upstreamModel": UPSTREAM_MODEL,
+                    "displayName": "GPT-5.4",
+                    "contextWindow": 128000
+                },
+                {
+                    "model": "gpt-5.4-mini",
+                    "upstreamModel": UPSTREAM_MODEL,
+                    "displayName": "GPT-5.4 Mini",
+                    "contextWindow": 128000
+                },
+                {
+                    "model": "gpt-5.4-nano",
+                    "upstreamModel": UPSTREAM_MODEL,
+                    "displayName": "GPT-5.4 Nano",
+                    "contextWindow": 128000
+                }
+            ]
+        })
+    }
+
+    fn replace_codex_model_in_config(config: &str, model: &str) -> String {
+        let model_line = format!(
+            "model = {}",
+            serde_json::to_string(model).unwrap_or_default()
+        );
+        let mut replaced = false;
+        let mut lines = Vec::new();
+
+        for line in config.lines() {
+            if line.trim_start().starts_with("model =") {
+                lines.push(model_line.clone());
+                replaced = true;
+            } else {
+                lines.push(line.to_string());
+            }
+        }
+
+        if replaced {
+            lines.join("\n")
+        } else if config.trim().is_empty() {
+            model_line
+        } else {
+            format!("{model_line}\n{config}")
+        }
     }
 
     /// 插入默认模型定价数据

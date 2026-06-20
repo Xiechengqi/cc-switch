@@ -10,7 +10,7 @@ use crate::provider::{CodexChatReasoningConfig, Provider};
 use crate::proxy::error::ProxyError;
 use regex::Regex;
 use serde_json::Value as JsonValue;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use toml::Value as TomlValue;
 
@@ -102,7 +102,7 @@ pub fn codex_provider_upstream_model(provider: &Provider) -> Option<String> {
         })
 }
 
-fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
+fn codex_provider_catalog_upstream_models(provider: &Provider) -> HashMap<String, String> {
     provider
         .settings_config
         .get("modelCatalog")
@@ -111,10 +111,21 @@ fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
         .map(|models| {
             models
                 .iter()
-                .filter_map(|model| model.get("model").and_then(|value| value.as_str()))
-                .map(str::trim)
-                .filter(|model| !model.is_empty())
-                .map(ToString::to_string)
+                .filter_map(|model| {
+                    let route_model = model
+                        .get("model")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|model| !model.is_empty())?;
+                    let upstream_model = model
+                        .get("upstreamModel")
+                        .or_else(|| model.get("upstream_model"))
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|model| !model.is_empty())
+                        .unwrap_or(route_model);
+                    Some((route_model.to_string(), upstream_model.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -130,15 +141,16 @@ pub fn apply_codex_chat_upstream_model(
         return None;
     }
 
-    let catalog_model_ids = codex_provider_catalog_model_ids(provider);
+    let catalog_upstream_models = codex_provider_catalog_upstream_models(provider);
     if let Some(request_model) = body
         .get("model")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|model| !model.is_empty())
     {
-        if catalog_model_ids.contains(request_model) {
-            return Some(request_model.to_string());
+        if let Some(upstream_model) = catalog_upstream_models.get(request_model) {
+            body["model"] = JsonValue::String(upstream_model.clone());
+            return Some(upstream_model.clone());
         }
     }
 
@@ -882,6 +894,43 @@ wire_api = "responses"
 
         assert_eq!(upstream_model.as_deref(), Some("kimi-k2"));
         assert_eq!(body.get("model").and_then(|v| v.as_str()), Some("kimi-k2"));
+    }
+
+    #[test]
+    fn test_apply_codex_chat_upstream_model_uses_catalog_upstream_model() {
+        let mut provider = create_provider(json!({
+            "config": r#"
+model_provider = "cursor"
+model = "gpt-5.5"
+
+[model_providers.cursor]
+name = "Cursor"
+base_url = "https://api.cursor.com"
+wire_api = "responses"
+"#,
+            "modelCatalog": {
+                "models": [
+                    { "model": "gpt-5.5", "upstreamModel": "composer-2.5" },
+                    { "model": "gpt-5.4", "upstreamModel": "composer-2.5" }
+                ]
+            }
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_chat".to_string()),
+            ..Default::default()
+        });
+        let mut body = json!({
+            "model": "gpt-5.5",
+            "input": "ping"
+        });
+
+        let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
+
+        assert_eq!(upstream_model.as_deref(), Some("composer-2.5"));
+        assert_eq!(
+            body.get("model").and_then(|v| v.as_str()),
+            Some("composer-2.5")
+        );
     }
 
     #[test]

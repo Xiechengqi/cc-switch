@@ -237,10 +237,11 @@ export function useCursorOauthQuota(
         appId,
         providerId,
       ),
-    enabled,
+    enabled: enabled && (!isCursorApiKey || Boolean(appId && providerId)),
     refetchInterval: false,
     refetchOnWindowFocus: false,
-    staleTime: Infinity,
-    retry: false,
+    refetchOnMount: isCursorApiKey ? "always" : true,
+    staleTime: isCursorApiKey ? 30 * 1000 : Infinity,
+    retry: isCursorApiKey ? 1 : false,
   });
 }

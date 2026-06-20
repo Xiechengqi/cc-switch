@@ -98,6 +98,7 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
   return {
     rowId: crypto.randomUUID(),
     model: seed?.model ?? "",
+    upstreamModel: seed?.upstreamModel ?? "",
     displayName: seed?.displayName ?? "",
     contextWindow: seed?.contextWindow ?? "",
   };
@@ -106,7 +107,12 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
 // Compares rows (with rowId) to incoming models (without) by data fields only,
 // so both sync effects can use the same equality definition.
 function catalogRowsMatchModels(
-  rows: Array<Pick<CodexCatalogRow, "model" | "displayName" | "contextWindow">>,
+  rows: Array<
+    Pick<
+      CodexCatalogRow,
+      "model" | "upstreamModel" | "displayName" | "contextWindow"
+    >
+  >,
   models: CodexCatalogModel[],
 ): boolean {
   if (rows.length !== models.length) return false;
@@ -114,6 +120,7 @@ function catalogRowsMatchModels(
     const incoming = models[i];
     return (
       row.model === (incoming.model ?? "") &&
+      (row.upstreamModel ?? "") === (incoming.upstreamModel ?? "") &&
       (row.displayName ?? "") === (incoming.displayName ?? "") &&
       String(row.contextWindow ?? "") === String(incoming.contextWindow ?? "")
     );
@@ -398,7 +405,9 @@ export function CodexFormFields({
       )}
 
       {/* 高级选项 —— 本地路由映射/模型映射/思考能力/自定义 UA；预设供应商通常无需展开 */}
-      {category !== "official" && (
+      {(category !== "official" ||
+        isCursorApiKeyPreset ||
+        isCursorOauthPreset) && (
         <Collapsible
           open={advancedExpanded}
           onOpenChange={setAdvancedExpanded}
@@ -431,7 +440,9 @@ export function CodexFormFields({
           )}
           <CollapsibleContent className="space-y-3 pt-3">
             {/* 本地路由映射开关 —— 沿用 shouldShowSpeedTest 门控，cloud_provider 保持不可切换 */}
-            {shouldShowSpeedTest && (
+            {(shouldShowSpeedTest ||
+              isCursorApiKeyPreset ||
+              isCursorOauthPreset) && (
               <div className="flex items-center justify-between gap-4">
                 <div className="space-y-1">
                   <FormLabel>
@@ -572,7 +583,7 @@ export function CodexFormFields({
                 {catalogRows.length > 0 && (
                   <div className="space-y-2">
                     {/* 列头：md+ 显示 */}
-                    <div className="hidden grid-cols-[1fr_1fr_140px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
+                    <div className="hidden grid-cols-[1fr_1fr_1fr_120px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
                       <span>
                         {t("codexConfig.catalogColumnDisplay", {
                           defaultValue: "菜单显示名",
@@ -580,7 +591,12 @@ export function CodexFormFields({
                       </span>
                       <span>
                         {t("codexConfig.catalogColumnModel", {
-                          defaultValue: "实际请求模型",
+                          defaultValue: "Codex 请求模型",
+                        })}
+                      </span>
+                      <span>
+                        {t("codexConfig.catalogColumnUpstreamModel", {
+                          defaultValue: "上游模型",
                         })}
                       </span>
                       <span>
@@ -594,7 +610,7 @@ export function CodexFormFields({
                     {catalogRows.map((row, index) => (
                       <div
                         key={row.rowId}
-                        className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_140px_36px]"
+                        className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_1fr_120px_36px]"
                       >
                         <Input
                           value={row.displayName ?? ""}
@@ -624,11 +640,11 @@ export function CodexFormFields({
                             placeholder={t(
                               "codexConfig.catalogModelPlaceholder",
                               {
-                                defaultValue: "例如: deepseek-v4-flash",
+                                defaultValue: "例如: gpt-5.5",
                               },
                             )}
                             aria-label={t("codexConfig.catalogColumnModel", {
-                              defaultValue: "实际请求模型",
+                              defaultValue: "Codex 请求模型",
                             })}
                             className="flex-1"
                           />
@@ -646,6 +662,26 @@ export function CodexFormFields({
                             />
                           )}
                         </div>
+                        <Input
+                          value={row.upstreamModel ?? ""}
+                          onChange={(event) =>
+                            handleUpdateCatalogRow(index, {
+                              upstreamModel: event.target.value,
+                            })
+                          }
+                          placeholder={t(
+                            "codexConfig.catalogUpstreamModelPlaceholder",
+                            {
+                              defaultValue: "默认同请求模型",
+                            },
+                          )}
+                          aria-label={t(
+                            "codexConfig.catalogColumnUpstreamModel",
+                            {
+                              defaultValue: "上游模型",
+                            },
+                          )}
+                        />
                         <Input
                           type="number"
                           min={1}

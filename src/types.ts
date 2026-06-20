@@ -257,6 +257,7 @@ export type CodexApiFormat = "openai_responses" | "openai_chat";
 
 export interface CodexCatalogModel {
   model: string;
+  upstreamModel?: string;
   displayName?: string;
   contextWindow?: string | number;
 }

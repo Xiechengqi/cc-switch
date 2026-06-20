@@ -112,6 +112,12 @@ pub async fn model_test_provider(
         state
             .db
             .save_stream_check_log(&provider_id, &provider.name, app_type.as_str(), &result);
+    if result.success {
+        let _ = state
+            .db
+            .reset_provider_health(&provider_id, app_type.as_str())
+            .await;
+    }
 
     Ok(result)
 }
@@ -181,6 +187,11 @@ pub(crate) async fn run_model_test_for_provider(
     .await?;
 
     let _ = db.save_stream_check_log(&provider.id, &provider.name, app_type.as_str(), &result);
+    if result.success {
+        let _ = db
+            .reset_provider_health(&provider.id, app_type.as_str())
+            .await;
+    }
 
     Ok(result)
 }

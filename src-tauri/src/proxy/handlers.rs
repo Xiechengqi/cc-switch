@@ -43,15 +43,27 @@ use super::{
 use crate::app_config::AppType;
 use crate::commands::CodexOAuthState;
 use crate::database::PRICING_SOURCE_REQUEST;
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::{
+        ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
+        State,
+    },
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 use bytes::Bytes;
+use futures::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::str::FromStr;
 use tauri::Manager;
+use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
 
 const SHARE_ROUTER_REQUEST_LOGS_LIMIT: usize = 10;
+const CODEX_RESPONSES_WS_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
+const CODEX_RESPONSES_WS_PROTOCOL: &str = "responses_websockets=2026-02-06";
 
 fn has_share_router_probe_header(headers: &axum::http::HeaderMap) -> bool {
     headers
@@ -190,27 +202,40 @@ pub async fn share_router_model_health(
     )
     .await
     {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(json!(ShareRouterModelHealthResponse {
-                ok: true,
-                success: result.success,
-                status: serde_json::to_value(&result.status)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_string))
-                    .unwrap_or_else(|| format!("{:?}", result.status).to_ascii_lowercase()),
-                message: result.message,
-                status_code: result.http_status,
-                model_used: result.model_used,
-                response_time_ms: result.response_time_ms,
-                tested_at: result.tested_at,
-                retry_count: result.retry_count,
-                error_category: result.error_category,
-                provider_id: provider.id,
-                provider_name: provider.name,
-            })),
-        )
-            .into_response(),
+        Ok(result) => {
+            if result.success {
+                state
+                    .provider_router
+                    .reset_provider_breaker(&provider.id, app_type.as_str())
+                    .await;
+                let _ = state
+                    .db
+                    .reset_provider_health(&provider.id, app_type.as_str())
+                    .await;
+            }
+
+            (
+                StatusCode::OK,
+                Json(json!(ShareRouterModelHealthResponse {
+                    ok: true,
+                    success: result.success,
+                    status: serde_json::to_value(&result.status)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| format!("{:?}", result.status).to_ascii_lowercase()),
+                    message: result.message,
+                    status_code: result.http_status,
+                    model_used: result.model_used,
+                    response_time_ms: result.response_time_ms,
+                    tested_at: result.tested_at,
+                    retry_count: result.retry_count,
+                    error_category: result.error_category,
+                    provider_id: provider.id,
+                    provider_name: provider.name,
+                })),
+            )
+                .into_response()
+        }
         Err(err) => (
             StatusCode::OK,
             Json(json!(ShareRouterModelHealthResponse {
@@ -1109,6 +1134,313 @@ pub async fn handle_responses(
         connection_guard,
     )
     .await
+}
+
+/// GET /v1/responses — Codex Responses WebSocket passthrough.
+///
+/// This is intentionally limited to the managed OpenAI OAuth provider. Other
+/// OpenAI-compatible providers may not expose ChatGPT's Codex WebSocket
+/// protocol, so returning an explicit error is safer than silently routing to
+/// an incompatible HTTP endpoint.
+pub async fn handle_responses_websocket(
+    State(state): State<ProxyState>,
+    ws: WebSocketUpgrade,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    let providers = match state.provider_router.select_providers("codex").await {
+        Ok(providers) => providers,
+        Err(err) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": {
+                        "type": "no_available_provider",
+                        "message": err.to_string(),
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if providers.is_empty() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "type": "no_available_provider",
+                    "message": "no Codex provider selected",
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    let provider = providers
+        .into_iter()
+        .find(|provider| provider.is_codex_official_with_managed_auth());
+    let Some(provider) = provider else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({
+                "error": {
+                    "type": "unsupported_provider",
+                    "message": "Responses WebSocket requires an available OpenAI OAuth provider with a managed ChatGPT account.",
+                }
+            })),
+        )
+            .into_response();
+    };
+
+    let Some(app_handle) = &state.app_handle else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "type": "auth_unavailable",
+                    "message": "OpenAI OAuth state is unavailable",
+                }
+            })),
+        )
+            .into_response();
+    };
+
+    let account_id = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("codex_oauth"));
+    let codex_state = app_handle.state::<CodexOAuthState>();
+    let codex_auth = codex_state.0.read().await;
+    let token_result = match account_id.as_deref() {
+        Some(id) => codex_auth.get_valid_token_for_account(id).await,
+        None => codex_auth.get_valid_token().await,
+    };
+    let token = match token_result {
+        Ok(token) => token,
+        Err(err) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": {
+                        "type": "authentication_error",
+                        "message": format!("OpenAI OAuth token unavailable: {err}"),
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    let resolved_account_id = match account_id {
+        Some(id) => Some(id),
+        None => codex_auth.default_account_id().await,
+    };
+    drop(codex_auth);
+
+    let session_id = crate::proxy::extract_session_id(&headers, &json!({}), "codex");
+    let upstream_session_id = if session_id.client_provided {
+        codex_ws_upstream_session_id(&session_id.session_id)
+    } else {
+        None
+    };
+
+    let upstream = match connect_codex_responses_ws_upstream(
+        &headers,
+        &token,
+        resolved_account_id.as_deref(),
+        upstream_session_id.as_deref(),
+    )
+    .await
+    {
+        Ok(upstream) => upstream,
+        Err(err) => {
+            let _ = state
+                .provider_router
+                .record_result(
+                    &provider.id,
+                    "codex",
+                    false,
+                    false,
+                    Some(format!("responses websocket connect failed: {err}")),
+                )
+                .await;
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "type": "upstream_connection_error",
+                        "message": err,
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let _ = state
+        .provider_router
+        .record_result(&provider.id, "codex", false, true, None)
+        .await;
+
+    ws.on_upgrade(move |socket| proxy_codex_responses_websocket(socket, upstream))
+}
+
+async fn connect_codex_responses_ws_upstream(
+    source_headers: &axum::http::HeaderMap,
+    access_token: &str,
+    account_id: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    String,
+> {
+    let mut request = CODEX_RESPONSES_WS_URL
+        .into_client_request()
+        .map_err(|err| format!("build upstream websocket request failed: {err}"))?;
+
+    let headers = request.headers_mut();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        axum::http::HeaderValue::from_str(&format!("Bearer {access_token}"))
+            .map_err(|err| format!("invalid authorization header: {err}"))?,
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("openai-beta"),
+        axum::http::HeaderValue::from_static(CODEX_RESPONSES_WS_PROTOCOL),
+    );
+    if let Some(user_agent) = source_headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Ok(value) = axum::http::HeaderValue::from_str(user_agent) {
+            headers.insert(axum::http::header::USER_AGENT, value);
+        }
+    }
+    if let Some(account_id) = account_id.map(str::trim).filter(|id| !id.is_empty()) {
+        headers.insert(
+            axum::http::HeaderName::from_static("chatgpt-account-id"),
+            axum::http::HeaderValue::from_str(account_id)
+                .map_err(|err| format!("invalid chatgpt account header: {err}"))?,
+        );
+    }
+    if let Some(session_id) = session_id.map(str::trim).filter(|id| !id.is_empty()) {
+        let value = axum::http::HeaderValue::from_str(session_id)
+            .map_err(|err| format!("invalid session header: {err}"))?;
+        headers.insert(
+            axum::http::HeaderName::from_static("session_id"),
+            value.clone(),
+        );
+        headers.insert(
+            axum::http::HeaderName::from_static("x-client-request-id"),
+            value,
+        );
+        let window_id = format!("{session_id}:0");
+        headers.insert(
+            axum::http::HeaderName::from_static("x-codex-window-id"),
+            axum::http::HeaderValue::from_str(&window_id)
+                .map_err(|err| format!("invalid codex window header: {err}"))?,
+        );
+    }
+
+    tokio_tungstenite::connect_async(request)
+        .await
+        .map(|(stream, _)| stream)
+        .map_err(|err| err.to_string())
+}
+
+async fn proxy_codex_responses_websocket(
+    client: WebSocket,
+    upstream: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) {
+    let (mut client_tx, mut client_rx) = client.split();
+    let (mut upstream_tx, mut upstream_rx) = upstream.split();
+
+    loop {
+        tokio::select! {
+            client_msg = client_rx.next() => {
+                match client_msg {
+                    Some(Ok(message)) => {
+                        let close = matches!(message, AxumWsMessage::Close(_));
+                        if let Some(upstream_message) = axum_ws_to_tungstenite(message) {
+                            if upstream_tx.send(upstream_message).await.is_err() {
+                                break;
+                            }
+                        }
+                        if close {
+                            break;
+                        }
+                    }
+                    Some(Err(err)) => {
+                        log::debug!("[CodexWS] client websocket read failed: {err}");
+                        break;
+                    }
+                    None => break,
+                }
+            }
+            upstream_msg = upstream_rx.next() => {
+                match upstream_msg {
+                    Some(Ok(message)) => {
+                        let close = matches!(message, TungsteniteMessage::Close(_));
+                        if let Some(client_message) = tungstenite_to_axum_ws(message) {
+                            if client_tx.send(client_message).await.is_err() {
+                                break;
+                            }
+                        }
+                        if close {
+                            break;
+                        }
+                    }
+                    Some(Err(err)) => {
+                        log::debug!("[CodexWS] upstream websocket read failed: {err}");
+                        let _ = client_tx
+                            .send(AxumWsMessage::Close(None))
+                            .await;
+                        break;
+                    }
+                    None => {
+                        let _ = client_tx.send(AxumWsMessage::Close(None)).await;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn axum_ws_to_tungstenite(message: AxumWsMessage) -> Option<TungsteniteMessage> {
+    match message {
+        AxumWsMessage::Text(text) => Some(TungsteniteMessage::Text(text.to_string().into())),
+        AxumWsMessage::Binary(bytes) => Some(TungsteniteMessage::Binary(bytes.into())),
+        AxumWsMessage::Ping(bytes) => Some(TungsteniteMessage::Ping(bytes.into())),
+        AxumWsMessage::Pong(bytes) => Some(TungsteniteMessage::Pong(bytes.into())),
+        AxumWsMessage::Close(_) => Some(TungsteniteMessage::Close(None)),
+    }
+}
+
+fn tungstenite_to_axum_ws(message: TungsteniteMessage) -> Option<AxumWsMessage> {
+    match message {
+        TungsteniteMessage::Text(text) => Some(AxumWsMessage::Text(text.to_string().into())),
+        TungsteniteMessage::Binary(bytes) => Some(AxumWsMessage::Binary(bytes.to_vec())),
+        TungsteniteMessage::Ping(bytes) => Some(AxumWsMessage::Ping(bytes.to_vec())),
+        TungsteniteMessage::Pong(bytes) => Some(AxumWsMessage::Pong(bytes.to_vec())),
+        TungsteniteMessage::Close(_) => Some(AxumWsMessage::Close(None)),
+        TungsteniteMessage::Frame(_) => None,
+    }
+}
+
+fn codex_ws_upstream_session_id(session_id: &str) -> Option<String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+    let session_id = session_id
+        .strip_prefix("codex_")
+        .unwrap_or(session_id)
+        .trim();
+    (!session_id.is_empty()).then(|| session_id.to_string())
 }
 
 /// 处理 /v1/images/generations 请求（OpenAI Images API - Codex OAuth 生图）

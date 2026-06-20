@@ -836,7 +836,30 @@ impl CodexOAuthManager {
             account.refresh_token.clone()
         };
 
-        let new_tokens = self.refresh_with_token(&refresh_token).await?;
+        let new_tokens = match self.refresh_with_token(&refresh_token).await {
+            Ok(tokens) => tokens,
+            Err(err) if is_refresh_race_recoverable_error(&err) => {
+                match self
+                    .reload_account_refresh_token_if_changed(account_id, &refresh_token)
+                    .await
+                {
+                    Ok(Some(new_refresh_token)) => {
+                        log::info!(
+                            "[CodexOAuth] refresh_token changed on disk while refreshing account={account_id}; retrying with latest token"
+                        );
+                        self.refresh_with_token(&new_refresh_token).await?
+                    }
+                    Ok(None) => return Err(err),
+                    Err(reload_err) => {
+                        log::warn!(
+                            "[CodexOAuth] failed to reload token store after refresh error for account={account_id}: {reload_err}"
+                        );
+                        return Err(err);
+                    }
+                }
+            }
+            Err(err) => return Err(err),
+        };
 
         // 如果服务端返回了新的 refresh_token，更新存储
         if let Some(new_refresh) = new_tokens.refresh_token.clone() {
@@ -1192,6 +1215,43 @@ impl CodexOAuthManager {
         Ok(())
     }
 
+    async fn reload_from_disk(&self) -> Result<(), CodexOAuthError> {
+        if !self.storage_path.exists() {
+            return Ok(());
+        }
+
+        let content = tokio::fs::read_to_string(&self.storage_path).await?;
+        let store: CodexOAuthStore = serde_json::from_str(&content)
+            .map_err(|e| CodexOAuthError::ParseError(e.to_string()))?;
+
+        let mut accounts = self.accounts.write().await;
+        *accounts = store.accounts;
+        let fallback_default = Self::fallback_default_account_id(&accounts);
+        drop(accounts);
+
+        let mut default = self.default_account_id.write().await;
+        *default = store.default_account_id.or(fallback_default);
+
+        Ok(())
+    }
+
+    async fn reload_account_refresh_token_if_changed(
+        &self,
+        account_id: &str,
+        used_refresh_token: &str,
+    ) -> Result<Option<String>, CodexOAuthError> {
+        self.reload_from_disk().await?;
+        let accounts = self.accounts.read().await;
+        let Some(account) = accounts.get(account_id) else {
+            return Ok(None);
+        };
+        if account.refresh_token != used_refresh_token {
+            Ok(Some(account.refresh_token.clone()))
+        } else {
+            Ok(None)
+        }
+    }
+
     async fn save_to_disk(&self) -> Result<(), CodexOAuthError> {
         let accounts = self.accounts.read().await.clone();
         let default = self.resolve_default_account_id().await;
@@ -1369,6 +1429,17 @@ fn compute_expires_at_ms(expires_in: Option<i64>) -> i64 {
     now_ms + secs * 1000
 }
 
+fn is_refresh_race_recoverable_error(err: &CodexOAuthError) -> bool {
+    match err {
+        CodexOAuthError::RefreshTokenInvalid => true,
+        CodexOAuthError::TokenFetchFailed(message) => {
+            let lower = message.to_ascii_lowercase();
+            lower.contains("invalid_grant") || lower.contains("refresh token")
+        }
+        _ => false,
+    }
+}
+
 /// 解析 JWT 中的 claims
 fn parse_jwt_claims(token: &str) -> Option<IdTokenClaims> {
     let parts: Vec<&str> = token.split('.').collect();
@@ -1511,6 +1582,19 @@ mod tests {
             expires_at_ms: now + 3_600_000,
         };
         assert!(!valid.is_expiring_soon());
+    }
+
+    #[test]
+    fn test_refresh_race_recoverable_error_detection() {
+        assert!(is_refresh_race_recoverable_error(
+            &CodexOAuthError::RefreshTokenInvalid
+        ));
+        assert!(is_refresh_race_recoverable_error(
+            &CodexOAuthError::TokenFetchFailed("invalid_grant".to_string())
+        ));
+        assert!(!is_refresh_race_recoverable_error(
+            &CodexOAuthError::NetworkError("timeout".to_string())
+        ));
     }
 
     #[test]

@@ -26,6 +26,7 @@ interface SubscriptionQuotaViewProps {
 export const TIER_I18N_KEYS: Record<string, string> = {
   five_hour: "subscription.fiveHour",
   seven_day: "subscription.sevenDay",
+  "30_day": "subscription.thirtyDay",
   seven_day_opus: "subscription.sevenDayOpus",
   // Upstream has occasionally exposed this typo-like key; treat it as Opus.
   seven_day_omelette: "subscription.sevenDayOpus",

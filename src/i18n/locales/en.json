@@ -3174,6 +3174,7 @@
     "title": "Subscription Quota",
     "fiveHour": "5-Hour",
     "sevenDay": "7-Day",
+    "thirtyDay": "30-Day",
     "sevenDayOpus": "7-Day Opus Limit",
     "sevenDaySonnet": "7-Day Sonnet Limit",
     "geminiPro": "Pro",

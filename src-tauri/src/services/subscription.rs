@@ -406,6 +406,7 @@ struct ApiExtraUsage {
 /// 已知的 Claude 用量窗口名称。`QuotaTier::name` 会是其中之一。
 pub const TIER_FIVE_HOUR: &str = "five_hour";
 pub const TIER_SEVEN_DAY: &str = "seven_day";
+pub const TIER_THIRTY_DAY: &str = "30_day";
 pub const TIER_SEVEN_DAY_OPUS: &str = "seven_day_opus";
 pub const TIER_SEVEN_DAY_SONNET: &str = "seven_day_sonnet";
 
@@ -1099,7 +1100,8 @@ struct CodexUsageResponse {
 fn window_seconds_to_tier_name(secs: i64) -> String {
     match secs {
         18000 => "five_hour".to_string(),
-        604800 => "seven_day".to_string(),
+        604800 => TIER_SEVEN_DAY.to_string(),
+        2592000 => TIER_THIRTY_DAY.to_string(),
         s => {
             let hours = s / 3600;
             if hours >= 24 {

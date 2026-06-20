@@ -3174,6 +3174,7 @@
     "title": "サブスクリプションクォータ",
     "fiveHour": "5時間",
     "sevenDay": "7日間",
+    "thirtyDay": "30日間",
     "sevenDayOpus": "7日間 Opus 制限",
     "sevenDaySonnet": "7日間 Sonnet 制限",
     "geminiPro": "Pro",

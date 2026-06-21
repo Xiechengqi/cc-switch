@@ -74,6 +74,14 @@ pub fn codex_provider_uses_chat_completions(provider: &Provider) -> bool {
 }
 
 pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &str) -> bool {
+    // Cursor OAuth / API Key providers are local adapters over Cursor's private
+    // Composer protocol. They already emit Responses or Chat Completions based
+    // on the incoming endpoint, so the generic Codex Responses <-> Chat bridge
+    // must not wrap them a second time.
+    if provider.is_cursor_oauth_provider() || provider.is_cursor_apikey_provider() {
+        return false;
+    }
+
     let path = endpoint
         .split_once('?')
         .map_or(endpoint, |(path, _query)| path);
@@ -834,6 +842,33 @@ wire_api = "chat"
             &provider,
             "/v1/responses"
         ));
+    }
+
+    #[test]
+    fn test_cursor_codex_provider_does_not_use_generic_chat_bridge() {
+        for provider_type in ["cursor_oauth", "cursor_apikey"] {
+            let mut provider = create_provider(json!({
+                "base_url": "https://api.cursor.com",
+                "modelMapping": {
+                    "mode": "single",
+                    "upstreamModel": "composer-2.5"
+                }
+            }));
+            provider.meta = Some(crate::provider::ProviderMeta {
+                provider_type: Some(provider_type.to_string()),
+                api_format: Some("openai_chat".to_string()),
+                ..Default::default()
+            });
+
+            assert!(!should_convert_codex_responses_to_chat(
+                &provider,
+                "/v1/responses"
+            ));
+            assert!(!should_convert_codex_responses_to_chat(
+                &provider,
+                "/responses?stream=true"
+            ));
+        }
     }
 
     #[test]

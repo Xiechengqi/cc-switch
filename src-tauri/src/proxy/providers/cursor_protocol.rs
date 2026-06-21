@@ -5,6 +5,7 @@
 //! outward SSE shape in one place so Claude and Codex providers can share it.
 
 use super::cursor_oauth_auth::CursorAccountData;
+use crate::provider::Provider;
 use crate::proxy::{hyper_client::ProxyResponse, ProxyError};
 use async_stream::stream;
 use bytes::{Bytes, BytesMut};
@@ -204,6 +205,16 @@ pub fn requested_model(body: &Value) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("cursor-default")
         .to_string()
+}
+
+pub(crate) fn prepare_cursor_codex_body(provider: &Provider, body: &Value) -> (Value, String) {
+    let response_model = requested_model(body);
+    let (mapped_body, original_model, mapped_model) =
+        crate::proxy::model_mapper::apply_model_mapping(body.clone(), provider);
+    if let (Some(original), Some(mapped)) = (original_model.as_deref(), mapped_model.as_deref()) {
+        log::debug!("[Cursor] Codex 模型映射: {original} -> {mapped}");
+    }
+    (mapped_body, response_model)
 }
 
 fn encode_cursor_chat_request(body: &Value, conversation_id: Option<&str>) -> Bytes {
@@ -1325,6 +1336,24 @@ fn build_anthropic_message_json(model: &str, text: &str, reasoning: &str) -> Val
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn create_provider(config: serde_json::Value) -> Provider {
+        Provider {
+            id: "cursor-test".to_string(),
+            name: "Cursor Test".to_string(),
+            settings_config: config,
+            website_url: None,
+            category: Some("codex".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        }
+    }
 
     #[test]
     fn normalise_model_maps_public_names() {
@@ -1340,5 +1369,27 @@ mod tests {
     fn connect_frame_wraps_payload() {
         let frame = connect_frame(b"abc");
         assert_eq!(frame, vec![0, 0, 0, 0, 3, b'a', b'b', b'c']);
+    }
+
+    #[test]
+    fn prepare_cursor_codex_body_applies_single_model_mapping() {
+        let provider = create_provider(json!({
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "composer-2.5"
+            }
+        }));
+        let body = json!({
+            "model": "gpt-5.5",
+            "input": "who are you"
+        });
+
+        let (mapped_body, response_model) = prepare_cursor_codex_body(&provider, &body);
+
+        assert_eq!(response_model, "gpt-5.5");
+        assert_eq!(
+            mapped_body.get("model").and_then(|value| value.as_str()),
+            Some("composer-2.5")
+        );
     }
 }

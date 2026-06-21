@@ -17,8 +17,8 @@ use tokio::sync::Mutex;
 
 use super::cursor_oauth_auth::{CursorAccountData, DEFAULT_CURSOR_CLIENT_VERSION};
 use super::cursor_protocol::{
-    requested_model, response_error_body, response_to_json, response_to_sse_stream,
-    send_cursor_request, CursorRequestContext, CursorResponseFormat,
+    prepare_cursor_codex_body, requested_model, response_error_body, response_to_json,
+    response_to_sse_stream, send_cursor_request, CursorRequestContext, CursorResponseFormat,
 };
 
 const DEFAULT_CURSOR_BACKEND_BASE_URL: &str = "https://api2.cursor.sh";
@@ -68,12 +68,13 @@ pub async fn forward_cursor_apikey_codex(
     endpoint: &str,
     body: &Value,
 ) -> Result<ProxyResponse, ProxyError> {
+    let (mapped_body, response_model) = prepare_cursor_codex_body(provider, body);
     let format = if endpoint.contains("/chat/completions") {
         CursorResponseFormat::OpenAiChatCompletions
     } else {
         CursorResponseFormat::OpenAiResponses
     };
-    forward_cursor_apikey(provider, headers, body, requested_model(body), format).await
+    forward_cursor_apikey(provider, headers, &mapped_body, response_model, format).await
 }
 
 async fn forward_cursor_apikey(

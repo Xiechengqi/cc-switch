@@ -498,6 +498,7 @@ function ProviderFormFull({
 
   const {
     claudeModel,
+    singleUpstreamModel,
     defaultHaikuModel,
     defaultHaikuModelName,
     defaultSonnetModel,
@@ -1696,9 +1697,22 @@ function ProviderFormFull({
           auth: unknown;
           config: string;
           modelCatalog?: { models: CodexCatalogModel[] };
+          modelMapping?: { mode: "single"; upstreamModel: string };
         };
         if (normalizedCatalogModels.length > 0) {
           configObj.modelCatalog = { models: normalizedCatalogModels };
+          const upstreamModels = normalizedCatalogModels
+            .map((item) => (item.upstreamModel || item.model || "").trim())
+            .filter(Boolean);
+          if (
+            upstreamModels.length > 0 &&
+            upstreamModels.every((model) => model === upstreamModels[0])
+          ) {
+            configObj.modelMapping = {
+              mode: "single",
+              upstreamModel: upstreamModels[0],
+            };
+          }
         }
         settingsConfig = JSON.stringify(configObj);
       } catch (err) {
@@ -2133,6 +2147,18 @@ function ProviderFormFull({
       const preset = entry.preset as CodexProviderPreset;
       const auth = preset.auth ?? {};
       const config = preset.config ?? "";
+      const settingsConfig: {
+        auth: Record<string, unknown>;
+        config: string;
+        modelCatalog?: { models: CodexCatalogModel[] };
+        modelMapping?: { mode: "single"; upstreamModel: string };
+      } = { auth, config };
+      if (preset.modelCatalog?.length) {
+        settingsConfig.modelCatalog = { models: preset.modelCatalog };
+      }
+      if (preset.modelMapping) {
+        settingsConfig.modelMapping = preset.modelMapping;
+      }
 
       resetCodexConfig(auth, config, preset.modelCatalog ?? []);
       setCodexChatReasoning(preset.codexChatReasoning ?? {});
@@ -2145,7 +2171,7 @@ function ProviderFormFull({
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
         websiteUrl: preset.websiteUrl ?? "",
-        settingsConfig: JSON.stringify({ auth, config }, null, 2),
+        settingsConfig: JSON.stringify(settingsConfig, null, 2),
         icon: preset.icon ?? "",
         iconColor: preset.iconColor ?? "",
       });
@@ -2655,6 +2681,7 @@ function ProviderFormFull({
               showEndpointTools
               shouldShowModelSelector
               claudeModel={claudeModel}
+              singleUpstreamModel={singleUpstreamModel}
               defaultHaikuModel={defaultHaikuModel}
               defaultHaikuModelName={defaultHaikuModelName}
               defaultSonnetModel={defaultSonnetModel}

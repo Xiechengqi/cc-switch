@@ -6,6 +6,26 @@ use crate::claude_desktop_config::ONE_M_CONTEXT_MARKER;
 use crate::provider::Provider;
 use serde_json::Value;
 
+pub fn single_upstream_model(provider: &Provider) -> Option<String> {
+    let mapping = provider.settings_config.get("modelMapping")?;
+    let mode = mapping
+        .get("mode")
+        .or_else(|| mapping.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if mode != "single" {
+        return None;
+    }
+    mapping
+        .get("upstreamModel")
+        .or_else(|| mapping.get("upstream_model"))
+        .or_else(|| mapping.get("model"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(ToString::to_string)
+}
+
 /// 模型映射配置
 pub struct ModelMapping {
     pub haiku_model: Option<String>,
@@ -106,16 +126,24 @@ pub fn apply_model_mapping(
     mut body: Value,
     provider: &Provider,
 ) -> (Value, Option<String>, Option<String>) {
+    let original_model = body.get("model").and_then(|m| m.as_str()).map(String::from);
+    if let (Some(original), Some(upstream_model)) =
+        (original_model.as_ref(), single_upstream_model(provider))
+    {
+        if upstream_model != *original {
+            log::debug!("[ModelMapper] 单模型映射: {original} → {upstream_model}");
+            body["model"] = serde_json::json!(upstream_model);
+            return (body, Some(original.clone()), Some(upstream_model));
+        }
+        return (body, original_model, None);
+    }
+
     let mapping = ModelMapping::from_provider(provider);
 
     // 如果没有配置映射，直接返回
     if !mapping.has_mapping() {
-        let original = body.get("model").and_then(|m| m.as_str()).map(String::from);
-        return (body, original, None);
+        return (body, original_model, None);
     }
-
-    // 提取原始模型名
-    let original_model = body.get("model").and_then(|m| m.as_str()).map(String::from);
 
     if let Some(ref original) = original_model {
         let mapped = mapping.map_model(original);
@@ -212,6 +240,29 @@ mod tests {
         assert_eq!(result["model"], "sonnet-mapped");
         assert_eq!(original, Some("claude-sonnet-4-5-20250929".to_string()));
         assert_eq!(mapped, Some("sonnet-mapped".to_string()));
+    }
+
+    #[test]
+    fn single_model_mapping_overrides_role_mapping() {
+        let mut provider = create_provider_with_mapping();
+        provider.settings_config["modelMapping"] = json!({
+            "mode": "single",
+            "upstreamModel": "composer-2.5"
+        });
+
+        for model in [
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "claude-haiku-4-5",
+            "claude-fable-5",
+            "gpt-5.5",
+        ] {
+            let (result, original, mapped) =
+                apply_model_mapping(json!({ "model": model }), &provider);
+            assert_eq!(result["model"], "composer-2.5");
+            assert_eq!(original.as_deref(), Some(model));
+            assert_eq!(mapped.as_deref(), Some("composer-2.5"));
+        }
     }
 
     #[test]

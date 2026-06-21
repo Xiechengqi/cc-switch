@@ -2093,6 +2093,26 @@ impl Database {
             let mut updated = false;
 
             if app_type == "claude" {
+                if settings
+                    .pointer("/modelMapping/mode")
+                    .and_then(|v| v.as_str())
+                    != Some("single")
+                    || settings
+                        .pointer("/modelMapping/upstreamModel")
+                        .and_then(|v| v.as_str())
+                        != Some("composer-2.5")
+                {
+                    if let Some(root) = settings.as_object_mut() {
+                        root.insert(
+                            "modelMapping".to_string(),
+                            serde_json::json!({
+                                "mode": "single",
+                                "upstreamModel": "composer-2.5"
+                            }),
+                        );
+                        updated = true;
+                    }
+                }
                 if let Some(env) = settings.get_mut("env").and_then(|v| v.as_object_mut()) {
                     let desired = [
                         ("ANTHROPIC_MODEL", "composer-2.5"),
@@ -2116,6 +2136,26 @@ impl Database {
                     }
                 }
             } else if app_type == "codex" {
+                if settings
+                    .pointer("/modelMapping/mode")
+                    .and_then(|v| v.as_str())
+                    != Some("single")
+                    || settings
+                        .pointer("/modelMapping/upstreamModel")
+                        .and_then(|v| v.as_str())
+                        != Some("composer-2.5")
+                {
+                    if let Some(root) = settings.as_object_mut() {
+                        root.insert(
+                            "modelMapping".to_string(),
+                            serde_json::json!({
+                                "mode": "single",
+                                "upstreamModel": "composer-2.5"
+                            }),
+                        );
+                        updated = true;
+                    }
+                }
                 if let Some(config) = settings.get_mut("config").and_then(|v| v.as_str()) {
                     let next_config = Self::replace_codex_model_in_config(config, "gpt-5.5");
                     if next_config != config {

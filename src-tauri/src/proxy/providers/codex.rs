@@ -141,6 +141,11 @@ pub fn apply_codex_chat_upstream_model(
         return None;
     }
 
+    if let Some(upstream_model) = crate::proxy::model_mapper::single_upstream_model(provider) {
+        body["model"] = JsonValue::String(upstream_model.clone());
+        return Some(upstream_model);
+    }
+
     let catalog_upstream_models = codex_provider_catalog_upstream_models(provider);
     if let Some(request_model) = body
         .get("model")
@@ -931,6 +936,49 @@ wire_api = "responses"
             body.get("model").and_then(|v| v.as_str()),
             Some("composer-2.5")
         );
+    }
+
+    #[test]
+    fn test_apply_codex_chat_upstream_model_uses_single_mapping_first() {
+        let mut provider = create_provider(json!({
+            "config": r#"
+model_provider = "cursor"
+model = "gpt-5.5"
+
+[model_providers.cursor]
+name = "Cursor"
+base_url = "https://api.cursor.com"
+wire_api = "responses"
+"#,
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "composer-2.5"
+            },
+            "modelCatalog": {
+                "models": [
+                    { "model": "gpt-5.5", "upstreamModel": "wrong-model" },
+                    { "model": "gpt-5.4", "upstreamModel": "wrong-model" }
+                ]
+            }
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_chat".to_string()),
+            ..Default::default()
+        });
+
+        for requested_model in ["gpt-5.5", "gpt-5.4", "unknown-client-model"] {
+            let mut body = json!({
+                "model": requested_model,
+                "input": "ping"
+            });
+            let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
+
+            assert_eq!(upstream_model.as_deref(), Some("composer-2.5"));
+            assert_eq!(
+                body.get("model").and_then(|v| v.as_str()),
+                Some("composer-2.5")
+            );
+        }
     }
 
     #[test]

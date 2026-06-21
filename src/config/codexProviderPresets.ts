@@ -6,6 +6,7 @@ import type {
   CodexApiFormat,
   CodexCatalogModel,
   CodexChatReasoning,
+  SingleModelMapping,
 } from "../types";
 import type { PresetTheme } from "./claudeProviderPresets";
 
@@ -37,6 +38,7 @@ export interface CodexProviderPreset {
   requiresOAuth?: boolean;
   // Codex Chat 本地路由模式下的模型目录
   modelCatalog?: CodexCatalogModel[];
+  modelMapping?: SingleModelMapping;
   // Codex Responses -> Chat Completions reasoning capability defaults
   codexChatReasoning?: CodexChatReasoning;
 }
@@ -182,6 +184,10 @@ export const codexProviderPresets: CodexProviderPreset[] = [
       "https://api.cursor.com",
       "gpt-5.5",
     ),
+    modelMapping: {
+      mode: "single",
+      upstreamModel: "composer-2.5",
+    },
     providerType: "cursor_apikey",
     apiFormat: "openai_chat",
     modelCatalog: cursorCodexModelCatalog,
@@ -203,6 +209,10 @@ export const codexProviderPresets: CodexProviderPreset[] = [
       "https://api2.cursor.sh",
       "gpt-5.5",
     ),
+    modelMapping: {
+      mode: "single",
+      upstreamModel: "composer-2.5",
+    },
     providerType: "cursor_oauth",
     requiresOAuth: true,
     apiFormat: "openai_chat",

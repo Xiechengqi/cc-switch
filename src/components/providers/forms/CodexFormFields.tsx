@@ -177,6 +177,8 @@ export function CodexFormFields({
     codexChatReasoning.supportsThinking === true ||
     codexChatReasoning.supportsEffort === true;
   const supportsEffort = codexChatReasoning.supportsEffort === true;
+  const isThirdPartyLocalRouting =
+    needsLocalRouting && !isCodexOfficialPreset && canEditCatalog;
 
   // needsLocalRouting 非默认值说明预设/用户动过路由配置，需要让模型映射保持可见
   const hasAnyAdvancedValue = !!customUserAgent || needsLocalRouting;
@@ -192,6 +194,15 @@ export function CodexFormFields({
   const [catalogRows, setCatalogRows] = useState<CodexCatalogRow[]>(() =>
     catalogModels.map((m) => createCatalogRow(m)),
   );
+  const singleUpstreamModel = (() => {
+    const upstreamModels = catalogRows
+      .map((row) => (row.upstreamModel || row.model || "").trim())
+      .filter(Boolean);
+    if (upstreamModels.length === 0) return "";
+    return upstreamModels.every((model) => model === upstreamModels[0])
+      ? upstreamModels[0]
+      : "";
+  })();
 
   // 记录上次发送给父组件的数据，避免重复触发
   const lastSentModelsRef = useRef<CodexCatalogModel[]>(catalogModels);
@@ -289,8 +300,17 @@ export function CodexFormFields({
 
   const handleAddCatalogRow = useCallback(() => {
     if (!onCatalogModelsChange) return;
-    setCatalogRows((current) => [...current, createCatalogRow()]);
-  }, [onCatalogModelsChange]);
+    setCatalogRows((current) => [
+      ...current,
+      createCatalogRow({ upstreamModel: singleUpstreamModel }),
+    ]);
+  }, [onCatalogModelsChange, singleUpstreamModel]);
+
+  const handleSingleUpstreamModelChange = useCallback((value: string) => {
+    setCatalogRows((current) =>
+      current.map((row) => ({ ...row, upstreamModel: value })),
+    );
+  }, []);
 
   const handleUpdateCatalogRow = useCallback(
     (index: number, patch: Partial<CodexCatalogModel>) => {
@@ -582,6 +602,35 @@ export function CodexFormFields({
 
                 {catalogRows.length > 0 && (
                   <div className="space-y-2">
+                    {isThirdPartyLocalRouting && (
+                      <div className="space-y-2 rounded-md border border-border-default bg-muted/40 p-3">
+                        <FormLabel htmlFor="codexSingleUpstreamModel">
+                          {t("codexConfig.singleUpstreamModelLabel", {
+                            defaultValue: "真实模型",
+                          })}
+                        </FormLabel>
+                        <Input
+                          id="codexSingleUpstreamModel"
+                          value={singleUpstreamModel}
+                          onChange={(event) =>
+                            handleSingleUpstreamModelChange(event.target.value)
+                          }
+                          placeholder={t(
+                            "codexConfig.singleUpstreamModelPlaceholder",
+                            {
+                              defaultValue: "例如: composer-2.5",
+                            },
+                          )}
+                          autoComplete="off"
+                        />
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          {t("codexConfig.singleUpstreamModelHint", {
+                            defaultValue:
+                              "不管客户端请求 gpt-5.5、gpt-5.4 还是其他模型，都统一转发为这个真实模型。下方逐模型映射会同步更新，仍可在需要时单独调整。",
+                          })}
+                        </p>
+                      </div>
+                    )}
                     {/* 列头：md+ 显示 */}
                     <div className="hidden grid-cols-[1fr_1fr_1fr_120px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
                       <span>

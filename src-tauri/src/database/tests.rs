@@ -527,6 +527,18 @@ fn migration_v28_to_v29_aligns_cursor_oauth_model_mapping() {
             .and_then(|value| value.as_str()),
         Some("composer-2.5")
     );
+    assert_eq!(
+        claude_settings
+            .pointer("/modelMapping/mode")
+            .and_then(|value| value.as_str()),
+        Some("single")
+    );
+    assert_eq!(
+        claude_settings
+            .pointer("/modelMapping/upstreamModel")
+            .and_then(|value| value.as_str()),
+        Some("composer-2.5")
+    );
 
     let codex_settings: String = conn
         .query_row(
@@ -551,6 +563,18 @@ fn migration_v28_to_v29_aligns_cursor_oauth_model_mapping() {
     assert_eq!(
         codex_settings
             .pointer("/modelCatalog/models/0/upstreamModel")
+            .and_then(|value| value.as_str()),
+        Some("composer-2.5")
+    );
+    assert_eq!(
+        codex_settings
+            .pointer("/modelMapping/mode")
+            .and_then(|value| value.as_str()),
+        Some("single")
+    );
+    assert_eq!(
+        codex_settings
+            .pointer("/modelMapping/upstreamModel")
             .and_then(|value| value.as_str()),
         Some("composer-2.5")
     );

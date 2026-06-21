@@ -262,6 +262,11 @@ export interface CodexCatalogModel {
   contextWindow?: string | number;
 }
 
+export interface SingleModelMapping {
+  mode: "single";
+  upstreamModel: string;
+}
+
 // Claude 认证字段类型
 export type ClaudeApiKeyField = "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY";
 

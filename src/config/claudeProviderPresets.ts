@@ -174,6 +174,10 @@ export const providerPresets: ProviderPreset[] = [
         ANTHROPIC_DEFAULT_FABLE_MODEL: "composer-2.5",
         ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: "Claude Fable",
       },
+      modelMapping: {
+        mode: "single",
+        upstreamModel: "composer-2.5",
+      },
     },
     isOfficial: true,
     category: "official",
@@ -202,6 +206,10 @@ export const providerPresets: ProviderPreset[] = [
         ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "Claude Opus",
         ANTHROPIC_DEFAULT_FABLE_MODEL: "composer-2.5",
         ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: "Claude Fable",
+      },
+      modelMapping: {
+        mode: "single",
+        upstreamModel: "composer-2.5",
       },
     },
     isOfficial: true,

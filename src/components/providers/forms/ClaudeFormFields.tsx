@@ -151,6 +151,7 @@ interface ClaudeFormFieldsProps {
   // Model Selector
   shouldShowModelSelector: boolean;
   claudeModel: string;
+  singleUpstreamModel?: string;
   defaultHaikuModel: string;
   defaultHaikuModelName: string;
   defaultSonnetModel: string;
@@ -234,6 +235,7 @@ export function ClaudeFormFields({
   showEndpointTools = true,
   shouldShowModelSelector,
   claudeModel,
+  singleUpstreamModel = "",
   defaultHaikuModel,
   defaultHaikuModelName,
   defaultSonnetModel,
@@ -256,6 +258,7 @@ export function ClaudeFormFields({
   const { t } = useTranslation();
   const hasAnyAdvancedValue = !!(
     claudeModel ||
+    singleUpstreamModel ||
     defaultHaikuModel ||
     defaultSonnetModel ||
     defaultOpusModel ||
@@ -1004,6 +1007,35 @@ export function ClaudeFormFields({
                 {t("providerForm.modelMappingHint")}
               </p>
             </div>
+
+            {!isClaudeOauthPreset && (
+              <div className="space-y-2 rounded-md border border-border-default bg-muted/40 p-3">
+                <FormLabel htmlFor="claudeSingleUpstreamModel">
+                  {t("providerForm.singleUpstreamModelLabel", {
+                    defaultValue: "真实模型",
+                  })}
+                </FormLabel>
+                {renderModelInput(
+                  "claudeSingleUpstreamModel",
+                  singleUpstreamModel ||
+                    claudeModel ||
+                    defaultSonnetModel ||
+                    defaultOpusModel ||
+                    defaultFableModel ||
+                    defaultHaikuModel,
+                  "MODEL_MAPPING_SINGLE_UPSTREAM",
+                  t("providerForm.singleUpstreamModelPlaceholder", {
+                    defaultValue: "例如: composer-2.5",
+                  }),
+                )}
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {t("providerForm.singleUpstreamModelHint", {
+                    defaultValue:
+                      "不管客户端请求 Opus、Sonnet、Haiku、Fable 或其他模型，都统一转发为这个真实模型。下方分角色映射会同步更新，仍可在需要时单独调整。",
+                  })}
+                </p>
+              </div>
+            )}
 
             <div className="space-y-3">
               <div className="hidden grid-cols-[120px_1fr_minmax(0,1fr)_104px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">

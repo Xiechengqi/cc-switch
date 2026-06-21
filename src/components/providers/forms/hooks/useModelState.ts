@@ -14,7 +14,8 @@ export type ClaudeModelEnvField =
   | "ANTHROPIC_DEFAULT_OPUS_MODEL"
   | "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"
   | "ANTHROPIC_DEFAULT_FABLE_MODEL"
-  | "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME";
+  | "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"
+  | "MODEL_MAPPING_SINGLE_UPSTREAM";
 
 export const CLAUDE_ONE_M_MARKER = "[1M]";
 
@@ -41,6 +42,11 @@ function parseModelsFromConfig(settingsConfig: string) {
   try {
     const cfg = settingsConfig ? JSON.parse(settingsConfig) : {};
     const env = cfg?.env || {};
+    const mapping = cfg?.modelMapping || {};
+    const singleUpstreamModel =
+      mapping?.mode === "single" && typeof mapping?.upstreamModel === "string"
+        ? mapping.upstreamModel
+        : "";
     const model =
       typeof env.ANTHROPIC_MODEL === "string" ? env.ANTHROPIC_MODEL : "";
     const small =
@@ -84,6 +90,7 @@ function parseModelsFromConfig(settingsConfig: string) {
 
     return {
       model,
+      singleUpstreamModel,
       haiku,
       haikuName,
       sonnet,
@@ -96,6 +103,7 @@ function parseModelsFromConfig(settingsConfig: string) {
   } catch {
     return {
       model: "",
+      singleUpstreamModel: "",
       haiku: "",
       haikuName: "",
       sonnet: "",
@@ -118,6 +126,9 @@ export function useModelState({
 }: UseModelStateProps) {
   const initial = useState(() => parseModelsFromConfig(settingsConfig))[0];
   const [claudeModel, setClaudeModel] = useState(initial.model);
+  const [singleUpstreamModel, setSingleUpstreamModel] = useState(
+    initial.singleUpstreamModel,
+  );
   const [defaultHaikuModel, setDefaultHaikuModel] = useState(initial.haiku);
   const [defaultHaikuModelName, setDefaultHaikuModelName] = useState(
     initial.haikuName,
@@ -156,6 +167,7 @@ export function useModelState({
 
     const parsed = parseModelsFromConfig(settingsConfig);
     setClaudeModel(parsed.model);
+    setSingleUpstreamModel(parsed.singleUpstreamModel);
     setDefaultHaikuModel(parsed.haiku);
     setDefaultHaikuModelName(parsed.haikuName);
     setDefaultSonnetModel(parsed.sonnet);
@@ -171,6 +183,18 @@ export function useModelState({
       isUserEditingRef.current = true;
 
       if (field === "ANTHROPIC_MODEL") setClaudeModel(value);
+      if (field === "MODEL_MAPPING_SINGLE_UPSTREAM") {
+        setSingleUpstreamModel(value);
+        setClaudeModel(value);
+        setDefaultHaikuModel(value);
+        setDefaultSonnetModel(value);
+        setDefaultOpusModel(value);
+        setDefaultFableModel(value);
+        setDefaultHaikuModelName(stripClaudeOneMMarker(value));
+        setDefaultSonnetModelName(stripClaudeOneMMarker(value));
+        setDefaultOpusModelName(stripClaudeOneMMarker(value));
+        setDefaultFableModelName(stripClaudeOneMMarker(value));
+      }
       if (field === "ANTHROPIC_DEFAULT_HAIKU_MODEL")
         setDefaultHaikuModel(value);
       if (field === "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME")
@@ -194,11 +218,40 @@ export function useModelState({
         if (!currentConfig.env) currentConfig.env = {};
         const env = currentConfig.env as Record<string, unknown>;
 
-        // 新键仅写入；旧键不再写入
         const trimmed = value.trim();
-        if (trimmed) {
+        if (field === "MODEL_MAPPING_SINGLE_UPSTREAM") {
+          const roleValue = trimmed;
+          if (roleValue) {
+            currentConfig.modelMapping = {
+              mode: "single",
+              upstreamModel: roleValue,
+            };
+            env["ANTHROPIC_MODEL"] = roleValue;
+            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] =
+              stripClaudeOneMMarker(roleValue);
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = roleValue;
+            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = roleValue;
+            env["ANTHROPIC_DEFAULT_FABLE_MODEL"] = roleValue;
+            env["ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"] =
+              stripClaudeOneMMarker(roleValue);
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"] =
+              stripClaudeOneMMarker(roleValue);
+            env["ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"] =
+              stripClaudeOneMMarker(roleValue);
+            env["ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"] =
+              stripClaudeOneMMarker(roleValue);
+          } else {
+            delete currentConfig.modelMapping;
+          }
+        } else if (trimmed) {
+          if (!field.endsWith("_NAME")) {
+            delete currentConfig.modelMapping;
+          }
           env[field] = trimmed;
         } else {
+          if (!field.endsWith("_NAME")) {
+            delete currentConfig.modelMapping;
+          }
           delete env[field];
         }
         // 删除旧键
@@ -217,6 +270,8 @@ export function useModelState({
   return {
     claudeModel,
     setClaudeModel,
+    singleUpstreamModel,
+    setSingleUpstreamModel,
     defaultHaikuModel,
     setDefaultHaikuModel,
     defaultHaikuModelName,

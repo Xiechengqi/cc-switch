@@ -665,10 +665,12 @@ function ProviderFormFull({
     codexApiKey,
     codexBaseUrl,
     codexCatalogModels,
+    codexSingleUpstreamModel,
     codexAuthError,
     setCodexAuth,
     setCodexConfig,
     setCodexCatalogModels,
+    setCodexSingleUpstreamModel,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
@@ -1014,6 +1016,16 @@ function ProviderFormFull({
           config.env = {};
         }
         config.env[key] = value;
+        if (key === "GEMINI_MODEL") {
+          if (value.trim()) {
+            (config as any).modelMapping = {
+              mode: "single",
+              upstreamModel: value.trim(),
+            };
+          } else {
+            delete (config as any).modelMapping;
+          }
+        }
         form.setValue("settingsConfig", JSON.stringify(config, null, 2));
       } catch {}
     },
@@ -1701,18 +1713,13 @@ function ProviderFormFull({
         };
         if (normalizedCatalogModels.length > 0) {
           configObj.modelCatalog = { models: normalizedCatalogModels };
-          const upstreamModels = normalizedCatalogModels
-            .map((item) => (item.upstreamModel || item.model || "").trim())
-            .filter(Boolean);
-          if (
-            upstreamModels.length > 0 &&
-            upstreamModels.every((model) => model === upstreamModels[0])
-          ) {
-            configObj.modelMapping = {
-              mode: "single",
-              upstreamModel: upstreamModels[0],
-            };
-          }
+        }
+        const trimmedSingleUpstreamModel = codexSingleUpstreamModel.trim();
+        if (trimmedSingleUpstreamModel) {
+          configObj.modelMapping = {
+            mode: "single",
+            upstreamModel: trimmedSingleUpstreamModel,
+          };
         }
         settingsConfig = JSON.stringify(configObj);
       } catch (err) {
@@ -1725,7 +1732,19 @@ function ProviderFormFull({
         const combined = {
           env: envObj,
           config: configObj,
+        } as {
+          env: Record<string, string>;
+          config: Record<string, unknown>;
+          modelMapping?: { mode: "single"; upstreamModel: string };
         };
+        const trimmedGeminiModel = geminiModel.trim();
+        if (trimmedGeminiModel) {
+          combined.env.GEMINI_MODEL = trimmedGeminiModel;
+          combined.modelMapping = {
+            mode: "single",
+            upstreamModel: trimmedGeminiModel,
+          };
+        }
         settingsConfig = JSON.stringify(combined);
       } catch (err) {
         settingsConfig = values.settingsConfig.trim();
@@ -2160,7 +2179,12 @@ function ProviderFormFull({
         settingsConfig.modelMapping = preset.modelMapping;
       }
 
-      resetCodexConfig(auth, config, preset.modelCatalog ?? []);
+      resetCodexConfig(
+        auth,
+        config,
+        preset.modelCatalog ?? [],
+        preset.modelMapping?.upstreamModel ?? "",
+      );
       setCodexChatReasoning(preset.codexChatReasoning ?? {});
       setLocalCodexApiFormat(
         preset.apiFormat ??
@@ -2743,6 +2767,8 @@ function ProviderFormFull({
               onCodexImageGenerationChange={setCodexImageGenerationEnabled}
               catalogModels={codexCatalogModels}
               onCatalogModelsChange={setCodexCatalogModels}
+              singleUpstreamModel={codexSingleUpstreamModel}
+              onSingleUpstreamModelChange={setCodexSingleUpstreamModel}
               speedTestEndpoints={speedTestEndpoints}
               customUserAgent={customUserAgent}
               onCustomUserAgentChange={setCustomUserAgent}

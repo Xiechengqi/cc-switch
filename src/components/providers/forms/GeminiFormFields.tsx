@@ -1,13 +1,18 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FormLabel } from "@/components/ui/form";
-import { Download, Info, Loader2 } from "lucide-react";
+import { Info, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { AntigravityOAuthSection } from "./AntigravityOAuthSection";
 import GeminiOAuthSection from "./GeminiOAuthSection";
-import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
+import { ApiKeySection, EndpointField } from "./shared";
+import { SingleModelMappingField } from "./SingleModelMappingField";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   fetchModelsForConfig,
   showFetchModelsError,
@@ -93,6 +98,15 @@ export function GeminiFormFields({
 
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [advancedExpanded, setAdvancedExpanded] = useState(
+    Boolean(shouldShowModelField && model),
+  );
+
+  useEffect(() => {
+    if (shouldShowModelField && model) {
+      setAdvancedExpanded(true);
+    }
+  }, [model, shouldShowModelField]);
 
   const handleFetchModels = useCallback(() => {
     if (!baseUrl || !apiKey) {
@@ -230,38 +244,49 @@ export function GeminiFormFields({
         />
       )}
 
-      {/* Model 输入框 */}
+      {/* Model 映射配置 */}
       {shouldShowModelField && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <FormLabel htmlFor="gemini-model">
-              {t("provider.form.gemini.model", { defaultValue: "模型" })}
-            </FormLabel>
+        <Collapsible
+          open={advancedExpanded}
+          onOpenChange={setAdvancedExpanded}
+          className="rounded-lg border border-border-default p-4"
+        >
+          <CollapsibleTrigger asChild>
             <Button
               type="button"
-              variant="outline"
+              variant={null}
               size="sm"
-              onClick={handleFetchModels}
-              disabled={isFetchingModels}
-              className="h-7 gap-1"
+              className="h-8 w-full justify-start gap-1.5 px-0 text-sm font-medium text-foreground hover:opacity-70"
             >
-              {isFetchingModels ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {advancedExpanded ? (
+                <ChevronDown className="h-4 w-4" />
               ) : (
-                <Download className="h-3.5 w-3.5" />
+                <ChevronRight className="h-4 w-4" />
               )}
-              {t("providerForm.fetchModels")}
+              {t("providerForm.advancedOptionsToggle", {
+                defaultValue: "高级选项",
+              })}
             </Button>
-          </div>
-          <ModelInputWithFetch
-            id="gemini-model"
-            value={model}
-            onChange={onModelChange}
-            placeholder="gemini-3.5-flash"
-            fetchedModels={fetchedModels}
-            isLoading={isFetchingModels}
-          />
-        </div>
+          </CollapsibleTrigger>
+          {!advancedExpanded && (
+            <p className="mt-1 ml-1 text-xs text-muted-foreground">
+              {t("providerForm.advancedOptionsHint", {
+                defaultValue: "包含模型映射等配置。大多数场景下保持默认即可。",
+              })}
+            </p>
+          )}
+          <CollapsibleContent className="pt-3">
+            <SingleModelMappingField
+              id="gemini-model"
+              value={model}
+              onChange={onModelChange}
+              placeholder="gemini-3.5-flash"
+              fetchedModels={fetchedModels}
+              isLoading={isFetchingModels}
+              onFetchModels={handleFetchModels}
+            />
+          </CollapsibleContent>
+        </Collapsible>
       )}
 
       {/* 端点测速弹窗 */}

@@ -1390,7 +1390,7 @@ impl RequestForwarder {
         };
         let codex_responses_to_chat = matches!(app_type, AppType::Codex)
             && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
-        let (effective_endpoint, passthrough_query) = if codex_responses_to_chat {
+        let (mut effective_endpoint, passthrough_query) = if codex_responses_to_chat {
             rewrite_codex_responses_endpoint_to_chat(endpoint)
         } else if needs_transform && adapter.name() == "Claude" {
             let api_format = resolved_claude_api_format
@@ -1411,6 +1411,21 @@ impl RequestForwarder {
                 .as_ref()
                 .and_then(|m| m.provider_type.as_deref())
                 == Some("claude_oauth");
+
+        let gemini_single_mapped_model = if matches!(app_type, AppType::Gemini) {
+            let mut mapped_model =
+                apply_gemini_single_model_mapping_to_endpoint(provider, &mut effective_endpoint);
+            if is_full_url {
+                if let Some(model) =
+                    apply_gemini_single_model_mapping_to_endpoint(provider, &mut base_url)
+                {
+                    mapped_model = Some(model);
+                }
+            }
+            mapped_model
+        } else {
+            None
+        };
 
         let codex_chat_base_is_full_endpoint = codex_responses_to_chat
             && base_url
@@ -1441,6 +1456,9 @@ impl RequestForwarder {
             .and_then(|m| m.as_str())
             .filter(|m| !m.is_empty())
             .map(str::to_string);
+        if let Some(model) = gemini_single_mapped_model.clone() {
+            outbound_model = Some(model);
+        }
 
         // 转换请求体（如果需要）
         let mut request_body = if codex_responses_to_chat {
@@ -1528,6 +1546,7 @@ impl RequestForwarder {
                 build_gemini_code_assist_forward_request(&effective_endpoint, &filtered_body)?;
             url = code_assist_url;
             filtered_body = code_assist_body;
+            outbound_model = Some(model.clone());
             Some(model)
         } else {
             None
@@ -1547,6 +1566,13 @@ impl RequestForwarder {
             ));
             url = antigravity_url;
             filtered_body = antigravity_body;
+            if let Some(model) = filtered_body
+                .get("model")
+                .and_then(|model| model.as_str())
+                .filter(|model| !model.is_empty())
+            {
+                outbound_model = Some(model.to_string());
+            }
         }
 
         // OAuth 401 重试：如果上游返回 401 且本次请求使用了 OAuth 账号注入，
@@ -3542,6 +3568,34 @@ fn extract_gemini_model_from_endpoint(endpoint: &str) -> Option<String> {
     (!model.is_empty()).then(|| model.to_string())
 }
 
+fn apply_gemini_single_model_mapping_to_endpoint(
+    provider: &Provider,
+    endpoint: &mut String,
+) -> Option<String> {
+    let upstream_model = super::model_mapper::single_upstream_model(provider)?;
+    let upstream_model =
+        super::gemini_url::normalize_gemini_model_id(upstream_model.trim()).to_string();
+    if upstream_model.is_empty() {
+        return None;
+    }
+
+    let marker = "/models/";
+    let start = endpoint.find(marker)? + marker.len();
+    let tail = &endpoint[start..];
+    let model_len = tail.find(|c| c == ':' || c == '?').unwrap_or(tail.len());
+    if model_len == 0 {
+        return None;
+    }
+
+    let original_model = &endpoint[start..start + model_len];
+    if original_model == upstream_model {
+        return Some(upstream_model);
+    }
+
+    endpoint.replace_range(start..start + model_len, &upstream_model);
+    Some(upstream_model)
+}
+
 fn gemini_cli_user_agent(model: &str) -> String {
     let model = if model.trim().is_empty() {
         "unknown"
@@ -5008,6 +5062,62 @@ mod tests {
 
         assert_eq!(model, "gemini-2.5-flash");
         assert_eq!(body["model"], "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn gemini_single_model_mapping_rewrites_endpoint_model() {
+        let provider = provider_with_settings(json!({
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "gemini-3.5-flash"
+            }
+        }));
+        let mut endpoint =
+            "/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse".to_string();
+
+        let mapped = apply_gemini_single_model_mapping_to_endpoint(&provider, &mut endpoint);
+
+        assert_eq!(mapped.as_deref(), Some("gemini-3.5-flash"));
+        assert_eq!(
+            endpoint,
+            "/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn gemini_single_model_mapping_strips_resource_model_prefix() {
+        let provider = provider_with_settings(json!({
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "models/gemini-3.5-flash"
+            }
+        }));
+        let mut endpoint = "/v1beta/models/models/gemini-2.5-pro:generateContent".to_string();
+
+        let mapped = apply_gemini_single_model_mapping_to_endpoint(&provider, &mut endpoint);
+
+        assert_eq!(mapped.as_deref(), Some("gemini-3.5-flash"));
+        assert_eq!(endpoint, "/v1beta/models/gemini-3.5-flash:generateContent");
+    }
+
+    #[test]
+    fn gemini_single_model_mapping_can_rewrite_full_url() {
+        let provider = provider_with_settings(json!({
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "gemini-3.5-flash"
+            }
+        }));
+        let mut url =
+            "https://relay.example/v1beta/models/gemini-2.5-pro:generateContent?key=1".to_string();
+
+        let mapped = apply_gemini_single_model_mapping_to_endpoint(&provider, &mut url);
+
+        assert_eq!(mapped.as_deref(), Some("gemini-3.5-flash"));
+        assert_eq!(
+            url,
+            "https://relay.example/v1beta/models/gemini-3.5-flash:generateContent?key=1"
+        );
     }
 
     #[test]

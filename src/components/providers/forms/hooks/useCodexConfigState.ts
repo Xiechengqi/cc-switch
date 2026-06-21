@@ -27,6 +27,31 @@ function pickCodexApiKey(
   return extractCodexExperimentalBearerToken(configText) || "";
 }
 
+function singleModelMappingFromConfig(
+  config: Record<string, unknown> | undefined,
+  catalogModels: CodexCatalogModel[],
+): string {
+  const mapping = config?.modelMapping;
+  if (
+    mapping &&
+    typeof mapping === "object" &&
+    !Array.isArray(mapping) &&
+    (mapping as any).mode === "single" &&
+    typeof (mapping as any).upstreamModel === "string"
+  ) {
+    return (mapping as any).upstreamModel.trim();
+  }
+
+  const upstreamModels = catalogModels
+    .map((item) => (item.upstreamModel || item.model || "").trim())
+    .filter(Boolean);
+  if (upstreamModels.length === 0) return "";
+  if (upstreamModels.every((model) => model === upstreamModels[0])) {
+    return upstreamModels[0];
+  }
+  return upstreamModels[0];
+}
+
 /**
  * 管理 Codex 配置状态
  * Codex 配置包含两部分：auth.json (JSON) 和 config.toml (TOML 字符串)
@@ -39,6 +64,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
   const [codexCatalogModels, setCodexCatalogModels] = useState<
     CodexCatalogModel[]
   >([]);
+  const [codexSingleUpstreamModel, setCodexSingleUpstreamModel] = useState("");
   const [codexAuthError, setCodexAuthError] = useState("");
 
   const isUpdatingCodexBaseUrlRef = useRef(false);
@@ -64,32 +90,37 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       const rawCatalogModels = Array.isArray(modelCatalog?.models)
         ? modelCatalog.models
         : [];
-      setCodexCatalogModels(
-        rawCatalogModels
-          .map((item: any) => ({
-            model: typeof item?.model === "string" ? item.model : "",
-            upstreamModel:
-              typeof item?.upstreamModel === "string"
-                ? item.upstreamModel
-                : typeof item?.upstream_model === "string"
-                  ? item.upstream_model
-                  : "",
-            displayName:
-              typeof item?.displayName === "string"
-                ? item.displayName
-                : typeof item?.display_name === "string"
-                  ? item.display_name
-                  : "",
-            contextWindow:
-              typeof item?.contextWindow === "string" ||
-              typeof item?.contextWindow === "number"
-                ? item.contextWindow
-                : typeof item?.context_window === "string" ||
-                    typeof item?.context_window === "number"
-                  ? item.context_window
-                  : "",
-          }))
-          .filter((item: CodexCatalogModel) => item.model.trim()),
+      const normalizedCatalogModels = rawCatalogModels
+        .map((item: any) => ({
+          model: typeof item?.model === "string" ? item.model : "",
+          upstreamModel:
+            typeof item?.upstreamModel === "string"
+              ? item.upstreamModel
+              : typeof item?.upstream_model === "string"
+                ? item.upstream_model
+                : "",
+          displayName:
+            typeof item?.displayName === "string"
+              ? item.displayName
+              : typeof item?.display_name === "string"
+                ? item.display_name
+                : "",
+          contextWindow:
+            typeof item?.contextWindow === "string" ||
+            typeof item?.contextWindow === "number"
+              ? item.contextWindow
+              : typeof item?.context_window === "string" ||
+                  typeof item?.context_window === "number"
+                ? item.context_window
+                : "",
+        }))
+        .filter((item: CodexCatalogModel) => item.model.trim());
+      setCodexCatalogModels(normalizedCatalogModels);
+      setCodexSingleUpstreamModel(
+        singleModelMappingFromConfig(
+          config as Record<string, unknown>,
+          normalizedCatalogModels,
+        ),
       );
 
       // 提取 Base URL
@@ -227,11 +258,13 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       auth: Record<string, unknown>,
       config: string,
       modelCatalogModels: CodexCatalogModel[] = [],
+      singleUpstreamModel = "",
     ) => {
       const authString = JSON.stringify(auth, null, 2);
       setCodexAuth(authString);
       setCodexConfig(config);
       setCodexCatalogModels(modelCatalogModels);
+      setCodexSingleUpstreamModel(singleUpstreamModel);
 
       const baseUrl = extractCodexBaseUrl(config);
       setCodexBaseUrl(baseUrl || "");
@@ -247,10 +280,12 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     codexApiKey,
     codexBaseUrl,
     codexCatalogModels,
+    codexSingleUpstreamModel,
     codexAuthError,
     setCodexAuth,
     setCodexConfig,
     setCodexCatalogModels,
+    setCodexSingleUpstreamModel,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexConfigChange,

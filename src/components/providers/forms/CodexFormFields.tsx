@@ -21,6 +21,7 @@ import {
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { CursorOAuthSection } from "./CursorOAuthSection";
+import { SingleModelMappingField } from "./SingleModelMappingField";
 import { ApiKeySection, EndpointField, ModelDropdown } from "./shared";
 import {
   fetchModelsForConfig,
@@ -83,6 +84,8 @@ interface CodexFormFieldsProps {
   // Model Catalog
   catalogModels?: CodexCatalogModel[];
   onCatalogModelsChange?: (models: CodexCatalogModel[]) => void;
+  singleUpstreamModel: string;
+  onSingleUpstreamModelChange: (value: string) => void;
 
   // Speed Test Endpoints
   speedTestEndpoints: EndpointCandidate[];
@@ -162,6 +165,8 @@ export function CodexFormFields({
   onCodexChatReasoningChange,
   catalogModels = [],
   onCatalogModelsChange,
+  singleUpstreamModel,
+  onSingleUpstreamModelChange,
   speedTestEndpoints,
   customUserAgent,
   onCustomUserAgentChange,
@@ -194,15 +199,7 @@ export function CodexFormFields({
   const [catalogRows, setCatalogRows] = useState<CodexCatalogRow[]>(() =>
     catalogModels.map((m) => createCatalogRow(m)),
   );
-  const singleUpstreamModel = (() => {
-    const upstreamModels = catalogRows
-      .map((row) => (row.upstreamModel || row.model || "").trim())
-      .filter(Boolean);
-    if (upstreamModels.length === 0) return "";
-    return upstreamModels.every((model) => model === upstreamModels[0])
-      ? upstreamModels[0]
-      : "";
-  })();
+  const [catalogExpanded, setCatalogExpanded] = useState(false);
 
   // 记录上次发送给父组件的数据，避免重复触发
   const lastSentModelsRef = useRef<CodexCatalogModel[]>(catalogModels);
@@ -306,11 +303,15 @@ export function CodexFormFields({
     ]);
   }, [onCatalogModelsChange, singleUpstreamModel]);
 
-  const handleSingleUpstreamModelChange = useCallback((value: string) => {
-    setCatalogRows((current) =>
-      current.map((row) => ({ ...row, upstreamModel: value })),
-    );
-  }, []);
+  const handleSingleUpstreamModelChange = useCallback(
+    (value: string) => {
+      onSingleUpstreamModelChange(value);
+      setCatalogRows((current) =>
+        current.map((row) => ({ ...row, upstreamModel: value })),
+      );
+    },
+    [onSingleUpstreamModelChange],
+  );
 
   const handleUpdateCatalogRow = useCallback(
     (index: number, patch: Partial<CodexCatalogModel>) => {
@@ -578,196 +579,182 @@ export function CodexFormFields({
             {/* 模型映射 —— 仅在本地路由 + 可编辑时显示；上方恒有 UA 字段，分隔线无需条件 */}
             {needsLocalRouting && canEditCatalog && (
               <div className="space-y-4 border-t border-border-default pt-3">
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-3">
-                    <FormLabel>
-                      {t("codexConfig.modelMappingTitle", {
-                        defaultValue: "模型映射",
+                {isThirdPartyLocalRouting && (
+                  <SingleModelMappingField
+                    id="codexSingleUpstreamModel"
+                    value={singleUpstreamModel}
+                    onChange={handleSingleUpstreamModelChange}
+                    fetchedModels={fetchedModels}
+                    isLoading={isFetchingModels}
+                    onFetchModels={handleFetchModels}
+                  />
+                )}
+
+                <Collapsible
+                  open={catalogExpanded}
+                  onOpenChange={setCatalogExpanded}
+                  className="border-t border-border-default pt-3"
+                >
+                  <CollapsibleTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={null}
+                      size="sm"
+                      className="h-8 gap-1.5 px-0 text-sm font-medium text-foreground hover:opacity-70"
+                    >
+                      {catalogExpanded ? (
+                        <ChevronDown className="h-4 w-4" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4" />
+                      )}
+                      {t("codexConfig.clientCatalogToggle", {
+                        defaultValue: "Codex 菜单模型",
                       })}
-                    </FormLabel>
-                    {renderCatalogActionButtons(
-                      handleAddCatalogRow,
-                      t("codexConfig.addCatalogModel", {
-                        defaultValue: "添加模型",
-                      }),
-                    )}
-                  </div>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    {t("codexConfig.modelMappingHint", {
-                      defaultValue:
-                        "选择模型角色后，CC Switch 会自动生成 Codex 兼容路由；菜单显示名可以填 DeepSeek、Kimi 等品牌模型，实际请求模型按右侧填写内容发送。",
-                    })}
-                  </p>
-                </div>
-
-                {catalogRows.length > 0 && (
-                  <div className="space-y-2">
-                    {isThirdPartyLocalRouting && (
-                      <div className="space-y-2 rounded-md border border-border-default bg-muted/40 p-3">
-                        <FormLabel htmlFor="codexSingleUpstreamModel">
-                          {t("codexConfig.singleUpstreamModelLabel", {
-                            defaultValue: "真实模型",
-                          })}
-                        </FormLabel>
-                        <Input
-                          id="codexSingleUpstreamModel"
-                          value={singleUpstreamModel}
-                          onChange={(event) =>
-                            handleSingleUpstreamModelChange(event.target.value)
-                          }
-                          placeholder={t(
-                            "codexConfig.singleUpstreamModelPlaceholder",
-                            {
-                              defaultValue: "例如: composer-2.5",
-                            },
-                          )}
-                          autoComplete="off"
-                        />
-                        <p className="text-xs leading-relaxed text-muted-foreground">
-                          {t("codexConfig.singleUpstreamModelHint", {
-                            defaultValue:
-                              "不管客户端请求 gpt-5.5、gpt-5.4 还是其他模型，都统一转发为这个真实模型。下方逐模型映射会同步更新，仍可在需要时单独调整。",
-                          })}
-                        </p>
-                      </div>
-                    )}
-                    {/* 列头：md+ 显示 */}
-                    <div className="hidden grid-cols-[1fr_1fr_1fr_120px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
-                      <span>
-                        {t("codexConfig.catalogColumnDisplay", {
-                          defaultValue: "菜单显示名",
-                        })}
-                      </span>
-                      <span>
-                        {t("codexConfig.catalogColumnModel", {
-                          defaultValue: "Codex 请求模型",
-                        })}
-                      </span>
-                      <span>
-                        {t("codexConfig.catalogColumnUpstreamModel", {
-                          defaultValue: "上游模型",
-                        })}
-                      </span>
-                      <span>
-                        {t("codexConfig.catalogColumnContext", {
-                          defaultValue: "上下文窗口",
-                        })}
-                      </span>
-                      <span />
+                    </Button>
+                  </CollapsibleTrigger>
+                  {!catalogExpanded && (
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {t("codexConfig.clientCatalogHint", {
+                        defaultValue:
+                          "只影响 Codex /model 菜单和客户端可选模型；真实上游模型使用上方配置。",
+                      })}
+                    </p>
+                  )}
+                  <CollapsibleContent className="space-y-3 pt-2">
+                    <div className="flex justify-end">
+                      {renderCatalogActionButtons(
+                        handleAddCatalogRow,
+                        t("codexConfig.addCatalogModel", {
+                          defaultValue: "添加模型",
+                        }),
+                      )}
                     </div>
-
-                    {catalogRows.map((row, index) => (
-                      <div
-                        key={row.rowId}
-                        className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_1fr_120px_36px]"
-                      >
-                        <Input
-                          value={row.displayName ?? ""}
-                          onChange={(event) =>
-                            handleUpdateCatalogRow(index, {
-                              displayName: event.target.value,
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.catalogDisplayNamePlaceholder",
-                            {
-                              defaultValue: "例如: DeepSeek V4 Flash",
-                            },
-                          )}
-                          aria-label={t("codexConfig.catalogColumnDisplay", {
-                            defaultValue: "菜单显示名",
-                          })}
-                        />
-                        <div className="flex gap-1">
-                          <Input
-                            value={row.model}
-                            onChange={(event) =>
-                              handleUpdateCatalogRow(index, {
-                                model: event.target.value,
-                              })
-                            }
-                            placeholder={t(
-                              "codexConfig.catalogModelPlaceholder",
-                              {
-                                defaultValue: "例如: gpt-5.5",
-                              },
-                            )}
-                            aria-label={t("codexConfig.catalogColumnModel", {
+                    {catalogRows.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="hidden grid-cols-[1fr_1fr_120px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
+                          <span>
+                            {t("codexConfig.catalogColumnDisplay", {
+                              defaultValue: "菜单显示名",
+                            })}
+                          </span>
+                          <span>
+                            {t("codexConfig.catalogColumnModel", {
                               defaultValue: "Codex 请求模型",
                             })}
-                            className="flex-1"
-                          />
-                          {fetchedModels.length > 0 && (
-                            <ModelDropdown
-                              models={fetchedModels}
-                              onSelect={(id) =>
+                          </span>
+                          <span>
+                            {t("codexConfig.catalogColumnContext", {
+                              defaultValue: "上下文窗口",
+                            })}
+                          </span>
+                          <span />
+                        </div>
+
+                        {catalogRows.map((row, index) => (
+                          <div
+                            key={row.rowId}
+                            className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_120px_36px]"
+                          >
+                            <Input
+                              value={row.displayName ?? ""}
+                              onChange={(event) =>
                                 handleUpdateCatalogRow(index, {
-                                  model: id,
-                                  displayName: row.displayName?.trim()
-                                    ? row.displayName
-                                    : id,
+                                  displayName: event.target.value,
                                 })
                               }
+                              placeholder={t(
+                                "codexConfig.catalogDisplayNamePlaceholder",
+                                {
+                                  defaultValue: "例如: DeepSeek V4 Flash",
+                                },
+                              )}
+                              aria-label={t(
+                                "codexConfig.catalogColumnDisplay",
+                                {
+                                  defaultValue: "菜单显示名",
+                                },
+                              )}
                             />
-                          )}
-                        </div>
-                        <Input
-                          value={row.upstreamModel ?? ""}
-                          onChange={(event) =>
-                            handleUpdateCatalogRow(index, {
-                              upstreamModel: event.target.value,
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.catalogUpstreamModelPlaceholder",
-                            {
-                              defaultValue: "默认同请求模型",
-                            },
-                          )}
-                          aria-label={t(
-                            "codexConfig.catalogColumnUpstreamModel",
-                            {
-                              defaultValue: "上游模型",
-                            },
-                          )}
-                        />
-                        <Input
-                          type="number"
-                          min={1}
-                          inputMode="numeric"
-                          value={row.contextWindow ?? ""}
-                          onChange={(event) =>
-                            handleUpdateCatalogRow(index, {
-                              contextWindow: event.target.value.replace(
-                                /[^\d]/g,
-                                "",
-                              ),
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.contextWindowPlaceholder",
-                            {
-                              defaultValue: "例如: 128000",
-                            },
-                          )}
-                          aria-label={t("codexConfig.catalogColumnContext", {
-                            defaultValue: "上下文窗口",
-                          })}
-                        />
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-9 w-9 text-muted-foreground hover:text-destructive"
-                          onClick={() => handleRemoveCatalogRow(index)}
-                          title={t("common.delete", { defaultValue: "删除" })}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                            <div className="flex gap-1">
+                              <Input
+                                value={row.model}
+                                onChange={(event) =>
+                                  handleUpdateCatalogRow(index, {
+                                    model: event.target.value,
+                                  })
+                                }
+                                placeholder={t(
+                                  "codexConfig.catalogModelPlaceholder",
+                                  {
+                                    defaultValue: "例如: gpt-5.5",
+                                  },
+                                )}
+                                aria-label={t(
+                                  "codexConfig.catalogColumnModel",
+                                  {
+                                    defaultValue: "Codex 请求模型",
+                                  },
+                                )}
+                                className="flex-1"
+                              />
+                              {fetchedModels.length > 0 && (
+                                <ModelDropdown
+                                  models={fetchedModels}
+                                  onSelect={(id) =>
+                                    handleUpdateCatalogRow(index, {
+                                      model: id,
+                                      displayName: row.displayName?.trim()
+                                        ? row.displayName
+                                        : id,
+                                    })
+                                  }
+                                />
+                              )}
+                            </div>
+                            <Input
+                              type="number"
+                              min={1}
+                              inputMode="numeric"
+                              value={row.contextWindow ?? ""}
+                              onChange={(event) =>
+                                handleUpdateCatalogRow(index, {
+                                  contextWindow: event.target.value.replace(
+                                    /[^\d]/g,
+                                    "",
+                                  ),
+                                })
+                              }
+                              placeholder={t(
+                                "codexConfig.contextWindowPlaceholder",
+                                {
+                                  defaultValue: "例如: 128000",
+                                },
+                              )}
+                              aria-label={t(
+                                "codexConfig.catalogColumnContext",
+                                {
+                                  defaultValue: "上下文窗口",
+                                },
+                              )}
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 text-muted-foreground hover:text-destructive"
+                              onClick={() => handleRemoveCatalogRow(index)}
+                              title={t("common.delete", {
+                                defaultValue: "删除",
+                              })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                )}
+                    )}
+                  </CollapsibleContent>
+                </Collapsible>
               </div>
             )}
           </CollapsibleContent>

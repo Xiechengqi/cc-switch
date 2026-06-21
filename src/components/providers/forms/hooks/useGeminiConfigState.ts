@@ -6,6 +6,22 @@ interface UseGeminiConfigStateProps {
   };
 }
 
+function singleModelMappingFromConfig(
+  config: Record<string, unknown> | undefined,
+): string {
+  const mapping = config?.modelMapping;
+  if (
+    mapping &&
+    typeof mapping === "object" &&
+    !Array.isArray(mapping) &&
+    (mapping as any).mode === "single" &&
+    typeof (mapping as any).upstreamModel === "string"
+  ) {
+    return (mapping as any).upstreamModel.trim();
+  }
+  return "";
+}
+
 /**
  * 管理 Gemini 配置状态
  * Gemini 配置包含两部分：env (环境变量) 和 config (扩展配置 JSON)
@@ -94,7 +110,12 @@ export function useGeminiConfigState({
       if (typeof env.GOOGLE_GEMINI_BASE_URL === "string") {
         setGeminiBaseUrl(env.GOOGLE_GEMINI_BASE_URL);
       }
-      if (typeof env.GEMINI_MODEL === "string") {
+      const mappedModel = singleModelMappingFromConfig(
+        config as Record<string, unknown>,
+      );
+      if (mappedModel) {
+        setGeminiModel(mappedModel);
+      } else if (typeof env.GEMINI_MODEL === "string") {
         setGeminiModel(env.GEMINI_MODEL);
       }
     }

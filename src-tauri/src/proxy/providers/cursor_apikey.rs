@@ -51,10 +51,12 @@ pub async fn forward_cursor_apikey_claude(
     headers: Option<&HeaderMap>,
     body: &Value,
 ) -> Result<ProxyResponse, ProxyError> {
+    let (mapped_body, response_model) = prepare_cursor_apikey_claude_body(provider, body);
     forward_cursor_apikey(
         provider,
         headers,
-        body,
+        &mapped_body,
+        response_model,
         CursorResponseFormat::AnthropicMessages,
     )
     .await
@@ -71,13 +73,14 @@ pub async fn forward_cursor_apikey_codex(
     } else {
         CursorResponseFormat::OpenAiResponses
     };
-    forward_cursor_apikey(provider, headers, body, format).await
+    forward_cursor_apikey(provider, headers, body, requested_model(body), format).await
 }
 
 async fn forward_cursor_apikey(
     provider: &Provider,
     headers: Option<&HeaderMap>,
     body: &Value,
+    response_model: String,
     response_format: CursorResponseFormat,
 ) -> Result<ProxyResponse, ProxyError> {
     let api_key = cursor_api_key_from_provider(provider)?;
@@ -113,16 +116,15 @@ async fn forward_cursor_apikey(
         return Err(ProxyError::UpstreamError { status, body });
     }
 
-    let model = requested_model(body);
     let is_stream = body
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if is_stream {
-        let stream = response_to_sse_stream(response, model, response_format);
+        let stream = response_to_sse_stream(response, response_model, response_format);
         Ok(ProxyResponse::local_sse(Box::pin(stream)))
     } else {
-        let (_, bytes) = response_to_json(response, &model, response_format).await?;
+        let (_, bytes) = response_to_json(response, &response_model, response_format).await?;
         Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
     }
 }
@@ -275,6 +277,18 @@ fn normalize_cursor_body(body: &Value) -> Value {
     next
 }
 
+fn prepare_cursor_apikey_claude_body(provider: &Provider, body: &Value) -> (Value, String) {
+    let response_model = requested_model(body);
+    let (mapped_body, original_model, mapped_model) =
+        crate::proxy::model_mapper::apply_model_mapping(body.clone(), provider);
+    if let (Some(original), Some(mapped)) = (original_model.as_deref(), mapped_model.as_deref()) {
+        log::debug!("[CursorApiKey] Claude 模型映射: {original} -> {mapped}");
+    }
+    let mapped_body =
+        crate::proxy::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
+    (mapped_body, response_model)
+}
+
 fn sha256_hex(input: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -369,5 +383,49 @@ mod tests {
             second.cursor_service_machine_id
         );
         assert_eq!(first.cursor_config_version, second.cursor_config_version);
+    }
+
+    #[test]
+    fn claude_body_uses_provider_mapping_but_keeps_response_model() {
+        let provider = provider(json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "cursor_key",
+                "ANTHROPIC_MODEL": "composer-2.5",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "composer-2.5",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "composer-2.5",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "composer-2.5",
+                "ANTHROPIC_DEFAULT_FABLE_MODEL": "composer-2.5"
+            }
+        }));
+        let (mapped_body, response_model) = prepare_cursor_apikey_claude_body(
+            &provider,
+            &json!({
+                "model": "claude-opus-4-8",
+                "messages": []
+            }),
+        );
+
+        assert_eq!(mapped_body["model"], json!("composer-2.5"));
+        assert_eq!(response_model, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn claude_body_strips_mapped_one_m_marker_before_cursor() {
+        let provider = provider(json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "cursor_key",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "composer-2.5 [1M]"
+            }
+        }));
+        let (mapped_body, response_model) = prepare_cursor_apikey_claude_body(
+            &provider,
+            &json!({
+                "model": "claude-sonnet-4-5[1m]",
+                "messages": []
+            }),
+        );
+
+        assert_eq!(mapped_body["model"], json!("composer-2.5"));
+        assert_eq!(response_model, "claude-sonnet-4-5[1m]");
     }
 }

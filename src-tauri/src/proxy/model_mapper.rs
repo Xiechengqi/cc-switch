@@ -26,6 +26,38 @@ pub fn single_upstream_model(provider: &Provider) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn catalog_upstream_model(provider: &Provider, request_model: &str) -> Option<String> {
+    let request_model = request_model.trim();
+    if request_model.is_empty() {
+        return None;
+    }
+
+    provider
+        .settings_config
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|model| {
+            let route_model = model
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())?;
+            if route_model != request_model {
+                return None;
+            }
+
+            model
+                .get("upstreamModel")
+                .or_else(|| model.get("upstream_model"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(ToString::to_string)
+        })
+}
+
 /// 模型映射配置
 pub struct ModelMapping {
     pub haiku_model: Option<String>,
@@ -136,6 +168,16 @@ pub fn apply_model_mapping(
             return (body, Some(original.clone()), Some(upstream_model));
         }
         return (body, original_model, None);
+    }
+
+    if let Some(original) = original_model.as_ref() {
+        if let Some(upstream_model) = catalog_upstream_model(provider, original) {
+            if upstream_model != *original {
+                log::debug!("[ModelMapper] 模型目录映射: {original} → {upstream_model}");
+                body["model"] = serde_json::json!(upstream_model);
+                return (body, Some(original.clone()), Some(upstream_model));
+            }
+        }
     }
 
     let mapping = ModelMapping::from_provider(provider);
@@ -263,6 +305,74 @@ mod tests {
             assert_eq!(original.as_deref(), Some(model));
             assert_eq!(mapped.as_deref(), Some("composer-2.5"));
         }
+    }
+
+    #[test]
+    fn model_catalog_upstream_model_maps_request_model() {
+        let mut provider = create_provider_without_mapping();
+        provider.settings_config = json!({
+            "modelCatalog": {
+                "models": [
+                    {
+                        "model": "gpt-5.5",
+                        "upstreamModel": "composer-2.5"
+                    }
+                ]
+            }
+        });
+
+        let (result, original, mapped) =
+            apply_model_mapping(json!({"model": "gpt-5.5"}), &provider);
+
+        assert_eq!(result["model"], "composer-2.5");
+        assert_eq!(original.as_deref(), Some("gpt-5.5"));
+        assert_eq!(mapped.as_deref(), Some("composer-2.5"));
+    }
+
+    #[test]
+    fn single_model_mapping_overrides_model_catalog() {
+        let mut provider = create_provider_without_mapping();
+        provider.settings_config = json!({
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "single-model"
+            },
+            "modelCatalog": {
+                "models": [
+                    {
+                        "model": "gpt-5.5",
+                        "upstreamModel": "catalog-model"
+                    }
+                ]
+            }
+        });
+
+        let (result, _, mapped) = apply_model_mapping(json!({"model": "gpt-5.5"}), &provider);
+
+        assert_eq!(result["model"], "single-model");
+        assert_eq!(mapped.as_deref(), Some("single-model"));
+    }
+
+    #[test]
+    fn model_catalog_without_upstream_model_keeps_request_model() {
+        let mut provider = create_provider_without_mapping();
+        provider.settings_config = json!({
+            "modelCatalog": {
+                "models": [
+                    {
+                        "model": "gpt-5.5",
+                        "upstreamModel": ""
+                    }
+                ]
+            }
+        });
+
+        let (result, original, mapped) =
+            apply_model_mapping(json!({"model": "gpt-5.5"}), &provider);
+
+        assert_eq!(result["model"], "gpt-5.5");
+        assert_eq!(original.as_deref(), Some("gpt-5.5"));
+        assert!(mapped.is_none());
     }
 
     #[test]

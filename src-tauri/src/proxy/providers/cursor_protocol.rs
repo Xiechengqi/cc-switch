@@ -1392,4 +1392,30 @@ mod tests {
             Some("composer-2.5")
         );
     }
+
+    #[test]
+    fn prepare_cursor_codex_body_applies_model_catalog_upstream_model() {
+        let provider = create_provider(json!({
+            "modelCatalog": {
+                "models": [
+                    {
+                        "model": "gpt-5.5",
+                        "upstreamModel": "composer-2.5"
+                    }
+                ]
+            }
+        }));
+        let body = json!({
+            "model": "gpt-5.5",
+            "input": "who are you"
+        });
+
+        let (mapped_body, response_model) = prepare_cursor_codex_body(&provider, &body);
+
+        assert_eq!(response_model, "gpt-5.5");
+        assert_eq!(
+            mapped_body.get("model").and_then(|value| value.as_str()),
+            Some("composer-2.5")
+        );
+    }
 }

@@ -3144,7 +3144,6 @@ pub(crate) fn build_antigravity_forward_request(
         "userAgent": "antigravity",
         "requestType": "agent",
         "requestId": antigravity_request_id(),
-        "enabledCreditTypes": ["GOOGLE_ONE_AI"],
         "request": inner_request,
     });
 
@@ -5156,7 +5155,7 @@ mod tests {
         assert!(body["requestId"]
             .as_str()
             .is_some_and(|id| id.starts_with("agent/")));
-        assert_eq!(body["enabledCreditTypes"][0], "GOOGLE_ONE_AI");
+        assert!(body.get("enabledCreditTypes").is_none());
         assert_eq!(body["request"]["sessionId"], "session-1");
         assert_eq!(
             body["request"]["generationConfig"]["maxOutputTokens"],

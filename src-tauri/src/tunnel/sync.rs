@@ -966,6 +966,9 @@ fn managed_oauth_provider_for_app(app: &AppType, provider: &Provider) -> Option<
         AppType::Claude | AppType::Codex if provider.is_cursor_oauth_provider() => {
             Some("cursor_oauth")
         }
+        AppType::Claude | AppType::Codex if provider.is_cursor_apikey_provider() => {
+            Some("cursor_apikey")
+        }
         AppType::Claude | AppType::Gemini if provider.is_antigravity_family_provider() => {
             Some("antigravity_oauth")
         }
@@ -977,6 +980,17 @@ async fn managed_oauth_account_summary(
     auth_provider: &str,
     provider: &Provider,
 ) -> (Option<String>, Option<ShareUpstreamQuota>) {
+    if auth_provider == "cursor_apikey" {
+        let Ok(api_key) =
+            crate::proxy::providers::cursor_apikey::cursor_api_key_from_provider(provider)
+        else {
+            return (None, None);
+        };
+        let account_id = crate::proxy::providers::cursor_apikey::account_id_for_api_key(&api_key);
+        let quota = cached_upstream_quota(auth_provider, &account_id).await;
+        return (Some(account_id), quota);
+    }
+
     let account_id = match provider
         .meta
         .as_ref()
@@ -2149,6 +2163,82 @@ mod tests {
         // Slot 没绑定时，对应 app 的 runtime 必须为空（codex/gemini 没绑定）。
         assert!(snap_a.app_runtimes.codex.is_none());
         assert!(snap_a.app_runtimes.gemini.is_none());
+    }
+
+    #[tokio::test]
+    async fn cursor_apikey_runtime_snapshot_uses_quota_account_identity() {
+        use crate::database::Database;
+        use crate::provider::{Provider, ProviderMeta};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let api_key = "cursor-test-api-key";
+        let expected_account =
+            crate::proxy::providers::cursor_apikey::account_id_for_api_key(api_key);
+        let mut provider = Provider::with_id(
+            "cursor-provider".to_string(),
+            "Cursor API Key".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": api_key
+                }
+            }),
+            Some(String::new()),
+        );
+        provider.category = Some("custom".to_string());
+        provider.meta = Some(ProviderMeta {
+            provider_type: Some("cursor_apikey".to_string()),
+            ..Default::default()
+        });
+
+        let mut bindings = HashMap::new();
+        bindings.insert("claude".to_string(), provider.id.clone());
+        let share = ShareRecord {
+            id: "share-cursor".to_string(),
+            name: "share-cursor".to_string(),
+            owner_email: "u@example.com".to_string(),
+            shared_with_emails: Vec::new(),
+            market_access_mode: "selected".to_string(),
+            access_by_app: HashMap::new(),
+            app_settings: HashMap::new(),
+            for_sale_official_price_percent_by_app: HashMap::new(),
+            description: None,
+            for_sale: "No".to_string(),
+            sale_market_kind: "token".to_string(),
+            bindings,
+            dynamic_apps: std::collections::HashSet::new(),
+            api_key: String::new(),
+            settings_config: None,
+            token_limit: -1,
+            parallel_limit: 3,
+            tokens_used: 0,
+            requests_count: 0,
+            expires_at: "2100-01-01T00:00:00Z".to_string(),
+            subdomain: Some("route-cursor".to_string()),
+            tunnel_url: None,
+            status: "active".to_string(),
+            auto_start: false,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            last_used_at: None,
+        };
+
+        let db = Arc::new(Database::memory().expect("memory db"));
+        db.save_provider("claude", &provider)
+            .expect("save cursor apikey provider");
+
+        let snapshot = build_share_runtime_snapshot(&share, &db).await;
+        let runtime = snapshot
+            .app_runtimes
+            .claude
+            .expect("cursor apikey claude runtime");
+
+        assert_eq!(runtime.kind, "official_oauth");
+        assert_eq!(runtime.provider_name.as_deref(), Some("Cursor API Key"));
+        assert_eq!(
+            runtime.account_email.as_deref(),
+            Some(expected_account.as_str())
+        );
+        assert!(runtime.quota.is_none());
     }
 
     /// P12 回归：share_metadata_from_record（sync 时写到 router 的 wire payload）

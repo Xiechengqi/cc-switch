@@ -78,13 +78,9 @@ const renderCopilotForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) => {
     shouldShowModelSelector: true,
     claudeModel: "",
     defaultHaikuModel: "",
-    defaultHaikuModelName: "",
     defaultSonnetModel: "claude-sonnet",
-    defaultSonnetModelName: "Claude Sonnet",
     defaultOpusModel: "",
-    defaultOpusModelName: "",
     defaultFableModel: "",
-    defaultFableModelName: "",
     onModelChange: vi.fn(),
     speedTestEndpoints: [],
     apiFormat: "anthropic",
@@ -136,7 +132,7 @@ describe("ClaudeFormFields", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "providerForm.fetchModels",
+        name: "获取模型",
       }),
     );
 
@@ -179,7 +175,7 @@ describe("ClaudeFormFields", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "providerForm.fetchModels",
+        name: "获取模型",
       }),
     );
 

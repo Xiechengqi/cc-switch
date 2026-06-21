@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { FormLabel } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   Collapsible,
@@ -10,19 +9,12 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { toast } from "sonner";
-import {
-  ChevronDown,
-  ChevronRight,
-  Download,
-  Loader2,
-  Plus,
-  Trash2,
-} from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { CursorOAuthSection } from "./CursorOAuthSection";
 import { SingleModelMappingField } from "./SingleModelMappingField";
-import { ApiKeySection, EndpointField, ModelDropdown } from "./shared";
+import { ApiKeySection, EndpointField } from "./shared";
 import {
   fetchModelsForConfig,
   showFetchModelsError,
@@ -32,7 +24,6 @@ import { CustomUserAgentField } from "./CustomUserAgentField";
 import { cn } from "@/lib/utils";
 import type {
   CodexApiFormat,
-  CodexCatalogModel,
   CodexChatReasoning,
   ProviderCategory,
 } from "@/types";
@@ -81,9 +72,7 @@ interface CodexFormFieldsProps {
   codexChatReasoning?: CodexChatReasoning;
   onCodexChatReasoningChange?: (value: CodexChatReasoning) => void;
 
-  // Model Catalog
-  catalogModels?: CodexCatalogModel[];
-  onCatalogModelsChange?: (models: CodexCatalogModel[]) => void;
+  // Model Mapping
   singleUpstreamModel: string;
   onSingleUpstreamModelChange: (value: string) => void;
 
@@ -93,41 +82,6 @@ interface CodexFormFieldsProps {
   // Local proxy User-Agent override
   customUserAgent: string;
   onCustomUserAgentChange: (value: string) => void;
-}
-
-type CodexCatalogRow = CodexCatalogModel & { rowId: string };
-
-function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
-  return {
-    rowId: crypto.randomUUID(),
-    model: seed?.model ?? "",
-    upstreamModel: seed?.upstreamModel ?? "",
-    displayName: seed?.displayName ?? "",
-    contextWindow: seed?.contextWindow ?? "",
-  };
-}
-
-// Compares rows (with rowId) to incoming models (without) by data fields only,
-// so both sync effects can use the same equality definition.
-function catalogRowsMatchModels(
-  rows: Array<
-    Pick<
-      CodexCatalogRow,
-      "model" | "upstreamModel" | "displayName" | "contextWindow"
-    >
-  >,
-  models: CodexCatalogModel[],
-): boolean {
-  if (rows.length !== models.length) return false;
-  return rows.every((row, i) => {
-    const incoming = models[i];
-    return (
-      row.model === (incoming.model ?? "") &&
-      (row.upstreamModel ?? "") === (incoming.upstreamModel ?? "") &&
-      (row.displayName ?? "") === (incoming.displayName ?? "") &&
-      String(row.contextWindow ?? "") === String(incoming.contextWindow ?? "")
-    );
-  });
 }
 
 export function CodexFormFields({
@@ -163,8 +117,6 @@ export function CodexFormFields({
   onApiFormatChange,
   codexChatReasoning = {},
   onCodexChatReasoningChange,
-  catalogModels = [],
-  onCatalogModelsChange,
   singleUpstreamModel,
   onSingleUpstreamModelChange,
   speedTestEndpoints,
@@ -176,14 +128,12 @@ export function CodexFormFields({
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const needsLocalRouting = apiFormat === "openai_chat";
-  const canEditCatalog = Boolean(onCatalogModelsChange);
   const canEditReasoning = Boolean(onCodexChatReasoningChange);
   const supportsThinking =
     codexChatReasoning.supportsThinking === true ||
     codexChatReasoning.supportsEffort === true;
   const supportsEffort = codexChatReasoning.supportsEffort === true;
-  const isThirdPartyLocalRouting =
-    needsLocalRouting && !isCodexOfficialPreset && canEditCatalog;
+  const shouldShowModelMapping = needsLocalRouting && !isCodexOfficialPreset;
 
   // needsLocalRouting 非默认值说明预设/用户动过路由配置，需要让模型映射保持可见
   const hasAnyAdvancedValue = !!customUserAgent || needsLocalRouting;
@@ -195,38 +145,6 @@ export function CodexFormFields({
       setAdvancedExpanded(true);
     }
   }, [hasAnyAdvancedValue]);
-
-  const [catalogRows, setCatalogRows] = useState<CodexCatalogRow[]>(() =>
-    catalogModels.map((m) => createCatalogRow(m)),
-  );
-  const [catalogExpanded, setCatalogExpanded] = useState(false);
-
-  // 记录上次发送给父组件的数据，避免重复触发
-  const lastSentModelsRef = useRef<CodexCatalogModel[]>(catalogModels);
-
-  // 父 → 子：仅当 prop 数据真的变化（预设切换 / 编辑加载）时才重建 rowId；
-  // 同 shape 时保留现有 rowId，避免编辑过程中焦点丢失。
-  useEffect(() => {
-    setCatalogRows((current) => {
-      if (catalogRowsMatchModels(current, catalogModels)) return current;
-      return catalogModels.map((m) => createCatalogRow(m));
-    });
-    // 同步更新 ref，避免父组件传入新数据时子→父 effect 误判为本地修改
-    lastSentModelsRef.current = catalogModels;
-  }, [catalogModels]);
-
-  // 子 → 父：rowId 是视图层概念，不应进入持久化数据；剥离后再回传。
-  // 注意：依赖数组不包含 catalogModels，避免父→子更新触发子→父回调形成循环。
-  useEffect(() => {
-    if (!onCatalogModelsChange) return;
-    const next: CodexCatalogModel[] = catalogRows.map(
-      ({ rowId: _rowId, ...rest }) => rest,
-    );
-    // 只有当数据真的变化时才通知父组件
-    if (catalogRowsMatchModels(catalogRows, lastSentModelsRef.current)) return;
-    lastSentModelsRef.current = next;
-    onCatalogModelsChange(next);
-  }, [catalogRows, onCatalogModelsChange]);
 
   const handleLocalRoutingChange = useCallback(
     (checked: boolean) => {
@@ -294,67 +212,6 @@ export function CodexFormFields({
       })
       .finally(() => setIsFetchingModels(false));
   }, [codexBaseUrl, codexApiKey, isFullUrl, customUserAgent, t]);
-
-  const handleAddCatalogRow = useCallback(() => {
-    if (!onCatalogModelsChange) return;
-    setCatalogRows((current) => [
-      ...current,
-      createCatalogRow({ upstreamModel: singleUpstreamModel }),
-    ]);
-  }, [onCatalogModelsChange, singleUpstreamModel]);
-
-  const handleSingleUpstreamModelChange = useCallback(
-    (value: string) => {
-      onSingleUpstreamModelChange(value);
-      setCatalogRows((current) =>
-        current.map((row) => ({ ...row, upstreamModel: value })),
-      );
-    },
-    [onSingleUpstreamModelChange],
-  );
-
-  const handleUpdateCatalogRow = useCallback(
-    (index: number, patch: Partial<CodexCatalogModel>) => {
-      setCatalogRows((current) =>
-        current.map((row, i) => (i === index ? { ...row, ...patch } : row)),
-      );
-    },
-    [],
-  );
-
-  const handleRemoveCatalogRow = useCallback((index: number) => {
-    setCatalogRows((current) => current.filter((_, i) => i !== index));
-  }, []);
-
-  const renderCatalogActionButtons = (onAdd: () => void, addLabel: string) => (
-    <div className="flex gap-1">
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={handleFetchModels}
-        disabled={isFetchingModels}
-        className="h-7 gap-1"
-      >
-        {isFetchingModels ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          <Download className="h-3.5 w-3.5" />
-        )}
-        {t("providerForm.fetchModels")}
-      </Button>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={onAdd}
-        className="h-7 gap-1"
-      >
-        <Plus className="h-3.5 w-3.5" />
-        {addLabel}
-      </Button>
-    </div>
-  );
 
   return (
     <>
@@ -576,185 +433,17 @@ export function CodexFormFields({
               />
             </div>
 
-            {/* 模型映射 —— 仅在本地路由 + 可编辑时显示；上方恒有 UA 字段，分隔线无需条件 */}
-            {needsLocalRouting && canEditCatalog && (
-              <div className="space-y-4 border-t border-border-default pt-3">
-                {isThirdPartyLocalRouting && (
-                  <SingleModelMappingField
-                    id="codexSingleUpstreamModel"
-                    value={singleUpstreamModel}
-                    onChange={handleSingleUpstreamModelChange}
-                    fetchedModels={fetchedModels}
-                    isLoading={isFetchingModels}
-                    onFetchModels={handleFetchModels}
-                  />
-                )}
-
-                <Collapsible
-                  open={catalogExpanded}
-                  onOpenChange={setCatalogExpanded}
-                  className="border-t border-border-default pt-3"
-                >
-                  <CollapsibleTrigger asChild>
-                    <Button
-                      type="button"
-                      variant={null}
-                      size="sm"
-                      className="h-8 gap-1.5 px-0 text-sm font-medium text-foreground hover:opacity-70"
-                    >
-                      {catalogExpanded ? (
-                        <ChevronDown className="h-4 w-4" />
-                      ) : (
-                        <ChevronRight className="h-4 w-4" />
-                      )}
-                      {t("codexConfig.clientCatalogToggle", {
-                        defaultValue: "Codex 菜单模型",
-                      })}
-                    </Button>
-                  </CollapsibleTrigger>
-                  {!catalogExpanded && (
-                    <p className="text-xs leading-relaxed text-muted-foreground">
-                      {t("codexConfig.clientCatalogHint", {
-                        defaultValue:
-                          "只影响 Codex /model 菜单和客户端可选模型；真实上游模型使用上方配置。",
-                      })}
-                    </p>
-                  )}
-                  <CollapsibleContent className="space-y-3 pt-2">
-                    <div className="flex justify-end">
-                      {renderCatalogActionButtons(
-                        handleAddCatalogRow,
-                        t("codexConfig.addCatalogModel", {
-                          defaultValue: "添加模型",
-                        }),
-                      )}
-                    </div>
-                    {catalogRows.length > 0 && (
-                      <div className="space-y-2">
-                        <div className="hidden grid-cols-[1fr_1fr_120px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
-                          <span>
-                            {t("codexConfig.catalogColumnDisplay", {
-                              defaultValue: "菜单显示名",
-                            })}
-                          </span>
-                          <span>
-                            {t("codexConfig.catalogColumnModel", {
-                              defaultValue: "Codex 请求模型",
-                            })}
-                          </span>
-                          <span>
-                            {t("codexConfig.catalogColumnContext", {
-                              defaultValue: "上下文窗口",
-                            })}
-                          </span>
-                          <span />
-                        </div>
-
-                        {catalogRows.map((row, index) => (
-                          <div
-                            key={row.rowId}
-                            className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_120px_36px]"
-                          >
-                            <Input
-                              value={row.displayName ?? ""}
-                              onChange={(event) =>
-                                handleUpdateCatalogRow(index, {
-                                  displayName: event.target.value,
-                                })
-                              }
-                              placeholder={t(
-                                "codexConfig.catalogDisplayNamePlaceholder",
-                                {
-                                  defaultValue: "例如: DeepSeek V4 Flash",
-                                },
-                              )}
-                              aria-label={t(
-                                "codexConfig.catalogColumnDisplay",
-                                {
-                                  defaultValue: "菜单显示名",
-                                },
-                              )}
-                            />
-                            <div className="flex gap-1">
-                              <Input
-                                value={row.model}
-                                onChange={(event) =>
-                                  handleUpdateCatalogRow(index, {
-                                    model: event.target.value,
-                                  })
-                                }
-                                placeholder={t(
-                                  "codexConfig.catalogModelPlaceholder",
-                                  {
-                                    defaultValue: "例如: gpt-5.5",
-                                  },
-                                )}
-                                aria-label={t(
-                                  "codexConfig.catalogColumnModel",
-                                  {
-                                    defaultValue: "Codex 请求模型",
-                                  },
-                                )}
-                                className="flex-1"
-                              />
-                              {fetchedModels.length > 0 && (
-                                <ModelDropdown
-                                  models={fetchedModels}
-                                  onSelect={(id) =>
-                                    handleUpdateCatalogRow(index, {
-                                      model: id,
-                                      displayName: row.displayName?.trim()
-                                        ? row.displayName
-                                        : id,
-                                    })
-                                  }
-                                />
-                              )}
-                            </div>
-                            <Input
-                              type="number"
-                              min={1}
-                              inputMode="numeric"
-                              value={row.contextWindow ?? ""}
-                              onChange={(event) =>
-                                handleUpdateCatalogRow(index, {
-                                  contextWindow: event.target.value.replace(
-                                    /[^\d]/g,
-                                    "",
-                                  ),
-                                })
-                              }
-                              placeholder={t(
-                                "codexConfig.contextWindowPlaceholder",
-                                {
-                                  defaultValue: "例如: 128000",
-                                },
-                              )}
-                              aria-label={t(
-                                "codexConfig.catalogColumnContext",
-                                {
-                                  defaultValue: "上下文窗口",
-                                },
-                              )}
-                            />
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="h-9 w-9 text-muted-foreground hover:text-destructive"
-                              onClick={() => handleRemoveCatalogRow(index)}
-                              title={t("common.delete", {
-                                defaultValue: "删除",
-                              })}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CollapsibleContent>
-                </Collapsible>
+            {/* 模型映射：所有客户端请求模型统一转发到同一个上游真实模型 */}
+            {shouldShowModelMapping && (
+              <div className="border-t border-border-default pt-3">
+                <SingleModelMappingField
+                  id="codexSingleUpstreamModel"
+                  value={singleUpstreamModel}
+                  onChange={onSingleUpstreamModelChange}
+                  fetchedModels={fetchedModels}
+                  isLoading={isFetchingModels}
+                  onFetchModels={handleFetchModels}
+                />
               </div>
             )}
           </CollapsibleContent>

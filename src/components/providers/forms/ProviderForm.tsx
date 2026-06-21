@@ -500,13 +500,9 @@ function ProviderFormFull({
     claudeModel,
     singleUpstreamModel,
     defaultHaikuModel,
-    defaultHaikuModelName,
     defaultSonnetModel,
-    defaultSonnetModelName,
     defaultOpusModel,
-    defaultOpusModelName,
     defaultFableModel,
-    defaultFableModelName,
     handleModelChange,
   } = useModelState({
     settingsConfig: form.getValues("settingsConfig"),
@@ -669,7 +665,6 @@ function ProviderFormFull({
     codexAuthError,
     setCodexAuth,
     setCodexConfig,
-    setCodexCatalogModels,
     setCodexSingleUpstreamModel,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
@@ -2707,13 +2702,9 @@ function ProviderFormFull({
               claudeModel={claudeModel}
               singleUpstreamModel={singleUpstreamModel}
               defaultHaikuModel={defaultHaikuModel}
-              defaultHaikuModelName={defaultHaikuModelName}
               defaultSonnetModel={defaultSonnetModel}
-              defaultSonnetModelName={defaultSonnetModelName}
               defaultOpusModel={defaultOpusModel}
-              defaultOpusModelName={defaultOpusModelName}
               defaultFableModel={defaultFableModel}
-              defaultFableModelName={defaultFableModelName}
               onModelChange={handleModelChange}
               speedTestEndpoints={speedTestEndpoints}
               apiFormat={localApiFormat}
@@ -2765,8 +2756,6 @@ function ProviderFormFull({
               onCodexChatReasoningChange={setCodexChatReasoning}
               codexImageGenerationEnabled={codexImageGenerationEnabled}
               onCodexImageGenerationChange={setCodexImageGenerationEnabled}
-              catalogModels={codexCatalogModels}
-              onCatalogModelsChange={setCodexCatalogModels}
               singleUpstreamModel={codexSingleUpstreamModel}
               onSingleUpstreamModelChange={setCodexSingleUpstreamModel}
               speedTestEndpoints={speedTestEndpoints}

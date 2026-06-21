@@ -7,7 +7,6 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { toast } from "sonner";
-import { Checkbox } from "@/components/ui/checkbox";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import {
@@ -54,12 +53,7 @@ import type {
   ClaudeApiFormat,
   ClaudeApiKeyField,
 } from "@/types";
-import {
-  hasClaudeOneMMarker,
-  setClaudeOneMMarker,
-  stripClaudeOneMMarker,
-  type ClaudeModelEnvField,
-} from "./hooks/useModelState";
+import { type ClaudeModelEnvField } from "./hooks/useModelState";
 import {
   providerPresets,
   type TemplateValueConfig,
@@ -148,13 +142,9 @@ interface ClaudeFormFieldsProps {
   claudeModel: string;
   singleUpstreamModel?: string;
   defaultHaikuModel: string;
-  defaultHaikuModelName: string;
   defaultSonnetModel: string;
-  defaultSonnetModelName: string;
   defaultOpusModel: string;
-  defaultOpusModelName: string;
   defaultFableModel: string;
-  defaultFableModelName: string;
   onModelChange: (field: ClaudeModelEnvField, value: string) => void;
 
   // Speed Test Endpoints
@@ -232,13 +222,9 @@ export function ClaudeFormFields({
   claudeModel,
   singleUpstreamModel = "",
   defaultHaikuModel,
-  defaultHaikuModelName,
   defaultSonnetModel,
-  defaultSonnetModelName,
   defaultOpusModel,
-  defaultOpusModelName,
   defaultFableModel,
-  defaultFableModelName,
   onModelChange,
   speedTestEndpoints,
   apiFormat,
@@ -263,7 +249,6 @@ export function ClaudeFormFields({
     customUserAgent
   );
   const [advancedExpanded, setAdvancedExpanded] = useState(hasAnyAdvancedValue);
-  const [roleMappingExpanded, setRoleMappingExpanded] = useState(false);
 
   // 预设填充高级值后自动展开（仅从折叠→展开，不会自动折叠）
   useEffect(() => {
@@ -610,79 +595,6 @@ export function ClaudeFormFields({
     );
   };
 
-  type ModelRoleRow = {
-    role: "sonnet" | "opus" | "fable" | "haiku";
-    label: string;
-    model: string;
-    displayName: string;
-    modelField: ClaudeModelEnvField;
-    displayNameField: ClaudeModelEnvField;
-    inputId: string;
-    supportsOneM: boolean;
-  };
-
-  const modelRoleRows: ModelRoleRow[] = [
-    {
-      role: "sonnet",
-      label: t("providerForm.modelRoleSonnet", { defaultValue: "Sonnet" }),
-      model: defaultSonnetModel,
-      displayName: defaultSonnetModelName,
-      modelField: "ANTHROPIC_DEFAULT_SONNET_MODEL",
-      displayNameField: "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-      inputId: "claudeDefaultSonnetModel",
-      supportsOneM: true,
-    },
-    {
-      role: "opus",
-      label: t("providerForm.modelRoleOpus", { defaultValue: "Opus" }),
-      model: defaultOpusModel,
-      displayName: defaultOpusModelName,
-      modelField: "ANTHROPIC_DEFAULT_OPUS_MODEL",
-      displayNameField: "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-      inputId: "claudeDefaultOpusModel",
-      supportsOneM: true,
-    },
-    {
-      role: "fable",
-      label: t("providerForm.modelRoleFable", { defaultValue: "Fable" }),
-      model: defaultFableModel,
-      displayName: defaultFableModelName,
-      modelField: "ANTHROPIC_DEFAULT_FABLE_MODEL",
-      displayNameField: "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
-      inputId: "claudeDefaultFableModel",
-      supportsOneM: true,
-    },
-    {
-      role: "haiku",
-      label: t("providerForm.modelRoleHaiku", { defaultValue: "Haiku" }),
-      model: defaultHaikuModel,
-      displayName: defaultHaikuModelName,
-      modelField: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-      displayNameField: "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-      inputId: "claudeDefaultHaikuModel",
-      supportsOneM: false,
-    },
-  ];
-
-  const handleRoleModelChange = (row: ModelRoleRow, value: string) => {
-    const oldModelBase = stripClaudeOneMMarker(row.model).trim();
-    const normalizedValue = row.supportsOneM
-      ? value
-      : stripClaudeOneMMarker(value);
-    const nextModelBase = stripClaudeOneMMarker(normalizedValue).trim();
-    const displayName = row.displayName.trim();
-    const shouldSyncDisplayName = !displayName || displayName === oldModelBase;
-    onModelChange(row.modelField, normalizedValue);
-    if (shouldSyncDisplayName) {
-      onModelChange(row.displayNameField, nextModelBase);
-    }
-  };
-
-  const handleRoleOneMChange = (row: ModelRoleRow, enabled: boolean) => {
-    if (!row.supportsOneM) return;
-    handleRoleModelChange(row, setClaudeOneMMarker(row.model, enabled));
-  };
-
   return (
     <>
       {/* GitHub Copilot OAuth 认证 */}
@@ -963,125 +875,6 @@ export function ClaudeFormFields({
                   }),
                 )}
               />
-            )}
-
-            {!isClaudeOauthPreset && (
-              <Collapsible
-                open={roleMappingExpanded}
-                onOpenChange={setRoleMappingExpanded}
-                className="border-t pt-3"
-              >
-                <CollapsibleTrigger asChild>
-                  <Button
-                    type="button"
-                    variant={null}
-                    size="sm"
-                    className="h-8 gap-1.5 px-0 text-sm font-medium text-foreground hover:opacity-70"
-                  >
-                    {roleMappingExpanded ? (
-                      <ChevronDown className="h-4 w-4" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4" />
-                    )}
-                    {t("providerForm.advancedRoleMappingToggle", {
-                      defaultValue: "高级分角色映射",
-                    })}
-                  </Button>
-                </CollapsibleTrigger>
-                <CollapsibleContent className="space-y-4 pt-2">
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    {t("providerForm.advancedRoleMappingHint", {
-                      defaultValue:
-                        "默认不需要配置。只有当同一个供应商需要按 Opus、Sonnet、Haiku、Fable 分别转发到不同真实模型时才使用。",
-                    })}
-                  </p>
-                  <div className="space-y-3">
-                    <div className="hidden grid-cols-[120px_1fr_minmax(0,1fr)_104px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
-                      <span>
-                        {t("providerForm.modelRoleLabel", {
-                          defaultValue: "模型角色",
-                        })}
-                      </span>
-                      <span>
-                        {t("providerForm.modelDisplayNameLabel", {
-                          defaultValue: "显示名称",
-                        })}
-                      </span>
-                      <span>
-                        {t("providerForm.requestModelLabel", {
-                          defaultValue: "实际请求模型",
-                        })}
-                      </span>
-                      <span>
-                        {t("providerForm.modelOneMHeader", {
-                          defaultValue: "声明支持 1M",
-                        })}
-                      </span>
-                    </div>
-
-                    {modelRoleRows.map((row) => {
-                      const modelBase = stripClaudeOneMMarker(row.model);
-                      const usesOneM =
-                        row.supportsOneM && hasClaudeOneMMarker(row.model);
-
-                      return (
-                        <div
-                          key={row.role}
-                          className="grid grid-cols-1 gap-2 md:grid-cols-[120px_1fr_minmax(0,1fr)_104px]"
-                        >
-                          <div className="flex h-9 items-center rounded-md border border-input bg-muted px-3 text-sm font-medium text-muted-foreground">
-                            {row.label}
-                          </div>
-                          <Input
-                            value={row.displayName}
-                            onChange={(event) =>
-                              onModelChange(
-                                row.displayNameField,
-                                event.target.value,
-                              )
-                            }
-                            placeholder={
-                              modelBase ||
-                              t("providerForm.modelDisplayNamePlaceholder", {
-                                defaultValue: "例如 DeepSeek V4 Pro",
-                              })
-                            }
-                            autoComplete="off"
-                          />
-                          {renderModelInput(
-                            row.inputId,
-                            modelBase,
-                            row.modelField,
-                            t("providerForm.modelPlaceholder", {
-                              defaultValue: "",
-                            }),
-                            (value) =>
-                              handleRoleModelChange(
-                                row,
-                                row.supportsOneM
-                                  ? setClaudeOneMMarker(value, usesOneM)
-                                  : stripClaudeOneMMarker(value),
-                              ),
-                          )}
-                          {row.supportsOneM && (
-                            <label className="flex h-9 items-center gap-2 text-sm text-muted-foreground">
-                              <Checkbox
-                                checked={usesOneM}
-                                onCheckedChange={(checked) =>
-                                  handleRoleOneMChange(row, checked === true)
-                                }
-                              />
-                              {t("providerForm.modelOneMLabel", {
-                                defaultValue: "1M",
-                              })}
-                            </label>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
             )}
 
             <CustomUserAgentField

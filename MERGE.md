@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-18
+
+- **上游分支：** `main`
+- **上游 HEAD：** `45555638`
+- **共同祖先：** `36b557b2`
+- **合并提交数：** 13
+- **主要变更：**
+  - feat(providers): 为 Kimi presets 加 prime-partner 心形徽章；docs 调整 Volcengine/MiniMax/Kimi 推广物料
+  - feat(usage): 支持从 models.dev 导入模型定价；新增 glm-5.2 定价
+  - fix(codex): Chat API 跳过缺失 function name 的 tool calls；CODEX_SQLITE_HOME 探测；防 codex base_url 重复条目
+  - fix(terminal): provider terminals 使用用户 shell
+  - feat(session-manager): session detail header 显示源文件名
+  - revert(proxy): 回退 Anthropic system-message hoisting
+  - fix(ui): 添加供应商页面搜索预设后无法点击选中（#4315）
+- **冲突解决：**
+  - `src/components/providers/forms/ProviderPresetSelector.tsx`：保留本仓 `DeepSeekIcon`，并入上游新增的 `Heart` lucide icon（用于 prime-partner 徽章）
+  - `src/config/{claude,codex}ProviderPresets.ts`：按"禁止新添加 API Key 类供应商"指令全部采纳 HEAD（含丢弃上游对 Kimi 的 prime-partner 标记）
+- **验证：** `cargo check` exit 0（2 条 dead-code warning）；`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-16
 
 - **上游分支：** `main`

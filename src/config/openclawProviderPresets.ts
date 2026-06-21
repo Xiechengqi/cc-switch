@@ -26,6 +26,7 @@ export interface OpenClawProviderPreset {
   settingsConfig: OpenClawProviderConfig;
   isOfficial?: boolean;
   isPartner?: boolean;
+  primePartner?: boolean; // 置顶合作伙伴（顶级）：徽章显示为心形
   partnerPromotionKey?: string;
   category?: ProviderCategory;
   /** Template variable definitions */
@@ -417,6 +418,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   },
   {
     name: "Kimi K2.7 Code",
+    primePartner: true,
     websiteUrl: "https://platform.moonshot.cn/console?aff=cc-switch",
     apiKeyUrl: "https://platform.moonshot.cn/console/api-keys",
     settingsConfig: {
@@ -455,6 +457,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   },
   {
     name: "Kimi For Coding",
+    primePartner: true,
     websiteUrl: "https://www.kimi.com/code/docs/?aff=cc-switch",
     apiKeyUrl: "https://platform.moonshot.cn/console/api-keys",
     settingsConfig: {

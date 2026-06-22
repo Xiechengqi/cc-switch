@@ -96,8 +96,11 @@ export interface UpdateShareProviderBindingParams {
   appType: "claude" | "codex" | "gemini";
   /**
    * 新 provider id。`null` / 省略 = 清空该 slot（解绑），share 在该 app 上将不再可用。
+   * `dynamic = true` 时该字段可省略，后端会解析当前 app 选中的 provider 并写入动态绑定。
    */
   providerId?: string | null;
+  /** 动态绑定当前选中的 provider。 */
+  dynamic?: boolean;
 }
 
 export interface ShareBindingHistoryEntry {

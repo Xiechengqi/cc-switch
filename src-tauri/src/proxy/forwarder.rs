@@ -59,6 +59,21 @@ fn request_model_from_body(body: &Value) -> String {
         .to_string()
 }
 
+fn attach_model_route_headers(
+    response: ProxyResponse,
+    body: &Value,
+    outbound_model: Option<&str>,
+) -> ProxyResponse {
+    let Some(outbound_model) = outbound_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return response;
+    };
+    let requested_model = request_model_from_body(body);
+    response.with_model_route_headers(&requested_model, outbound_model, "model_mapping")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OAuthKind {
     Claude,
@@ -606,7 +621,11 @@ impl RequestForwarder {
                     }
 
                     return Ok(ForwardResult {
-                        response,
+                        response: attach_model_route_headers(
+                            response,
+                            &provider_body,
+                            outbound_model.as_deref(),
+                        ),
                         provider: provider.clone(),
                         claude_api_format,
                         outbound_model,
@@ -709,7 +728,11 @@ impl RequestForwarder {
                                     }
 
                                     return Ok(ForwardResult {
-                                        response,
+                                        response: attach_model_route_headers(
+                                            response,
+                                            &media_body,
+                                            outbound_model.as_deref(),
+                                        ),
                                         provider: provider.clone(),
                                         claude_api_format,
                                         outbound_model,
@@ -839,7 +862,11 @@ impl RequestForwarder {
                                         }
 
                                         return Ok(ForwardResult {
-                                            response,
+                                            response: attach_model_route_headers(
+                                                response,
+                                                &provider_body,
+                                                outbound_model.as_deref(),
+                                            ),
                                             provider: provider.clone(),
                                             claude_api_format,
                                             outbound_model,
@@ -983,7 +1010,11 @@ impl RequestForwarder {
                                     }
 
                                     return Ok(ForwardResult {
-                                        response,
+                                        response: attach_model_route_headers(
+                                            response,
+                                            &provider_body,
+                                            outbound_model.as_deref(),
+                                        ),
                                         provider: provider.clone(),
                                         claude_api_format,
                                         outbound_model,

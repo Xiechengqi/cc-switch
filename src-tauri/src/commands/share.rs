@@ -518,6 +518,9 @@ pub struct UpdateShareProviderBindingParams {
     /// 新 provider id。`None`（或省略）表示清空该 slot（解绑）。
     #[serde(default)]
     pub provider_id: Option<String>,
+    /// true 表示动态绑定当前 app 激活的 provider。
+    #[serde(default)]
+    pub dynamic: bool,
 }
 
 /// P8 多 app share：改绑 / 新增 / 清空 share 在某个 app_type slot 上的 provider 绑定。
@@ -535,6 +538,7 @@ pub async fn update_share_provider_binding(
         &params.share_id,
         &params.app_type,
         params.provider_id.as_deref(),
+        params.dynamic,
     )
     .map_err(|e: AppError| e.to_string())
 }

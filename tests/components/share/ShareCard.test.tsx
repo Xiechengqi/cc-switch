@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { beforeAll, describe, it, expect, vi } from "vitest";
@@ -298,6 +298,88 @@ describe("ShareCard", () => {
     expect(handlers.onUpdateOwnerEmail).toHaveBeenCalledWith(
       expect.objectContaining({ id: "share-1" }),
       "new-owner@example.com",
+    );
+  });
+
+  it("shows dynamic provider binding when editing an existing dynamic share", async () => {
+    const user = userEvent.setup();
+    renderShareCard(
+      <ShareCard
+        share={{
+          ...baseShare,
+          bindings: { claude: "current-provider" },
+          dynamicApps: ["claude"],
+        }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        providersByAppForEdit={{
+          claude: [
+            {
+              id: "current-provider",
+              name: "Current Provider",
+              disabled: false,
+            },
+          ],
+          codex: [],
+          gemini: [],
+        }}
+        {...createHandlers()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+
+    expect(screen.getByText("动态")).toBeInTheDocument();
+    expect(
+      screen.getByText("动态绑定当前选中的 provider"),
+    ).toBeInTheDocument();
+  });
+
+  it("saves dynamic provider binding from the edit dialog", async () => {
+    const user = userEvent.setup();
+    const handlers = createHandlers();
+    renderShareCard(
+      <ShareCard
+        share={{
+          ...baseShare,
+          bindings: { claude: "fixed-provider" },
+        }}
+        tunnelConfig={tunnelConfig}
+        tunnelConfigured={true}
+        providersByAppForEdit={{
+          claude: [
+            {
+              id: "fixed-provider",
+              name: "Fixed Provider",
+              disabled: false,
+            },
+          ],
+          codex: [],
+          gemini: [],
+        }}
+        {...handlers}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "share.edit" }));
+    await user.click(
+      screen.getByText("Fixed Provider").closest("button") ??
+        screen.getByText("Fixed Provider"),
+    );
+    await user.click(
+      await screen.findByRole("option", {
+        name: "动态绑定当前选中的 provider",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() =>
+      expect(handlers.onUpdateProviderBinding).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "share-1" }),
+        "claude",
+        null,
+        { dynamic: true },
+      ),
     );
   });
 

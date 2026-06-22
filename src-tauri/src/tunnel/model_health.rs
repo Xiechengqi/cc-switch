@@ -211,9 +211,13 @@ async fn check_app(
     .await;
     let latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let entry = match result {
-        Ok(result) => {
-            result_to_health_entry(app_type.as_str(), &provider.id, &provider.name, result)
-        }
+        Ok(result) => result_to_health_entry(
+            app_type.as_str(),
+            &provider.id,
+            &provider.name,
+            &provider,
+            result,
+        ),
         Err(err) => ShareModelHealthResult {
             app_type: app_type.as_str().to_string(),
             requested_model: app_type.as_str().to_string(),
@@ -288,13 +292,16 @@ fn result_to_health_entry(
     app_type: &str,
     provider_id: &str,
     provider_name: &str,
+    provider: &Provider,
     result: StreamCheckResult,
 ) -> ShareModelHealthResult {
     let status = if result.success { "success" } else { "failed" };
+    let requested_model = result.model_used;
+    let actual_model = actual_model_for_provider(provider, &requested_model);
     ShareModelHealthResult {
         app_type: app_type.to_string(),
-        requested_model: result.model_used.clone(),
-        actual_model: result.model_used,
+        requested_model,
+        actual_model,
         status: status.to_string(),
         recent_results: Vec::new(),
         status_code: result.http_status,
@@ -309,6 +316,21 @@ fn result_to_health_entry(
         provider_id: Some(provider_id.to_string()),
         provider_name: Some(provider_name.to_string()),
     }
+}
+
+fn actual_model_for_provider(provider: &Provider, requested_model: &str) -> String {
+    let mut body = serde_json::json!({ "model": requested_model });
+    let (mapped_body, _, _) =
+        crate::proxy::model_mapper::apply_model_mapping(body.take(), provider);
+    let mapped_body =
+        crate::proxy::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
+    mapped_body
+        .get("model")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(requested_model)
+        .to_string()
 }
 
 async fn record_health_result(share_id: &str, result: ShareModelHealthResult) {
@@ -372,6 +394,7 @@ fn health_store() -> &'static RwLock<HealthMap> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::model_test::HealthStatus;
     use std::sync::Mutex;
 
     /// 这些测试都改全局 store，必须串行，否则会互相串味。
@@ -416,6 +439,54 @@ mod tests {
     async fn reset_store() {
         let mut store = health_store().write().await;
         store.clear();
+    }
+
+    fn provider(settings_config: serde_json::Value) -> Provider {
+        Provider {
+            id: "provider-id".to_string(),
+            name: "Provider".to_string(),
+            settings_config,
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        }
+    }
+
+    #[test]
+    fn health_entry_records_requested_and_actual_model_mapping() {
+        let provider = provider(serde_json::json!({
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "composer-2.5"
+            }
+        }));
+        let result = StreamCheckResult {
+            status: HealthStatus::Operational,
+            success: true,
+            message: "ok".to_string(),
+            response_time_ms: Some(123),
+            http_status: Some(200),
+            model_used: "gpt-5.5".to_string(),
+            tested_at: 42,
+            retry_count: 0,
+            error_category: None,
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        };
+
+        let entry = result_to_health_entry("codex", "provider-id", "Provider", &provider, result);
+
+        assert_eq!(entry.requested_model, "gpt-5.5");
+        assert_eq!(entry.actual_model, "composer-2.5");
+        assert_eq!(entry.status, "success");
     }
 
     #[tokio::test]

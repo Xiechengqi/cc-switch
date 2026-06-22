@@ -560,11 +560,13 @@ export function useUpdateShareProviderBindingMutation() {
       shareId,
       appType,
       providerId,
+      dynamic,
     }: {
       shareId: string;
       appType: "claude" | "codex" | "gemini";
       providerId: string | null;
-    }) => shareApi.updateProviderBinding({ shareId, appType, providerId }),
+      dynamic?: boolean;
+    }) => shareApi.updateProviderBinding({ shareId, appType, providerId, dynamic }),
     {
       successKey: "share.toast.updateProviderBindingSuccess",
       successDefault: "Provider 绑定已更新",

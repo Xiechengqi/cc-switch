@@ -387,6 +387,7 @@ impl ShareService {
         share_id: &str,
         app_type: &str,
         new_provider_id: Option<&str>,
+        dynamic: bool,
     ) -> Result<ShareRecord, AppError> {
         let share = db
             .get_share_by_id(share_id)?
@@ -399,15 +400,30 @@ impl ShareService {
         }
         let app_type = normalize_share_app_type(app_type)?;
         let old_provider_id = share.bindings.get(&app_type).cloned();
+        let old_dynamic = share.dynamic_apps.contains(&app_type);
 
-        let normalized_new = match new_provider_id {
-            Some(value) if !value.trim().is_empty() => Some(normalize_provider_id(value)?),
-            _ => None,
+        let normalized_new = if dynamic {
+            let app = std::str::FromStr::from_str(app_type.as_str()).map_err(|e: AppError| e)?;
+            let current = crate::settings::get_effective_current_provider(db, &app)?
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    AppError::Message(format!(
+                        "{app_type} 当前没有激活的 provider，无法动态绑定。请先在 {app_type} 选择一个 provider，或改用固定绑定。"
+                    ))
+                })?;
+            Some(normalize_provider_id(&current)?)
+        } else {
+            match new_provider_id {
+                Some(value) if !value.trim().is_empty() => Some(normalize_provider_id(value)?),
+                _ => None,
+            }
         };
 
-        if normalized_new == old_provider_id {
+        if normalized_new == old_provider_id && dynamic == old_dynamic {
             return Err(AppError::Message(if normalized_new.is_none() {
                 format!("{app_type} slot 已经为空，无需操作")
+            } else if dynamic {
+                format!("{app_type} 槽位已经是动态绑定，无需改绑")
             } else {
                 format!("{app_type} 槽位的 provider 与当前绑定一致，无需改绑")
             }));
@@ -420,7 +436,9 @@ impl ShareService {
                 ))
             })?;
             debug_assert_eq!(provider.id, *pid);
-            ensure_fixed_provider_available(db, pid, Some(share_id), Some(&app_type))?;
+            if !dynamic {
+                ensure_fixed_provider_available(db, pid, Some(share_id), Some(&app_type))?;
+            }
         }
 
         db.upsert_share_binding_with_history(
@@ -428,6 +446,7 @@ impl ShareService {
             &app_type,
             old_provider_id.as_deref(),
             normalized_new.as_deref(),
+            dynamic,
         )?;
         let updated = db
             .get_share_by_id(share_id)?
@@ -1431,7 +1450,7 @@ mod tests {
         share.status = "paused".to_string();
         db.create_share(&share).unwrap();
 
-        let updated = ShareService::update_provider_binding(&db, "s1", "claude", Some("p2"))
+        let updated = ShareService::update_provider_binding(&db, "s1", "claude", Some("p2"), false)
             .expect("rebind succeeds");
         assert_eq!(
             updated.bindings.get("claude").map(String::as_str),
@@ -1444,10 +1463,10 @@ mod tests {
         assert_eq!(history[0].new_provider_id.as_deref(), Some("p2"));
 
         // 乐观锁：手动把 slot 改回 p1，再用"以为还是 p2"的快照改绑应失败。
-        db.upsert_share_binding_with_history("s1", "claude", Some("p2"), Some("p1"))
+        db.upsert_share_binding_with_history("s1", "claude", Some("p2"), Some("p1"), false)
             .unwrap();
         let err = db
-            .upsert_share_binding_with_history("s1", "claude", Some("p2"), Some("p1"))
+            .upsert_share_binding_with_history("s1", "claude", Some("p2"), Some("p1"), false)
             .expect_err("stale snapshot rejected");
         assert!(err.to_string().contains("已被其他操作改动"));
     }
@@ -1464,7 +1483,7 @@ mod tests {
         share.status = "active".to_string();
         db.create_share(&share).unwrap();
 
-        let err = ShareService::update_provider_binding(&db, "s1", "claude", Some("p2"))
+        let err = ShareService::update_provider_binding(&db, "s1", "claude", Some("p2"), false)
             .expect_err("active share rebind blocked");
         assert!(
             err.to_string().contains("[paused-required]"),
@@ -1482,7 +1501,7 @@ mod tests {
         share.status = "paused".to_string();
         db.create_share(&share).unwrap();
 
-        let updated = ShareService::update_provider_binding(&db, "s1", "claude", None)
+        let updated = ShareService::update_provider_binding(&db, "s1", "claude", None, false)
             .expect("unbind succeeds");
         assert!(updated.bindings.is_empty());
 
@@ -1506,12 +1525,35 @@ mod tests {
         second.status = "paused".to_string();
         db.create_share(&second).unwrap();
 
-        let err = ShareService::update_provider_binding(&db, "s2", "claude", Some("p1"))
+        let err = ShareService::update_provider_binding(&db, "s2", "claude", Some("p1"), false)
             .expect_err("provider already bound to another share must be rejected");
         assert!(
             err.to_string().contains("已被 share sub1"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn update_provider_binding_can_switch_to_dynamic_binding() {
+        let db = fresh_db();
+        db.save_provider("claude", &make_provider("p1", "claude"))
+            .unwrap();
+        db.save_provider("claude", &make_provider("p2", "claude"))
+            .unwrap();
+        db.set_current_provider("claude", "p2")
+            .expect("set current provider");
+        let mut share = raw_share("s1", "p1", "sub1");
+        share.status = "paused".to_string();
+        db.create_share(&share).unwrap();
+
+        let updated = ShareService::update_provider_binding(&db, "s1", "claude", None, true)
+            .expect("dynamic rebind succeeds");
+
+        assert_eq!(
+            updated.bindings.get("claude").map(String::as_str),
+            Some("p2")
+        );
+        assert!(updated.dynamic_apps.contains("claude"));
     }
 
     /// E-4：api_key 字段是历史遗留死字段，prepare_create 永远写空串。

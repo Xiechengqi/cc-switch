@@ -713,12 +713,14 @@ impl Database {
         app_type: &str,
         expected_old_provider_id: Option<&str>,
         new_provider_id: Option<&str>,
+        dynamic: bool,
     ) -> Result<(), AppError> {
         if expected_old_provider_id.is_none() && new_provider_id.is_none() {
             return Err(AppError::Message(
                 "改绑失败：当前 slot 已经为空，无需操作".to_string(),
             ));
         }
+        let dynamic_flag: i64 = if dynamic { 1 } else { 0 };
         let mut conn = lock_conn!(self.conn);
         let tx = conn
             .transaction()
@@ -728,22 +730,21 @@ impl Database {
             // INSERT
             (None, Some(new_pid)) => tx
                 .execute(
-                    "INSERT INTO share_provider_bindings (share_id, app_type, provider_id)
-                     SELECT ?1, ?2, ?3
+                    "INSERT INTO share_provider_bindings (share_id, app_type, provider_id, dynamic)
+                     SELECT ?1, ?2, ?3, ?4
                      WHERE NOT EXISTS (
                          SELECT 1 FROM share_provider_bindings
                          WHERE share_id = ?1 AND app_type = ?2
                      )",
-                    params![share_id, app_type, new_pid],
+                    params![share_id, app_type, new_pid, dynamic_flag],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?,
-            // UPDATE：手动改绑同时清掉 dynamic 标记。如果用户原本是动态绑定，主动选了
-            // 一个固定 provider，则视为退出动态模式。
+            // UPDATE：dynamic=false 表示固定绑定，dynamic=true 表示跟随当前 provider。
             (Some(old_pid), Some(new_pid)) => tx
                 .execute(
-                    "UPDATE share_provider_bindings SET provider_id = ?3, dynamic = 0
+                    "UPDATE share_provider_bindings SET provider_id = ?3, dynamic = ?5
                      WHERE share_id = ?1 AND app_type = ?2 AND provider_id = ?4",
-                    params![share_id, app_type, new_pid, old_pid],
+                    params![share_id, app_type, new_pid, old_pid, dynamic_flag],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?,
             // DELETE

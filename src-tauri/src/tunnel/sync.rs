@@ -1133,12 +1133,29 @@ fn extract_codex_toml_base_url(config: &str) -> Option<&str> {
 }
 
 fn custom_provider_models(app: &AppType, provider: &Provider) -> Vec<ShareUpstreamModel> {
+    if let Some(model) = single_mapping_model(provider) {
+        return vec![ShareUpstreamModel {
+            slot: "model".to_string(),
+            actual_model: model,
+        }];
+    }
+
     match app {
         AppType::Claude => claude_custom_models(provider),
         AppType::Codex => codex_custom_models(provider),
         AppType::Gemini => gemini_custom_models(provider),
         _ => Vec::new(),
     }
+}
+
+fn single_mapping_model(provider: &Provider) -> Option<String> {
+    crate::proxy::model_mapper::single_upstream_model(provider)
+        .map(|model| {
+            crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(&model)
+                .trim()
+                .to_string()
+        })
+        .filter(|model| !model.is_empty())
 }
 
 fn claude_custom_models(provider: &Provider) -> Vec<ShareUpstreamModel> {
@@ -2028,6 +2045,27 @@ mod tests {
             custom_provider_api_url(&AppType::Codex, &provider).as_deref(),
             Some("https://codex-api.example/v1")
         );
+    }
+
+    #[test]
+    fn custom_provider_models_prefer_single_model_mapping() {
+        let provider = provider(json!({
+            "model": "gpt-5.5",
+            "env": {
+                "ANTHROPIC_MODEL": "claude-opus-4-7"
+            },
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "composer-2.5"
+            }
+        }));
+
+        for app in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+            let models = custom_provider_models(&app, &provider);
+            assert_eq!(models.len(), 1);
+            assert_eq!(models[0].slot, "model");
+            assert_eq!(models[0].actual_model, "composer-2.5");
+        }
     }
 
     #[test]

@@ -9,7 +9,7 @@ import type {
   ShareRecord,
 } from "@/lib/api";
 import { SHARE_APP_TYPES } from "@/lib/api";
-import type { ProviderOption } from "./CreateShareDialog";
+import { DYNAMIC_BINDING_VALUE, type ProviderOption } from "./CreateShareDialog";
 import { formatProviderOptionLabel } from "./providerOptions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -121,6 +121,7 @@ interface EditShareDialogProps {
     share: ShareRecord,
     appType: keyof ShareBindings,
     providerId: string | null,
+    options?: { dynamic?: boolean },
   ) => Promise<void> | void;
   /**
    * A-3：当 share 处于 active 状态时，点击"自动暂停并改绑"按钮触发
@@ -131,6 +132,7 @@ interface EditShareDialogProps {
     share: ShareRecord,
     appType: keyof ShareBindings,
     newProviderId: string | null,
+    options?: { dynamic?: boolean },
   ) => Promise<void> | void;
 }
 
@@ -309,9 +311,15 @@ export function EditShareDialog({
     setSubdomainInput(share.subdomain ?? "");
     // P8：每个 app_type slot 独立。"" 表示该 slot 未绑定。
     setProviderIdInputs({
-      claude: share.bindings.claude ?? "",
-      codex: share.bindings.codex ?? "",
-      gemini: share.bindings.gemini ?? "",
+      claude: share.dynamicApps?.includes("claude")
+        ? DYNAMIC_BINDING_VALUE
+        : (share.bindings.claude ?? ""),
+      codex: share.dynamicApps?.includes("codex")
+        ? DYNAMIC_BINDING_VALUE
+        : (share.bindings.codex ?? ""),
+      gemini: share.dynamicApps?.includes("gemini")
+        ? DYNAMIC_BINDING_VALUE
+        : (share.bindings.gemini ?? ""),
     });
     setDescriptionInput(share.description ?? "");
     setOwnerEmailInput(share.ownerEmail ?? "");
@@ -376,11 +384,13 @@ export function EditShareDialog({
   // P8：每个 slot 独立 dirty 检查。"" 视为 "未绑定"，与 share.bindings 缺键等价。
   const bindingChanges = useMemo(() => {
     return SHARE_APP_TYPES.map((app: keyof ShareBindings) => {
-      const original = share.bindings[app] ?? "";
+      const original = dynamicAppSet.has(app)
+        ? DYNAMIC_BINDING_VALUE
+        : (share.bindings[app] ?? "");
       const input = (providerIdInputs[app] ?? "").trim();
       return { app, original, input, dirty: input !== original };
     });
-  }, [providerIdInputs, share.bindings]);
+  }, [dynamicAppSet, providerIdInputs, share.bindings]);
   const nextAccessApps = useMemo<Array<keyof ShareBindings>>(() => {
     const bound = SHARE_APP_TYPES.filter((app) => {
       const providerId = (providerIdInputs[app] ?? "").trim();
@@ -393,6 +403,7 @@ export function EditShareDialog({
     const counts = new Map<string, number>();
     for (const entry of bindingChanges) {
       if (!entry.input) continue;
+      if (entry.input === DYNAMIC_BINDING_VALUE) continue;
       const remainsDynamic = dynamicAppSet.has(entry.app) && !entry.dirty;
       if (remainsDynamic) continue;
       counts.set(entry.input, (counts.get(entry.input) ?? 0) + 1);
@@ -676,11 +687,17 @@ export function EditShareDialog({
       // 一下再 Save 就行。
       for (const entry of bindingChanges) {
         if (!entry.dirty) continue;
-        const nextProviderId = entry.input.length > 0 ? entry.input : null;
+        const nextDynamic = entry.input === DYNAMIC_BINDING_VALUE;
+        const nextProviderId =
+          entry.input.length > 0 && !nextDynamic ? entry.input : null;
         if (!sharePaused && onRebindAtomic) {
-          await onRebindAtomic(share, entry.app, nextProviderId);
+          await onRebindAtomic(share, entry.app, nextProviderId, {
+            dynamic: nextDynamic,
+          });
         } else {
-          await onUpdateProviderBinding(share, entry.app, nextProviderId);
+          await onUpdateProviderBinding(share, entry.app, nextProviderId, {
+            dynamic: nextDynamic,
+          });
         }
       }
       if (tokenLimitDirty) await onUpdateTokenLimit(share, parsedTokenLimit);
@@ -818,6 +835,7 @@ export function EditShareDialog({
                 {[activeSettingsApp].map((app) => {
                   const candidates = providersByApp[app] ?? [];
                   const value = providerIdInputs[app] ?? "";
+                  const isDynamic = value === DYNAMIC_BINDING_VALUE;
                   const selectedProvider = candidates.find(
                     (provider) => provider.id === value,
                   );
@@ -835,7 +853,13 @@ export function EditShareDialog({
                     >
                       <div className="flex items-center justify-between text-xs font-medium uppercase text-muted-foreground">
                         <span>{app}</span>
-                        {value ? (
+                        {isDynamic ? (
+                          <Badge variant="outline" className="text-[10px]">
+                            {t("share.bindingDynamic", {
+                              defaultValue: "动态",
+                            })}
+                          </Badge>
+                        ) : value ? (
                           <Badge variant="outline" className="text-[10px]">
                             {t("share.bound", { defaultValue: "已绑定" })}
                           </Badge>
@@ -850,7 +874,7 @@ export function EditShareDialog({
                       </div>
                       <div className="flex items-center gap-2">
                         <Select
-                          value={value || undefined}
+                          value={value}
                           disabled={busy || bindingsReadOnly}
                           onValueChange={(next) =>
                             setProviderIdInputs((prev) => ({
@@ -868,10 +892,20 @@ export function EditShareDialog({
                                 },
                               )}
                             >
-                              {selectedProvider?.name}
+                              {isDynamic
+                                ? t("share.providerBindingDynamic", {
+                                    defaultValue:
+                                      "动态绑定当前选中的 provider",
+                                  })
+                                : selectedProvider?.name}
                             </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
+                            <SelectItem value={DYNAMIC_BINDING_VALUE}>
+                              {t("share.providerBindingDynamic", {
+                                defaultValue: "动态绑定当前选中的 provider",
+                              })}
+                            </SelectItem>
                             {candidates.length === 0 ? (
                               <SelectItem value="__empty__" disabled>
                                 {t("share.providerBindingEmpty", {

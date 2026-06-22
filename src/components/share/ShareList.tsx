@@ -89,11 +89,13 @@ interface ShareListProps {
     share: ShareRecord,
     appType: "claude" | "codex" | "gemini",
     providerId: string | null,
+    options?: { dynamic?: boolean },
   ) => Promise<void> | void;
   onRebindAtomic?: (
     share: ShareRecord,
     appType: "claude" | "codex" | "gemini",
     newProviderId: string | null,
+    options?: { dynamic?: boolean },
   ) => Promise<void> | void;
   /**
    * 全 app 维度的"可绑定 provider 列表"映射，key = appType。

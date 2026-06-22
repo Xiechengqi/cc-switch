@@ -1409,6 +1409,7 @@ async fn invoke_local_admin_scoped(
                     &params.share_id,
                     &params.app_type,
                     params.provider_id.as_deref(),
+                    params.dynamic,
                 )
                 .map_err(WebError::internal)?,
             )))

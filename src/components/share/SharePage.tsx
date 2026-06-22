@@ -820,7 +820,7 @@ export function SharePage({
                   }),
             )
           }
-          onUpdateProviderBinding={(share, appType, providerId) =>
+          onUpdateProviderBinding={(share, appType, providerId, options) =>
             runShareAction(share, () =>
               shareScoped
                 ? Promise.resolve()
@@ -828,10 +828,11 @@ export function SharePage({
                     shareId: share.id,
                     appType,
                     providerId,
+                    dynamic: options?.dynamic,
                   }),
             )
           }
-          onRebindAtomic={(share, appType, providerId) =>
+          onRebindAtomic={(share, appType, providerId, options) =>
             runShareAction(share, async () => {
               if (shareScoped) return;
               // A-3：active share 上一键改绑 = disable tunnel → update binding → enable tunnel。
@@ -842,6 +843,7 @@ export function SharePage({
                 shareId: share.id,
                 appType,
                 providerId,
+                dynamic: options?.dynamic,
               });
               await enableMutation.mutateAsync(share.id);
             })

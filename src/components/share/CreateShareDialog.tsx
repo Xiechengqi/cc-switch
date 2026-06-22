@@ -218,7 +218,7 @@ const EMPTY_MARKETS: PublicMarket[] = [];
  *
  * 用 "__" 前缀是为了和真实 provider id（UUID / 用户自定义短名）保留出区分空间。
  */
-const DYNAMIC_BINDING_VALUE = "__dynamic__";
+export const DYNAMIC_BINDING_VALUE = "__dynamic__";
 
 /**
  * 由 owner email 派生默认 subdomain。

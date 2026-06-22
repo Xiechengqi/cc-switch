@@ -135,11 +135,13 @@ interface ShareCardProps {
     share: ShareRecord,
     appType: "claude" | "codex" | "gemini",
     providerId: string | null,
+    options?: { dynamic?: boolean },
   ) => Promise<void> | void;
   onRebindAtomic?: (
     share: ShareRecord,
     appType: "claude" | "codex" | "gemini",
     newProviderId: string | null,
+    options?: { dynamic?: boolean },
   ) => Promise<void> | void;
 }
 

@@ -312,12 +312,13 @@ pub async fn handle_non_streaming(
         if let Ok(json_value) = serde_json::from_slice::<Value>(&body_bytes) {
             // 解析使用量
             if let Some(usage) = (parser_config.response_parser)(&json_value) {
-                // 归因优先级：usage 解析出的模型 → 响应 model 字段 → 映射后的出站
-                // 模型（路由接管真值）→ 客户端请求模型。空字符串视为缺失。
-                let model = usage
-                    .model
+                // 归因优先级：明确的出站模型（模型映射真值）→ usage 模型 →
+                // 响应 model 字段 → 客户端请求模型。Cursor 会为了客户端兼容回显
+                // 请求模型，因此 outbound_model 必须优先。
+                let model = ctx
+                    .outbound_model
                     .clone()
-                    .filter(|m| !m.is_empty())
+                    .or_else(|| usage.model.clone().filter(|m| !m.is_empty()))
                     .or_else(|| {
                         json_value
                             .get("model")
@@ -325,7 +326,6 @@ pub async fn handle_non_streaming(
                             .filter(|m| !m.is_empty())
                             .map(str::to_string)
                     })
-                    .or_else(|| ctx.outbound_model.clone())
                     .unwrap_or_else(|| ctx.request_model.clone());
 
                 spawn_log_usage(
@@ -338,12 +338,16 @@ pub async fn handle_non_streaming(
                     false,
                 );
             } else {
-                let model = json_value
-                    .get("model")
-                    .and_then(|m| m.as_str())
-                    .filter(|m| !m.is_empty())
-                    .map(str::to_string)
-                    .or_else(|| ctx.outbound_model.clone())
+                let model = ctx
+                    .outbound_model
+                    .clone()
+                    .or_else(|| {
+                        json_value
+                            .get("model")
+                            .and_then(|m| m.as_str())
+                            .filter(|m| !m.is_empty())
+                            .map(str::to_string)
+                    })
                     .unwrap_or_else(|| ctx.request_model.clone());
                 spawn_log_usage(
                     state,
@@ -559,6 +563,7 @@ fn create_usage_collector(
         .outbound_model
         .clone()
         .unwrap_or_else(|| ctx.request_model.clone());
+    let forced_outbound_model = ctx.outbound_model.clone();
     // 用 ctx 的 app_type 而不是 parser_config 的：Claude Desktop 流式透传复用
     // CLAUDE_PARSER_CONFIG（app_type_str="claude"），按 parser_config 记账会把
     // claude-desktop 的行错记到 claude 名下，导致供应商计价覆盖解析不到。
@@ -578,7 +583,9 @@ fn create_usage_collector(
         parser_config.stream_event_filter,
         move |events, first_token_ms| {
             if let Some(usage) = stream_parser(&events) {
-                let model = model_extractor(&events, &fallback_model);
+                let model = forced_outbound_model
+                    .clone()
+                    .unwrap_or_else(|| model_extractor(&events, &fallback_model));
                 let latency_ms = start_time.elapsed().as_millis() as u64;
 
                 let state = state.clone();
@@ -654,7 +661,9 @@ fn create_usage_collector(
                     }
                 });
             } else {
-                let model = model_extractor(&events, &fallback_model);
+                let model = forced_outbound_model
+                    .clone()
+                    .unwrap_or_else(|| model_extractor(&events, &fallback_model));
                 let latency_ms = start_time.elapsed().as_millis() as u64;
                 let state = state.clone();
                 let provider_id = provider_id.clone();

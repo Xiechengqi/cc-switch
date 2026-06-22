@@ -211,14 +211,18 @@ pub fn requested_model(body: &Value) -> String {
         .to_string()
 }
 
-pub(crate) fn prepare_cursor_codex_body(provider: &Provider, body: &Value) -> (Value, String) {
+pub(crate) fn prepare_cursor_codex_body(
+    provider: &Provider,
+    body: &Value,
+) -> (Value, String, String) {
     let response_model = requested_model(body);
     let (mapped_body, original_model, mapped_model) =
         crate::proxy::model_mapper::apply_model_mapping(body.clone(), provider);
     if let (Some(original), Some(mapped)) = (original_model.as_deref(), mapped_model.as_deref()) {
         log::debug!("[Cursor] Codex 模型映射: {original} -> {mapped}");
     }
-    (mapped_body, response_model)
+    let upstream_model = requested_model(&mapped_body);
+    (mapped_body, response_model, upstream_model)
 }
 
 pub(crate) fn conversation_id_from_headers(headers: Option<&HeaderMap>) -> Option<String> {
@@ -1726,9 +1730,11 @@ mod tests {
             "input": "who are you"
         });
 
-        let (mapped_body, response_model) = prepare_cursor_codex_body(&provider, &body);
+        let (mapped_body, response_model, upstream_model) =
+            prepare_cursor_codex_body(&provider, &body);
 
         assert_eq!(response_model, "gpt-5.5");
+        assert_eq!(upstream_model, "composer-2.5");
         assert_eq!(
             mapped_body.get("model").and_then(|value| value.as_str()),
             Some("composer-2.5")
@@ -1752,9 +1758,11 @@ mod tests {
             "input": "who are you"
         });
 
-        let (mapped_body, response_model) = prepare_cursor_codex_body(&provider, &body);
+        let (mapped_body, response_model, upstream_model) =
+            prepare_cursor_codex_body(&provider, &body);
 
         assert_eq!(response_model, "gpt-5.5");
+        assert_eq!(upstream_model, "composer-2.5");
         assert_eq!(
             mapped_body.get("model").and_then(|value| value.as_str()),
             Some("composer-2.5")

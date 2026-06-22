@@ -12,6 +12,10 @@ use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use std::{pin::Pin, sync::OnceLock};
 
+pub const MODEL_ROUTE_REQUESTED_HEADER: &str = "x-cc-switch-requested-model";
+pub const MODEL_ROUTE_ACTUAL_HEADER: &str = "x-cc-switch-actual-model";
+pub const MODEL_ROUTE_SOURCE_HEADER: &str = "x-cc-switch-actual-model-source";
+
 /// Our own header case map: maps lowercase header name → original wire-casing bytes.
 ///
 /// This is a backup mechanism independent of hyper's internal `HeaderCaseMap` (which is
@@ -164,6 +168,67 @@ impl ProxyResponse {
             Self::Reqwest(r) => r.headers(),
             Self::Local { headers, .. } | Self::LocalStream { headers, .. } => headers,
         }
+    }
+
+    pub fn with_model_route_headers(
+        mut self,
+        requested_model: &str,
+        actual_model: &str,
+        source: &str,
+    ) -> Self {
+        fn insert_header(headers: &mut http::HeaderMap, name: &'static str, value: &str) {
+            if let Ok(value) = http::HeaderValue::from_str(value) {
+                headers.insert(name, value);
+            }
+        }
+
+        let requested_model = requested_model.trim();
+        let actual_model = actual_model.trim();
+        let source = source.trim();
+        if requested_model.is_empty() || actual_model.is_empty() {
+            return self;
+        }
+
+        match &mut self {
+            Self::Hyper(response) => {
+                insert_header(
+                    response.headers_mut(),
+                    MODEL_ROUTE_REQUESTED_HEADER,
+                    requested_model,
+                );
+                insert_header(
+                    response.headers_mut(),
+                    MODEL_ROUTE_ACTUAL_HEADER,
+                    actual_model,
+                );
+                if !source.is_empty() {
+                    insert_header(response.headers_mut(), MODEL_ROUTE_SOURCE_HEADER, source);
+                }
+            }
+            Self::Reqwest(response) => {
+                insert_header(
+                    response.headers_mut(),
+                    MODEL_ROUTE_REQUESTED_HEADER,
+                    requested_model,
+                );
+                insert_header(
+                    response.headers_mut(),
+                    MODEL_ROUTE_ACTUAL_HEADER,
+                    actual_model,
+                );
+                if !source.is_empty() {
+                    insert_header(response.headers_mut(), MODEL_ROUTE_SOURCE_HEADER, source);
+                }
+            }
+            Self::Local { headers, .. } | Self::LocalStream { headers, .. } => {
+                insert_header(headers, MODEL_ROUTE_REQUESTED_HEADER, requested_model);
+                insert_header(headers, MODEL_ROUTE_ACTUAL_HEADER, actual_model);
+                if !source.is_empty() {
+                    insert_header(headers, MODEL_ROUTE_SOURCE_HEADER, source);
+                }
+            }
+        }
+        self
     }
 
     /// Shortcut: extract `content-type` header value as `&str`.

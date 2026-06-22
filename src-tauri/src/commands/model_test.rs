@@ -1119,6 +1119,7 @@ async fn check_cursor_oauth_provider_once(
                         provider, None, &body,
                     )
                     .await
+                    .map(|(response, _)| response)
                 } else {
                     crate::proxy::providers::cursor_claude::forward_cursor_claude(
                         Some(app_handle),
@@ -1127,6 +1128,7 @@ async fn check_cursor_oauth_provider_once(
                         &body,
                     )
                     .await
+                    .map(|(response, _)| response)
                 }
             }
             AppType::Codex => {
@@ -1144,6 +1146,7 @@ async fn check_cursor_oauth_provider_once(
                         &body,
                     )
                     .await
+                    .map(|(response, _)| response)
                 } else {
                     crate::proxy::providers::cursor_codex::forward_cursor_codex(
                         Some(app_handle),
@@ -1153,6 +1156,7 @@ async fn check_cursor_oauth_provider_once(
                         &body,
                     )
                     .await
+                    .map(|(response, _)| response)
                 }
             }
             _ => Err(crate::proxy::ProxyError::InvalidRequest(format!(

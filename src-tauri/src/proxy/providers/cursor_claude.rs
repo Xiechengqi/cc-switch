@@ -20,7 +20,7 @@ pub async fn forward_cursor_claude(
     provider: &Provider,
     headers: Option<&HeaderMap>,
     body: &Value,
-) -> Result<ProxyResponse, ProxyError> {
+) -> Result<(ProxyResponse, String), ProxyError> {
     let Some(app_handle) = app_handle else {
         return Err(ProxyError::AuthError(
             "Cursor OAuth 认证不可用（无 AppHandle）".to_string(),
@@ -46,7 +46,8 @@ pub async fn forward_cursor_claude(
     }
     .map_err(|e| ProxyError::AuthError(format!("Cursor OAuth 认证失败: {e}")))?;
 
-    let (mapped_body, response_model) = prepare_cursor_oauth_claude_body(provider, body);
+    let (mapped_body, response_model, upstream_model) =
+        prepare_cursor_oauth_claude_body(provider, body);
     let ctx = CursorRequestContext {
         account: resolved_account.clone(),
         access_token: token,
@@ -88,7 +89,7 @@ pub async fn forward_cursor_claude(
             mapped_body.clone(),
             CursorResponseFormat::AnthropicMessages,
         );
-        Ok(ProxyResponse::local_sse(Box::pin(stream)))
+        Ok((ProxyResponse::local_sse(Box::pin(stream)), upstream_model))
     } else {
         let (_, bytes) = response_to_json(
             response,
@@ -97,7 +98,10 @@ pub async fn forward_cursor_claude(
             CursorResponseFormat::AnthropicMessages,
         )
         .await?;
-        Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
+        Ok((
+            ProxyResponse::local_json(StatusCode::OK, bytes),
+            upstream_model,
+        ))
     }
 }
 
@@ -113,7 +117,7 @@ fn normalize_stream_body(body: &Value) -> Value {
     next
 }
 
-fn prepare_cursor_oauth_claude_body(provider: &Provider, body: &Value) -> (Value, String) {
+fn prepare_cursor_oauth_claude_body(provider: &Provider, body: &Value) -> (Value, String, String) {
     let response_model = requested_model(body);
     let (mapped_body, original_model, mapped_model) =
         crate::proxy::model_mapper::apply_model_mapping(body.clone(), provider);
@@ -122,7 +126,8 @@ fn prepare_cursor_oauth_claude_body(provider: &Provider, body: &Value) -> (Value
     }
     let mapped_body =
         crate::proxy::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
-    (mapped_body, response_model)
+    let upstream_model = requested_model(&mapped_body);
+    (mapped_body, response_model, upstream_model)
 }
 
 #[allow(dead_code)]
@@ -151,7 +156,7 @@ mod tests {
                 "upstreamModel": "composer-2.5"
             }
         }));
-        let (mapped_body, response_model) = prepare_cursor_oauth_claude_body(
+        let (mapped_body, response_model, upstream_model) = prepare_cursor_oauth_claude_body(
             &provider,
             &json!({
                 "model": "claude-opus-4-7",
@@ -161,6 +166,7 @@ mod tests {
 
         assert_eq!(mapped_body["model"], json!("composer-2.5"));
         assert_eq!(response_model, "claude-opus-4-7");
+        assert_eq!(upstream_model, "composer-2.5");
     }
 
     #[test]
@@ -171,7 +177,7 @@ mod tests {
                 "upstreamModel": "composer-2.5 [1M]"
             }
         }));
-        let (mapped_body, response_model) = prepare_cursor_oauth_claude_body(
+        let (mapped_body, response_model, upstream_model) = prepare_cursor_oauth_claude_body(
             &provider,
             &json!({
                 "model": "claude-sonnet-4-5[1m]",
@@ -181,5 +187,6 @@ mod tests {
 
         assert_eq!(mapped_body["model"], json!("composer-2.5"));
         assert_eq!(response_model, "claude-sonnet-4-5[1m]");
+        assert_eq!(upstream_model, "composer-2.5");
     }
 }

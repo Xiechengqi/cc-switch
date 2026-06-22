@@ -51,6 +51,14 @@ const ANTIGRAVITY_MAX_OUTPUT_TOKENS: i64 = 16_384;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
+fn request_model_from_body(body: &Value) -> String {
+    body.get("model")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OAuthKind {
     Claude,
@@ -1172,28 +1180,48 @@ impl RequestForwarder {
         }
 
         if matches!(app_type, AppType::Claude) && provider.is_cursor_oauth_provider() {
-            let response = super::providers::cursor_claude::forward_cursor_claude(
-                self.app_handle.as_ref(),
-                provider,
-                Some(headers),
-                body,
-            )
-            .await?;
-            return Ok((response, Some("anthropic".to_string()), None));
+            let (response, outbound_model) =
+                super::providers::cursor_claude::forward_cursor_claude(
+                    self.app_handle.as_ref(),
+                    provider,
+                    Some(headers),
+                    body,
+                )
+                .await?;
+            let response = response.with_model_route_headers(
+                &request_model_from_body(body),
+                &outbound_model,
+                "model_mapping",
+            );
+            return Ok((
+                response,
+                Some("anthropic".to_string()),
+                Some(outbound_model),
+            ));
         }
 
         if matches!(app_type, AppType::Claude) && provider.is_cursor_apikey_provider() {
-            let response = super::providers::cursor_apikey::forward_cursor_apikey_claude(
-                provider,
-                Some(headers),
-                body,
-            )
-            .await?;
-            return Ok((response, Some("anthropic".to_string()), None));
+            let (response, outbound_model) =
+                super::providers::cursor_apikey::forward_cursor_apikey_claude(
+                    provider,
+                    Some(headers),
+                    body,
+                )
+                .await?;
+            let response = response.with_model_route_headers(
+                &request_model_from_body(body),
+                &outbound_model,
+                "model_mapping",
+            );
+            return Ok((
+                response,
+                Some("anthropic".to_string()),
+                Some(outbound_model),
+            ));
         }
 
         if matches!(app_type, AppType::Codex) && provider.is_cursor_oauth_provider() {
-            let response = super::providers::cursor_codex::forward_cursor_codex(
+            let (response, outbound_model) = super::providers::cursor_codex::forward_cursor_codex(
                 self.app_handle.as_ref(),
                 provider,
                 Some(headers),
@@ -1201,18 +1229,29 @@ impl RequestForwarder {
                 body,
             )
             .await?;
-            return Ok((response, Some("openai".to_string()), None));
+            let response = response.with_model_route_headers(
+                &request_model_from_body(body),
+                &outbound_model,
+                "model_mapping",
+            );
+            return Ok((response, Some("openai".to_string()), Some(outbound_model)));
         }
 
         if matches!(app_type, AppType::Codex) && provider.is_cursor_apikey_provider() {
-            let response = super::providers::cursor_apikey::forward_cursor_apikey_codex(
-                provider,
-                Some(headers),
-                endpoint,
-                body,
-            )
-            .await?;
-            return Ok((response, Some("openai".to_string()), None));
+            let (response, outbound_model) =
+                super::providers::cursor_apikey::forward_cursor_apikey_codex(
+                    provider,
+                    Some(headers),
+                    endpoint,
+                    body,
+                )
+                .await?;
+            let response = response.with_model_route_headers(
+                &request_model_from_body(body),
+                &outbound_model,
+                "model_mapping",
+            );
+            return Ok((response, Some("openai".to_string()), Some(outbound_model)));
         }
 
         // Gemini Official/OAuth 对齐 Claude/Codex official：本地代理不要求用户配置

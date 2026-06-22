@@ -20,8 +20,8 @@ pub async fn forward_cursor_codex(
     headers: Option<&HeaderMap>,
     endpoint: &str,
     body: &Value,
-) -> Result<ProxyResponse, ProxyError> {
-    let (mapped_body, response_model) = prepare_cursor_codex_body(provider, body);
+) -> Result<(ProxyResponse, String), ProxyError> {
+    let (mapped_body, response_model, upstream_model) = prepare_cursor_codex_body(provider, body);
 
     let Some(app_handle) = app_handle else {
         return Err(ProxyError::AuthError(
@@ -94,11 +94,14 @@ pub async fn forward_cursor_codex(
             mapped_body.clone(),
             response_format,
         );
-        Ok(ProxyResponse::local_sse(Box::pin(stream)))
+        Ok((ProxyResponse::local_sse(Box::pin(stream)), upstream_model))
     } else {
         let (_, bytes) =
             response_to_json(response, &response_model, &mapped_body, response_format).await?;
-        Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
+        Ok((
+            ProxyResponse::local_json(StatusCode::OK, bytes),
+            upstream_model,
+        ))
     }
 }
 

@@ -1175,6 +1175,7 @@ impl RequestForwarder {
             let response = super::providers::cursor_claude::forward_cursor_claude(
                 self.app_handle.as_ref(),
                 provider,
+                Some(headers),
                 body,
             )
             .await?;
@@ -1195,6 +1196,7 @@ impl RequestForwarder {
             let response = super::providers::cursor_codex::forward_cursor_codex(
                 self.app_handle.as_ref(),
                 provider,
+                Some(headers),
                 endpoint,
                 body,
             )
@@ -2364,43 +2366,42 @@ impl RequestForwarder {
                 .parse()
                 .map_err(|e| ProxyError::ForwardFailed(format!("Invalid URL '{url}': {e}")))?;
             // 发送请求
-            let response_result: Result<ProxyResponse, ProxyError> =
-                if use_reqwest_transport {
-                    // SOCKS5 代理只能走 reqwest；Antigravity CloudCode 端点也复用
-                    // reqwest 路径，与模型测试和已验证的直连请求保持一致。
-                    if is_socks_proxy {
-                        log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
-                    } else {
-                        log::debug!("[Antigravity] Using reqwest transport");
-                    }
-                    let client = super::http_client::get();
-                    let mut request = client.post(&url);
-                    if !self.non_streaming_timeout.is_zero() {
-                        request = request.timeout(self.non_streaming_timeout);
-                    }
-                    for (key, value) in &ordered_headers {
-                        request = request.header(key, value);
-                    }
-                    let reqwest_resp = request
-                        .body(body_bytes)
-                        .send()
-                        .await
-                        .map_err(map_reqwest_send_error);
-                    reqwest_resp.map(ProxyResponse::Reqwest)
+            let response_result: Result<ProxyResponse, ProxyError> = if use_reqwest_transport {
+                // SOCKS5 代理只能走 reqwest；Antigravity CloudCode 端点也复用
+                // reqwest 路径，与模型测试和已验证的直连请求保持一致。
+                if is_socks_proxy {
+                    log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
                 } else {
-                    // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
-                    // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
-                    super::hyper_client::send_request(
-                        uri,
-                        http::Method::POST,
-                        ordered_headers,
-                        extensions.clone(),
-                        body_bytes,
-                        timeout,
-                        upstream_proxy_url.as_deref(),
-                    )
+                    log::debug!("[Antigravity] Using reqwest transport");
+                }
+                let client = super::http_client::get();
+                let mut request = client.post(&url);
+                if !self.non_streaming_timeout.is_zero() {
+                    request = request.timeout(self.non_streaming_timeout);
+                }
+                for (key, value) in &ordered_headers {
+                    request = request.header(key, value);
+                }
+                let reqwest_resp = request
+                    .body(body_bytes)
+                    .send()
                     .await
-                };
+                    .map_err(map_reqwest_send_error);
+                reqwest_resp.map(ProxyResponse::Reqwest)
+            } else {
+                // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
+                // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
+                super::hyper_client::send_request(
+                    uri,
+                    http::Method::POST,
+                    ordered_headers,
+                    extensions.clone(),
+                    body_bytes,
+                    timeout,
+                    upstream_proxy_url.as_deref(),
+                )
+                .await
+            };
             let response = match response_result {
                 Ok(response) => response,
                 Err(err) => {

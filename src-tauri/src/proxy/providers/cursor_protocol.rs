@@ -11,7 +11,7 @@ use async_stream::stream;
 use bytes::{Bytes, BytesMut};
 use flate2::read::GzDecoder;
 use futures::{Stream, StreamExt};
-use http::header::HeaderName;
+use http::header::{HeaderMap, HeaderName};
 use http::StatusCode;
 use http_body_util::Full;
 use hyper_util::client::legacy::Client;
@@ -88,6 +88,7 @@ pub async fn send_cursor_request(ctx: &CursorRequestContext) -> Result<ProxyResp
 pub fn response_to_sse_stream(
     response: ProxyResponse,
     model: String,
+    request_body: Value,
     format: CursorResponseFormat,
 ) -> impl Stream<Item = IoResult<Bytes>> + Send + 'static {
     stream! {
@@ -95,7 +96,8 @@ pub fn response_to_sse_stream(
         let mut upstream = response.bytes_stream();
         let mut aggregated_text = String::new();
         let mut aggregated_reasoning = String::new();
-        let mut writer = SseWriter::new(model, format);
+        let input_tokens = estimate_input_tokens(&request_body);
+        let mut writer = SseWriter::new(model, format, input_tokens);
 
         for event in writer.start_events() {
             yield Ok(Bytes::from(event));
@@ -151,6 +153,7 @@ pub async fn response_error_body(response: ProxyResponse) -> Option<String> {
 pub async fn response_to_json(
     response: ProxyResponse,
     model: &str,
+    request_body: &Value,
     format: CursorResponseFormat,
 ) -> Result<(StatusCode, Bytes), ProxyError> {
     let status = response.status();
@@ -183,15 +186,16 @@ pub async fn response_to_json(
             ),
         ));
     }
+    let usage = estimate_usage(request_body, &decoded.text, &decoded.reasoning);
     let body = match format {
         CursorResponseFormat::OpenAiResponses => {
-            build_openai_response_json(model, &decoded.text, &decoded.reasoning)
+            build_openai_response_json(model, &decoded.text, &decoded.reasoning, usage)
         }
         CursorResponseFormat::OpenAiChatCompletions => {
-            build_chat_completion_json(model, &decoded.text, &decoded.reasoning)
+            build_chat_completion_json(model, &decoded.text, &decoded.reasoning, usage)
         }
         CursorResponseFormat::AnthropicMessages => {
-            build_anthropic_message_json(model, &decoded.text, &decoded.reasoning)
+            build_anthropic_message_json(model, &decoded.text, &decoded.reasoning, usage)
         }
     };
     Ok((
@@ -215,6 +219,36 @@ pub(crate) fn prepare_cursor_codex_body(provider: &Provider, body: &Value) -> (V
         log::debug!("[Cursor] Codex 模型映射: {original} -> {mapped}");
     }
     (mapped_body, response_model)
+}
+
+pub(crate) fn conversation_id_from_headers(headers: Option<&HeaderMap>) -> Option<String> {
+    let headers = headers?;
+    let key = [
+        "x-session-affinity",
+        "x-opencode-session-id",
+        "x-opencode-session",
+    ]
+    .iter()
+    .find_map(|name| {
+        headers
+            .get(*name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    })?;
+    Some(stable_uuid_like(key))
+}
+
+fn stable_uuid_like(input: &str) -> String {
+    let hash = sha256_hex(input);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hash[0..8],
+        &hash[8..12],
+        &hash[12..16],
+        &hash[16..20],
+        &hash[20..32]
+    )
 }
 
 fn encode_cursor_chat_request(body: &Value, conversation_id: Option<&str>) -> Bytes {
@@ -955,14 +989,17 @@ struct SseWriter {
     format: CursorResponseFormat,
     id: String,
     created: i64,
+    input_tokens: u32,
     anthropic_next_index: usize,
     anthropic_thinking_open: Option<usize>,
     anthropic_text_open: Option<usize>,
+    openai_reasoning_added: bool,
+    openai_text_added: bool,
     openai_role_sent: bool,
 }
 
 impl SseWriter {
-    fn new(model: String, format: CursorResponseFormat) -> Self {
+    fn new(model: String, format: CursorResponseFormat, input_tokens: u32) -> Self {
         let prefix = match format {
             CursorResponseFormat::AnthropicMessages => "msg",
             CursorResponseFormat::OpenAiResponses => "resp",
@@ -976,9 +1013,12 @@ impl SseWriter {
                 uuid::Uuid::new_v4().to_string().replace('-', "")
             ),
             created: chrono::Utc::now().timestamp(),
+            input_tokens,
             anthropic_next_index: 0,
             anthropic_thinking_open: None,
             anthropic_text_open: None,
+            openai_reasoning_added: false,
+            openai_text_added: false,
             openai_role_sent: false,
         }
     }
@@ -997,17 +1037,26 @@ impl SseWriter {
                         "model": self.model,
                         "stop_reason": null,
                         "stop_sequence": null,
-                        "usage": {"input_tokens": 0, "output_tokens": 0}
+                        "usage": {"input_tokens": self.input_tokens, "output_tokens": 0}
                     }
                 }),
             )],
-            CursorResponseFormat::OpenAiResponses => vec![event(
-                "response.created",
-                json!({
-                    "type": "response.created",
-                    "response": {"id": self.id, "created_at": self.created, "model": self.model}
-                }),
-            )],
+            CursorResponseFormat::OpenAiResponses => vec![
+                event(
+                    "response.created",
+                    json!({
+                        "type": "response.created",
+                        "response": self.openai_base_response("in_progress", Vec::new(), None)
+                    }),
+                ),
+                event(
+                    "response.in_progress",
+                    json!({
+                        "type": "response.in_progress",
+                        "response": self.openai_base_response("in_progress", Vec::new(), None)
+                    }),
+                ),
+            ],
             CursorResponseFormat::OpenAiChatCompletions => Vec::new(),
         }
     }
@@ -1018,15 +1067,29 @@ impl SseWriter {
             CursorResponseFormat::OpenAiResponses => {
                 let mut out = Vec::new();
                 if !delta.reasoning_delta.is_empty() {
+                    out.extend(self.openai_reasoning_start_events());
                     out.push(event(
                         "response.reasoning_summary_text.delta",
-                        json!({"type": "response.reasoning_summary_text.delta", "delta": delta.reasoning_delta}),
+                        json!({
+                            "type": "response.reasoning_summary_text.delta",
+                            "item_id": self.openai_reasoning_item_id(),
+                            "output_index": self.openai_reasoning_output_index(),
+                            "summary_index": 0,
+                            "delta": delta.reasoning_delta
+                        }),
                     ));
                 }
                 if !delta.text_delta.is_empty() {
+                    out.extend(self.openai_text_start_events());
                     out.push(event(
                         "response.output_text.delta",
-                        json!({"type": "response.output_text.delta", "delta": delta.text_delta}),
+                        json!({
+                            "type": "response.output_text.delta",
+                            "item_id": self.openai_text_item_id(),
+                            "output_index": self.openai_text_output_index(),
+                            "content_index": 0,
+                            "delta": delta.text_delta
+                        }),
                     ));
                 }
                 out
@@ -1040,6 +1103,7 @@ impl SseWriter {
                         &self.model,
                         json!({"role": "assistant", "content": ""}),
                         None,
+                        None,
                     ));
                     self.openai_role_sent = true;
                 }
@@ -1050,6 +1114,7 @@ impl SseWriter {
                         &self.model,
                         json!({"reasoning_content": delta.reasoning_delta}),
                         None,
+                        None,
                     ));
                 }
                 if !delta.text_delta.is_empty() {
@@ -1058,6 +1123,7 @@ impl SseWriter {
                         self.created,
                         &self.model,
                         json!({"content": delta.text_delta}),
+                        None,
                         None,
                     ));
                 }
@@ -1135,9 +1201,9 @@ impl SseWriter {
                     return out;
                 }
                 out.push(anthropic_event(
-                    "message_delta",
-                    json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": {"output_tokens": 0}}),
-                ));
+                        "message_delta",
+                        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": {"output_tokens": estimate_output_tokens(aggregated_text, aggregated_reasoning)}}),
+                    ));
                 out.push(anthropic_event(
                     "message_stop",
                     json!({"type": "message_stop"}),
@@ -1156,13 +1222,26 @@ impl SseWriter {
                         "data: [DONE]\n\n".to_string(),
                     ];
                 }
-                vec![
+                let usage = EstimatedUsage {
+                    input_tokens: self.input_tokens,
+                    output_tokens: estimate_output_tokens(aggregated_text, aggregated_reasoning),
+                };
+                let output = openai_output_items_with_ids(
+                    &self.openai_reasoning_item_id(),
+                    &self.openai_text_item_id(),
+                    aggregated_text,
+                    aggregated_reasoning,
+                );
+                let mut out = Vec::new();
+                out.extend(self.openai_done_events(aggregated_text, aggregated_reasoning));
+                out.push(
                     event(
                         "response.completed",
-                        json!({"type": "response.completed", "response": build_openai_response_json_with_id(&self.id, self.created, &self.model, aggregated_text, aggregated_reasoning)}),
-                    ),
-                    "data: [DONE]\n\n".to_string(),
-                ]
+                        json!({"type": "response.completed", "response": self.openai_base_response("completed", output, Some(usage))}),
+                    )
+                );
+                out.push("data: [DONE]\n\n".to_string());
+                out
             }
             CursorResponseFormat::OpenAiChatCompletions => {
                 let mut out = Vec::new();
@@ -1172,6 +1251,7 @@ impl SseWriter {
                         self.created,
                         &self.model,
                         json!({"role": "assistant", "content": ""}),
+                        None,
                         None,
                     ));
                     self.openai_role_sent = true;
@@ -1192,6 +1272,13 @@ impl SseWriter {
                     &self.model,
                     json!({}),
                     Some("stop"),
+                    Some(EstimatedUsage {
+                        input_tokens: self.input_tokens,
+                        output_tokens: estimate_output_tokens(
+                            aggregated_text,
+                            aggregated_reasoning,
+                        ),
+                    }),
                 ));
                 out.push("data: [DONE]\n\n".to_string());
                 out
@@ -1223,6 +1310,170 @@ impl SseWriter {
             ],
         }
     }
+
+    fn openai_reasoning_output_index(&self) -> usize {
+        0
+    }
+
+    fn openai_text_output_index(&self) -> usize {
+        usize::from(self.openai_reasoning_added)
+    }
+
+    fn openai_reasoning_item_id(&self) -> String {
+        format!("rs_{}", self.id)
+    }
+
+    fn openai_text_item_id(&self) -> String {
+        format!("{}_msg", self.id)
+    }
+
+    fn openai_reasoning_start_events(&mut self) -> Vec<String> {
+        if self.openai_reasoning_added {
+            return Vec::new();
+        }
+        self.openai_reasoning_added = true;
+        let output_index = self.openai_reasoning_output_index();
+        let item_id = self.openai_reasoning_item_id();
+        vec![
+            event(
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": {"id": item_id, "type": "reasoning", "status": "in_progress", "summary": []}
+                }),
+            ),
+            event(
+                "response.reasoning_summary_part.added",
+                json!({
+                    "type": "response.reasoning_summary_part.added",
+                    "item_id": self.openai_reasoning_item_id(),
+                    "output_index": output_index,
+                    "summary_index": 0,
+                    "part": {"type": "summary_text", "text": ""}
+                }),
+            ),
+        ]
+    }
+
+    fn openai_text_start_events(&mut self) -> Vec<String> {
+        if self.openai_text_added {
+            return Vec::new();
+        }
+        self.openai_text_added = true;
+        let output_index = self.openai_text_output_index();
+        let item_id = self.openai_text_item_id();
+        vec![
+            event(
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": {"id": item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}
+                }),
+            ),
+            event(
+                "response.content_part.added",
+                json!({
+                    "type": "response.content_part.added",
+                    "item_id": self.openai_text_item_id(),
+                    "output_index": output_index,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": "", "annotations": []}
+                }),
+            ),
+        ]
+    }
+
+    fn openai_done_events(&mut self, text: &str, reasoning: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.openai_reasoning_added {
+            let output_index = self.openai_reasoning_output_index();
+            let item_id = self.openai_reasoning_item_id();
+            let item = json!({
+                "id": item_id,
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": reasoning}]
+            });
+            out.push(event(
+                "response.reasoning_summary_text.done",
+                json!({
+                    "type": "response.reasoning_summary_text.done",
+                    "item_id": self.openai_reasoning_item_id(),
+                    "output_index": output_index,
+                    "summary_index": 0,
+                    "text": reasoning
+                }),
+            ));
+            out.push(event(
+                "response.reasoning_summary_part.done",
+                json!({
+                    "type": "response.reasoning_summary_part.done",
+                    "item_id": self.openai_reasoning_item_id(),
+                    "output_index": output_index,
+                    "summary_index": 0,
+                    "part": {"type": "summary_text", "text": reasoning}
+                }),
+            ));
+            out.push(event(
+                "response.output_item.done",
+                json!({"type": "response.output_item.done", "output_index": output_index, "item": item}),
+            ));
+        }
+        if self.openai_text_added {
+            let output_index = self.openai_text_output_index();
+            let item_id = self.openai_text_item_id();
+            let item = json!({
+                "id": item_id,
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text, "annotations": []}]
+            });
+            out.push(event(
+                "response.output_text.done",
+                json!({
+                    "type": "response.output_text.done",
+                    "item_id": self.openai_text_item_id(),
+                    "output_index": output_index,
+                    "content_index": 0,
+                    "text": text
+                }),
+            ));
+            out.push(event(
+                "response.content_part.done",
+                json!({
+                    "type": "response.content_part.done",
+                    "item_id": self.openai_text_item_id(),
+                    "output_index": output_index,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": text, "annotations": []}
+                }),
+            ));
+            out.push(event(
+                "response.output_item.done",
+                json!({"type": "response.output_item.done", "output_index": output_index, "item": item}),
+            ));
+        }
+        out
+    }
+
+    fn openai_base_response(
+        &self,
+        status: &str,
+        output: Vec<Value>,
+        usage: Option<EstimatedUsage>,
+    ) -> Value {
+        json!({
+            "id": self.id,
+            "object": "response",
+            "created_at": self.created,
+            "status": status,
+            "model": self.model,
+            "output": output,
+            "usage": usage.map(responses_usage_json).unwrap_or(Value::Null)
+        })
+    }
 }
 
 fn anthropic_event(event_name: &str, data: Value) -> String {
@@ -1239,6 +1490,7 @@ fn chat_chunk(
     model: &str,
     delta: Value,
     finish_reason: Option<&str>,
+    usage: Option<EstimatedUsage>,
 ) -> String {
     format!(
         "data: {}\n\n",
@@ -1247,18 +1499,89 @@ fn chat_chunk(
             "object": "chat.completion.chunk",
             "created": created,
             "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+            "usage": usage.map(chat_usage_json).unwrap_or(Value::Null)
         })
     )
 }
 
-fn build_openai_response_json(model: &str, text: &str, reasoning: &str) -> Value {
+#[derive(Debug, Clone, Copy)]
+struct EstimatedUsage {
+    input_tokens: u32,
+    output_tokens: u32,
+}
+
+fn estimate_usage(body: &Value, text: &str, reasoning: &str) -> EstimatedUsage {
+    EstimatedUsage {
+        input_tokens: estimate_input_tokens(body),
+        output_tokens: estimate_output_tokens(text, reasoning),
+    }
+}
+
+fn estimate_input_tokens(body: &Value) -> u32 {
+    let text = messages_from_body(body)
+        .into_iter()
+        .map(|message| message.content)
+        .collect::<Vec<_>>()
+        .join("\n");
+    estimate_tokens_from_text(&text)
+}
+
+fn estimate_output_tokens(text: &str, reasoning: &str) -> u32 {
+    estimate_tokens_from_text(&format!("{reasoning}\n{text}"))
+}
+
+fn estimate_tokens_from_text(text: &str) -> u32 {
+    let chars = text.chars().filter(|c| !c.is_whitespace()).count();
+    if chars == 0 {
+        0
+    } else {
+        ((chars + 3) / 4).max(1) as u32
+    }
+}
+
+fn responses_usage_json(usage: EstimatedUsage) -> Value {
+    json!({
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.input_tokens + usage.output_tokens,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "estimated": true
+    })
+}
+
+fn chat_usage_json(usage: EstimatedUsage) -> Value {
+    json!({
+        "prompt_tokens": usage.input_tokens,
+        "completion_tokens": usage.output_tokens,
+        "total_tokens": usage.input_tokens + usage.output_tokens,
+        "prompt_tokens_details": {"cached_tokens": 0},
+        "estimated": true
+    })
+}
+
+fn anthropic_usage_json(usage: EstimatedUsage) -> Value {
+    json!({
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "estimated": true
+    })
+}
+
+fn build_openai_response_json(
+    model: &str,
+    text: &str,
+    reasoning: &str,
+    usage: EstimatedUsage,
+) -> Value {
     build_openai_response_json_with_id(
         &format!("resp_{}", uuid::Uuid::new_v4().to_string().replace('-', "")),
         chrono::Utc::now().timestamp(),
         model,
         text,
         reasoning,
+        usage,
     )
 }
 
@@ -1268,19 +1591,10 @@ fn build_openai_response_json_with_id(
     model: &str,
     text: &str,
     reasoning: &str,
+    usage: EstimatedUsage,
 ) -> Value {
-    let mut output = Vec::new();
-    if !reasoning.trim().is_empty() {
-        output.push(json!({
-            "type": "reasoning",
-            "summary": [{"type": "summary_text", "text": reasoning}]
-        }));
-    }
-    output.push(json!({
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "output_text", "text": text}]
-    }));
+    let output =
+        openai_output_items_with_ids(&format!("rs_{id}"), &format!("{id}_msg"), text, reasoning);
     json!({
         "id": id,
         "object": "response",
@@ -1288,17 +1602,40 @@ fn build_openai_response_json_with_id(
         "status": "completed",
         "model": model,
         "output": output,
-        "usage": {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "input_tokens_details": {"cached_tokens": 0},
-            "output_tokens_details": {"reasoning_tokens": 0}
-        }
+        "usage": responses_usage_json(usage)
     })
 }
 
-fn build_chat_completion_json(model: &str, text: &str, reasoning: &str) -> Value {
+fn openai_output_items_with_ids(
+    reasoning_item_id: &str,
+    text_item_id: &str,
+    text: &str,
+    reasoning: &str,
+) -> Vec<Value> {
+    let mut output = Vec::new();
+    if !reasoning.trim().is_empty() {
+        output.push(json!({
+            "id": reasoning_item_id,
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": reasoning}]
+        }));
+    }
+    output.push(json!({
+        "id": text_item_id,
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": text, "annotations": []}]
+    }));
+    output
+}
+
+fn build_chat_completion_json(
+    model: &str,
+    text: &str,
+    reasoning: &str,
+    usage: EstimatedUsage,
+) -> Value {
     let mut message = json!({"role": "assistant", "content": text});
     if !reasoning.trim().is_empty() {
         message["reasoning_content"] = json!(reasoning);
@@ -1309,11 +1646,16 @@ fn build_chat_completion_json(model: &str, text: &str, reasoning: &str) -> Value
         "created": chrono::Utc::now().timestamp(),
         "model": model,
         "choices": [{"index": 0, "message": message, "finish_reason": "stop", "logprobs": null}],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        "usage": chat_usage_json(usage)
     })
 }
 
-fn build_anthropic_message_json(model: &str, text: &str, reasoning: &str) -> Value {
+fn build_anthropic_message_json(
+    model: &str,
+    text: &str,
+    reasoning: &str,
+    usage: EstimatedUsage,
+) -> Value {
     let mut content = Vec::new();
     if !reasoning.trim().is_empty() {
         content.push(json!({"type": "thinking", "thinking": reasoning}));
@@ -1329,7 +1671,7 @@ fn build_anthropic_message_json(model: &str, text: &str, reasoning: &str) -> Val
         "model": model,
         "stop_reason": "end_turn",
         "stop_sequence": null,
-        "usage": {"input_tokens": 0, "output_tokens": 0}
+        "usage": anthropic_usage_json(usage)
     })
 }
 

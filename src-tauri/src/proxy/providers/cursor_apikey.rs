@@ -17,8 +17,9 @@ use tokio::sync::Mutex;
 
 use super::cursor_oauth_auth::{CursorAccountData, DEFAULT_CURSOR_CLIENT_VERSION};
 use super::cursor_protocol::{
-    prepare_cursor_codex_body, requested_model, response_error_body, response_to_json,
-    response_to_sse_stream, send_cursor_request, CursorRequestContext, CursorResponseFormat,
+    conversation_id_from_headers, prepare_cursor_codex_body, requested_model, response_error_body,
+    response_to_json, response_to_sse_stream, send_cursor_request, CursorRequestContext,
+    CursorResponseFormat,
 };
 
 const DEFAULT_CURSOR_BACKEND_BASE_URL: &str = "https://api2.cursor.sh";
@@ -122,10 +123,11 @@ async fn forward_cursor_apikey(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if is_stream {
-        let stream = response_to_sse_stream(response, response_model, response_format);
+        let stream =
+            response_to_sse_stream(response, response_model, body.clone(), response_format);
         Ok(ProxyResponse::local_sse(Box::pin(stream)))
     } else {
-        let (_, bytes) = response_to_json(response, &response_model, response_format).await?;
+        let (_, bytes) = response_to_json(response, &response_model, body, response_format).await?;
         Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
     }
 }
@@ -295,36 +297,6 @@ fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     hex::encode(hasher.finalize())
-}
-
-fn conversation_id_from_headers(headers: Option<&HeaderMap>) -> Option<String> {
-    let headers = headers?;
-    let key = [
-        "x-session-affinity",
-        "x-opencode-session-id",
-        "x-opencode-session",
-    ]
-    .iter()
-    .find_map(|name| {
-        headers
-            .get(*name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-    })?;
-    Some(stable_uuid_like(key))
-}
-
-fn stable_uuid_like(input: &str) -> String {
-    let hash = sha256_hex(input);
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hash[0..8],
-        &hash[8..12],
-        &hash[12..16],
-        &hash[16..20],
-        &hash[20..32]
-    )
 }
 
 #[cfg(test)]

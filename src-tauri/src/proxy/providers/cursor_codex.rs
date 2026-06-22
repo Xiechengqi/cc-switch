@@ -4,18 +4,20 @@ use crate::commands::CursorOAuthState;
 use crate::provider::Provider;
 use crate::proxy::hyper_client::ProxyResponse;
 use crate::proxy::ProxyError;
+use http::HeaderMap;
 use http::StatusCode;
 use serde_json::Value;
 use tauri::Manager;
 
 use super::cursor_protocol::{
-    prepare_cursor_codex_body, response_error_body, response_to_json, response_to_sse_stream,
-    send_cursor_request, CursorRequestContext, CursorResponseFormat,
+    conversation_id_from_headers, prepare_cursor_codex_body, response_error_body, response_to_json,
+    response_to_sse_stream, send_cursor_request, CursorRequestContext, CursorResponseFormat,
 };
 
 pub async fn forward_cursor_codex(
     app_handle: Option<&tauri::AppHandle>,
     provider: &Provider,
+    headers: Option<&HeaderMap>,
     endpoint: &str,
     body: &Value,
 ) -> Result<ProxyResponse, ProxyError> {
@@ -55,7 +57,7 @@ pub async fn forward_cursor_codex(
         account: resolved_account.clone(),
         access_token: token,
         body: normalize_cursor_body(&mapped_body),
-        conversation_id: None,
+        conversation_id: conversation_id_from_headers(headers),
     };
     let response = send_cursor_request(&ctx).await?;
     let response = if response.status() == StatusCode::UNAUTHORIZED {
@@ -86,10 +88,16 @@ pub async fn forward_cursor_codex(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if is_stream {
-        let stream = response_to_sse_stream(response, response_model, response_format);
+        let stream = response_to_sse_stream(
+            response,
+            response_model,
+            mapped_body.clone(),
+            response_format,
+        );
         Ok(ProxyResponse::local_sse(Box::pin(stream)))
     } else {
-        let (_, bytes) = response_to_json(response, &response_model, response_format).await?;
+        let (_, bytes) =
+            response_to_json(response, &response_model, &mapped_body, response_format).await?;
         Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
     }
 }

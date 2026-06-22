@@ -5,18 +5,20 @@ use crate::provider::Provider;
 use crate::proxy::hyper_client::ProxyResponse;
 use crate::proxy::ProxyError;
 use bytes::Bytes;
+use http::HeaderMap;
 use http::StatusCode;
 use serde_json::{json, Value};
 use tauri::Manager;
 
 use super::cursor_protocol::{
-    requested_model, response_error_body, response_to_json, response_to_sse_stream,
-    send_cursor_request, CursorRequestContext, CursorResponseFormat,
+    conversation_id_from_headers, requested_model, response_error_body, response_to_json,
+    response_to_sse_stream, send_cursor_request, CursorRequestContext, CursorResponseFormat,
 };
 
 pub async fn forward_cursor_claude(
     app_handle: Option<&tauri::AppHandle>,
     provider: &Provider,
+    headers: Option<&HeaderMap>,
     body: &Value,
 ) -> Result<ProxyResponse, ProxyError> {
     let Some(app_handle) = app_handle else {
@@ -49,7 +51,7 @@ pub async fn forward_cursor_claude(
         account: resolved_account.clone(),
         access_token: token,
         body: normalize_stream_body(&mapped_body),
-        conversation_id: None,
+        conversation_id: conversation_id_from_headers(headers),
     };
     let response = send_cursor_request(&ctx).await?;
     let response = if response.status() == StatusCode::UNAUTHORIZED {
@@ -83,6 +85,7 @@ pub async fn forward_cursor_claude(
         let stream = response_to_sse_stream(
             response,
             response_model,
+            mapped_body.clone(),
             CursorResponseFormat::AnthropicMessages,
         );
         Ok(ProxyResponse::local_sse(Box::pin(stream)))
@@ -90,6 +93,7 @@ pub async fn forward_cursor_claude(
         let (_, bytes) = response_to_json(
             response,
             &response_model,
+            &mapped_body,
             CursorResponseFormat::AnthropicMessages,
         )
         .await?;

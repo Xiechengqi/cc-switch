@@ -22,6 +22,7 @@ interface JsonEditorProps {
   language?: "json" | "javascript";
   height?: string | number;
   showMinimap?: boolean; // 添加此属性以防未来使用
+  readOnly?: boolean;
 }
 
 const JsonEditor: React.FC<JsonEditorProps> = ({
@@ -33,6 +34,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   showValidation = true,
   language = "json",
   height,
+  readOnly = false,
 }) => {
   const { t } = useTranslation();
   const editorRef = useRef<HTMLDivElement>(null);
@@ -142,6 +144,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       baseTheme,
       sizingTheme,
       jsonLinter,
+      EditorView.editable.of(!readOnly),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const newValue = update.state.doc.toString();
@@ -208,7 +211,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [darkMode, rows, height, language, jsonLinter]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建
+  }, [darkMode, rows, height, language, jsonLinter, readOnly]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建
 
   // 当 value 从外部改变时更新编辑器内容
   useEffect(() => {
@@ -261,7 +264,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
         style={{ width: "100%", height: isFullHeight ? undefined : "auto" }}
         className={isFullHeight ? "flex-1 min-h-0" : ""}
       />
-      {language === "json" && (
+      {language === "json" && !readOnly && (
         <button
           type="button"
           onClick={handleFormat}

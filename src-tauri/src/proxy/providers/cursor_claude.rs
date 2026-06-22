@@ -6,7 +6,7 @@ use crate::proxy::hyper_client::ProxyResponse;
 use crate::proxy::ProxyError;
 use bytes::Bytes;
 use http::StatusCode;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::Manager;
 
 use super::cursor_protocol::{
@@ -44,10 +44,11 @@ pub async fn forward_cursor_claude(
     }
     .map_err(|e| ProxyError::AuthError(format!("Cursor OAuth 认证失败: {e}")))?;
 
+    let (mapped_body, response_model) = prepare_cursor_oauth_claude_body(provider, body);
     let ctx = CursorRequestContext {
         account: resolved_account.clone(),
         access_token: token,
-        body: normalize_stream_body(body),
+        body: normalize_stream_body(&mapped_body),
         conversation_id: None,
     };
     let response = send_cursor_request(&ctx).await?;
@@ -74,18 +75,24 @@ pub async fn forward_cursor_claude(
         return Err(ProxyError::UpstreamError { status, body });
     }
 
-    let model = requested_model(body);
     let is_stream = body
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if is_stream {
-        let stream =
-            response_to_sse_stream(response, model, CursorResponseFormat::AnthropicMessages);
+        let stream = response_to_sse_stream(
+            response,
+            response_model,
+            CursorResponseFormat::AnthropicMessages,
+        );
         Ok(ProxyResponse::local_sse(Box::pin(stream)))
     } else {
-        let (_, bytes) =
-            response_to_json(response, &model, CursorResponseFormat::AnthropicMessages).await?;
+        let (_, bytes) = response_to_json(
+            response,
+            &response_model,
+            CursorResponseFormat::AnthropicMessages,
+        )
+        .await?;
         Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
     }
 }
@@ -97,12 +104,78 @@ fn normalize_stream_body(body: &Value) -> Value {
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
     {
-        next["stream"] = serde_json::json!(true);
+        next["stream"] = json!(true);
     }
     next
+}
+
+fn prepare_cursor_oauth_claude_body(provider: &Provider, body: &Value) -> (Value, String) {
+    let response_model = requested_model(body);
+    let (mapped_body, original_model, mapped_model) =
+        crate::proxy::model_mapper::apply_model_mapping(body.clone(), provider);
+    if let (Some(original), Some(mapped)) = (original_model.as_deref(), mapped_model.as_deref()) {
+        log::debug!("[CursorOAuth] Claude 模型映射: {original} -> {mapped}");
+    }
+    let mapped_body =
+        crate::proxy::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
+    (mapped_body, response_model)
 }
 
 #[allow(dead_code)]
 fn json_bytes(value: &Value) -> Bytes {
     Bytes::from(serde_json::to_vec(value).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider(settings_config: Value) -> Provider {
+        Provider::with_id(
+            "cursor-oauth-test".to_string(),
+            "Cursor OAuth".to_string(),
+            settings_config,
+            Some("https://cursor.com".to_string()),
+        )
+    }
+
+    #[test]
+    fn claude_body_uses_provider_mapping_but_keeps_response_model() {
+        let provider = provider(json!({
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "composer-2.5"
+            }
+        }));
+        let (mapped_body, response_model) = prepare_cursor_oauth_claude_body(
+            &provider,
+            &json!({
+                "model": "claude-opus-4-7",
+                "messages": []
+            }),
+        );
+
+        assert_eq!(mapped_body["model"], json!("composer-2.5"));
+        assert_eq!(response_model, "claude-opus-4-7");
+    }
+
+    #[test]
+    fn claude_body_strips_mapped_one_m_marker_before_cursor() {
+        let provider = provider(json!({
+            "modelMapping": {
+                "mode": "single",
+                "upstreamModel": "composer-2.5 [1M]"
+            }
+        }));
+        let (mapped_body, response_model) = prepare_cursor_oauth_claude_body(
+            &provider,
+            &json!({
+                "model": "claude-sonnet-4-5[1m]",
+                "messages": []
+            }),
+        );
+
+        assert_eq!(mapped_body["model"], json!("composer-2.5"));
+        assert_eq!(response_model, "claude-sonnet-4-5[1m]");
+    }
 }

@@ -134,6 +134,23 @@ const isAntigravityFamilyType = (providerType?: string | null) =>
 const isOpenAIOAuthProviderType = (providerType?: string | null) =>
   providerType === PROVIDER_TYPES.CODEX_OAUTH || providerType === "codex_oauth";
 
+const CURSOR_DEFAULT_UPSTREAM_MODEL = "composer-2.5";
+
+const stripClaudeOneMMarkerForConfig = (model: string): string => {
+  const trimmedEnd = model.trimEnd();
+  return trimmedEnd.toLowerCase().endsWith("[1m]")
+    ? trimmedEnd.slice(0, -"[1M]".length).trimEnd()
+    : model;
+};
+
+const parseObjectConfig = (raw: string): Record<string, unknown> => {
+  if (!raw.trim()) return {};
+  const parsed = JSON.parse(raw);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+};
+
 type PresetEntry = {
   id: string;
   preset:
@@ -825,6 +842,18 @@ function ProviderFormFull({
     appId === "gemini" && isAntigravityFamilyType(currentProviderType);
   const isCursorApiKeyPreset =
     currentProviderType === PROVIDER_TYPES.CURSOR_APIKEY;
+  const isCursorProvider =
+    currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
+    currentProviderType === PROVIDER_TYPES.CURSOR_APIKEY;
+  const isStructuredProviderConfig =
+    appId === "claude" &&
+    (currentProviderType === PROVIDER_TYPES.GITHUB_COPILOT ||
+      isOpenAIOAuthProviderType(currentProviderType) ||
+      currentProviderType === PROVIDER_TYPES.CLAUDE_OAUTH ||
+      isAntigravityFamilyType(currentProviderType) ||
+      isCursorProvider ||
+      currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
+      currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT);
   const excludesQuotaDispatchLimit =
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
     isAntigravityFamilyType(currentProviderType);
@@ -1674,7 +1703,57 @@ function ProviderFormFull({
 
     let settingsConfig: string;
 
-    if (appId === "codex") {
+    if (appId === "claude") {
+      try {
+        const configObj = parseObjectConfig(values.settingsConfig);
+        const env =
+          configObj.env &&
+          typeof configObj.env === "object" &&
+          !Array.isArray(configObj.env)
+            ? ({ ...(configObj.env as Record<string, unknown>) } as Record<
+                string,
+                unknown
+              >)
+            : {};
+        configObj.env = env;
+
+        const upstreamModel =
+          singleUpstreamModel.trim() ||
+          (isCursorOauthProvider || isCursorApiKeyPreset
+            ? CURSOR_DEFAULT_UPSTREAM_MODEL
+            : "") ||
+          claudeModel.trim() ||
+          defaultSonnetModel.trim() ||
+          defaultOpusModel.trim() ||
+          defaultFableModel.trim() ||
+          defaultHaikuModel.trim();
+
+        if (!isClaudeOauthProvider && upstreamModel) {
+          const normalizedUpstream = upstreamModel.trim();
+          const displayModel = stripClaudeOneMMarkerForConfig(normalizedUpstream);
+          configObj.modelMapping = {
+            mode: "single",
+            upstreamModel: normalizedUpstream,
+          };
+          env.ANTHROPIC_MODEL = normalizedUpstream;
+          env.ANTHROPIC_DEFAULT_HAIKU_MODEL = displayModel;
+          env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME = displayModel;
+          env.ANTHROPIC_DEFAULT_SONNET_MODEL = normalizedUpstream;
+          env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = displayModel;
+          env.ANTHROPIC_DEFAULT_OPUS_MODEL = normalizedUpstream;
+          env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME = displayModel;
+          env.ANTHROPIC_DEFAULT_FABLE_MODEL = normalizedUpstream;
+          env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = displayModel;
+          delete env.ANTHROPIC_SMALL_FAST_MODEL;
+        } else if (isClaudeOauthProvider) {
+          delete configObj.modelMapping;
+        }
+
+        settingsConfig = JSON.stringify(configObj);
+      } catch (err) {
+        settingsConfig = values.settingsConfig.trim();
+      }
+    } else if (appId === "codex") {
       try {
         const authJson = JSON.parse(codexAuth);
         const shouldPersistCodexLocalRouting =
@@ -1709,7 +1788,11 @@ function ProviderFormFull({
         if (normalizedCatalogModels.length > 0) {
           configObj.modelCatalog = { models: normalizedCatalogModels };
         }
-        const trimmedSingleUpstreamModel = codexSingleUpstreamModel.trim();
+        const trimmedSingleUpstreamModel =
+          codexSingleUpstreamModel.trim() ||
+          (isCursorOauthProvider || isCursorApiKeyPreset
+            ? CURSOR_DEFAULT_UPSTREAM_MODEL
+            : "");
         if (trimmedSingleUpstreamModel) {
           configObj.modelMapping = {
             mode: "single",
@@ -2794,7 +2877,9 @@ function ProviderFormFull({
               onCustomEndpointsChange={setDraftCustomEndpoints}
               autoSelect={endpointAutoSelect}
               onAutoSelectChange={setEndpointAutoSelect}
-              shouldShowModelField={category !== "official"}
+              shouldShowModelField={
+                category !== "official" || isGeminiAntigravityOauthPreset
+              }
               model={geminiModel}
               onModelChange={handleGeminiModelChange}
               speedTestEndpoints={speedTestEndpoints}
@@ -3010,6 +3095,29 @@ function ProviderFormFull({
                   </FormItem>
                 )}
               />
+            </>
+          ) : isStructuredProviderConfig ? (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="settingsConfig">
+                  {t("provider.configJson")}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {t("providerForm.generatedConfigPreviewHint", {
+                    defaultValue:
+                      "此配置由上方结构化字段生成；请通过模型映射、端点和认证字段修改。",
+                  })}
+                </p>
+                <JsonEditor
+                  value={form.watch("settingsConfig")}
+                  onChange={() => {}}
+                  rows={14}
+                  showValidation={true}
+                  language="json"
+                  readOnly
+                />
+              </div>
+              {settingsConfigErrorField}
             </>
           ) : (
             <>

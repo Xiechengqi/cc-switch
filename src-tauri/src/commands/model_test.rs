@@ -1123,6 +1123,7 @@ async fn check_cursor_oauth_provider_once(
                     crate::proxy::providers::cursor_claude::forward_cursor_claude(
                         Some(app_handle),
                         provider,
+                        None,
                         &body,
                     )
                     .await
@@ -1147,6 +1148,7 @@ async fn check_cursor_oauth_provider_once(
                     crate::proxy::providers::cursor_codex::forward_cursor_codex(
                         Some(app_handle),
                         provider,
+                        None,
                         "/v1/responses",
                         &body,
                     )

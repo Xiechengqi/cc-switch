@@ -239,7 +239,7 @@ pub(crate) fn conversation_id_from_headers(headers: Option<&HeaderMap>) -> Optio
     Some(stable_uuid_like(key))
 }
 
-fn stable_uuid_like(input: &str) -> String {
+pub(crate) fn stable_uuid_like(input: &str) -> String {
     let hash = sha256_hex(input);
     format!(
         "{}-{}-{}-{}-{}",

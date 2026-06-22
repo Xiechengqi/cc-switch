@@ -18,8 +18,8 @@ use tokio::sync::Mutex;
 use super::cursor_oauth_auth::{CursorAccountData, DEFAULT_CURSOR_CLIENT_VERSION};
 use super::cursor_protocol::{
     conversation_id_from_headers, prepare_cursor_codex_body, requested_model, response_error_body,
-    response_to_json, response_to_sse_stream, send_cursor_request, CursorRequestContext,
-    CursorResponseFormat,
+    response_to_json, response_to_sse_stream, send_cursor_request, stable_uuid_like,
+    CursorRequestContext, CursorResponseFormat,
 };
 
 const DEFAULT_CURSOR_BACKEND_BASE_URL: &str = "https://api2.cursor.sh";

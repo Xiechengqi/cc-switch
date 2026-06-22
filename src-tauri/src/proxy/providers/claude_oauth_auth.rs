@@ -25,6 +25,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
@@ -36,8 +37,11 @@ const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 /// Claude OAuth 授权 URL
 const CLAUDE_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 
-/// Claude OAuth Token URL（用于 code 换 token 和 refresh token）
-const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
+/// Claude OAuth Token URL（localhost callback / Claude Code CLI style）。
+const CLAUDE_API_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
+
+/// Claude OAuth Token URL（platform out-of-band web-paste style）。
+const CLAUDE_PLATFORM_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 
 /// 本地回调服务器端口
 const CALLBACK_PORT: u16 = 54545;
@@ -60,8 +64,14 @@ const TOKEN_REFRESH_BUFFER_MS: i64 = 60_000;
 /// 回调等待超时（秒）
 const CALLBACK_TIMEOUT_SECS: u64 = 300;
 
+/// Token endpoint 单次请求超时（秒）。
+const TOKEN_REQUEST_TIMEOUT_SECS: u64 = 30;
+
 /// User-Agent
 const CLAUDE_USER_AGENT: &str = "cc-switch-claude-oauth";
+
+/// platform.claude.com 的 out-of-band token endpoint 更接近浏览器/axios 调用。
+const CLAUDE_PLATFORM_USER_AGENT: &str = "axios/1.13.6";
 
 /// Claude OAuth 错误
 #[derive(Debug, thiserror::Error)]
@@ -445,10 +455,12 @@ impl ClaudeOAuthManager {
         code: &str,
         state: &str,
     ) -> Result<GitHubAccount, ClaudeOAuthError> {
-        // 取出并验证 pending flow
+        let (authorization_code, token_state) = parse_authorization_code_input(code, state)?;
+
+        // 读取并验证 pending flow。成功保存账号后再消费，失败时允许用户重试粘贴。
         let flow = {
-            let mut pending = self.pending_flows.write().await;
-            pending.remove(state).ok_or_else(|| {
+            let pending = self.pending_flows.read().await;
+            pending.get(state).cloned().ok_or_else(|| {
                 ClaudeOAuthError::TokenFetchFailed(
                     "未找到对应的 OAuth 流程（state 不匹配或已过期），请重新登录".to_string(),
                 )
@@ -456,6 +468,8 @@ impl ClaudeOAuthManager {
         };
 
         if flow.expires_at_ms <= chrono::Utc::now().timestamp_millis() {
+            let mut pending = self.pending_flows.write().await;
+            pending.remove(state);
             return Err(ClaudeOAuthError::Timeout);
         }
 
@@ -463,7 +477,12 @@ impl ClaudeOAuthManager {
 
         // 用 authorization_code + code_verifier 换 token
         let tokens = self
-            .exchange_code_for_tokens(code, state, &flow.code_verifier, &flow.redirect_uri)
+            .exchange_code_for_tokens(
+                &authorization_code,
+                &token_state,
+                &flow.code_verifier,
+                &flow.redirect_uri,
+            )
             .await?;
 
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
@@ -491,6 +510,11 @@ impl ClaudeOAuthManager {
         let account = self
             .add_account_internal(account_id, refresh_token, email, org_uuid)
             .await?;
+
+        {
+            let mut pending = self.pending_flows.write().await;
+            pending.remove(state);
+        }
 
         Ok(account)
     }
@@ -614,28 +638,56 @@ impl ClaudeOAuthManager {
             "code_verifier": code_verifier,
         });
 
-        let response = self
-            .http_client
-            .post(CLAUDE_TOKEN_URL)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .header("User-Agent", CLAUDE_USER_AGENT)
-            .json(&body)
-            .send()
-            .await?;
+        let urls = token_urls_for_redirect(redirect_uri);
+        let mut last_error: Option<ClaudeOAuthError> = None;
+        for (idx, token_url) in urls.iter().copied().enumerate() {
+            log::info!("[ClaudeOAuth] 正在请求 OAuth Token endpoint: {token_url}");
+            let response = self
+                .http_client
+                .post(token_url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/plain, */*")
+                .header("User-Agent", user_agent_for_token_url(token_url))
+                .timeout(Duration::from_secs(TOKEN_REQUEST_TIMEOUT_SECS))
+                .json(&body)
+                .send()
+                .await;
 
-        if !response.status().is_success() {
+            let response = match response {
+                Ok(response) => response,
+                Err(err) => {
+                    let message = format!("Token 交换请求失败 ({token_url}): {err}");
+                    if idx + 1 < urls.len() {
+                        log::warn!("[ClaudeOAuth] {message}，尝试备用 endpoint");
+                        last_error = Some(ClaudeOAuthError::NetworkError(message));
+                        continue;
+                    }
+                    return Err(ClaudeOAuthError::NetworkError(message));
+                }
+            };
+
             let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            return Err(ClaudeOAuthError::TokenFetchFailed(format!(
-                "Token 交换失败: {status} - {text}"
-            )));
+            if !status.is_success() {
+                let text = response.text().await.unwrap_or_default();
+                let message = format!("Token 交换失败 ({token_url}): {status} - {text}");
+                if idx + 1 < urls.len() {
+                    log::warn!("[ClaudeOAuth] {message}，尝试备用 endpoint");
+                    last_error = Some(ClaudeOAuthError::TokenFetchFailed(message));
+                    continue;
+                }
+                return Err(ClaudeOAuthError::TokenFetchFailed(message));
+            }
+
+            log::info!("[ClaudeOAuth] OAuth Token endpoint 请求成功: {token_url}");
+            return response
+                .json()
+                .await
+                .map_err(|e| ClaudeOAuthError::ParseError(e.to_string()));
         }
 
-        response
-            .json()
-            .await
-            .map_err(|e| ClaudeOAuthError::ParseError(e.to_string()))
+        Err(last_error.unwrap_or_else(|| {
+            ClaudeOAuthError::TokenFetchFailed("没有可用的 OAuth Token endpoint".to_string())
+        }))
     }
 
     /// 用 refresh_token 刷新 access_token
@@ -649,32 +701,61 @@ impl ClaudeOAuthManager {
             "refresh_token": refresh_token,
         });
 
-        let response = self
-            .http_client
-            .post(CLAUDE_TOKEN_URL)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .header("User-Agent", CLAUDE_USER_AGENT)
-            .json(&body)
-            .send()
-            .await?;
+        let urls = [CLAUDE_API_TOKEN_URL, CLAUDE_PLATFORM_TOKEN_URL];
+        let mut last_error: Option<ClaudeOAuthError> = None;
+        for (idx, token_url) in urls.iter().copied().enumerate() {
+            log::info!("[ClaudeOAuth] 正在刷新 OAuth Token endpoint: {token_url}");
+            let response = self
+                .http_client
+                .post(token_url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/plain, */*")
+                .header("User-Agent", user_agent_for_token_url(token_url))
+                .timeout(Duration::from_secs(TOKEN_REQUEST_TIMEOUT_SECS))
+                .json(&body)
+                .send()
+                .await;
 
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(ClaudeOAuthError::RefreshTokenInvalid);
+            let response = match response {
+                Ok(response) => response,
+                Err(err) => {
+                    let message = format!("Refresh 请求失败 ({token_url}): {err}");
+                    if idx + 1 < urls.len() {
+                        log::warn!("[ClaudeOAuth] {message}，尝试备用 endpoint");
+                        last_error = Some(ClaudeOAuthError::NetworkError(message));
+                        continue;
+                    }
+                    return Err(ClaudeOAuthError::NetworkError(message));
+                }
+            };
+
+            let status = response.status();
+            if !status.is_success() {
+                let text = response.text().await.unwrap_or_default();
+                let message = format!("Refresh 失败 ({token_url}): {status} - {text}");
+                if idx + 1 < urls.len() {
+                    log::warn!("[ClaudeOAuth] {message}，尝试备用 endpoint");
+                    last_error = Some(ClaudeOAuthError::TokenFetchFailed(message));
+                    continue;
+                }
+                if status == reqwest::StatusCode::UNAUTHORIZED
+                    || status == reqwest::StatusCode::FORBIDDEN
+                {
+                    return Err(ClaudeOAuthError::RefreshTokenInvalid);
+                }
+                return Err(ClaudeOAuthError::TokenFetchFailed(message));
+            }
+
+            log::info!("[ClaudeOAuth] OAuth Token 刷新成功: {token_url}");
+            return response
+                .json()
+                .await
+                .map_err(|e| ClaudeOAuthError::ParseError(e.to_string()));
         }
 
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(ClaudeOAuthError::TokenFetchFailed(format!(
-                "Refresh 失败: {status} - {text}"
-            )));
-        }
-
-        response
-            .json()
-            .await
-            .map_err(|e| ClaudeOAuthError::ParseError(e.to_string()))
+        Err(last_error.unwrap_or_else(|| {
+            ClaudeOAuthError::TokenFetchFailed("没有可用的 OAuth Token endpoint".to_string())
+        }))
     }
 
     // ==================== Token 获取（含自动刷新） ====================
@@ -1141,6 +1222,60 @@ fn compute_expires_at_ms(expires_in: Option<i64>) -> i64 {
     chrono::Utc::now().timestamp_millis() + expires_in * 1000
 }
 
+fn token_urls_for_redirect(redirect_uri: &str) -> Vec<&'static str> {
+    if redirect_uri == WEB_PASTE_REDIRECT_URI {
+        vec![CLAUDE_PLATFORM_TOKEN_URL, CLAUDE_API_TOKEN_URL]
+    } else {
+        vec![CLAUDE_API_TOKEN_URL, CLAUDE_PLATFORM_TOKEN_URL]
+    }
+}
+
+fn user_agent_for_token_url(token_url: &str) -> &'static str {
+    if token_url == CLAUDE_PLATFORM_TOKEN_URL {
+        CLAUDE_PLATFORM_USER_AGENT
+    } else {
+        CLAUDE_USER_AGENT
+    }
+}
+
+fn parse_authorization_code_input(
+    raw_code: &str,
+    expected_state: &str,
+) -> Result<(String, String), ClaudeOAuthError> {
+    let trimmed = raw_code.trim();
+    if trimmed.is_empty() {
+        return Err(ClaudeOAuthError::TokenFetchFailed(
+            "授权码为空，请重新复制 platform.claude.com 显示的完整授权码".to_string(),
+        ));
+    }
+
+    let (code, state_from_code) = match trimmed.split_once('#') {
+        Some((code, state)) => (code.trim(), Some(state.trim())),
+        None => (trimmed, None),
+    };
+
+    if code.is_empty() {
+        return Err(ClaudeOAuthError::TokenFetchFailed(
+            "授权码格式无效：缺少 code 部分".to_string(),
+        ));
+    }
+
+    let token_state = match state_from_code {
+        Some(state) if state.is_empty() => expected_state.to_string(),
+        Some(state) => {
+            if state != expected_state {
+                return Err(ClaudeOAuthError::TokenFetchFailed(format!(
+                    "state 不匹配: 期望 {expected_state}, 收到 {state}"
+                )));
+            }
+            state.to_string()
+        }
+        None => expected_state.to_string(),
+    };
+
+    Ok((code.to_string(), token_state))
+}
+
 /// 构造 (redirect_uri, auth_url) 二元组。纯函数，便于单测。
 ///
 /// 见 [`OAuthFlowMode`] 对两种模式的差异。
@@ -1257,6 +1392,30 @@ mod tests {
             urlencoding::encode(SAMPLE_CHALLENGE)
         )));
         assert!(url.contains(&format!("state={}", urlencoding::encode(SAMPLE_STATE))));
+    }
+
+    #[test]
+    fn parses_platform_code_with_state_fragment() {
+        let (code, state) =
+            parse_authorization_code_input(&format!("auth-code#{SAMPLE_STATE}"), SAMPLE_STATE)
+                .unwrap();
+        assert_eq!(code, "auth-code");
+        assert_eq!(state, SAMPLE_STATE);
+    }
+
+    #[test]
+    fn rejects_platform_code_with_mismatched_state_fragment() {
+        let err =
+            parse_authorization_code_input("auth-code#other-state", SAMPLE_STATE).unwrap_err();
+        assert!(err.to_string().contains("state 不匹配"));
+    }
+
+    #[test]
+    fn web_paste_redirect_prefers_platform_token_endpoint() {
+        assert_eq!(
+            token_urls_for_redirect(WEB_PASTE_REDIRECT_URI),
+            vec![CLAUDE_PLATFORM_TOKEN_URL, CLAUDE_API_TOKEN_URL]
+        );
     }
 
     /// 两种模式的 redirect_uri 必须完全不同——这就是整个 web 模式的关键不变量。

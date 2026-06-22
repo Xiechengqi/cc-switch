@@ -396,6 +396,7 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
                 )}
               </Button>
             </div>
+            {error && <p className="text-xs text-red-500">{error}</p>}
           </div>
 
           <div className="text-center">

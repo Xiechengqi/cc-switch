@@ -12,6 +12,7 @@ pub(crate) mod control;
 pub mod copilot_optimizer;
 pub mod error;
 pub mod error_mapper;
+pub(crate) mod failover_health;
 pub(crate) mod failover_switch;
 mod forwarder;
 pub mod gemini_url;

@@ -9,6 +9,7 @@
 //! a direct (non-proxied) CLI request.
 
 use super::{
+    failover_health,
     failover_switch::FailoverSwitchManager,
     handlers,
     log_codes::srv as log_srv,
@@ -57,6 +58,8 @@ pub struct ProxyServer {
     shutdown_tx: Arc<RwLock<Option<oneshot::Sender<()>>>>,
     /// 服务器任务句柄，用于等待服务器实际关闭
     server_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    /// 故障转移主动健康探测任务句柄
+    failover_health_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
 }
 
 impl ProxyServer {
@@ -88,6 +91,7 @@ impl ProxyServer {
             state,
             shutdown_tx: Arc::new(RwLock::new(None)),
             server_handle: Arc::new(RwLock::new(None)),
+            failover_health_handle: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -215,6 +219,15 @@ impl ProxyServer {
         // 保存服务器任务句柄
         *self.server_handle.write().await = Some(handle);
 
+        let failover_health_handle = failover_health::spawn_failover_health_probe_scheduler(
+            self.state.db.clone(),
+            self.state.app_handle.clone(),
+            self.state.provider_router.clone(),
+            self.state.failover_manager.clone(),
+            self.state.status.clone(),
+        );
+        *self.failover_health_handle.write().await = Some(failover_health_handle);
+
         Ok(ProxyServerInfo {
             address: self.config.listen_address.clone(),
             port: actual_port,
@@ -223,6 +236,10 @@ impl ProxyServer {
     }
 
     pub async fn stop(&self) -> Result<(), ProxyError> {
+        if let Some(handle) = self.failover_health_handle.write().await.take() {
+            handle.abort();
+        }
+
         // 1. 发送关闭信号
         if let Some(tx) = self.shutdown_tx.write().await.take() {
             let _ = tx.send(());

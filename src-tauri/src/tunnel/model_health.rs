@@ -217,6 +217,7 @@ async fn check_app(
             &provider.name,
             &provider,
             result,
+            "cc-switch-scheduled",
         ),
         Err(err) => ShareModelHealthResult {
             app_type: app_type.as_str().to_string(),
@@ -294,6 +295,7 @@ fn result_to_health_entry(
     provider_name: &str,
     provider: &Provider,
     result: StreamCheckResult,
+    source: &str,
 ) -> ShareModelHealthResult {
     let status = if result.success { "success" } else { "failed" };
     let requested_model = result.model_used;
@@ -312,10 +314,38 @@ fn result_to_health_entry(
             Some(result.message)
         },
         checked_at: result.tested_at,
-        source: "cc-switch-scheduled".to_string(),
+        source: source.to_string(),
         provider_id: Some(provider_id.to_string()),
         provider_name: Some(provider_name.to_string()),
     }
+}
+
+pub(crate) async fn record_failover_probe_result_for_provider(
+    db: &Arc<Database>,
+    app_type: &AppType,
+    provider: &Provider,
+    result: StreamCheckResult,
+) -> Result<(), AppError> {
+    let app = app_type.as_str();
+    let shares = ShareService::list(db)?;
+    for share in shares {
+        if share.status != "active" {
+            continue;
+        }
+        if share.bindings.get(app).map(String::as_str) != Some(provider.id.as_str()) {
+            continue;
+        }
+        let entry = result_to_health_entry(
+            app,
+            &provider.id,
+            &provider.name,
+            provider,
+            result.clone(),
+            "cc-switch-failover-probe",
+        );
+        record_health_result(&share.id, entry).await;
+    }
+    Ok(())
 }
 
 fn actual_model_for_provider(provider: &Provider, requested_model: &str) -> String {
@@ -482,7 +512,14 @@ mod tests {
             cache_creation_tokens: 0,
         };
 
-        let entry = result_to_health_entry("codex", "provider-id", "Provider", &provider, result);
+        let entry = result_to_health_entry(
+            "codex",
+            "provider-id",
+            "Provider",
+            &provider,
+            result,
+            "cc-switch-scheduled",
+        );
 
         assert_eq!(entry.requested_model, "gpt-5.5");
         assert_eq!(entry.actual_model, "composer-2.5");

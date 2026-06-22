@@ -1749,7 +1749,7 @@ async fn invoke_share_scoped(
     let share_id = scope.share.id.as_str();
     match command {
         "get_settings" => Ok(json!(share_settings_projection())),
-        "get_proxy_status" => Ok(json!(proxy_status(state).await)),
+        "get_proxy_status" => Ok(json!(proxy_status_raw(state).await)),
         "get_proxy_takeover_status" => Ok(json!({
             "claude": false,
             "codex": false,
@@ -1781,7 +1781,26 @@ fn sanitize_share_for_web(mut share: crate::database::ShareRecord) -> crate::dat
 }
 
 async fn proxy_status(state: &ProxyState) -> ProxyStatus {
+    if let Some(app_state) = state
+        .app_handle
+        .as_ref()
+        .and_then(|app| app.try_state::<AppState>())
+    {
+        if let Ok(status) = app_state.proxy_service.get_status().await {
+            return status;
+        }
+    }
+
     let status = state.status.read().await.clone();
+    proxy_status_with_runtime_address(state, status).await
+}
+
+async fn proxy_status_raw(state: &ProxyState) -> ProxyStatus {
+    let status = state.status.read().await.clone();
+    proxy_status_with_runtime_address(state, status).await
+}
+
+async fn proxy_status_with_runtime_address(state: &ProxyState, status: ProxyStatus) -> ProxyStatus {
     if status.running {
         status
     } else {

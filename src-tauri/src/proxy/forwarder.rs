@@ -51,6 +51,27 @@ const ANTIGRAVITY_MAX_OUTPUT_TOKENS: i64 = 16_384;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OAuthKind {
+    Claude,
+    Codex,
+    Copilot,
+    Gemini,
+    Antigravity,
+}
+
+fn should_refresh_oauth_token_for_status(kind: OAuthKind, status_code: u16) -> bool {
+    status_code == 401 || (matches!(kind, OAuthKind::Antigravity) && status_code == 404)
+}
+
+fn should_use_reqwest_transport(
+    app_type: &AppType,
+    provider: &Provider,
+    is_socks_proxy: bool,
+) -> bool {
+    is_socks_proxy || is_antigravity_oauth_provider(app_type, provider)
+}
+
 pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
@@ -1575,16 +1596,9 @@ impl RequestForwarder {
             }
         }
 
-        // OAuth 401 重试：如果上游返回 401 且本次请求使用了 OAuth 账号注入，
-        // 作废该账号的缓存 access_token 后重试一次（仅一次，避免雪崩）。
-        #[derive(Debug, Clone, Copy)]
-        enum OAuthKind {
-            Claude,
-            Codex,
-            Copilot,
-            Gemini,
-            Antigravity,
-        }
+        // OAuth 认证态重试：上游返回认证失效信号时，作废缓存 token 并重新走完整
+        // 认证注入流程一次。Antigravity 有时会把旧 access token / project entitlement
+        // 表现成 404 NOT_FOUND，而不是 401。
         let mut oauth_retried = false;
 
         let response: ProxyResponse = loop {
@@ -2337,6 +2351,8 @@ impl RequestForwarder {
                 .as_deref()
                 .map(|u| u.starts_with("socks5"))
                 .unwrap_or(false);
+            let use_reqwest_transport =
+                should_use_reqwest_transport(app_type, provider, is_socks_proxy);
 
             if let Some(candidates) = antigravity_url_candidates.as_ref() {
                 if let Some(candidate) = candidates.get(antigravity_url_index) {
@@ -2348,37 +2364,43 @@ impl RequestForwarder {
                 .parse()
                 .map_err(|e| ProxyError::ForwardFailed(format!("Invalid URL '{url}': {e}")))?;
             // 发送请求
-            let response_result: Result<ProxyResponse, ProxyError> = if is_socks_proxy {
-                // SOCKS5 代理：只能走 reqwest（不支持 header case 保留）
-                log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
-                let client = super::http_client::get();
-                let mut request = client.post(&url);
-                if !self.non_streaming_timeout.is_zero() {
-                    request = request.timeout(self.non_streaming_timeout);
-                }
-                for (key, value) in &ordered_headers {
-                    request = request.header(key, value);
-                }
-                let reqwest_resp = request
-                    .body(body_bytes)
-                    .send()
+            let response_result: Result<ProxyResponse, ProxyError> =
+                if use_reqwest_transport {
+                    // SOCKS5 代理只能走 reqwest；Antigravity CloudCode 端点也复用
+                    // reqwest 路径，与模型测试和已验证的直连请求保持一致。
+                    if is_socks_proxy {
+                        log::debug!("[Forwarder] Using reqwest for SOCKS5 proxy");
+                    } else {
+                        log::debug!("[Antigravity] Using reqwest transport");
+                    }
+                    let client = super::http_client::get();
+                    let mut request = client.post(&url);
+                    if !self.non_streaming_timeout.is_zero() {
+                        request = request.timeout(self.non_streaming_timeout);
+                    }
+                    for (key, value) in &ordered_headers {
+                        request = request.header(key, value);
+                    }
+                    let reqwest_resp = request
+                        .body(body_bytes)
+                        .send()
+                        .await
+                        .map_err(map_reqwest_send_error);
+                    reqwest_resp.map(ProxyResponse::Reqwest)
+                } else {
+                    // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
+                    // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
+                    super::hyper_client::send_request(
+                        uri,
+                        http::Method::POST,
+                        ordered_headers,
+                        extensions.clone(),
+                        body_bytes,
+                        timeout,
+                        upstream_proxy_url.as_deref(),
+                    )
                     .await
-                    .map_err(map_reqwest_send_error);
-                reqwest_resp.map(ProxyResponse::Reqwest)
-            } else {
-                // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
-                // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
-                super::hyper_client::send_request(
-                    uri,
-                    http::Method::POST,
-                    ordered_headers,
-                    extensions.clone(),
-                    body_bytes,
-                    timeout,
-                    upstream_proxy_url.as_deref(),
-                )
-                .await
-            };
+                };
             let response = match response_result {
                 Ok(response) => response,
                 Err(err) => {
@@ -2405,14 +2427,18 @@ impl RequestForwarder {
 
             let status_code = status.as_u16();
 
-            // OAuth 401 单次重试：作废缓存 token 并重新走完整认证注入流程
-            if status_code == 401 && !oauth_retried {
+            // OAuth 单次重试：作废缓存 token 并重新走完整认证注入流程
+            if !oauth_retried
+                && oauth_kind_used.as_ref().is_some_and(|(kind, _)| {
+                    should_refresh_oauth_token_for_status(*kind, status_code)
+                })
+            {
                 if let Some((kind, account_id)) = oauth_kind_used.clone() {
                     if let Some(app_handle) = &self.app_handle {
                         log::warn!(
-                    "[OAuthRetry] 上游返回 401 (kind={:?}, account={account_id})，作废缓存 token 后重试一次",
-                    kind
-                );
+                            "[OAuthRetry] 上游返回 {status_code} (kind={:?}, account={account_id})，作废缓存 token 后重试一次",
+                            kind
+                        );
                         match kind {
                             OAuthKind::Claude => {
                                 let state = app_handle.state::<ClaudeOAuthState>();
@@ -4352,6 +4378,52 @@ mod tests {
             max_attempts: 1,
             override_provider_id: None,
         }
+    }
+
+    #[test]
+    fn oauth_retry_refreshes_antigravity_token_on_404_only() {
+        assert!(should_refresh_oauth_token_for_status(
+            OAuthKind::Antigravity,
+            404
+        ));
+        assert!(should_refresh_oauth_token_for_status(
+            OAuthKind::Antigravity,
+            401
+        ));
+        assert!(should_refresh_oauth_token_for_status(
+            OAuthKind::Claude,
+            401
+        ));
+        assert!(!should_refresh_oauth_token_for_status(
+            OAuthKind::Claude,
+            404
+        ));
+        assert!(!should_refresh_oauth_token_for_status(
+            OAuthKind::Codex,
+            404
+        ));
+    }
+
+    #[test]
+    fn antigravity_uses_reqwest_transport_even_without_socks_proxy() {
+        let antigravity = test_provider_with_type(Some("antigravity_oauth"));
+        let normal = test_provider_with_type(None);
+
+        assert!(should_use_reqwest_transport(
+            &AppType::Claude,
+            &antigravity,
+            false
+        ));
+        assert!(should_use_reqwest_transport(
+            &AppType::Claude,
+            &normal,
+            true
+        ));
+        assert!(!should_use_reqwest_transport(
+            &AppType::Claude,
+            &normal,
+            false
+        ));
     }
 
     #[test]

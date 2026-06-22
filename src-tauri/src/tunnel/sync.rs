@@ -988,7 +988,7 @@ async fn managed_oauth_account_summary(
         };
         let account_id = crate::proxy::providers::cursor_apikey::account_id_for_api_key(&api_key);
         let quota = cached_upstream_quota(auth_provider, &account_id).await;
-        return (Some(account_id), quota);
+        return (None, quota);
     }
 
     let account_id = match provider
@@ -2166,15 +2166,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cursor_apikey_runtime_snapshot_uses_quota_account_identity() {
+    async fn cursor_apikey_runtime_snapshot_hides_synthetic_account_identity() {
         use crate::database::Database;
         use crate::provider::{Provider, ProviderMeta};
         use std::collections::HashMap;
         use std::sync::Arc;
 
         let api_key = "cursor-test-api-key";
-        let expected_account =
-            crate::proxy::providers::cursor_apikey::account_id_for_api_key(api_key);
         let mut provider = Provider::with_id(
             "cursor-provider".to_string(),
             "Cursor API Key".to_string(),
@@ -2234,10 +2232,7 @@ mod tests {
 
         assert_eq!(runtime.kind, "official_oauth");
         assert_eq!(runtime.provider_name.as_deref(), Some("Cursor API Key"));
-        assert_eq!(
-            runtime.account_email.as_deref(),
-            Some(expected_account.as_str())
-        );
+        assert_eq!(runtime.account_email.as_deref(), None);
         assert!(runtime.quota.is_none());
     }
 

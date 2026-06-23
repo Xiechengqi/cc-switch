@@ -8,6 +8,10 @@ import { ProviderList } from "@/components/providers/ProviderList";
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
 const providerCardRenderSpy = vi.fn();
+const failoverQueryMocks = vi.hoisted(() => ({
+  useAutoFailoverEnabled: vi.fn(() => ({ data: false })),
+  resetCircuitBreakerMutate: vi.fn(),
+}));
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
@@ -90,11 +94,15 @@ vi.mock("@/hooks/useStreamCheck", () => ({
 }));
 
 vi.mock("@/lib/query/failover", () => ({
-  useAutoFailoverEnabled: () => ({ data: false }),
+  useAutoFailoverEnabled: (_appType: string) =>
+    failoverQueryMocks.useAutoFailoverEnabled(),
   useFailoverQueue: () => ({ data: [] }),
   useAddToFailoverQueue: () => ({ mutate: vi.fn() }),
   useRemoveFromFailoverQueue: () => ({ mutate: vi.fn() }),
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
+  useResetCircuitBreaker: () => ({
+    mutate: failoverQueryMocks.resetCircuitBreakerMutate,
+  }),
 }));
 
 function createProvider(overrides: Partial<Provider> = {}): Provider {
@@ -124,6 +132,9 @@ beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
   providerCardRenderSpy.mockClear();
+  failoverQueryMocks.useAutoFailoverEnabled.mockReset();
+  failoverQueryMocks.useAutoFailoverEnabled.mockReturnValue({ data: false });
+  failoverQueryMocks.resetCircuitBreakerMutate.mockClear();
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -305,5 +316,39 @@ describe("ProviderList Component", () => {
     expect(
       screen.getByText("No providers match your search."),
     ).toBeInTheDocument();
+  });
+
+  it("passes failover mode to provider cards when takeover status is not ready", () => {
+    const providerA = createProvider({ id: "a", name: "A" });
+    const providerB = createProvider({ id: "b", name: "B" });
+
+    failoverQueryMocks.useAutoFailoverEnabled.mockReturnValue({ data: true });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerA, providerB],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ a: providerA, b: providerB }}
+        currentProviderId="a"
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        isProxyTakeover={false}
+      />,
+    );
+
+    const providerAProps = providerCardRenderSpy.mock.calls
+      .map(([props]) => props)
+      .find((props) => props.provider.id === "a");
+
+    expect(providerAProps?.isAutoFailoverEnabled).toBe(true);
+    expect(providerAProps?.isProxyTakeover).toBe(false);
+    expect(providerAProps?.isCurrent).toBe(true);
   });
 });

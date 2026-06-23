@@ -153,8 +153,7 @@ export function ProviderList({
   const addToQueue = useAddToFailoverQueue();
   const removeFromQueue = useRemoveFromFailoverQueue();
 
-  const isFailoverModeActive =
-    isProxyTakeover === true && isAutoFailoverEnabled === true;
+  const isFailoverModeActive = isAutoFailoverEnabled === true;
 
   const isOpenCode = appId === "opencode";
   const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);

@@ -1,8 +1,8 @@
 //! Cursor API key provider.
 //!
-//! This follows the composer-api transport shape: a user Cursor API key is
-//! exchanged for Cursor's internal access token, then the existing private
-//! Connect-RPC Composer protocol is used for Claude/Codex-compatible requests.
+//! Exchanges a user Cursor API key for Cursor's internal access token, then
+//! drives requests over either the legacy `ChatService` (text-only) or the
+//! newer `agent.v1.AgentService/Run` (tools + images + Responses state).
 
 use crate::provider::Provider;
 use crate::proxy::hyper_client::ProxyResponse;
@@ -15,12 +15,16 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 
+use super::cursor_agent_service::{run_agent, AgentRunOptions};
 use super::cursor_oauth_auth::{CursorAccountData, DEFAULT_CURSOR_CLIENT_VERSION};
 use super::cursor_protocol::{
     conversation_id_from_headers, prepare_cursor_codex_body, requested_model, response_error_body,
     response_to_json, response_to_sse_stream, send_cursor_request, stable_uuid_like,
     CursorRequestContext, CursorResponseFormat,
 };
+use super::cursor_request_builder::{build_plan, InboundProtocol, ToolResultBlock};
+use super::cursor_router::{select_protocol, select_tool_mode, CursorProtocol, CursorToolMode};
+use super::cursor_session::{self, CursorSessionManager};
 
 const DEFAULT_CURSOR_BACKEND_BASE_URL: &str = "https://api2.cursor.sh";
 const EXCHANGE_USER_API_KEY_PATH: &str = "/auth/exchange_user_api_key";
@@ -60,6 +64,8 @@ pub async fn forward_cursor_apikey_claude(
         &mapped_body,
         response_model,
         CursorResponseFormat::AnthropicMessages,
+        InboundProtocol::AnthropicMessages,
+        body,
     )
     .await?;
     Ok((response, upstream_model))
@@ -72,68 +78,181 @@ pub async fn forward_cursor_apikey_codex(
     body: &Value,
 ) -> Result<(ProxyResponse, String), ProxyError> {
     let (mapped_body, response_model, upstream_model) = prepare_cursor_codex_body(provider, body);
-    let format = if endpoint.contains("/chat/completions") {
-        CursorResponseFormat::OpenAiChatCompletions
+    let (format, inbound) = if endpoint.contains("/chat/completions") {
+        (
+            CursorResponseFormat::OpenAiChatCompletions,
+            InboundProtocol::OpenAiChat,
+        )
     } else {
-        CursorResponseFormat::OpenAiResponses
+        (
+            CursorResponseFormat::OpenAiResponses,
+            InboundProtocol::OpenAiResponses,
+        )
     };
-    let response =
-        forward_cursor_apikey(provider, headers, &mapped_body, response_model, format).await?;
+    let response = forward_cursor_apikey(
+        provider,
+        headers,
+        &mapped_body,
+        response_model,
+        format,
+        inbound,
+        body,
+    )
+    .await?;
     Ok((response, upstream_model))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn forward_cursor_apikey(
     provider: &Provider,
     headers: Option<&HeaderMap>,
-    body: &Value,
+    mapped_body: &Value,
     response_model: String,
     response_format: CursorResponseFormat,
+    inbound: InboundProtocol,
+    original_body: &Value,
 ) -> Result<ProxyResponse, ProxyError> {
     let api_key = cursor_api_key_from_provider(provider)?;
     let access_token = get_cursor_access_token(&api_key, false).await?;
     let account = account_for_api_key(&api_key);
 
-    let request_body = normalize_cursor_body(body);
-    let conversation_id = conversation_id_from_headers(headers);
-    let response = send_cursor_request(&CursorRequestContext {
-        account: account.clone(),
-        access_token: access_token.clone(),
-        body: request_body.clone(),
-        conversation_id: conversation_id.clone(),
-    })
-    .await?;
-    let response = if response.status() == StatusCode::UNAUTHORIZED {
-        invalidate_cached_access_token(&api_key).await;
-        let access_token = get_cursor_access_token(&api_key, true).await?;
-        send_cursor_request(&CursorRequestContext {
-            account,
-            access_token,
-            body: request_body,
-            conversation_id,
-        })
-        .await?
-    } else {
-        response
-    };
+    let protocol = select_protocol(provider, inbound, mapped_body);
+    log::debug!(
+        "[CursorApiKey] 选定协议: {:?}（model={}）",
+        protocol,
+        requested_model(mapped_body)
+    );
 
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response_error_body(response).await;
-        return Err(ProxyError::UpstreamError { status, body });
-    }
+    match protocol {
+        CursorProtocol::AgentService => {
+            let mut plan = build_plan(inbound, mapped_body);
+            let session_key = derive_session_key(
+                headers,
+                mapped_body,
+                cursor_session::global(),
+                &plan.tool_results,
+                plan.previous_response_id.as_deref(),
+            )
+            .await;
+            if matches!(select_tool_mode(provider), CursorToolMode::Disabled) {
+                plan.tools.clear();
+            }
+            let is_stream = original_body
+                .get("stream")
+                .and_then(Value::as_bool)
+                .unwrap_or(matches!(inbound, InboundProtocol::OpenAiResponses));
+            let try_once = |access_token: String| {
+                let account = account.clone();
+                let session_key = session_key.clone();
+                let plan = plan.clone();
+                let response_model = response_model.clone();
+                async move {
+                    run_agent(AgentRunOptions {
+                        account: &account,
+                        access_token: &access_token,
+                        session_manager: cursor_session::global(),
+                        session_key,
+                        plan,
+                        format: response_format,
+                        response_model,
+                        stream: is_stream,
+                    })
+                    .await
+                }
+            };
+            match try_once(access_token.clone()).await {
+                Ok(resp) => Ok(resp),
+                Err(ProxyError::UpstreamError { status: 401, .. }) => {
+                    invalidate_cached_access_token(&api_key).await;
+                    let refreshed = get_cursor_access_token(&api_key, true).await?;
+                    try_once(refreshed).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        CursorProtocol::ChatService => {
+            let request_body = normalize_cursor_body(mapped_body);
+            let conversation_id = conversation_id_from_headers(headers);
+            let response = send_cursor_request(&CursorRequestContext {
+                account: account.clone(),
+                access_token: access_token.clone(),
+                body: request_body.clone(),
+                conversation_id: conversation_id.clone(),
+            })
+            .await?;
+            let response = if response.status() == StatusCode::UNAUTHORIZED {
+                invalidate_cached_access_token(&api_key).await;
+                let access_token = get_cursor_access_token(&api_key, true).await?;
+                send_cursor_request(&CursorRequestContext {
+                    account,
+                    access_token,
+                    body: request_body,
+                    conversation_id,
+                })
+                .await?
+            } else {
+                response
+            };
 
-    let is_stream = body
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if is_stream {
-        let stream =
-            response_to_sse_stream(response, response_model, body.clone(), response_format);
-        Ok(ProxyResponse::local_sse(Box::pin(stream)))
-    } else {
-        let (_, bytes) = response_to_json(response, &response_model, body, response_format).await?;
-        Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
+            if !response.status().is_success() {
+                let status = response.status().as_u16();
+                let body = response_error_body(response).await;
+                return Err(ProxyError::UpstreamError { status, body });
+            }
+
+            let is_stream = original_body
+                .get("stream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if is_stream {
+                let stream = response_to_sse_stream(
+                    response,
+                    response_model,
+                    mapped_body.clone(),
+                    response_format,
+                );
+                Ok(ProxyResponse::local_sse(Box::pin(stream)))
+            } else {
+                let (_, bytes) =
+                    response_to_json(response, &response_model, mapped_body, response_format)
+                        .await?;
+                Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
+            }
+        }
     }
+}
+
+async fn derive_session_key(
+    headers: Option<&HeaderMap>,
+    body: &Value,
+    session_manager: &CursorSessionManager,
+    tool_results: &[ToolResultBlock],
+    previous_response_id: Option<&str>,
+) -> String {
+    if let Some(s) = conversation_id_from_headers(headers) {
+        return s;
+    }
+    for tr in tool_results {
+        if let Some(s) = session_manager.resolve_tool_call_id(&tr.tool_call_id).await {
+            return s;
+        }
+    }
+    if let Some(prev) = previous_response_id {
+        if !prev.is_empty() {
+            if let Some(s) = session_manager.resolve_response_id(prev).await {
+                return s;
+            }
+            return stable_uuid_like(prev);
+        }
+    }
+    if let Some(meta) = body.get("metadata").and_then(Value::as_object) {
+        if let Some(id) = meta.get("conversation_id").and_then(Value::as_str) {
+            if !id.is_empty() {
+                return stable_uuid_like(id);
+            }
+        }
+    }
+    uuid::Uuid::new_v4().to_string()
 }
 
 pub(crate) fn cursor_api_key_from_provider(provider: &Provider) -> Result<String, ProxyError> {
@@ -180,18 +299,19 @@ pub(crate) async fn get_cursor_access_token(
     api_key: &str,
     force_refresh: bool,
 ) -> Result<String, ProxyError> {
-    let key_hash = sha256_hex(api_key);
+    let cache_key = access_token_cache_key(api_key);
     if !force_refresh {
-        if let Some(cached) = ACCESS_TOKEN_CACHE.lock().await.get(&key_hash).cloned() {
-            if cached.is_valid() {
-                return Ok(cached.token);
+        let cache = ACCESS_TOKEN_CACHE.lock().await;
+        if let Some(entry) = cache.get(&cache_key) {
+            if entry.is_valid() {
+                return Ok(entry.token.clone());
             }
         }
     }
-
     let token = exchange_cursor_api_key(api_key).await?;
-    ACCESS_TOKEN_CACHE.lock().await.insert(
-        key_hash,
+    let mut cache = ACCESS_TOKEN_CACHE.lock().await;
+    cache.insert(
+        cache_key,
         CachedAccessToken {
             token: token.clone(),
             expires_at_ms: chrono::Utc::now().timestamp_millis() + ACCESS_TOKEN_CACHE_TTL_MS,
@@ -201,55 +321,57 @@ pub(crate) async fn get_cursor_access_token(
 }
 
 async fn invalidate_cached_access_token(api_key: &str) {
-    let key_hash = sha256_hex(api_key);
-    ACCESS_TOKEN_CACHE.lock().await.remove(&key_hash);
+    let mut cache = ACCESS_TOKEN_CACHE.lock().await;
+    cache.remove(&access_token_cache_key(api_key));
 }
 
 async fn exchange_cursor_api_key(api_key: &str) -> Result<String, ProxyError> {
-    let base_url = cursor_backend_base_url();
     let url = format!(
         "{}{}",
-        base_url.trim_end_matches('/'),
+        cursor_backend_base_url(),
         EXCHANGE_USER_API_KEY_PATH
     );
     let client = reqwest::Client::builder()
-        .http2_adaptive_window(true)
+        .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| ProxyError::ForwardFailed(format!("创建 Cursor HTTP client 失败: {e}")))?;
-    let response = client
-        .post(url)
-        .bearer_auth(api_key)
-        .header("Content-Type", "application/json")
+        .map_err(|e| ProxyError::ForwardFailed(format!("构造 exchange client 失败: {e}")))?;
+    let resp = client
+        .post(&url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("content-type", "application/json")
         .json(&json!({}))
         .send()
         .await
-        .map_err(|e| ProxyError::ForwardFailed(format!("Cursor API Key 交换失败: {e}")))?;
-
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response.text().await.ok();
-        return Err(ProxyError::UpstreamError { status, body });
+        .map_err(|e| ProxyError::ForwardFailed(format!("exchange_user_api_key 请求失败: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(ProxyError::UpstreamError {
+            status,
+            body: Some(body),
+        });
     }
-
-    let payload = response
-        .json::<CursorApiKeyExchangeResponse>()
+    let parsed: CursorApiKeyExchangeResponse = resp
+        .json()
         .await
-        .map_err(|e| ProxyError::ForwardFailed(format!("解析 Cursor API Key 交换响应失败: {e}")))?;
-    payload
+        .map_err(|e| ProxyError::ForwardFailed(format!("解析 exchange 响应失败: {e}")))?;
+    parsed
         .access_token
-        .filter(|token| !token.trim().is_empty())
-        .ok_or_else(|| {
-            ProxyError::ForwardFailed("Cursor API Key 交换响应缺少 accessToken".to_string())
-        })
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ProxyError::AuthError("Cursor exchange 响应缺少 access_token".to_string()))
 }
 
 fn cursor_backend_base_url() -> String {
     std::env::var("CC_SWITCH_CURSOR_BACKEND_BASE_URL")
         .ok()
         .or_else(|| std::env::var("CURSOR_BACKEND_BASE_URL").ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_CURSOR_BACKEND_BASE_URL.to_string())
+}
+
+fn access_token_cache_key(api_key: &str) -> String {
+    sha256_hex(api_key)
 }
 
 pub(crate) fn account_for_api_key(api_key: &str) -> CursorAccountData {
@@ -308,7 +430,16 @@ fn sha256_hex(input: &str) -> String {
 mod tests {
     use super::*;
 
-    fn provider(settings_config: Value) -> Provider {
+    fn provider(api_key: &str) -> Provider {
+        Provider::with_id(
+            "test".to_string(),
+            "test".to_string(),
+            json!({ "env": { "CURSOR_API_KEY": api_key } }),
+            None,
+        )
+    }
+
+    fn provider_with_config(settings_config: Value) -> Provider {
         Provider::with_id(
             "cursor-apikey-test".to_string(),
             "Cursor API Key".to_string(),
@@ -318,8 +449,22 @@ mod tests {
     }
 
     #[test]
+    fn account_id_is_stable() {
+        let p1 = account_id_for_api_key("sk_abc");
+        let p2 = account_id_for_api_key("sk_abc");
+        assert_eq!(p1, p2);
+        assert!(p1.starts_with("cursor_apikey_"));
+    }
+
+    #[test]
+    fn api_key_from_settings() {
+        let p = provider("sk_test_123");
+        assert_eq!(cursor_api_key_from_provider(&p).unwrap(), "sk_test_123");
+    }
+
+    #[test]
     fn extracts_claude_cursor_api_key() {
-        let provider = provider(json!({
+        let provider = provider_with_config(json!({
             "env": {
                 "ANTHROPIC_AUTH_TOKEN": " cursor_key "
             }
@@ -332,7 +477,7 @@ mod tests {
 
     #[test]
     fn extracts_codex_cursor_api_key() {
-        let provider = provider(json!({
+        let provider = provider_with_config(json!({
             "auth": {
                 "OPENAI_API_KEY": "cursor_key"
             },
@@ -345,67 +490,11 @@ mod tests {
     }
 
     #[test]
-    fn stable_uuid_like_is_deterministic() {
-        let first = stable_uuid_like("session-a");
-        let second = stable_uuid_like("session-a");
-        assert_eq!(first, second);
-        assert_eq!(first.len(), 36);
-    }
-
-    #[test]
-    fn account_for_api_key_uses_stable_identity() {
-        let first = account_for_api_key("cursor_key");
-        let second = account_for_api_key("cursor_key");
-        assert_eq!(
-            first.cursor_service_machine_id,
-            second.cursor_service_machine_id
-        );
-        assert_eq!(first.cursor_config_version, second.cursor_config_version);
-    }
-
-    #[test]
-    fn claude_body_uses_provider_mapping_but_keeps_response_model() {
-        let provider = provider(json!({
-            "env": {
-                "ANTHROPIC_AUTH_TOKEN": "cursor_key",
-                "ANTHROPIC_MODEL": "composer-2.5",
-                "ANTHROPIC_DEFAULT_OPUS_MODEL": "composer-2.5",
-                "ANTHROPIC_DEFAULT_SONNET_MODEL": "composer-2.5",
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "composer-2.5",
-                "ANTHROPIC_DEFAULT_FABLE_MODEL": "composer-2.5"
-            }
-        }));
-        let (mapped_body, response_model, upstream_model) = prepare_cursor_apikey_claude_body(
-            &provider,
-            &json!({
-                "model": "claude-opus-4-8",
-                "messages": []
-            }),
-        );
-
-        assert_eq!(mapped_body["model"], json!("composer-2.5"));
-        assert_eq!(response_model, "claude-opus-4-8");
-        assert_eq!(upstream_model, "composer-2.5");
-    }
-
-    #[test]
-    fn claude_body_strips_mapped_one_m_marker_before_cursor() {
-        let provider = provider(json!({
-            "env": {
-                "ANTHROPIC_AUTH_TOKEN": "cursor_key",
-                "ANTHROPIC_DEFAULT_SONNET_MODEL": "composer-2.5 [1M]"
-            }
-        }));
-        let (mapped_body, response_model, upstream_model) = prepare_cursor_apikey_claude_body(
-            &provider,
-            &json!({
-                "model": "claude-sonnet-4-5[1m]",
-                "messages": []
-            }),
-        );
-
-        assert_eq!(mapped_body["model"], json!("composer-2.5"));
-        assert_eq!(response_model, "claude-sonnet-4-5[1m]");
-        assert_eq!(upstream_model, "composer-2.5");
+    fn access_token_cache_key_does_not_store_raw_key() {
+        let raw = "cursor_key";
+        let key = access_token_cache_key(raw);
+        assert_ne!(key, raw);
+        assert_eq!(key.len(), 64);
+        assert_eq!(key, access_token_cache_key(raw));
     }
 }

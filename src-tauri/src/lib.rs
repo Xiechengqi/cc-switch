@@ -1142,6 +1142,18 @@ pub fn run() {
                 log::info!("✓ CursorOAuthManager initialized");
             }
 
+            // 初始化 Cursor agent.v1 session 管理器（h2 stream 保活 + tool round-trip）
+            {
+                use crate::proxy::providers::cursor_session;
+                use commands::CursorSessionState;
+
+                // Force the lazy singleton to materialise at startup so the
+                // first agent request doesn't pay the construction cost.
+                let _ = cursor_session::global();
+                app.manage(CursorSessionState(cursor_session::global().clone()));
+                log::info!("✓ CursorSessionManager initialized");
+            }
+
             // 初始化 DeepSeekAccountManager (DeepSeek 账号)
             {
                 use crate::proxy::providers::deepseek_account_auth::DeepSeekAccountManager;

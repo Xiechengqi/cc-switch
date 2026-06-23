@@ -1,6 +1,6 @@
 //! Cursor OAuth provider for Claude-compatible proxy requests.
 
-use crate::commands::CursorOAuthState;
+use crate::commands::{CursorOAuthState, CursorSessionState};
 use crate::provider::Provider;
 use crate::proxy::hyper_client::ProxyResponse;
 use crate::proxy::ProxyError;
@@ -10,10 +10,14 @@ use http::StatusCode;
 use serde_json::{json, Value};
 use tauri::Manager;
 
+use super::cursor_agent_service::{run_agent, AgentRunOptions};
 use super::cursor_protocol::{
     conversation_id_from_headers, requested_model, response_error_body, response_to_json,
     response_to_sse_stream, send_cursor_request, CursorRequestContext, CursorResponseFormat,
 };
+use super::cursor_request_builder::{build_plan, InboundProtocol, ToolResultBlock};
+use super::cursor_router::{select_protocol, select_tool_mode, CursorProtocol, CursorToolMode};
+use super::cursor_session::CursorSessionManager;
 
 pub async fn forward_cursor_claude(
     app_handle: Option<&tauri::AppHandle>,
@@ -48,60 +52,95 @@ pub async fn forward_cursor_claude(
 
     let (mapped_body, response_model, upstream_model) =
         prepare_cursor_oauth_claude_body(provider, body);
-    let ctx = CursorRequestContext {
-        account: resolved_account.clone(),
-        access_token: token,
-        body: normalize_stream_body(&mapped_body),
-        conversation_id: conversation_id_from_headers(headers),
-    };
-    let response = send_cursor_request(&ctx).await?;
-    let response = if response.status() == StatusCode::UNAUTHORIZED {
-        manager
-            .invalidate_cached_token(&resolved_account.account_id)
-            .await;
-        let token = manager
-            .get_valid_token_for_account(&resolved_account.account_id)
-            .await
-            .map_err(|e| ProxyError::AuthError(format!("Cursor OAuth 认证失败: {e}")))?;
-        send_cursor_request(&CursorRequestContext {
-            access_token: token,
-            ..ctx
-        })
-        .await?
-    } else {
-        response
-    };
 
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response_error_body(response).await;
-        return Err(ProxyError::UpstreamError { status, body });
-    }
+    let protocol = select_protocol(provider, InboundProtocol::AnthropicMessages, &mapped_body);
+    log::debug!(
+        "[CursorOAuth] 选定协议: {:?}（model={}）",
+        protocol,
+        upstream_model
+    );
 
-    let is_stream = body
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if is_stream {
-        let stream = response_to_sse_stream(
-            response,
-            response_model,
-            mapped_body.clone(),
-            CursorResponseFormat::AnthropicMessages,
-        );
-        Ok((ProxyResponse::local_sse(Box::pin(stream)), upstream_model))
-    } else {
-        let (_, bytes) = response_to_json(
-            response,
-            &response_model,
-            &mapped_body,
-            CursorResponseFormat::AnthropicMessages,
-        )
-        .await?;
-        Ok((
-            ProxyResponse::local_json(StatusCode::OK, bytes),
-            upstream_model,
-        ))
+    match protocol {
+        CursorProtocol::AgentService => {
+            let session_state = app_handle.state::<CursorSessionState>();
+            let mut plan = build_plan(InboundProtocol::AnthropicMessages, &mapped_body);
+            let session_key =
+                derive_session_key(headers, &mapped_body, &session_state.0, &plan.tool_results)
+                    .await;
+            if matches!(select_tool_mode(provider), CursorToolMode::Disabled) {
+                plan.tools.clear();
+            }
+            let is_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+            let response = run_agent(AgentRunOptions {
+                account: &resolved_account,
+                access_token: &token,
+                session_manager: &session_state.0,
+                session_key,
+                plan,
+                format: CursorResponseFormat::AnthropicMessages,
+                response_model,
+                stream: is_stream,
+            })
+            .await?;
+            Ok((response, upstream_model))
+        }
+        CursorProtocol::ChatService => {
+            let ctx = CursorRequestContext {
+                account: resolved_account.clone(),
+                access_token: token,
+                body: normalize_stream_body(&mapped_body),
+                conversation_id: conversation_id_from_headers(headers),
+            };
+            let response = send_cursor_request(&ctx).await?;
+            let response = if response.status() == StatusCode::UNAUTHORIZED {
+                manager
+                    .invalidate_cached_token(&resolved_account.account_id)
+                    .await;
+                let token = manager
+                    .get_valid_token_for_account(&resolved_account.account_id)
+                    .await
+                    .map_err(|e| ProxyError::AuthError(format!("Cursor OAuth 认证失败: {e}")))?;
+                send_cursor_request(&CursorRequestContext {
+                    access_token: token,
+                    ..ctx
+                })
+                .await?
+            } else {
+                response
+            };
+
+            if !response.status().is_success() {
+                let status = response.status().as_u16();
+                let body = response_error_body(response).await;
+                return Err(ProxyError::UpstreamError { status, body });
+            }
+
+            let is_stream = body
+                .get("stream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if is_stream {
+                let stream = response_to_sse_stream(
+                    response,
+                    response_model,
+                    mapped_body.clone(),
+                    CursorResponseFormat::AnthropicMessages,
+                );
+                Ok((ProxyResponse::local_sse(Box::pin(stream)), upstream_model))
+            } else {
+                let (_, bytes) = response_to_json(
+                    response,
+                    &response_model,
+                    &mapped_body,
+                    CursorResponseFormat::AnthropicMessages,
+                )
+                .await?;
+                Ok((
+                    ProxyResponse::local_json(StatusCode::OK, bytes),
+                    upstream_model,
+                ))
+            }
+        }
     }
 }
 
@@ -128,6 +167,36 @@ fn prepare_cursor_oauth_claude_body(provider: &Provider, body: &Value) -> (Value
         crate::proxy::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
     let upstream_model = requested_model(&mapped_body);
     (mapped_body, response_model, upstream_model)
+}
+
+/// Derive a stable session key for AgentService routing. Priority:
+///   1. `x-session-affinity` header
+///   2. `x-opencode-session-id` / `x-opencode-session`
+///   3. pending tool_call_id index
+///   4. body-level `metadata.conversation_id` (Claude Code passes this)
+///   5. fresh fallback id (avoids concurrent no-header sessions colliding)
+async fn derive_session_key(
+    headers: Option<&HeaderMap>,
+    body: &Value,
+    session_manager: &CursorSessionManager,
+    tool_results: &[ToolResultBlock],
+) -> String {
+    if let Some(s) = conversation_id_from_headers(headers) {
+        return s;
+    }
+    for tr in tool_results {
+        if let Some(s) = session_manager.resolve_tool_call_id(&tr.tool_call_id).await {
+            return s;
+        }
+    }
+    if let Some(meta) = body.get("metadata").and_then(Value::as_object) {
+        if let Some(id) = meta.get("conversation_id").and_then(Value::as_str) {
+            if !id.is_empty() {
+                return crate::proxy::providers::cursor_protocol::stable_uuid_like(id);
+            }
+        }
+    }
+    uuid::Uuid::new_v4().to_string()
 }
 
 #[allow(dead_code)]

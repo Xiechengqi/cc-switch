@@ -137,6 +137,35 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/open_external`, () => success(true)),
 
+  http.post(`${TAURI_ENDPOINT}/auth_get_status`, async ({ request }) => {
+    const { authProvider, auth_provider } = await withJson<{
+      authProvider?: string;
+      auth_provider?: string;
+    }>(request);
+    return success({
+      provider: authProvider ?? auth_provider ?? "github_copilot",
+      authenticated: false,
+      default_account_id: null,
+      accounts: [],
+    });
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/deepseek_account_status`, () =>
+    success({
+      authenticated: false,
+      default_account_id: null,
+      accounts: [],
+    }),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/ollama_cloud_status`, () =>
+    success({
+      authenticated: false,
+      defaultAccountId: null,
+      accounts: [],
+    }),
+  ),
+
   http.post(`${TAURI_ENDPOINT}/list_sessions`, () => success(listSessions())),
 
   http.post(`${TAURI_ENDPOINT}/get_session_messages`, async ({ request }) => {

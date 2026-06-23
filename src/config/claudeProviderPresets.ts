@@ -65,6 +65,7 @@ export interface ProviderPreset {
   // - "cursor_apikey": Cursor API Key 反代 Anthropic/Codex API
   // - "kiro_oauth": Kiro OAuth 账号反代 Anthropic API
   // - "deepseek_account": DeepSeek 账号
+  // - "ollama_cloud": Ollama Cloud API Key
   providerType?:
     | "github_copilot"
     | "codex_oauth"
@@ -75,7 +76,8 @@ export interface ProviderPreset {
     | "cursor_oauth"
     | "cursor_apikey"
     | "kiro_oauth"
-    | "deepseek_account";
+    | "deepseek_account"
+    | "ollama_cloud";
 
   // 是否需要 OAuth 认证（而非 API Key）
   requiresOAuth?: boolean;
@@ -157,6 +159,36 @@ export const providerPresets: ProviderPreset[] = [
       textColor: "#FFFFFF",
     },
     icon: "kiro",
+  },
+  {
+    name: "Ollama Cloud",
+    websiteUrl: "https://ollama.com",
+    settingsConfig: {
+      env: {
+        ANTHROPIC_BASE_URL: "https://ollama.com",
+        ANTHROPIC_AUTH_TOKEN: "",
+        ANTHROPIC_MODEL: "kimi-k2.7-code",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "kimi-k2.7-code",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "kimi-k2.7-code",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "kimi-k2.7-code",
+        ANTHROPIC_DEFAULT_FABLE_MODEL: "kimi-k2.7-code",
+      },
+      modelMapping: {
+        mode: "single",
+        upstreamModel: "kimi-k2.7-code",
+      },
+    },
+    isOfficial: true,
+    category: "official",
+    apiFormat: "openai_chat",
+    providerType: "ollama_cloud",
+    requiresOAuth: true,
+    modelsUrl: "https://ollama.com/v1/models",
+    theme: {
+      backgroundColor: "#111111",
+      textColor: "#FFFFFF",
+    },
+    icon: "ollama",
   },
   {
     name: "Cursor OAuth",

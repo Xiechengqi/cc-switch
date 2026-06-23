@@ -2383,6 +2383,8 @@ async fn subscription_command(
         "get_coding_plan_quota" => Ok(json!(crate::services::coding_plan::get_coding_plan_quota(
             &string_arg(&args, "baseUrl")?,
             &string_arg(&args, "apiKey")?,
+            optional_string_arg(&args, "accessKeyId").as_deref(),
+            optional_string_arg(&args, "secretAccessKey").as_deref(),
         )
         .await
         .map_err(WebError::internal)?)),

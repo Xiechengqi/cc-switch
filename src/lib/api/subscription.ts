@@ -49,8 +49,16 @@ export const subscriptionApi = {
   getCodingPlanQuota: (
     baseUrl: string,
     apiKey: string,
+    // 火山方舟用账号 AK/SK 签名查询用量；其他供应商不传。
+    accessKeyId?: string,
+    secretAccessKey?: string,
   ): Promise<SubscriptionQuota> =>
-    invokeCommand("get_coding_plan_quota", { baseUrl, apiKey }),
+    invokeCommand("get_coding_plan_quota", {
+      baseUrl,
+      apiKey,
+      accessKeyId,
+      secretAccessKey,
+    }),
   getBalance: (
     baseUrl: string,
     apiKey: string,

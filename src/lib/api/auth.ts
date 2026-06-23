@@ -23,6 +23,26 @@ export interface DeepSeekAccountStatus {
   accounts: DeepSeekAccount[];
 }
 
+export interface OllamaCloudAccount {
+  id: string;
+  label?: string | null;
+  createdAt: number;
+  isDefault: boolean;
+  maskedKey: string;
+}
+
+export interface OllamaCloudStatus {
+  authenticated: boolean;
+  defaultAccountId: string | null;
+  accounts: OllamaCloudAccount[];
+}
+
+export interface OllamaModel {
+  id: string;
+  displayName?: string | null;
+  ownedBy?: string | null;
+}
+
 export interface ManagedAuthAccount {
   id: string;
   provider: ManagedAuthProvider;
@@ -250,6 +270,60 @@ export async function deepseekAccountSetDefault(
   return invokeCommand("deepseek_account_set_default", { accountId });
 }
 
+export async function ollamaCloudImportApiKey(params: {
+  apiKey: string;
+  label?: string | null;
+}): Promise<OllamaCloudAccount> {
+  return invokeCommand<OllamaCloudAccount>("ollama_cloud_import_api_key", {
+    apiKey: params.apiKey,
+    label: params.label || null,
+  });
+}
+
+export async function ollamaCloudListAccounts(): Promise<OllamaCloudAccount[]> {
+  return invokeCommand<OllamaCloudAccount[]>("ollama_cloud_list_accounts");
+}
+
+export async function ollamaCloudStatus(): Promise<OllamaCloudStatus> {
+  return invokeCommand<OllamaCloudStatus>("ollama_cloud_status");
+}
+
+export async function ollamaCloudRemoveAccount(
+  accountId: string,
+): Promise<void> {
+  return invokeCommand("ollama_cloud_remove_account", { accountId });
+}
+
+export async function ollamaCloudSetDefaultAccount(
+  accountId: string,
+): Promise<void> {
+  return invokeCommand("ollama_cloud_set_default_account", { accountId });
+}
+
+export async function ollamaCloudTestConnection(
+  apiKey: string,
+): Promise<OllamaModel[]> {
+  return invokeCommand<OllamaModel[]>("ollama_cloud_test_connection", {
+    apiKey,
+  });
+}
+
+export async function ollamaCloudListModels(
+  accountId?: string | null,
+): Promise<OllamaModel[]> {
+  return invokeCommand<OllamaModel[]>("ollama_cloud_list_models", {
+    accountId: accountId || null,
+  });
+}
+
+export async function ollamaCloudListTags(
+  accountId?: string | null,
+): Promise<OllamaModel[]> {
+  return invokeCommand<OllamaModel[]>("ollama_cloud_list_tags", {
+    accountId: accountId || null,
+  });
+}
+
 export const authApi = {
   authStartLogin,
   authSubmitOauthCode,
@@ -264,4 +338,12 @@ export const authApi = {
   deepseekAccountStatus,
   deepseekAccountRemove,
   deepseekAccountSetDefault,
+  ollamaCloudImportApiKey,
+  ollamaCloudListAccounts,
+  ollamaCloudStatus,
+  ollamaCloudRemoveAccount,
+  ollamaCloudSetDefaultAccount,
+  ollamaCloudTestConnection,
+  ollamaCloudListModels,
+  ollamaCloudListTags,
 };

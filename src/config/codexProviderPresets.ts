@@ -34,7 +34,11 @@ export interface CodexProviderPreset {
   // Codex API 格式
   apiFormat?: CodexApiFormat;
   // 特殊供应商类型
-  providerType?: "codex_oauth" | "cursor_oauth" | "cursor_apikey";
+  providerType?:
+    | "codex_oauth"
+    | "cursor_oauth"
+    | "cursor_apikey"
+    | "ollama_cloud";
   requiresOAuth?: boolean;
   // Codex Chat 本地路由模式下的模型目录
   modelCatalog?: CodexCatalogModel[];
@@ -223,6 +227,45 @@ export const codexProviderPresets: CodexProviderPreset[] = [
       textColor: "#FFFFFF",
     },
     icon: "cursor",
+  },
+  {
+    name: "Ollama Cloud",
+    websiteUrl: "https://ollama.com",
+    isOfficial: true,
+    category: "official",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "ollama",
+      "https://ollama.com",
+      "kimi-k2.7-code",
+    ),
+    modelMapping: {
+      mode: "single",
+      upstreamModel: "kimi-k2.7-code",
+    },
+    providerType: "ollama_cloud",
+    requiresOAuth: true,
+    apiFormat: "openai_chat",
+    modelCatalog: modelCatalog([
+      {
+        model: "kimi-k2.7-code",
+        displayName: "Kimi K2.7 Code",
+        contextWindow: 262144,
+      },
+    ]),
+    codexChatReasoning: {
+      supportsThinking: true,
+      supportsEffort: true,
+      thinkingParam: "thinking",
+      effortParam: "reasoning_effort",
+      outputFormat: "reasoning_content",
+    },
+    theme: {
+      icon: "codex",
+      backgroundColor: "#111111",
+      textColor: "#FFFFFF",
+    },
+    icon: "ollama",
   },
   {
     name: "OpenRouter",

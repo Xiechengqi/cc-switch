@@ -102,9 +102,15 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     queryFn: () => authApi.deepseekAccountStatus(),
     staleTime: 30000,
   });
+  const ollamaCloudStatusResult = useQuery({
+    queryKey: ["ollama-cloud-status"],
+    queryFn: () => authApi.ollamaCloudStatus(),
+    staleTime: 30000,
+  });
   const managedAuthStatusVersion = managedAuthStatusResults
     .map((result) => String(result.dataUpdatedAt))
     .concat(String(deepSeekAccountStatusResult.dataUpdatedAt))
+    .concat(String(ollamaCloudStatusResult.dataUpdatedAt))
     .join(":");
   const managedAuthStatuses = useMemo<ManagedAuthStatusByProvider>(() => {
     const result: ManagedAuthStatusByProvider = {};
@@ -114,6 +120,9 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
     });
     if (deepSeekAccountStatusResult.data) {
       result.deepseek_account = deepSeekAccountStatusResult.data;
+    }
+    if (ollamaCloudStatusResult.data) {
+      result.ollama_cloud = ollamaCloudStatusResult.data;
     }
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps

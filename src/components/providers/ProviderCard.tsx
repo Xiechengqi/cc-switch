@@ -8,7 +8,11 @@ import type {
 } from "@dnd-kit/core";
 import type { Provider } from "@/types";
 import { authApi, type AppId } from "@/lib/api";
-import type { ManagedAuthProvider, ManagedAuthStatus } from "@/lib/api";
+import type {
+  ManagedAuthProvider,
+  ManagedAuthStatus,
+  OllamaCloudStatus,
+} from "@/lib/api";
 import { PROVIDER_TYPES } from "@/config/constants";
 import { cn } from "@/lib/utils";
 import { ProviderActions } from "@/components/providers/ProviderActions";
@@ -186,6 +190,23 @@ function useManagedOauthAccountLogin(
     enabled: authProvider !== null,
     staleTime: 30000,
   });
+  const { data: ollamaCloudStatus } = useQuery<OllamaCloudStatus>({
+    queryKey: ["ollama-cloud-status"],
+    queryFn: () => authApi.ollamaCloudStatus(),
+    enabled: quotaSource === "ollama_cloud",
+    staleTime: 30000,
+  });
+
+  if (quotaSource === "ollama_cloud") {
+    const accountId =
+      resolveManagedAccountId(provider.meta, PROVIDER_TYPES.OLLAMA_CLOUD) ??
+      ollamaCloudStatus?.defaultAccountId ??
+      null;
+    const account = accountId
+      ? ollamaCloudStatus?.accounts.find((item) => item.id === accountId)
+      : undefined;
+    return account?.label || account?.maskedKey || accountId;
+  }
 
   if (!authProvider) {
     return null;
@@ -403,7 +424,7 @@ export function ProviderCard({
             <GripVertical className="h-4 w-4" />
           </button>
 
-          <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center border border-border group-hover:scale-105 transition-transform duration-300">
+          <div className="h-8 w-8 flex-shrink-0 rounded-lg bg-muted flex items-center justify-center border border-border group-hover:scale-105 transition-transform duration-300">
             <ProviderIcon
               icon={provider.icon}
               name={provider.name}
@@ -412,7 +433,7 @@ export function ProviderCard({
             />
           </div>
 
-          <div className="min-w-0 space-y-1">
+          <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2 min-h-7">
               <h3 className="text-base font-semibold leading-none">
                 {provider.name}
@@ -474,7 +495,7 @@ export function ProviderCard({
                 type="button"
                 onClick={handleOpenWebsite}
                 className={cn(
-                  "inline-flex items-center text-sm max-w-[280px]",
+                  "inline-flex max-w-full items-center overflow-hidden text-left text-sm",
                   isClickableUrl
                     ? "text-blue-500 transition-colors hover:underline dark:text-blue-400 cursor-pointer"
                     : "text-muted-foreground cursor-default",
@@ -482,7 +503,7 @@ export function ProviderCard({
                 title={displayUrl}
                 disabled={!isClickableUrl}
               >
-                <span className="truncate">{displayUrl}</span>
+                <span className="min-w-0 truncate">{displayUrl}</span>
               </button>
             )}
           </div>

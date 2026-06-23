@@ -463,6 +463,7 @@ base_url = "http://localhost:8080"
 
         db.update_proxy_config(ProxyConfig {
             live_takeover_active: true,
+            listen_port: 0,
             ..Default::default()
         })
         .await
@@ -491,7 +492,7 @@ base_url = "http://localhost:8080"
         )
         .expect("seed taken-over live file");
 
-        state
+        let proxy_info = state
             .proxy_service
             .start()
             .await

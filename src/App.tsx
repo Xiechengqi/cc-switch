@@ -14,7 +14,6 @@ import {
   Book,
   Brain,
   Wrench,
-  RefreshCw,
   History,
   BarChart2,
   Download,
@@ -83,7 +82,11 @@ import { FailoverToggle } from "@/components/proxy/FailoverToggle";
 import UsageScriptModal from "@/components/UsageScriptModal";
 import UnifiedMcpPanel from "@/components/mcp/UnifiedMcpPanel";
 import PromptPanel from "@/components/prompts/PromptPanel";
-import { SkillsPage } from "@/components/skills/SkillsPage";
+import {
+  SkillsPage,
+  getSkillsPageHeaderActions,
+  type SkillsPageSource,
+} from "@/components/skills/SkillsPage";
 import UnifiedSkillsPanel from "@/components/skills/UnifiedSkillsPanel";
 import { DeepLinkImportDialog } from "@/components/DeepLinkImportDialog";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
@@ -407,6 +410,8 @@ function DesktopApp() {
   const sharedFeatureApp: AppId =
     activeApp === "claude-desktop" ? "claude" : activeApp;
   const [currentView, setCurrentView] = useState<View>(getInitialView);
+  const [skillsDiscoverySource, setSkillsDiscoverySource] =
+    useState<SkillsPageSource>("repos");
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
@@ -1143,6 +1148,11 @@ function DesktopApp() {
     }
   };
 
+  const handleOpenSkillsDiscovery = () => {
+    setSkillsDiscoverySource("repos");
+    setCurrentView("skillsDiscovery");
+  };
+
   const renderContent = () => {
     const content = (() => {
       switch (currentView) {
@@ -1170,7 +1180,7 @@ function DesktopApp() {
           return (
             <UnifiedSkillsPanel
               ref={unifiedSkillsPanelRef}
-              onOpenDiscovery={() => setCurrentView("skillsDiscovery")}
+              onOpenDiscovery={handleOpenSkillsDiscovery}
               currentApp={
                 sharedFeatureApp === "openclaw" ? "claude" : sharedFeatureApp
               }
@@ -1183,6 +1193,7 @@ function DesktopApp() {
               initialApp={
                 sharedFeatureApp === "openclaw" ? "claude" : sharedFeatureApp
               }
+              onSourceChange={setSkillsDiscoverySource}
             />
           );
         case "mcp":
@@ -1618,7 +1629,7 @@ function DesktopApp() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setCurrentView("skillsDiscovery")}
+                      onClick={handleOpenSkillsDiscovery}
                       className="hover:bg-black/5 dark:hover:bg-white/5"
                     >
                       <Search className="w-4 h-4 mr-2" />
@@ -1628,24 +1639,20 @@ function DesktopApp() {
                 )}
                 {currentView === "skillsDiscovery" && (
                   <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => skillsPageRef.current?.refresh()}
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <RefreshCw className="w-4 h-4 mr-2" />
-                      {t("skills.refresh")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => skillsPageRef.current?.openRepoManager()}
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <Settings className="w-4 h-4 mr-2" />
-                      {t("skills.repoManager")}
-                    </Button>
+                    {getSkillsPageHeaderActions(skillsDiscoverySource).map(
+                      ({ key, labelKey, Icon, execute }) => (
+                        <Button
+                          key={key}
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => execute(skillsPageRef.current)}
+                          className="hover:bg-black/5 dark:hover:bg-white/5"
+                        >
+                          <Icon className="w-4 h-4 mr-2" />
+                          {t(labelKey)}
+                        </Button>
+                      ),
+                    )}
                   </>
                 )}
                 {currentView === "providers" && (

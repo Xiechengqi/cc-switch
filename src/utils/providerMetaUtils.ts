@@ -124,6 +124,7 @@ export function isManagedOauthProvider(
     isCursorOauthWithManagedAuth(provider) ||
     provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH ||
     provider.meta?.providerType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
+    provider.meta?.providerType === PROVIDER_TYPES.OLLAMA_CLOUD ||
     (appId === "codex" && isCodexOfficialWithManagedAuth(provider)) ||
     (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider))
   );
@@ -142,6 +143,10 @@ export function canTestProvider(
   }
 
   if (provider.meta?.providerType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT) {
+    return true;
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.OLLAMA_CLOUD) {
     return true;
   }
 
@@ -187,6 +192,7 @@ export type ProviderQuotaSource =
   | "cursor_oauth"
   | "cursor_apikey"
   | "kiro_oauth"
+  | "ollama_cloud"
   | "official"
   | "none";
 
@@ -234,6 +240,10 @@ export function getProviderQuotaSource(
 
   if (provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH) {
     return "kiro_oauth";
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.OLLAMA_CLOUD) {
+    return "ollama_cloud";
   }
 
   if (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider)) {

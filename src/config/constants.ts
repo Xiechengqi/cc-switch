@@ -10,6 +10,7 @@ export const PROVIDER_TYPES = {
   CURSOR_APIKEY: "cursor_apikey",
   KIRO_OAUTH: "kiro_oauth",
   DEEPSEEK_ACCOUNT: "deepseek_account",
+  OLLAMA_CLOUD: "ollama_cloud",
 } as const;
 
 // 用量脚本模板类型常量

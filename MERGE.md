@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-21
+
+- **上游分支：** `main`
+- **上游 HEAD：** `169d58ac`
+- **共同祖先：** `45555638`
+- **合并提交数：** 13
+- **主要变更：**
+  - feat(providers): 添加供应商面板 header/footer 调整 + preset 排序"官方优先 / prime partner 次之"
+  - feat(usage): 火山方舟 Agent/Coding Plan 通过 AK/SK 签名查询（新增 `TIER_MONTHLY` + UsageScript.accessKeyId/secretAccessKey 字段）
+  - feat(icons): Kimi 图标刷新 + CTok→ETok rebrand
+  - feat(provider): Kimi For Coding preset 加 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+  - fix(ui): Skills 管理 / 模型配置交互；align Claude MCP path for custom config dirs
+  - fix: OpenCode/OpenClaw Kimi preset 重命名为 "Kimi"
+  - style(proxy): rustfmt 旧 function_call 分支
+- **冲突解决：**
+  - `src-tauri/src/tray.rs`：保留本仓 `LONG_TIER_NAMES`（30d 标签），并入上游 `M_TIER_NAMES`（月窗口，"m" 标签）；test 中两个 import 同时含 `TIER_THIRTY_DAY` 与 `TIER_MONTHLY`
+  - `src-tauri/src/services/coding_plan.rs`：保留 HEAD 的 `api_key empty` 早返回，采纳上游 `coding_plan_not_found` helper 重构；用脚本批量补齐 QuotaTier 缺失字段（used/limit/unit + used_value_usd/max_value_usd）与 SubscriptionQuota 的 `failure: None`
+  - `src-tauri/src/services/provider/mod.rs` / `src-tauri/tests/provider_service.rs`：保留 HEAD 的 `expected_proxy_base_url` / `codex_proxy_base_url` 局部变量写法
+  - `src/components/providers/ProviderCard.tsx`：采纳上游 `flex-1` 容器宽度修正
+  - `src/lib/api/subscription.ts`：保留本仓 `invokeCommand` runtime 抽象，并入上游新增 `accessKeyId`/`secretAccessKey` 参数（火山方舟 AK/SK 签名）
+  - `src-tauri/src/web/handlers.rs`：`get_coding_plan_quota` 调用补齐新增 accessKeyId/secretAccessKey 第 3/4 形参
+  - `src/config/{claude,codex,gemini}ProviderPresets.ts`：按"禁止新添加 API Key 类供应商"全部采纳 HEAD（含丢弃上游 Kimi/Volcengine 推广物料更新与 Kimi For Coding `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 字段）
+  - WIP 处理：合并前后两次 `git stash`（pre-merge + during-merge）暂存本地正在开发的 Ollama Cloud + form 改造（ProviderForm.tsx / ClaudeFormFields.tsx / CodexFormFields.tsx / hooks/index.ts），合并稳定后用 `git checkout HEAD` 把这些文件回退到主分支版本（WIP 仍在 stash 中，后续可重接）
+- **验证：** `cargo check` exit 0（2 条 dead-code warning）；`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-18
 
 - **上游分支：** `main`

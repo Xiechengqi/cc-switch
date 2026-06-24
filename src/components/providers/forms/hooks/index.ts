@@ -26,4 +26,3 @@ export { useAntigravityOauth } from "./useAntigravityOauth";
 export { useCursorOauth } from "./useCursorOauth";
 export { useKiroOauth } from "./useKiroOauth";
 export { useDeepSeekAccount } from "./useDeepSeekAccount";
-export { useOllamaCloud } from "./useOllamaCloud";

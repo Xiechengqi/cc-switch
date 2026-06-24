@@ -8,11 +8,7 @@ import type {
 } from "@dnd-kit/core";
 import type { Provider } from "@/types";
 import { authApi, type AppId } from "@/lib/api";
-import type {
-  ManagedAuthProvider,
-  ManagedAuthStatus,
-  OllamaCloudStatus,
-} from "@/lib/api";
+import type { ManagedAuthProvider, ManagedAuthStatus } from "@/lib/api";
 import { PROVIDER_TYPES } from "@/config/constants";
 import { cn } from "@/lib/utils";
 import { ProviderActions } from "@/components/providers/ProviderActions";
@@ -190,23 +186,6 @@ function useManagedOauthAccountLogin(
     enabled: authProvider !== null,
     staleTime: 30000,
   });
-  const { data: ollamaCloudStatus } = useQuery<OllamaCloudStatus>({
-    queryKey: ["ollama-cloud-status"],
-    queryFn: () => authApi.ollamaCloudStatus(),
-    enabled: quotaSource === "ollama_cloud",
-    staleTime: 30000,
-  });
-
-  if (quotaSource === "ollama_cloud") {
-    const accountId =
-      resolveManagedAccountId(provider.meta, PROVIDER_TYPES.OLLAMA_CLOUD) ??
-      ollamaCloudStatus?.defaultAccountId ??
-      null;
-    const account = accountId
-      ? ollamaCloudStatus?.accounts.find((item) => item.id === accountId)
-      : undefined;
-    return account?.label || account?.maskedKey || accountId;
-  }
 
   if (!authProvider) {
     return null;

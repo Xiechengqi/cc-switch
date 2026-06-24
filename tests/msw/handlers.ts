@@ -158,14 +158,6 @@ export const handlers = [
     }),
   ),
 
-  http.post(`${TAURI_ENDPOINT}/ollama_cloud_status`, () =>
-    success({
-      authenticated: false,
-      defaultAccountId: null,
-      accounts: [],
-    }),
-  ),
-
   http.post(`${TAURI_ENDPOINT}/list_sessions`, () => success(listSessions())),
 
   http.post(`${TAURI_ENDPOINT}/get_session_messages`, async ({ request }) => {

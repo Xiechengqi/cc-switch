@@ -48,8 +48,6 @@ pub mod gemini_shadow;
 pub mod kiro_claude;
 pub mod kiro_oauth_auth;
 pub mod models;
-pub mod ollama_cloud;
-pub mod ollama_cloud_auth;
 pub mod streaming;
 pub mod streaming_codex_chat;
 pub mod streaming_gemini;
@@ -116,7 +114,7 @@ pub enum ProviderType {
     AntigravityOAuth,
     /// Antigravity CLI / agy (same OAuth account pool, CLI/harness profile)
     AgyOAuth,
-    /// Ollama Cloud API Key (OpenAI-compatible Chat Completions)
+    /// Ollama API Key (OpenAI-compatible Chat Completions)
     OllamaCloud,
 }
 

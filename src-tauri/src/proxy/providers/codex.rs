@@ -509,10 +509,6 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
-        if provider.is_ollama_cloud_provider() {
-            return Ok("https://ollama.com".to_string());
-        }
-
         if provider.is_codex_official_with_managed_auth() {
             return Ok("https://chatgpt.com/backend-api/codex".to_string());
         }
@@ -564,13 +560,6 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
-        if provider.is_ollama_cloud_provider() {
-            return Some(AuthInfo::new(
-                "ollama_cloud_placeholder".to_string(),
-                AuthStrategy::OllamaCloudApiKey,
-            ));
-        }
-
         if provider.is_codex_official_with_managed_auth() {
             return Some(AuthInfo::new(
                 "codex_oauth_placeholder".to_string(),

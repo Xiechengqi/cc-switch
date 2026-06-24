@@ -108,7 +108,6 @@ import {
   useCursorOauth,
   useKiroOauth,
   useDeepSeekAccount,
-  useOllamaCloud,
 } from "./hooks";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useSettingsQuery, useSharesQuery } from "@/lib/query";
@@ -397,6 +396,10 @@ function ProviderFormFull({
     appId === "claude" &&
     (selectedClaudePresetProviderType || initialData?.meta?.providerType) ===
       PROVIDER_TYPES.CURSOR_APIKEY;
+  const apiKeyFormCategory =
+    initialData?.meta?.providerType === PROVIDER_TYPES.OLLAMA_CLOUD
+      ? "third_party"
+      : category;
 
   useEffect(() => {
     setSelectedPresetId(initialData ? null : "custom");
@@ -499,7 +502,7 @@ function ProviderFormFull({
     initialConfig: form.getValues("settingsConfig"),
     onConfigChange: handleSettingsConfigChange,
     selectedPresetId,
-    category,
+    category: apiKeyFormCategory,
     appType: appId,
     apiKeyField: appId === "claude" ? localApiKeyField : undefined,
     allowOfficialApiKey: allowOfficialClaudeApiKey,
@@ -507,7 +510,7 @@ function ProviderFormFull({
 
   const { baseUrl, handleClaudeBaseUrlChange } = useBaseUrlState({
     appType: appId,
-    category,
+    category: apiKeyFormCategory,
     settingsConfig: form.getValues("settingsConfig"),
     codexConfig: "",
     onSettingsConfigChange: handleSettingsConfigChange,
@@ -597,11 +600,6 @@ function ProviderFormFull({
     accounts: deepSeekAccounts,
     defaultAccountId: defaultDeepSeekAccountId,
   } = useDeepSeekAccount();
-  const {
-    isAuthenticated: isOllamaCloudAuthenticated,
-    accounts: ollamaCloudAccounts,
-    defaultAccountId: defaultOllamaCloudAccountId,
-  } = useOllamaCloud();
 
   // 选中的 GitHub 账号 ID（多账号支持）
   const [selectedGitHubAccountId, setSelectedGitHubAccountId] = useState<
@@ -647,10 +645,6 @@ function ProviderFormFull({
   const [selectedDeepSeekAccountId, setSelectedDeepSeekAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "deepseek_account"));
-  const [selectedOllamaCloudAccountId, setSelectedOllamaCloudAccountId] =
-    useState<string | null>(() =>
-      resolveManagedAccountId(initialData?.meta, "ollama_cloud"),
-    );
 
   const selectedCodexPresetProviderType =
     appId === "codex" && selectedPresetId?.startsWith("codex-")
@@ -840,14 +834,9 @@ function ProviderFormFull({
     initialData?.meta,
     PROVIDER_TYPES.CURSOR_OAUTH,
   );
-  const hasOllamaCloudAuthBinding = hasManagedAuthBinding(
-    initialData?.meta,
-    PROVIDER_TYPES.OLLAMA_CLOUD,
-  );
   const currentProviderType =
     currentPresetProviderType ||
     initialData?.meta?.providerType ||
-    (hasOllamaCloudAuthBinding ? PROVIDER_TYPES.OLLAMA_CLOUD : undefined) ||
     (hasCursorOauthAuthBinding ? PROVIDER_TYPES.CURSOR_OAUTH : undefined) ||
     (appId === "gemini" && category === "official" && hasGoogleGeminiAuthBinding
       ? PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH
@@ -872,8 +861,7 @@ function ProviderFormFull({
       isAntigravityFamilyType(currentProviderType) ||
       isCursorProvider ||
       currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
-      currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
-      isOllamaCloudProvider);
+      currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT);
   const excludesQuotaDispatchLimit =
     currentProviderType === PROVIDER_TYPES.GOOGLE_GEMINI_OAUTH ||
     isAntigravityFamilyType(currentProviderType);
@@ -896,7 +884,6 @@ function ProviderFormFull({
     currentProviderType === PROVIDER_TYPES.CURSOR_APIKEY ||
     currentProviderType === PROVIDER_TYPES.KIRO_OAUTH ||
     currentProviderType === PROVIDER_TYPES.DEEPSEEK_ACCOUNT ||
-    isOllamaCloudProvider ||
     isCodexOfficialPreset;
 
   useEffect(() => {
@@ -953,25 +940,6 @@ function ProviderFormFull({
     deepSeekAccounts,
     defaultDeepSeekAccountId,
     selectedDeepSeekAccountId,
-  ]);
-
-  useEffect(() => {
-    const isOllamaCloudPreset =
-      currentProviderType === PROVIDER_TYPES.OLLAMA_CLOUD;
-    if (!isOllamaCloudPreset || selectedOllamaCloudAccountId) {
-      return;
-    }
-
-    const preferredAccountId =
-      defaultOllamaCloudAccountId ?? ollamaCloudAccounts[0]?.id ?? null;
-    if (preferredAccountId) {
-      setSelectedOllamaCloudAccountId(preferredAccountId);
-    }
-  }, [
-    currentProviderType,
-    defaultOllamaCloudAccountId,
-    ollamaCloudAccounts,
-    selectedOllamaCloudAccountId,
   ]);
 
   useEffect(() => {
@@ -1460,6 +1428,7 @@ function ProviderFormFull({
       currentProviderType === PROVIDER_TYPES.OLLAMA_CLOUD ||
       templatePreset?.providerType === "ollama_cloud" ||
       initialData?.meta?.providerType === "ollama_cloud";
+    const validationCategory = isOllamaCloudProvider ? "third_party" : category;
     // GitHub Copilot 必须先登录才能添加
     if (isCopilotProvider && !isCopilotAuthenticated) {
       toast.error(
@@ -1594,25 +1563,6 @@ function ProviderFormFull({
         return;
       }
     }
-    if (isOllamaCloudProvider) {
-      if (!isOllamaCloudAuthenticated) {
-        toast.error(
-          t("ollamaCloud.loginRequired", {
-            defaultValue: "请先添加 Ollama Cloud API Key",
-          }),
-        );
-        return;
-      }
-      if (!selectedOllamaCloudAccountId) {
-        toast.error(
-          t("ollamaCloud.selectAccountRequired", {
-            defaultValue: "Ollama Cloud 必须绑定一个 API Key",
-          }),
-        );
-        return;
-      }
-    }
-
     // OMO Other Fields JSON：B 类（格式错了保存下去数据就坏了）
     if (
       appId === "opencode" &&
@@ -1658,13 +1608,15 @@ function ProviderFormFull({
 
     // 非官方供应商端点 / API Key 空：A 类
     // cloud_provider（如 Bedrock）通过模板变量处理认证，跳过通用校验
-    if (category !== "official" && category !== "cloud_provider") {
+    if (
+      validationCategory !== "official" &&
+      validationCategory !== "cloud_provider"
+    ) {
       if (appId === "claude") {
         if (
           !isCodexOauthProvider &&
           !isCursorOauthProvider &&
           !isDeepSeekAccountProvider &&
-          !isOllamaCloudProvider &&
           !baseUrl.trim()
         ) {
           issues.push(
@@ -1678,7 +1630,6 @@ function ProviderFormFull({
           !isCodexOauthProvider &&
           !isCursorOauthProvider &&
           !isDeepSeekAccountProvider &&
-          !isOllamaCloudProvider &&
           !apiKey.trim()
         ) {
           issues.push(
@@ -1688,14 +1639,14 @@ function ProviderFormFull({
           );
         }
       } else if (appId === "codex") {
-        if (!isOllamaCloudProvider && !codexBaseUrl.trim()) {
+        if (!codexBaseUrl.trim()) {
           issues.push(
             t("providerForm.endpointRequired", {
               defaultValue: "非官方供应商请填写 API 端点",
             }),
           );
         }
-        if (!isOllamaCloudProvider && !codexApiKey.trim()) {
+        if (!codexApiKey.trim()) {
           issues.push(
             t("providerForm.apiKeyRequired", {
               defaultValue: "非官方供应商请填写 API Key",
@@ -1768,6 +1719,7 @@ function ProviderFormFull({
       currentProviderType === PROVIDER_TYPES.OLLAMA_CLOUD ||
       templatePreset?.providerType === "ollama_cloud" ||
       initialData?.meta?.providerType === "ollama_cloud";
+    const saveCategory = isOllamaCloudProvider ? "third_party" : category;
 
     let settingsConfig: string;
 
@@ -1826,7 +1778,7 @@ function ProviderFormFull({
       try {
         const authJson = JSON.parse(codexAuth);
         const shouldPersistCodexLocalRouting =
-          category !== "official" ||
+          saveCategory !== "official" ||
           isCursorApiKeyPreset ||
           currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
           isOllamaCloudProvider;
@@ -2101,14 +2053,7 @@ function ProviderFormFull({
                           authProvider: "deepseek_account",
                           accountId: selectedDeepSeekAccountId ?? undefined,
                         }
-                      : isOllamaCloudProvider
-                        ? {
-                            source: "managed_account",
-                            authProvider: "ollama_cloud",
-                            accountId:
-                              selectedOllamaCloudAccountId ?? undefined,
-                          }
-                        : undefined,
+                      : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         isCopilotProvider && selectedGitHubAccountId
@@ -2120,7 +2065,7 @@ function ProviderFormFull({
         : undefined,
       codexChatReasoning:
         appId === "codex" &&
-        (category !== "official" ||
+        (saveCategory !== "official" ||
           isCursorApiKeyPreset ||
           currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
           isOllamaCloudProvider) &&
@@ -2128,9 +2073,9 @@ function ProviderFormFull({
           ? normalizeCodexChatReasoningForSave(codexChatReasoning)
           : undefined,
       customUserAgent:
-        (appId === "claude" && category !== "official") ||
+        (appId === "claude" && saveCategory !== "official") ||
         (appId === "codex" &&
-          (category !== "official" ||
+          (saveCategory !== "official" ||
             isCursorApiKeyPreset ||
             currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
             isOllamaCloudProvider))
@@ -2151,10 +2096,10 @@ function ProviderFormFull({
         ? quotaDispatchLimitPercent
         : undefined,
       apiFormat:
-        appId === "claude" && category !== "official"
+        appId === "claude" && saveCategory !== "official"
           ? localApiFormat
           : appId === "codex" &&
-              (category !== "official" ||
+              (saveCategory !== "official" ||
                 isCursorApiKeyPreset ||
                 currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
                 isOllamaCloudProvider)
@@ -2162,12 +2107,12 @@ function ProviderFormFull({
             : undefined,
       apiKeyField:
         appId === "claude" &&
-        category !== "official" &&
+        saveCategory !== "official" &&
         localApiKeyField !== "ANTHROPIC_AUTH_TOKEN"
           ? localApiKeyField
           : undefined,
       isFullUrl:
-        supportsFullUrl && category !== "official" && localIsFullUrl
+        supportsFullUrl && saveCategory !== "official" && localIsFullUrl
           ? true
           : undefined,
     };
@@ -2185,8 +2130,12 @@ function ProviderFormFull({
     await onSubmit(payload);
   };
 
+  const effectiveProviderFormCategory = isOllamaCloudProvider
+    ? "third_party"
+    : category;
   const shouldShowSpeedTest =
-    category !== "official" && category !== "cloud_provider";
+    effectiveProviderFormCategory !== "official" &&
+    effectiveProviderFormCategory !== "cloud_provider";
 
   const {
     shouldShowApiKeyLink: shouldShowClaudeApiKeyLink,
@@ -2195,7 +2144,7 @@ function ProviderFormFull({
     partnerPromotionKey: claudePartnerPromotionKey,
   } = useApiKeyLink({
     appId: "claude",
-    category,
+    category: effectiveProviderFormCategory,
     selectedPresetId,
     presetEntries,
     formWebsiteUrl: form.watch("websiteUrl") || "",
@@ -2208,7 +2157,7 @@ function ProviderFormFull({
     partnerPromotionKey: codexPartnerPromotionKey,
   } = useApiKeyLink({
     appId: "codex",
-    category,
+    category: effectiveProviderFormCategory,
     selectedPresetId,
     presetEntries,
     formWebsiteUrl: form.watch("websiteUrl") || "",
@@ -2771,7 +2720,7 @@ function ProviderFormFull({
               }
               apiKey={apiKey}
               onApiKeyChange={handleApiKeyChange}
-              category={category}
+              category={effectiveProviderFormCategory}
               shouldShowApiKeyLink={shouldShowClaudeApiKeyLink}
               websiteUrl={claudeWebsiteUrl}
               isPartner={isClaudePartner}
@@ -2811,10 +2760,6 @@ function ProviderFormFull({
                 templatePreset?.providerType === "deepseek_account" ||
                 initialData?.meta?.providerType === "deepseek_account"
               }
-              isOllamaCloudPreset={
-                templatePreset?.providerType === "ollama_cloud" ||
-                initialData?.meta?.providerType === "ollama_cloud"
-              }
               usesOAuth={
                 templatePreset?.requiresOAuth === true ||
                 templatePreset?.providerType === "github_copilot" ||
@@ -2831,9 +2776,7 @@ function ProviderFormFull({
                 templatePreset?.providerType === "cursor_oauth" ||
                 initialData?.meta?.providerType === "cursor_oauth" ||
                 templatePreset?.providerType === "deepseek_account" ||
-                initialData?.meta?.providerType === "deepseek_account" ||
-                templatePreset?.providerType === "ollama_cloud" ||
-                initialData?.meta?.providerType === "ollama_cloud"
+                initialData?.meta?.providerType === "deepseek_account"
               }
               isCopilotAuthenticated={isCopilotAuthenticated}
               selectedGitHubAccountId={selectedGitHubAccountId}
@@ -2852,8 +2795,6 @@ function ProviderFormFull({
               onCursorAccountSelect={setSelectedCursorAccountId}
               selectedDeepSeekAccountId={selectedDeepSeekAccountId}
               onDeepSeekAccountSelect={setSelectedDeepSeekAccountId}
-              selectedOllamaCloudAccountId={selectedOllamaCloudAccountId}
-              onOllamaCloudAccountSelect={setSelectedOllamaCloudAccountId}
               codexFastMode={codexFastMode}
               onCodexFastModeChange={setCodexFastMode}
               templateValueEntries={templateValueEntries}
@@ -2896,7 +2837,7 @@ function ProviderFormFull({
               providerId={providerId}
               codexApiKey={codexApiKey}
               onApiKeyChange={handleCodexApiKeyChange}
-              category={category}
+              category={effectiveProviderFormCategory}
               shouldShowApiKeyLink={shouldShowCodexApiKeyLink}
               websiteUrl={codexWebsiteUrl}
               isPartner={isCodexPartner}
@@ -2909,13 +2850,8 @@ function ProviderFormFull({
                 currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH
               }
               isCursorApiKeyPreset={isCursorApiKeyPreset}
-              isOllamaCloudPreset={
-                currentProviderType === PROVIDER_TYPES.OLLAMA_CLOUD
-              }
               selectedCursorAccountId={selectedCursorAccountId}
               onCursorAccountSelect={setSelectedCursorAccountId}
-              selectedOllamaCloudAccountId={selectedOllamaCloudAccountId}
-              onOllamaCloudAccountSelect={setSelectedOllamaCloudAccountId}
               shouldShowSpeedTest={shouldShowSpeedTest}
               codexBaseUrl={codexBaseUrl}
               onBaseUrlChange={handleCodexBaseUrlChange}

@@ -1196,20 +1196,6 @@ pub fn run() {
                 log::info!("✓ DeepSeekAccountManager initialized");
             }
 
-            // 初始化 OllamaCloudAccountManager (Ollama Cloud API Key)
-            {
-                use crate::proxy::providers::ollama_cloud_auth::OllamaCloudAccountManager;
-                use commands::OllamaCloudState;
-                use tokio::sync::RwLock;
-
-                let app_config_dir = crate::config::get_app_config_dir();
-                let ollama_cloud_manager = OllamaCloudAccountManager::new(app_config_dir);
-                app.manage(OllamaCloudState(Arc::new(RwLock::new(
-                    ollama_cloud_manager,
-                ))));
-                log::info!("✓ OllamaCloudAccountManager initialized");
-            }
-
             // 初始化 OAuth 订阅额度后台刷新服务
             {
                 use commands::OauthQuotaState;
@@ -1575,15 +1561,6 @@ pub fn run() {
             commands::deepseek_account_status,
             commands::deepseek_account_remove,
             commands::deepseek_account_set_default,
-            // Ollama Cloud API Key management
-            commands::ollama_cloud_import_api_key,
-            commands::ollama_cloud_list_accounts,
-            commands::ollama_cloud_status,
-            commands::ollama_cloud_remove_account,
-            commands::ollama_cloud_set_default_account,
-            commands::ollama_cloud_test_connection,
-            commands::ollama_cloud_list_models,
-            commands::ollama_cloud_list_tags,
             // New MCP via config.json (SSOT)
             commands::get_mcp_config,
             commands::upsert_mcp_server_in_config,

@@ -229,10 +229,10 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     icon: "cursor",
   },
   {
-    name: "Ollama Cloud",
+    name: "Ollama API Key",
     websiteUrl: "https://ollama.com",
-    isOfficial: true,
-    category: "official",
+    isOfficial: false,
+    category: "third_party",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "ollama",
@@ -244,7 +244,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
       upstreamModel: "kimi-k2.7-code",
     },
     providerType: "ollama_cloud",
-    requiresOAuth: true,
+    requiresOAuth: false,
     apiFormat: "openai_chat",
     modelCatalog: modelCatalog([
       {

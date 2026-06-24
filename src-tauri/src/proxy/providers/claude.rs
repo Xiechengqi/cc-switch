@@ -710,10 +710,6 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
-        if provider.is_ollama_cloud_provider() {
-            return Ok("https://ollama.com".to_string());
-        }
-
         // Codex OAuth: 强制使用 ChatGPT 后端 API 端点（忽略用户配置的 base_url）
         if self.is_codex_oauth(provider) {
             return Ok("https://chatgpt.com/backend-api/codex".to_string());
@@ -784,13 +780,6 @@ impl ProviderAdapter for ClaudeAdapter {
             return Some(AuthInfo::new(
                 "claude_oauth_placeholder".to_string(),
                 AuthStrategy::ClaudeOAuth,
-            ));
-        }
-
-        if provider_type == ProviderType::OllamaCloud {
-            return Some(AuthInfo::new(
-                "ollama_cloud_placeholder".to_string(),
-                AuthStrategy::OllamaCloudApiKey,
             ));
         }
 
@@ -882,7 +871,7 @@ impl ProviderAdapter for ClaudeAdapter {
             AuthStrategy::Anthropic => {
                 vec![(HeaderName::from_static("x-api-key"), hv(&auth.api_key)?)]
             }
-            AuthStrategy::ClaudeAuth | AuthStrategy::Bearer | AuthStrategy::OllamaCloudApiKey => {
+            AuthStrategy::ClaudeAuth | AuthStrategy::Bearer => {
                 vec![(HeaderName::from_static("authorization"), hv(&bearer)?)]
             }
             AuthStrategy::ClaudeOAuth => {

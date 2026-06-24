@@ -13,7 +13,6 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { CodexOAuthSection } from "./CodexOAuthSection";
 import { CursorOAuthSection } from "./CursorOAuthSection";
-import { OllamaCloudApiKeySection } from "./OllamaCloudApiKeySection";
 import { SingleModelMappingField } from "./SingleModelMappingField";
 import { ApiKeySection, EndpointField } from "./shared";
 import {
@@ -21,7 +20,6 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
-import { authApi } from "@/lib/api/auth";
 import { CustomUserAgentField } from "./CustomUserAgentField";
 import { cn } from "@/lib/utils";
 import type {
@@ -54,9 +52,6 @@ interface CodexFormFieldsProps {
   isCursorApiKeyPreset?: boolean;
   selectedCursorAccountId?: string | null;
   onCursorAccountSelect?: (accountId: string | null) => void;
-  isOllamaCloudPreset?: boolean;
-  selectedOllamaCloudAccountId?: string | null;
-  onOllamaCloudAccountSelect?: (accountId: string | null) => void;
 
   // Base URL
   shouldShowSpeedTest: boolean;
@@ -108,9 +103,6 @@ export function CodexFormFields({
   isCursorApiKeyPreset = false,
   selectedCursorAccountId,
   onCursorAccountSelect,
-  isOllamaCloudPreset = false,
-  selectedOllamaCloudAccountId,
-  onOllamaCloudAccountSelect,
   shouldShowSpeedTest,
   codexBaseUrl,
   onBaseUrlChange,
@@ -141,8 +133,7 @@ export function CodexFormFields({
     codexChatReasoning.supportsThinking === true ||
     codexChatReasoning.supportsEffort === true;
   const supportsEffort = codexChatReasoning.supportsEffort === true;
-  const shouldShowModelMapping =
-    needsLocalRouting && (!isCodexOfficialPreset || isOllamaCloudPreset);
+  const shouldShowModelMapping = needsLocalRouting && !isCodexOfficialPreset;
 
   // needsLocalRouting 非默认值说明预设/用户动过路由配置，需要让模型映射保持可见
   const hasAnyAdvancedValue = !!customUserAgent || needsLocalRouting;
@@ -190,33 +181,6 @@ export function CodexFormFields({
   );
 
   const handleFetchModels = useCallback(() => {
-    if (isOllamaCloudPreset) {
-      setIsFetchingModels(true);
-      authApi
-        .ollamaCloudListModels(selectedOllamaCloudAccountId)
-        .then((models) => {
-          const fetched = models.map<FetchedModel>((model) => ({
-            id: model.id,
-            displayName: model.displayName,
-            ownedBy: model.ownedBy ?? "ollama",
-          }));
-          setFetchedModels(fetched);
-          if (fetched.length === 0) {
-            toast.info(t("providerForm.fetchModelsEmpty"));
-          } else {
-            toast.success(
-              t("providerForm.fetchModelsSuccess", { count: fetched.length }),
-            );
-          }
-        })
-        .catch((err) => {
-          console.warn("[OllamaCloud] Failed:", err);
-          showFetchModelsError(err, t);
-        })
-        .finally(() => setIsFetchingModels(false));
-      return;
-    }
-
     if (!codexBaseUrl || !codexApiKey) {
       showFetchModelsError(null, t, {
         hasApiKey: !!codexApiKey,
@@ -247,15 +211,7 @@ export function CodexFormFields({
         showFetchModelsError(err, t);
       })
       .finally(() => setIsFetchingModels(false));
-  }, [
-    codexBaseUrl,
-    codexApiKey,
-    isFullUrl,
-    customUserAgent,
-    isOllamaCloudPreset,
-    selectedOllamaCloudAccountId,
-    t,
-  ]);
+  }, [codexBaseUrl, codexApiKey, isFullUrl, customUserAgent, t]);
 
   return (
     <>
@@ -277,15 +233,8 @@ export function CodexFormFields({
         />
       )}
 
-      {isOllamaCloudPreset && (
-        <OllamaCloudApiKeySection
-          selectedAccountId={selectedOllamaCloudAccountId}
-          onAccountSelect={onOllamaCloudAccountSelect}
-        />
-      )}
-
       {/* Codex API Key 输入框 */}
-      {!isCursorOauthPreset && !isOllamaCloudPreset && (
+      {!isCursorOauthPreset && (
         <ApiKeySection
           id="codexApiKey"
           label="API Key"
@@ -336,8 +285,7 @@ export function CodexFormFields({
       {/* 高级选项 —— 本地路由映射/模型映射/思考能力/自定义 UA；预设供应商通常无需展开 */}
       {(category !== "official" ||
         isCursorApiKeyPreset ||
-        isCursorOauthPreset ||
-        isOllamaCloudPreset) && (
+        isCursorOauthPreset) && (
         <Collapsible
           open={advancedExpanded}
           onOpenChange={setAdvancedExpanded}
@@ -372,8 +320,7 @@ export function CodexFormFields({
             {/* 本地路由映射开关 —— 沿用 shouldShowSpeedTest 门控，cloud_provider 保持不可切换 */}
             {(shouldShowSpeedTest ||
               isCursorApiKeyPreset ||
-              isCursorOauthPreset ||
-              isOllamaCloudPreset) && (
+              isCursorOauthPreset) && (
               <div className="flex items-center justify-between gap-4">
                 <div className="space-y-1">
                   <FormLabel>

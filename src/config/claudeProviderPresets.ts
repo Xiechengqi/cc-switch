@@ -65,7 +65,7 @@ export interface ProviderPreset {
   // - "cursor_apikey": Cursor API Key 反代 Anthropic/Codex API
   // - "kiro_oauth": Kiro OAuth 账号反代 Anthropic API
   // - "deepseek_account": DeepSeek 账号
-  // - "ollama_cloud": Ollama Cloud API Key
+  // - "ollama_cloud": Ollama API Key OpenAI-compatible API
   providerType?:
     | "github_copilot"
     | "codex_oauth"
@@ -161,7 +161,7 @@ export const providerPresets: ProviderPreset[] = [
     icon: "kiro",
   },
   {
-    name: "Ollama Cloud",
+    name: "Ollama API Key",
     websiteUrl: "https://ollama.com",
     settingsConfig: {
       env: {
@@ -178,11 +178,11 @@ export const providerPresets: ProviderPreset[] = [
         upstreamModel: "kimi-k2.7-code",
       },
     },
-    isOfficial: true,
-    category: "official",
+    isOfficial: false,
+    category: "third_party",
     apiFormat: "openai_chat",
     providerType: "ollama_cloud",
-    requiresOAuth: true,
+    requiresOAuth: false,
     modelsUrl: "https://ollama.com/v1/models",
     theme: {
       backgroundColor: "#111111",

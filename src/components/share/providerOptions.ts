@@ -3,7 +3,6 @@ import type {
   DeepSeekAccountStatus,
   ManagedAuthProvider,
   ManagedAuthStatus,
-  OllamaCloudStatus,
 } from "@/lib/api/auth";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import type { Provider } from "@/types";
@@ -31,8 +30,7 @@ export const SHARE_PROVIDER_AUTH_PROVIDERS = [
 type ShareProviderAuthProvider = (typeof SHARE_PROVIDER_AUTH_PROVIDERS)[number];
 type ShareAccountProvider =
   | ShareProviderAuthProvider
-  | typeof PROVIDER_TYPES.DEEPSEEK_ACCOUNT
-  | typeof PROVIDER_TYPES.OLLAMA_CLOUD;
+  | typeof PROVIDER_TYPES.DEEPSEEK_ACCOUNT;
 
 const SHARE_PROVIDER_AUTH_PROVIDER_SET = new Set<string>(
   SHARE_PROVIDER_AUTH_PROVIDERS,
@@ -40,14 +38,12 @@ const SHARE_PROVIDER_AUTH_PROVIDER_SET = new Set<string>(
 const SHARE_ACCOUNT_PROVIDER_SET = new Set<string>([
   ...SHARE_PROVIDER_AUTH_PROVIDERS,
   PROVIDER_TYPES.DEEPSEEK_ACCOUNT,
-  PROVIDER_TYPES.OLLAMA_CLOUD,
 ]);
 
 export type ManagedAuthStatusByProvider = Partial<
   Record<ShareProviderAuthProvider, ManagedAuthStatus>
 > & {
   [PROVIDER_TYPES.DEEPSEEK_ACCOUNT]?: DeepSeekAccountStatus;
-  [PROVIDER_TYPES.OLLAMA_CLOUD]?: OllamaCloudStatus;
 };
 
 export function buildProviderOption(
@@ -127,18 +123,6 @@ function getAccountLabel(
       ? status?.accounts.find((item) => item.id === accountId)
       : undefined;
     return normalizeDetail(account?.login ?? accountId);
-  }
-
-  if (authProvider === PROVIDER_TYPES.OLLAMA_CLOUD) {
-    const status = authStatuses?.ollama_cloud;
-    const accountId =
-      resolveManagedAccountId(provider.meta, authProvider) ??
-      status?.defaultAccountId ??
-      null;
-    const account = accountId
-      ? status?.accounts.find((item) => item.id === accountId)
-      : undefined;
-    return normalizeDetail(account?.label ?? account?.maskedKey ?? accountId);
   }
 
   if (!SHARE_PROVIDER_AUTH_PROVIDER_SET.has(authProvider)) return null;

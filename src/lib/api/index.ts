@@ -68,9 +68,6 @@ export type {
   ManagedAuthDeviceCodeResponse,
   DeepSeekAccount,
   DeepSeekAccountStatus,
-  OllamaCloudAccount,
-  OllamaCloudStatus,
-  OllamaModel,
 } from "./auth";
 export type {
   CodexBankedResetConsumeResult,

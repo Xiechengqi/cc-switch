@@ -210,7 +210,6 @@ impl Provider {
             || self.is_google_gemini_oauth_provider()
             || self.is_antigravity_family_provider()
             || self.is_deepseek_account_provider()
-            || self.is_ollama_cloud_provider()
             || self.is_kiro_oauth_provider()
             || self.is_cursor_oauth_provider()
             || self.is_google_gemini_official_with_managed_auth()
@@ -234,12 +233,9 @@ impl Provider {
                     || self.is_cursor_oauth_provider()
                     || self.is_antigravity_family_provider()
                     || self.is_codex_official_with_managed_auth()
-                    || self.is_ollama_cloud_provider()
             }
             AppType::Codex => {
-                self.is_codex_official_with_managed_auth()
-                    || self.is_cursor_oauth_provider()
-                    || self.is_ollama_cloud_provider()
+                self.is_codex_official_with_managed_auth() || self.is_cursor_oauth_provider()
             }
             AppType::Gemini => {
                 self.is_google_gemini_oauth_provider()
@@ -260,8 +256,6 @@ impl Provider {
             AppType::Codex if self.is_cursor_oauth_provider() => Some("https://api2.cursor.sh"),
             AppType::Claude if self.is_cursor_apikey_provider() => Some("https://api.cursor.com"),
             AppType::Codex if self.is_cursor_apikey_provider() => Some("https://api.cursor.com"),
-            AppType::Claude if self.is_ollama_cloud_provider() => Some("https://ollama.com"),
-            AppType::Codex if self.is_ollama_cloud_provider() => Some("https://ollama.com"),
             AppType::Claude if self.is_antigravity_family_provider() => {
                 Some("https://daily-cloudcode-pa.googleapis.com")
             }

@@ -10,7 +10,9 @@ use crate::services::codex_banked_reset::{
     self, CodexBankedResetConsumeResult, CodexBankedResetInviteResult, CodexBankedResetStatus,
 };
 use crate::services::model_fetch::FetchedModel;
-use crate::services::subscription::{query_codex_quota, CredentialStatus, SubscriptionQuota};
+use crate::services::subscription::{
+    query_codex_quota_with_plan, CredentialStatus, SubscriptionQuota,
+};
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::RwLock;
@@ -52,13 +54,22 @@ pub async fn get_codex_oauth_quota(
         }
     };
 
-    Ok(query_codex_quota(
+    let (quota, plan_type) = query_codex_quota_with_plan(
         &token,
         Some(&id),
         "codex_oauth",
         "Codex OAuth access token expired or rejected. Please re-login via cc-switch.",
     )
-    .await)
+    .await;
+    if let Some(plan_type) = plan_type.as_deref() {
+        if let Err(err) = manager
+            .record_account_plan(&id, Some(plan_type), "wham_usage")
+            .await
+        {
+            log::warn!("[CodexOAuth] failed to persist wham/usage plan for account={id}: {err}");
+        }
+    }
+    Ok(quota)
 }
 
 /// 获取 Codex OAuth (ChatGPT Plus/Pro) 可用模型列表

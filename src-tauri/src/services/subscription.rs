@@ -1071,14 +1071,21 @@ fn is_codex_token_stale(last_refresh: &str) -> bool {
 
 // ── Codex API 查询 ──────────────────────────────────────
 
-fn format_codex_plan_label(plan: &str) -> String {
-    match plan {
-        "plus" => "ChatGPT Plus".to_string(),
-        "pro" => "ChatGPT Pro".to_string(),
+pub(crate) fn normalize_chatgpt_plan_type(plan: &str) -> String {
+    plan.trim().to_ascii_lowercase().replace(['-', ' '], "_")
+}
+
+pub(crate) fn format_chatgpt_plan_label(plan: &str) -> String {
+    match normalize_chatgpt_plan_type(plan).as_str() {
         "free" => "ChatGPT Free".to_string(),
+        "plus" => "ChatGPT Plus".to_string(),
+        "prolite" | "pro_lite" => "ChatGPT Pro 5x".to_string(),
+        "pro" => "ChatGPT Pro 20x".to_string(),
         "team" => "ChatGPT Team".to_string(),
-        "enterprise" => "ChatGPT Enterprise".to_string(),
-        other => other.to_string(),
+        "business" | "self_serve_business_usage_based" => "ChatGPT Business".to_string(),
+        "enterprise" | "hc" | "enterprise_cbp_usage_based" => "ChatGPT Enterprise".to_string(),
+        "edu" | "education" | "edu_plus" | "edu_pro" => "ChatGPT Edu".to_string(),
+        _ => plan.trim().to_string(),
     }
 }
 
@@ -1134,6 +1141,17 @@ pub(crate) async fn query_codex_quota(
     tool_label: &str,
     expired_message: &str,
 ) -> SubscriptionQuota {
+    query_codex_quota_with_plan(access_token, account_id, tool_label, expired_message)
+        .await
+        .0
+}
+
+pub(crate) async fn query_codex_quota_with_plan(
+    access_token: &str,
+    account_id: Option<&str>,
+    tool_label: &str,
+    expired_message: &str,
+) -> (SubscriptionQuota, Option<String>) {
     let client = crate::proxy::http_client::get();
 
     let mut req = client
@@ -1149,10 +1167,13 @@ pub(crate) async fn query_codex_quota(
     let resp = match req.timeout(std::time::Duration::from_secs(15)).send().await {
         Ok(r) => r,
         Err(e) => {
-            return SubscriptionQuota::failure(
-                tool_label,
-                QuotaFailure::from_reqwest(&e),
-                format!("Network error: {e}"),
+            return (
+                SubscriptionQuota::failure(
+                    tool_label,
+                    QuotaFailure::from_reqwest(&e),
+                    format!("Network error: {e}"),
+                ),
+                None,
             );
         }
     };
@@ -1178,21 +1199,32 @@ pub(crate) async fn query_codex_quota(
                 truncate_for_log(&body, 200)
             ),
         };
-        return SubscriptionQuota::failure(tool_label, failure, message);
+        return (
+            SubscriptionQuota::failure(tool_label, failure, message),
+            None,
+        );
     }
 
     let body: CodexUsageResponse = match resp.json().await {
         Ok(v) => v,
         Err(e) => {
-            return SubscriptionQuota::failure(
-                tool_label,
-                QuotaFailure::Parse,
-                format!("Failed to parse API response: {e}"),
+            return (
+                SubscriptionQuota::failure(
+                    tool_label,
+                    QuotaFailure::Parse,
+                    format!("Failed to parse API response: {e}"),
+                ),
+                None,
             );
         }
     };
 
-    let plan_label = body.plan_type.as_deref().map(format_codex_plan_label);
+    let plan_type = body
+        .plan_type
+        .as_deref()
+        .map(normalize_chatgpt_plan_type)
+        .filter(|value| !value.is_empty());
+    let plan_label = plan_type.as_deref().map(format_chatgpt_plan_label);
 
     let mut tiers = Vec::new();
 
@@ -1219,17 +1251,20 @@ pub(crate) async fn query_codex_quota(
         }
     }
 
-    SubscriptionQuota {
-        tool: tool_label.to_string(),
-        credential_status: CredentialStatus::Valid,
-        credential_message: plan_label,
-        success: true,
-        tiers,
-        extra_usage: None,
-        error: None,
-        queried_at: Some(now_millis()),
-        failure: None,
-    }
+    (
+        SubscriptionQuota {
+            tool: tool_label.to_string(),
+            credential_status: CredentialStatus::Valid,
+            credential_message: plan_label,
+            success: true,
+            tiers,
+            extra_usage: None,
+            error: None,
+            queried_at: Some(now_millis()),
+            failure: None,
+        },
+        plan_type,
+    )
 }
 
 // ── Gemini 凭据读取 ──────────────────────────────────────
@@ -1879,6 +1914,19 @@ mod cursor_tests {
         assert_eq!(format_cursor_membership_label("PRO"), "Cursor Pro");
         // 未知等级回落到原值
         assert_eq!(format_cursor_membership_label("team"), "Cursor team");
+    }
+
+    #[test]
+    fn chatgpt_plan_label_distinguishes_pro_tiers() {
+        assert_eq!(format_chatgpt_plan_label("free"), "ChatGPT Free");
+        assert_eq!(format_chatgpt_plan_label("plus"), "ChatGPT Plus");
+        assert_eq!(format_chatgpt_plan_label("prolite"), "ChatGPT Pro 5x");
+        assert_eq!(format_chatgpt_plan_label("pro-lite"), "ChatGPT Pro 5x");
+        assert_eq!(format_chatgpt_plan_label("pro"), "ChatGPT Pro 20x");
+        assert_eq!(
+            format_chatgpt_plan_label("self_serve_business_usage_based"),
+            "ChatGPT Business"
+        );
     }
 
     #[test]

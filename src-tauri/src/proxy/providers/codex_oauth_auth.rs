@@ -165,6 +165,8 @@ struct OrgClaim {
 struct OpenAiAuthClaim {
     #[serde(default)]
     chatgpt_account_id: Option<String>,
+    #[serde(default)]
+    chatgpt_plan_type: Option<String>,
 }
 
 /// 缓存的 access_token（含过期时间）
@@ -217,18 +219,31 @@ struct CodexAccountData {
     /// 登录方式：device 或 cli。旧数据默认 device。
     #[serde(default = "default_codex_login_method")]
     pub login_method: String,
+    /// ChatGPT plan enum. Prefer wham/usage over JWT because JWT claims can lag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_updated_at: Option<i64>,
 }
 
 /// 公开的账号信息（返回给前端，复用 GitHubAccount 结构）
 impl From<&CodexAccountData> for GitHubAccount {
     fn from(data: &CodexAccountData) -> Self {
+        let base_login = data
+            .email
+            .clone()
+            .unwrap_or_else(|| format!("ChatGPT ({})", &data.account_id));
+        let login = match data.plan_label.as_deref().map(str::trim) {
+            Some(label) if !label.is_empty() => format!("{base_login} · {label}"),
+            _ => base_login,
+        };
         GitHubAccount {
             id: data.account_id.clone(),
-            // 用 email 作为显示名（若无则用 account_id）
-            login: data
-                .email
-                .clone()
-                .unwrap_or_else(|| format!("ChatGPT ({})", &data.account_id)),
+            login,
             email: data.email.clone(),
             avatar_url: None,
             authenticated_at: data.authenticated_at,
@@ -442,7 +457,7 @@ impl CodexOAuthManager {
             CodexOAuthError::TokenFetchFailed("响应缺少 refresh_token".to_string())
         })?;
 
-        let (account_id, email) = extract_identity_from_tokens(&tokens);
+        let (account_id, email, plan_type) = extract_identity_from_tokens(&tokens);
         let account_id = account_id.ok_or_else(|| {
             CodexOAuthError::ParseError("无法从 token 中提取 account_id".to_string())
         })?;
@@ -460,7 +475,7 @@ impl CodexOAuthManager {
         }
 
         let account = self
-            .add_account_internal(account_id, refresh_token, email, "device")
+            .add_account_internal(account_id, refresh_token, email, "device", plan_type, "jwt")
             .await?;
 
         Ok(Some(account))
@@ -704,7 +719,7 @@ impl CodexOAuthManager {
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             CodexOAuthError::TokenFetchFailed("响应缺少 refresh_token".to_string())
         })?;
-        let (account_id, email) = extract_identity_from_tokens(&tokens);
+        let (account_id, email, plan_type) = extract_identity_from_tokens(&tokens);
         let account_id = account_id.ok_or_else(|| {
             CodexOAuthError::ParseError("无法从 token 中提取 account_id".to_string())
         })?;
@@ -720,7 +735,7 @@ impl CodexOAuthManager {
             );
         }
 
-        self.add_account_internal(account_id, refresh_token, email, "cli")
+        self.add_account_internal(account_id, refresh_token, email, "cli", plan_type, "jwt")
             .await
     }
 
@@ -873,6 +888,12 @@ impl CodexOAuthManager {
             }
         }
 
+        let (_, _, jwt_plan_type) = extract_identity_from_tokens(&new_tokens);
+        if let Some(plan_type) = jwt_plan_type.as_deref() {
+            self.record_account_plan(account_id, Some(plan_type), "jwt")
+                .await?;
+        }
+
         let access_token = new_tokens.access_token.clone();
         let expires_at_ms = compute_expires_at_ms(new_tokens.expires_in);
 
@@ -972,6 +993,52 @@ impl CodexOAuthManager {
         Ok(())
     }
 
+    pub async fn record_account_plan(
+        &self,
+        account_id: &str,
+        plan_type: Option<&str>,
+        source: &str,
+    ) -> Result<(), CodexOAuthError> {
+        let Some(plan_type) = plan_type
+            .map(crate::services::subscription::normalize_chatgpt_plan_type)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(());
+        };
+        let plan_label = crate::services::subscription::format_chatgpt_plan_label(&plan_type);
+        let next_priority = plan_source_priority(source);
+
+        let mut changed = false;
+        {
+            let mut accounts = self.accounts.write().await;
+            let Some(account) = accounts.get_mut(account_id) else {
+                return Err(CodexOAuthError::AccountNotFound(account_id.to_string()));
+            };
+
+            let current_priority = account
+                .plan_source
+                .as_deref()
+                .map(plan_source_priority)
+                .unwrap_or(0);
+            if next_priority >= current_priority
+                && (account.plan_type.as_deref() != Some(plan_type.as_str())
+                    || account.plan_source.as_deref() != Some(source)
+                    || account.plan_label.as_deref() != Some(plan_label.as_str()))
+            {
+                account.plan_type = Some(plan_type);
+                account.plan_label = Some(plan_label);
+                account.plan_source = Some(source.to_string());
+                account.plan_updated_at = Some(chrono::Utc::now().timestamp());
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.save_to_disk().await?;
+        }
+        Ok(())
+    }
+
     pub async fn clear_auth(&self) -> Result<(), CodexOAuthError> {
         log::info!("[CodexOAuth] 清除所有认证");
 
@@ -1050,8 +1117,56 @@ impl CodexOAuthManager {
         refresh_token: String,
         email: Option<String>,
         login_method: &str,
+        plan_type: Option<String>,
+        plan_source: &str,
     ) -> Result<GitHubAccount, CodexOAuthError> {
         let now = chrono::Utc::now().timestamp();
+        let (existing_plan_type, existing_plan_label, existing_plan_source, existing_updated_at) = {
+            let accounts = self.accounts.read().await;
+            accounts
+                .get(&account_id)
+                .map(|account| {
+                    (
+                        account.plan_type.clone(),
+                        account.plan_label.clone(),
+                        account.plan_source.clone(),
+                        account.plan_updated_at,
+                    )
+                })
+                .unwrap_or((None, None, None, None))
+        };
+        let next_plan_type = plan_type
+            .as_deref()
+            .map(crate::services::subscription::normalize_chatgpt_plan_type)
+            .filter(|value| !value.is_empty());
+        let next_priority = plan_source_priority(plan_source);
+        let current_priority = existing_plan_source
+            .as_deref()
+            .map(plan_source_priority)
+            .unwrap_or(0);
+        let should_use_next_plan = next_plan_type.is_some() && next_priority >= current_priority;
+        let stored_plan_type = if should_use_next_plan {
+            next_plan_type
+        } else {
+            existing_plan_type
+        };
+        let stored_plan_label = if should_use_next_plan {
+            stored_plan_type
+                .as_deref()
+                .map(crate::services::subscription::format_chatgpt_plan_label)
+        } else {
+            existing_plan_label
+        };
+        let stored_plan_source = if should_use_next_plan {
+            Some(plan_source.to_string())
+        } else {
+            existing_plan_source
+        };
+        let stored_plan_updated_at = if should_use_next_plan {
+            Some(now)
+        } else {
+            existing_updated_at
+        };
 
         let data = CodexAccountData {
             account_id: account_id.clone(),
@@ -1059,6 +1174,10 @@ impl CodexOAuthManager {
             refresh_token,
             authenticated_at: now,
             login_method: login_method.to_string(),
+            plan_type: stored_plan_type,
+            plan_label: stored_plan_label,
+            plan_source: stored_plan_source,
+            plan_updated_at: stored_plan_updated_at,
         };
 
         let account = GitHubAccount::from(&data);
@@ -1298,6 +1417,15 @@ fn default_codex_login_method() -> String {
     "device".to_string()
 }
 
+fn plan_source_priority(source: &str) -> u8 {
+    match source {
+        "wham_usage" => 3,
+        "jwt" => 2,
+        "stored" => 1,
+        _ => 0,
+    }
+}
+
 fn generate_base64url_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
@@ -1450,10 +1578,13 @@ fn parse_jwt_claims(token: &str) -> Option<IdTokenClaims> {
     serde_json::from_slice(&decoded).ok()
 }
 
-/// 从 token 响应中提取 (account_id, email)
-fn extract_identity_from_tokens(tokens: &OAuthTokenResponse) -> (Option<String>, Option<String>) {
+/// 从 token 响应中提取 (account_id, email, jwt_plan_type)
+fn extract_identity_from_tokens(
+    tokens: &OAuthTokenResponse,
+) -> (Option<String>, Option<String>, Option<String>) {
     let mut account_id: Option<String> = None;
     let mut email: Option<String> = None;
+    let mut plan_type: Option<String> = None;
 
     if let Some(id_token) = tokens.id_token.as_deref() {
         if let Some(claims) = parse_jwt_claims(id_token) {
@@ -1468,6 +1599,10 @@ fn extract_identity_from_tokens(tokens: &OAuthTokenResponse) -> (Option<String>,
                 })
                 .or_else(|| claims.organizations.first().and_then(|o| o.id.clone()));
             email = claims.email.clone();
+            plan_type = claims
+                .openai_auth
+                .as_ref()
+                .and_then(|a| a.chatgpt_plan_type.clone());
         }
     }
 
@@ -1486,10 +1621,16 @@ fn extract_identity_from_tokens(tokens: &OAuthTokenResponse) -> (Option<String>,
             if email.is_none() {
                 email = claims.email.clone();
             }
+            if plan_type.is_none() {
+                plan_type = claims
+                    .openai_auth
+                    .as_ref()
+                    .and_then(|a| a.chatgpt_plan_type.clone());
+            }
         }
     }
 
-    (account_id, email)
+    (account_id, email, plan_type)
 }
 
 #[cfg(test)]
@@ -1655,6 +1796,8 @@ mod tests {
                     "rt-secret".to_string(),
                     Some("user@example.com".to_string()),
                     "device",
+                    None,
+                    "jwt",
                 )
                 .await
                 .unwrap();
@@ -1678,6 +1821,8 @@ mod tests {
                 "rt".to_string(),
                 Some("a@example.com".to_string()),
                 "device",
+                None,
+                "jwt",
             )
             .await
             .unwrap();
@@ -1687,6 +1832,8 @@ mod tests {
                 "rt2".to_string(),
                 Some("b@example.com".to_string()),
                 "device",
+                None,
+                "jwt",
             )
             .await
             .unwrap();

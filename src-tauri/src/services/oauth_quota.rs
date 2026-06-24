@@ -24,7 +24,7 @@ use crate::proxy::providers::kiro_oauth_auth::{
     KiroOAuthError, KiroOAuthManager, KiroUsageLimitsResponse,
 };
 use crate::services::subscription::{
-    query_claude_quota_with_token, query_codex_quota, query_gemini_quota_with_token,
+    query_claude_quota_with_token, query_codex_quota_with_plan, query_gemini_quota_with_token,
     CredentialStatus, QuotaTier, SubscriptionQuota,
 };
 
@@ -652,13 +652,24 @@ async fn refresh_codex_quota(managers: &OauthQuotaManagers, account_id: &str) ->
     let manager = managers.codex.read().await;
     match manager.get_valid_token_for_account(account_id).await {
         Ok(token) => {
-            query_codex_quota(
+            let (quota, plan_type) = query_codex_quota_with_plan(
                 &token,
                 Some(account_id),
                 "codex_oauth",
                 "Codex OAuth access token expired or rejected. Please re-login via cc-switch.",
             )
-            .await
+            .await;
+            if let Some(plan_type) = plan_type.as_deref() {
+                if let Err(err) = manager
+                    .record_account_plan(account_id, Some(plan_type), "wham_usage")
+                    .await
+                {
+                    log::warn!(
+                        "[OauthQuota] failed to persist Codex OAuth plan for account={account_id}: {err}"
+                    );
+                }
+            }
+            quota
         }
         Err(err) => SubscriptionQuota::error(
             "codex_oauth",

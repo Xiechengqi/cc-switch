@@ -853,6 +853,99 @@ function ProviderFormFull({
     currentProviderType === PROVIDER_TYPES.CURSOR_APIKEY;
   const isOllamaCloudProvider =
     currentProviderType === PROVIDER_TYPES.OLLAMA_CLOUD;
+  const isCursorOauthProviderForConfig =
+    currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
+    templatePreset?.providerType === "cursor_oauth" ||
+    initialData?.meta?.providerType === "cursor_oauth";
+  const isOllamaCloudProviderForConfig =
+    currentProviderType === PROVIDER_TYPES.OLLAMA_CLOUD ||
+    templatePreset?.providerType === "ollama_cloud" ||
+    initialData?.meta?.providerType === "ollama_cloud";
+  const buildCodexSettingsConfigString = useCallback(
+    (pretty = false): string => {
+      const authJson = JSON.parse(codexAuth || "{}");
+      const saveCategory = isOllamaCloudProviderForConfig
+        ? "third_party"
+        : category;
+      const shouldPersistCodexLocalRouting =
+        saveCategory !== "official" ||
+        isCursorApiKeyPreset ||
+        isCursorOauthProviderForConfig ||
+        isOllamaCloudProviderForConfig;
+      let normalizedCodexConfig =
+        shouldPersistCodexLocalRouting && (codexConfig ?? "").trim()
+          ? setCodexWireApi(codexConfig ?? "", "responses")
+          : (codexConfig ?? "");
+      const normalizedCatalogModels =
+        shouldPersistCodexLocalRouting && localCodexApiFormat === "openai_chat"
+          ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
+          : [];
+
+      if (normalizedCatalogModels.length > 0) {
+        normalizedCodexConfig = setCodexModelNameInConfig(
+          normalizedCodexConfig,
+          normalizedCatalogModels[0].model,
+        );
+      }
+
+      const configObj = {
+        auth: authJson,
+        config: normalizedCodexConfig,
+      } as {
+        auth: unknown;
+        config: string;
+        modelCatalog?: { models: CodexCatalogModel[] };
+        modelMapping?: { mode: "single"; upstreamModel: string };
+      };
+
+      if (normalizedCatalogModels.length > 0) {
+        configObj.modelCatalog = { models: normalizedCatalogModels };
+      }
+
+      const trimmedSingleUpstreamModel =
+        codexSingleUpstreamModel.trim() ||
+        (isCursorOauthProviderForConfig || isCursorApiKeyPreset
+          ? CURSOR_DEFAULT_UPSTREAM_MODEL
+          : isOllamaCloudProviderForConfig
+            ? "kimi-k2.7-code"
+            : "");
+
+      if (trimmedSingleUpstreamModel) {
+        configObj.modelMapping = {
+          mode: "single",
+          upstreamModel: trimmedSingleUpstreamModel,
+        };
+      }
+
+      return JSON.stringify(configObj, null, pretty ? 2 : undefined);
+    },
+    [
+      category,
+      codexAuth,
+      codexCatalogModels,
+      codexConfig,
+      codexSingleUpstreamModel,
+      currentProviderType,
+      initialData?.meta?.providerType,
+      isCursorApiKeyPreset,
+      isCursorOauthProviderForConfig,
+      isOllamaCloudProviderForConfig,
+      localCodexApiFormat,
+      templatePreset?.providerType,
+    ],
+  );
+  const watchedSettingsConfig = form.watch("settingsConfig");
+  const codexSettingsConfigPreview = useMemo(() => {
+    if (appId !== "codex") {
+      return watchedSettingsConfig || "{}";
+    }
+
+    try {
+      return buildCodexSettingsConfigString(true);
+    } catch {
+      return watchedSettingsConfig || "{}";
+    }
+  }, [appId, buildCodexSettingsConfigString, watchedSettingsConfig]);
   const isStructuredProviderConfig =
     appId === "claude" &&
     (currentProviderType === PROVIDER_TYPES.GITHUB_COPILOT ||
@@ -1776,54 +1869,7 @@ function ProviderFormFull({
       }
     } else if (appId === "codex") {
       try {
-        const authJson = JSON.parse(codexAuth);
-        const shouldPersistCodexLocalRouting =
-          saveCategory !== "official" ||
-          isCursorApiKeyPreset ||
-          currentProviderType === PROVIDER_TYPES.CURSOR_OAUTH ||
-          isOllamaCloudProvider;
-        let normalizedCodexConfig =
-          shouldPersistCodexLocalRouting && (codexConfig ?? "").trim()
-            ? setCodexWireApi(codexConfig ?? "", "responses")
-            : (codexConfig ?? "");
-        const normalizedCatalogModels =
-          shouldPersistCodexLocalRouting &&
-          localCodexApiFormat === "openai_chat"
-            ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
-            : [];
-        // Sync first catalog row's model into config.toml so Codex uses it as default
-        if (normalizedCatalogModels.length > 0) {
-          normalizedCodexConfig = setCodexModelNameInConfig(
-            normalizedCodexConfig,
-            normalizedCatalogModels[0].model,
-          );
-        }
-        const configObj = {
-          auth: authJson,
-          config: normalizedCodexConfig,
-        } as {
-          auth: unknown;
-          config: string;
-          modelCatalog?: { models: CodexCatalogModel[] };
-          modelMapping?: { mode: "single"; upstreamModel: string };
-        };
-        if (normalizedCatalogModels.length > 0) {
-          configObj.modelCatalog = { models: normalizedCatalogModels };
-        }
-        const trimmedSingleUpstreamModel =
-          codexSingleUpstreamModel.trim() ||
-          (isCursorOauthProvider || isCursorApiKeyPreset
-            ? CURSOR_DEFAULT_UPSTREAM_MODEL
-            : isOllamaCloudProvider
-              ? "kimi-k2.7-code"
-              : "");
-        if (trimmedSingleUpstreamModel) {
-          configObj.modelMapping = {
-            mode: "single",
-            upstreamModel: trimmedSingleUpstreamModel,
-          };
-        }
-        settingsConfig = JSON.stringify(configObj);
+        settingsConfig = buildCodexSettingsConfigString();
       } catch (err) {
         settingsConfig = values.settingsConfig.trim();
       }
@@ -3009,6 +3055,7 @@ function ProviderFormFull({
               <CodexConfigEditor
                 authValue={codexAuth}
                 configValue={codexConfig}
+                settingsConfigPreview={codexSettingsConfigPreview}
                 providerName={form.watch("name")}
                 showRemoteCompaction={category !== "official"}
                 isProxyTakeover={isProxyTakeover}
@@ -3131,7 +3178,9 @@ function ProviderFormFull({
             <>
               <div className="space-y-2">
                 <Label htmlFor="settingsConfig">
-                  {t("provider.configJson")}
+                  {t("provider.configJsonPreview", {
+                    defaultValue: "配置JSON预览",
+                  })}
                 </Label>
                 <p className="text-xs text-muted-foreground">
                   {t("providerForm.generatedConfigPreviewHint", {
@@ -3155,6 +3204,9 @@ function ProviderFormFull({
               <CommonConfigEditor
                 value={form.getValues("settingsConfig")}
                 onChange={(value) => form.setValue("settingsConfig", value)}
+                label={t("provider.advancedConfigJson", {
+                  defaultValue: "高级配置JSON",
+                })}
                 useCommonConfig={useCommonConfig}
                 onCommonConfigToggle={handleCommonConfigToggle}
                 commonConfigSnippet={commonConfigSnippet}

@@ -20,6 +20,7 @@ mod init_status;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
+mod local_web_auth;
 mod mcp;
 mod openclaw_config;
 mod opencode_config;
@@ -29,6 +30,7 @@ mod prompt_files;
 mod provider;
 mod provider_defaults;
 mod proxy;
+mod runtime_mode;
 mod services;
 mod session_manager;
 mod settings;
@@ -256,6 +258,11 @@ pub fn run() {
                 log::info!("ℹ No deep link URL found in args (this is expected on macOS when launched via system)");
             }
 
+            if crate::runtime_mode::is_no_desktop() {
+                log::info!("no-desktop 模式：忽略第二实例窗口唤起请求");
+                return;
+            }
+
             // Show and focus window regardless
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -305,6 +312,10 @@ pub fn run() {
         )
         .setup(|app| {
             let _ = rustls::crypto::ring::default_provider().install_default();
+            let no_desktop = crate::runtime_mode::is_no_desktop();
+            if no_desktop {
+                log::info!("cc-switch 正在以 no-desktop 模式启动");
+            }
 
             // 预先刷新 Store 覆盖配置，确保后续路径读取正确（日志/数据库等）
             app_store::refresh_app_config_dir_override(app.handle());
@@ -315,12 +326,14 @@ pub fn run() {
             // 注册 Updater 插件（桌面端）
             #[cfg(desktop)]
             {
-                if let Err(e) = app
-                    .handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())
-                {
-                    // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
-                    log::warn!("初始化 Updater 插件失败，已跳过：{e}");
+                if !no_desktop {
+                    if let Err(e) = app
+                        .handle()
+                        .plugin(tauri_plugin_updater::Builder::new().build())
+                    {
+                        // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
+                        log::warn!("初始化 Updater 插件失败，已跳过：{e}");
+                    }
                 }
             }
             // 初始化日志（单文件输出到 <app_config_dir>/logs/cc-switch.log）
@@ -452,6 +465,17 @@ pub fn run() {
             }
 
             let app_state = AppState::new(db);
+
+            if let Some(token) =
+                crate::local_web_auth::ensure_startup_setup_token(&app_state.db)?
+            {
+                log::warn!(
+                    "Web 管理密码尚未设置。首次设置需要 setup token: {token}"
+                );
+                if no_desktop {
+                    println!("cc-switch web setup token: {token}");
+                }
+            }
 
             // 设置 AppHandle 用于代理故障转移时的 UI 更新
             app_state.proxy_service.set_app_handle(app.handle().clone());
@@ -910,117 +934,121 @@ pub fn run() {
 
             // 启动阶段不再无条件保存,避免意外覆盖用户配置。
 
-            // 注册 deep-link URL 处理器（使用正确的 DeepLinkExt API）
-            log::info!("=== Registering deep-link URL handler ===");
+            if !no_desktop {
+                // 注册 deep-link URL 处理器（使用正确的 DeepLinkExt API）
+                log::info!("=== Registering deep-link URL handler ===");
 
-            // Linux 和 Windows 调试模式需要显式注册
-            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
-            {
-                #[cfg(target_os = "linux")]
+                // Linux 和 Windows 调试模式需要显式注册
+                #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
                 {
-                    // Use Tauri's path API to get correct path (includes app identifier)
-                    // tauri-plugin-deep-link writes to: ~/.local/share/com.ccswitch.desktop/applications/cc-switch-handler.desktop
-                    // Only register if .desktop file doesn't exist to avoid overwriting user customizations
-                    let should_register = app
-                        .path()
-                        .data_dir()
-                        .map(|d| !d.join("applications/cc-switch-handler.desktop").exists())
-                        .unwrap_or(true);
+                    #[cfg(target_os = "linux")]
+                    {
+                        // Use Tauri's path API to get correct path (includes app identifier)
+                        // tauri-plugin-deep-link writes to: ~/.local/share/com.ccswitch.desktop/applications/cc-switch-handler.desktop
+                        // Only register if .desktop file doesn't exist to avoid overwriting user customizations
+                        let should_register = app
+                            .path()
+                            .data_dir()
+                            .map(|d| !d.join("applications/cc-switch-handler.desktop").exists())
+                            .unwrap_or(true);
 
-                    if should_register {
+                        if should_register {
+                            if let Err(e) = app.deep_link().register_all() {
+                                log::error!("✗ Failed to register deep link schemes: {}", e);
+                            } else {
+                                log::info!("✓ Deep link schemes registered (Linux)");
+                            }
+                        } else {
+                            log::info!("⊘ Deep link handler already exists, skipping registration");
+                        }
+                    }
+
+                    #[cfg(all(debug_assertions, windows))]
+                    {
                         if let Err(e) = app.deep_link().register_all() {
                             log::error!("✗ Failed to register deep link schemes: {}", e);
                         } else {
-                            log::info!("✓ Deep link schemes registered (Linux)");
+                            log::info!("✓ Deep link schemes registered (Windows debug)");
                         }
-                    } else {
-                        log::info!("⊘ Deep link handler already exists, skipping registration");
                     }
                 }
 
-                #[cfg(all(debug_assertions, windows))]
+                // 注册 URL 处理回调（所有平台通用）
+                app.deep_link().on_open_url({
+                    let app_handle = app.handle().clone();
+                    move |event| {
+                        log::info!("=== Deep Link Event Received (on_open_url) ===");
+                        let urls = event.urls();
+                        log::info!("Received {} URL(s)", urls.len());
+
+                        if crate::lightweight::is_lightweight_mode() {
+                            if let Err(e) = crate::lightweight::exit_lightweight_mode(&app_handle) {
+                                log::error!("退出轻量模式重建窗口失败: {e}");
+                            }
+                        }
+
+                        for (i, url) in urls.iter().enumerate() {
+                            let url_str = url.as_str();
+                            log::debug!("  URL[{i}]: {}", redact_url_for_log(url_str));
+
+                            if handle_deeplink_url(&app_handle, url_str, true, "on_open_url") {
+                                break; // Process only first ccswitch:// URL
+                            }
+                        }
+                    }
+                });
+                log::info!("✓ Deep-link URL handler registered");
+
+                // 创建动态托盘菜单
+                let menu = tray::create_tray_menu(app.handle(), &app_state)?;
+
+                // 构建托盘
+                let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
+                    .tooltip("CC Switch") // 鼠标悬停提示
+                    .on_tray_icon_event(|tray, event| match event {
+                        // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
+                        // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
+                        // refresh_all_usage_in_tray 内部有 10 秒防抖。
+                        TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. } => {
+                            let app = tray.app_handle().clone();
+                            tauri::async_runtime::spawn(async move {
+                                crate::tray::refresh_all_usage_in_tray(&app).await;
+                            });
+                        }
+                        _ => log::debug!("unhandled event {event:?}"),
+                    })
+                    .menu(&menu)
+                    .on_menu_event(|app, event| {
+                        tray::handle_tray_menu_event(app, &event.id.0);
+                    })
+                    .show_menu_on_left_click(true);
+
+                // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
+                #[cfg(target_os = "macos")]
                 {
-                    if let Err(e) = app.deep_link().register_all() {
-                        log::error!("✗ Failed to register deep link schemes: {}", e);
+                    if let Some(icon) = macos_tray_icon() {
+                        tray_builder = tray_builder.icon(icon).icon_as_template(true);
+                    } else if let Some(icon) = app.default_window_icon() {
+                        log::warn!("Falling back to default window icon for tray");
+                        tray_builder = tray_builder.icon(icon.clone());
                     } else {
-                        log::info!("✓ Deep link schemes registered (Windows debug)");
+                        log::warn!("Failed to load macOS tray icon for tray");
                     }
                 }
+
+                #[cfg(not(target_os = "macos"))]
+                {
+                    if let Some(icon) = app.default_window_icon() {
+                        tray_builder = tray_builder.icon(icon.clone());
+                    } else {
+                        log::warn!("Failed to get default window icon for tray");
+                    }
+                }
+
+                let _tray = tray_builder.build(app)?;
+            } else {
+                log::info!("no-desktop 模式：跳过 deep-link 注册和系统托盘创建");
             }
-
-            // 注册 URL 处理回调（所有平台通用）
-            app.deep_link().on_open_url({
-                let app_handle = app.handle().clone();
-                move |event| {
-                    log::info!("=== Deep Link Event Received (on_open_url) ===");
-                    let urls = event.urls();
-                    log::info!("Received {} URL(s)", urls.len());
-
-                    if crate::lightweight::is_lightweight_mode() {
-                        if let Err(e) = crate::lightweight::exit_lightweight_mode(&app_handle) {
-                            log::error!("退出轻量模式重建窗口失败: {e}");
-                        }
-                    }
-
-                    for (i, url) in urls.iter().enumerate() {
-                        let url_str = url.as_str();
-                        log::debug!("  URL[{i}]: {}", redact_url_for_log(url_str));
-
-                        if handle_deeplink_url(&app_handle, url_str, true, "on_open_url") {
-                            break; // Process only first ccswitch:// URL
-                        }
-                    }
-                }
-            });
-            log::info!("✓ Deep-link URL handler registered");
-
-            // 创建动态托盘菜单
-            let menu = tray::create_tray_menu(app.handle(), &app_state)?;
-
-            // 构建托盘
-            let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
-                .tooltip("CC Switch") // 鼠标悬停提示
-                .on_tray_icon_event(|tray, event| match event {
-                    // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
-                    // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
-                    // refresh_all_usage_in_tray 内部有 10 秒防抖。
-                    TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. } => {
-                        let app = tray.app_handle().clone();
-                        tauri::async_runtime::spawn(async move {
-                            crate::tray::refresh_all_usage_in_tray(&app).await;
-                        });
-                    }
-                    _ => log::debug!("unhandled event {event:?}"),
-                })
-                .menu(&menu)
-                .on_menu_event(|app, event| {
-                    tray::handle_tray_menu_event(app, &event.id.0);
-                })
-                .show_menu_on_left_click(true);
-
-            // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
-            #[cfg(target_os = "macos")]
-            {
-                if let Some(icon) = macos_tray_icon() {
-                    tray_builder = tray_builder.icon(icon).icon_as_template(true);
-                } else if let Some(icon) = app.default_window_icon() {
-                    log::warn!("Falling back to default window icon for tray");
-                    tray_builder = tray_builder.icon(icon.clone());
-                } else {
-                    log::warn!("Failed to load macOS tray icon for tray");
-                }
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                if let Some(icon) = app.default_window_icon() {
-                    tray_builder = tray_builder.icon(icon.clone());
-                } else {
-                    log::warn!("Failed to get default window icon for tray");
-                }
-            }
-
-            let _tray = tray_builder.build(app)?;
             crate::services::webdav_auto_sync::start_worker(
                 app_state.db.clone(),
                 app.handle().clone(),
@@ -1278,6 +1306,16 @@ pub fn run() {
 
                 // 检查 settings 表中的代理状态，自动恢复代理服务
                 restore_proxy_state_on_startup(&state).await;
+                if no_desktop && !state.proxy_service.is_running().await {
+                    match state.proxy_service.start().await {
+                        Ok(info) => log::info!(
+                            "no-desktop 模式：Web/代理入口已启动于 {}:{}",
+                            info.address,
+                            info.port
+                        ),
+                        Err(e) => log::error!("no-desktop 模式启动 Web/代理入口失败: {e}"),
+                    }
+                }
 
                 // 恢复 active share 的 tunnel，避免 cc-switch-router 或桌面端重启后
                 // 本地状态仍是 active，但真实隧道长期停留在离线状态。
@@ -1415,6 +1453,15 @@ pub fn run() {
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
             if let Some(window) = app.get_webview_window("main") {
+                if no_desktop {
+                    let _ = window.hide();
+                    if let Err(err) = window.destroy() {
+                        log::warn!("no-desktop 模式销毁主窗口失败: {err}");
+                    } else {
+                        log::info!("no-desktop 模式：主窗口已销毁，仅保留 Web/代理入口");
+                    }
+                    return Ok(());
+                }
                 // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
                 #[cfg(target_os = "linux")]

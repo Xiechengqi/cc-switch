@@ -53,9 +53,13 @@ import {
 } from "@/lib/runtime";
 import {
   clearRouterSessionTokens,
+  getWebAuthMethods,
+  loginWithWebPassword,
   requestRouterEmailCodeWithIdentityRetry,
   setRouterApiToken,
+  setupWebPassword,
   verifyRouterEmailCode,
+  type WebAuthMethods,
 } from "@/lib/routerAuth";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -236,13 +240,48 @@ function ClientWebLoginPage({
 }: {
   onAuthenticated: () => Promise<WebRuntimeContext>;
 }) {
-  const [mode, setMode] = useState<"email" | "token">("email");
+  const [authMethods, setAuthMethods] = useState<WebAuthMethods | null>(null);
+  const [mode, setMode] = useState<"email" | "token" | "password" | "setup">(
+    "password",
+  );
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [apiToken, setApiToken] = useState("");
+  const [password, setPassword] = useState("");
+  const [setupPasswordValue, setSetupPasswordValue] = useState("");
+  const [setupToken, setSetupToken] = useState("");
   const [codeSent, setCodeSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    void getWebAuthMethods()
+      .then((methods) => {
+        if (!active) return;
+        setAuthMethods(methods);
+        if (methods.methods.includes("passwordSetup")) {
+          setMode("setup");
+        } else if (
+          !methods.routerAvailable &&
+          methods.methods.includes("password")
+        ) {
+          setMode("password");
+        } else if (methods.methods.includes("email")) {
+          setMode("email");
+        } else if (methods.methods.includes("apiToken")) {
+          setMode("token");
+        } else {
+          setMode("password");
+        }
+      })
+      .catch((err) => {
+        if (active) setError(extractErrorMessage(err));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const finishAuth = useCallback(async () => {
     const context = await onAuthenticated();
@@ -304,32 +343,129 @@ function ClientWebLoginPage({
     }
   }, [apiToken, busy, finishAuth]);
 
+  const loginWithPassword = useCallback(async () => {
+    if (!password || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await loginWithWebPassword(password);
+      await finishAuth();
+      toast.success("已使用 Web 密码登录");
+    } catch (err) {
+      clearRouterSessionTokens();
+      setError(extractErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, finishAuth, password]);
+
+  const setupPassword = useCallback(async () => {
+    if (!setupPasswordValue || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await setupWebPassword(
+        setupPasswordValue,
+        setupToken.trim() || undefined,
+      );
+      await finishAuth();
+      toast.success("Web 密码已设置");
+    } catch (err) {
+      clearRouterSessionTokens();
+      setError(extractErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, finishAuth, setupPasswordValue, setupToken]);
+
+  const canUseEmail = authMethods?.methods.includes("email") ?? false;
+  const canUseToken = authMethods?.methods.includes("apiToken") ?? false;
+  const canUsePassword = authMethods?.methods.includes("password") ?? false;
+  const needsPasswordSetup =
+    authMethods?.methods.includes("passwordSetup") ?? false;
+  const tabCount = [canUseEmail, canUseToken, canUsePassword].filter(
+    Boolean,
+  ).length;
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10 text-foreground">
       <div className="w-full max-w-sm rounded-lg border border-border bg-card p-5 shadow-sm">
         <div className="mb-5">
           <div className="text-lg font-semibold">Client Web 登录</div>
           <div className="mt-1 text-sm text-muted-foreground">
-            使用邮箱验证码或 Router API token 访问当前 client。
+            使用可用的鉴权方式访问当前 client。
           </div>
         </div>
-        <div className="mb-4 grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant={mode === "email" ? "default" : "outline"}
-            onClick={() => setMode("email")}
+        {needsPasswordSetup ? null : tabCount > 1 ? (
+          <div
+            className="mb-4 grid gap-2"
+            style={{
+              gridTemplateColumns: `repeat(${tabCount}, minmax(0, 1fr))`,
+            }}
           >
-            邮箱验证码
-          </Button>
-          <Button
-            type="button"
-            variant={mode === "token" ? "default" : "outline"}
-            onClick={() => setMode("token")}
+            {canUseEmail ? (
+              <Button
+                type="button"
+                variant={mode === "email" ? "default" : "outline"}
+                onClick={() => setMode("email")}
+              >
+                邮箱验证码
+              </Button>
+            ) : null}
+            {canUseToken ? (
+              <Button
+                type="button"
+                variant={mode === "token" ? "default" : "outline"}
+                onClick={() => setMode("token")}
+              >
+                API Token
+              </Button>
+            ) : null}
+            {canUsePassword ? (
+              <Button
+                type="button"
+                variant={mode === "password" ? "default" : "outline"}
+                onClick={() => setMode("password")}
+              >
+                Web 密码
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {needsPasswordSetup ? (
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void setupPassword();
+            }}
           >
-            API Token
-          </Button>
-        </div>
-        {mode === "email" ? (
+            <Input
+              value={setupToken}
+              placeholder="Setup token"
+              type="password"
+              autoComplete="one-time-code"
+              disabled={busy}
+              onChange={(event) => setSetupToken(event.currentTarget.value)}
+            />
+            <Input
+              value={setupPasswordValue}
+              placeholder="设置 Web 密码"
+              type="password"
+              autoComplete="new-password"
+              disabled={busy}
+              onChange={(event) =>
+                setSetupPasswordValue(event.currentTarget.value)
+              }
+            />
+            <Button
+              type="submit"
+              disabled={busy || setupPasswordValue.length < 8}
+            >
+              设置并登录
+            </Button>
+          </form>
+        ) : mode === "email" && canUseEmail ? (
           <form
             className="grid gap-3"
             onSubmit={(event) => {
@@ -371,7 +507,7 @@ function ClientWebLoginPage({
               </Button>
             ) : null}
           </form>
-        ) : (
+        ) : mode === "token" && canUseToken ? (
           <form
             className="grid gap-3"
             onSubmit={(event) => {
@@ -388,6 +524,26 @@ function ClientWebLoginPage({
               onChange={(event) => setApiToken(event.currentTarget.value)}
             />
             <Button type="submit" disabled={busy || !apiToken.trim()}>
+              登录
+            </Button>
+          </form>
+        ) : (
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void loginWithPassword();
+            }}
+          >
+            <Input
+              value={password}
+              placeholder="Web 密码"
+              type="password"
+              autoComplete="current-password"
+              disabled={busy}
+              onChange={(event) => setPassword(event.currentTarget.value)}
+            />
+            <Button type="submit" disabled={busy || !password}>
               登录
             </Button>
           </form>

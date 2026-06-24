@@ -1,6 +1,7 @@
 const AUTH_KEY = "cc_switch_router_auth_v1";
 
 export interface RouterAuthState {
+  authProvider?: "router" | "apiToken" | "password" | null;
   installationId?: string | null;
   publicKey?: string | null;
   privateKey?: string | null;
@@ -54,6 +55,7 @@ export function clearRouterSessionTokens(): void {
     accessToken: null,
     refreshToken: null,
     apiToken: null,
+    authProvider: null,
     expiresAt: null,
     refreshExpiresAt: null,
   });
@@ -65,9 +67,25 @@ export function setRouterApiToken(apiToken: string): void {
     accessToken: null,
     refreshToken: null,
     apiToken: apiToken.trim(),
+    authProvider: "apiToken",
     expiresAt: null,
     refreshExpiresAt: null,
   });
+}
+
+export interface WebAuthMethods {
+  routerAvailable: boolean;
+  passwordConfigured: boolean;
+  setupTokenRequired: boolean;
+  methods: Array<"email" | "apiToken" | "password" | "passwordSetup">;
+}
+
+export async function getWebAuthMethods(): Promise<WebAuthMethods> {
+  const response = await fetch("/web-api/auth/methods", {
+    headers: { accept: "application/json" },
+    cache: "no-store",
+  });
+  return parseJsonResponse<WebAuthMethods>(response);
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -239,6 +257,16 @@ function authBearerHeaders(): Record<string, string> {
 async function refreshAccessToken(): Promise<boolean> {
   const state = readAuthState();
   if (!state.refreshToken) return false;
+  if (state.authProvider === "password") {
+    const response = await fetch("/web-api/auth/password/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        refreshToken: state.refreshToken,
+      }),
+    });
+    return applyPasswordAuthResponse(response);
+  }
   if (state.installationId) {
     const response = await fetch("/v1/auth/session/refresh", {
       method: "POST",
@@ -258,6 +286,66 @@ async function refreshAccessToken(): Promise<boolean> {
     }),
   });
   return applyRefreshResponse(response);
+}
+
+async function applyPasswordAuthResponse(response: Response): Promise<boolean> {
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return false;
+  if (!data.accessToken || !data.refreshToken) return false;
+  mergeAuthState({
+    authProvider: "password",
+    email: "local-admin@cc-switch.local",
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken,
+    apiToken: null,
+    expiresAt: data.expiresAt,
+    refreshExpiresAt: data.refreshExpiresAt,
+  });
+  return true;
+}
+
+async function applyPasswordAuthResponseOrThrow(
+  response: Response,
+): Promise<void> {
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.message || data?.error || `HTTP ${response.status}`);
+  }
+  if (!data.accessToken || !data.refreshToken) {
+    throw new Error("password login response is missing tokens");
+  }
+  mergeAuthState({
+    authProvider: "password",
+    email: "local-admin@cc-switch.local",
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken,
+    apiToken: null,
+    expiresAt: data.expiresAt,
+    refreshExpiresAt: data.refreshExpiresAt,
+  });
+}
+
+export async function loginWithWebPassword(password: string): Promise<void> {
+  await applyPasswordAuthResponseOrThrow(
+    await fetch("/web-api/auth/password/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    }),
+  );
+}
+
+export async function setupWebPassword(
+  password: string,
+  setupToken?: string,
+): Promise<void> {
+  await applyPasswordAuthResponseOrThrow(
+    await fetch("/web-api/auth/password/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password, setupToken: setupToken || null }),
+    }),
+  );
 }
 
 async function applyRefreshResponse(response: Response): Promise<boolean> {
@@ -376,6 +464,7 @@ export async function verifyRouterEmailCode(
     accessToken: data.accessToken,
     refreshToken: data.refreshToken,
     apiToken: null,
+    authProvider: "router",
     expiresAt: data.expiresAt,
     refreshExpiresAt: data.refreshExpiresAt,
   });

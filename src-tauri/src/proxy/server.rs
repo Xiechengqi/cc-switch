@@ -327,6 +327,30 @@ impl ProxyServer {
                 post(crate::web::handlers::refresh_session),
             )
             .route(
+                "/web-api/auth/methods",
+                get(crate::web::handlers::auth_methods),
+            )
+            .route(
+                "/web-api/auth/password/setup",
+                post(crate::web::handlers::password_setup),
+            )
+            .route(
+                "/web-api/auth/password/login",
+                post(crate::web::handlers::password_login),
+            )
+            .route(
+                "/web-api/auth/password/refresh",
+                post(crate::web::handlers::password_refresh),
+            )
+            .route(
+                "/web-api/auth/password/logout",
+                post(crate::web::handlers::password_logout),
+            )
+            .route(
+                "/web-api/auth/password/change",
+                post(crate::web::handlers::password_change),
+            )
+            .route(
                 "/web-api/oauth/openai-cli/callback",
                 get(crate::web::handlers::openai_cli_oauth_callback),
             )

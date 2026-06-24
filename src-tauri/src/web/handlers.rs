@@ -126,6 +126,31 @@ pub struct RefreshSessionRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordSetupRequest {
+    password: String,
+    setup_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasswordLoginRequest {
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordRefreshRequest {
+    refresh_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordChangeRequest {
+    current_password: String,
+    new_password: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct OpenAICliOAuthCallbackQuery {
     code: Option<String>,
     state: Option<String>,
@@ -170,6 +195,80 @@ pub async fn refresh_session(Json(input): Json<RefreshSessionRequest>) -> Respon
     match crate::email_auth::refresh_client_web_session(&config, &refresh_token).await {
         Ok(value) => Json(value).into_response(),
         Err(err) => error_response(StatusCode::UNAUTHORIZED, &err),
+    }
+}
+
+pub async fn auth_methods(State(state): State<ProxyState>) -> Response {
+    match crate::local_web_auth::auth_methods(&state.db) {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+    }
+}
+
+pub async fn password_setup(
+    State(state): State<ProxyState>,
+    Json(input): Json<PasswordSetupRequest>,
+) -> Response {
+    match crate::local_web_auth::setup_password(
+        &state.db,
+        &input.password,
+        input.setup_token.as_deref(),
+    ) {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(StatusCode::UNAUTHORIZED, &err.to_string()),
+    }
+}
+
+pub async fn password_login(
+    State(state): State<ProxyState>,
+    Json(input): Json<PasswordLoginRequest>,
+) -> Response {
+    match crate::local_web_auth::login(&state.db, &input.password) {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(StatusCode::UNAUTHORIZED, &err.to_string()),
+    }
+}
+
+pub async fn password_refresh(
+    State(state): State<ProxyState>,
+    Json(input): Json<PasswordRefreshRequest>,
+) -> Response {
+    match crate::local_web_auth::refresh(&state.db, &input.refresh_token) {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(StatusCode::UNAUTHORIZED, &err.to_string()),
+    }
+}
+
+pub async fn password_logout(State(state): State<ProxyState>, headers: HeaderMap) -> Response {
+    let Some(token) = bearer_token(&headers) else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "authorization bearer token is required",
+        );
+    };
+    match crate::local_web_auth::logout(&state.db, token) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+    }
+}
+
+pub async fn password_change(
+    State(state): State<ProxyState>,
+    headers: HeaderMap,
+    Json(input): Json<PasswordChangeRequest>,
+) -> Response {
+    match crate::local_web_auth::authenticate_headers(&state.db, &headers) {
+        Ok(Some(_)) => {}
+        Ok(None) => return error_response(StatusCode::UNAUTHORIZED, "login required"),
+        Err(err) => return error_response(StatusCode::UNAUTHORIZED, &err.to_string()),
+    }
+    match crate::local_web_auth::change_password(
+        &state.db,
+        &input.current_password,
+        &input.new_password,
+    ) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => error_response(StatusCode::BAD_REQUEST, &err.to_string()),
     }
 }
 
@@ -352,6 +451,17 @@ fn resolve_scope(state: &ProxyState, headers: &HeaderMap) -> Result<WebScope, We
         }));
     }
 
+    match crate::local_web_auth::authenticate_headers(&state.db, headers) {
+        Ok(Some(principal)) => {
+            return Ok(WebScope::LocalAdmin(LocalAdminScope {
+                user_email: principal.user_email,
+                role: principal.role,
+            }));
+        }
+        Ok(None) => {}
+        Err(err) => return Err(WebError::unauthorized(err.to_string())),
+    }
+
     let share_id = headers
         .get("x-cc-switch-share-id")
         .and_then(|value| value.to_str().ok())
@@ -371,6 +481,15 @@ fn resolve_scope(state: &ProxyState, headers: &HeaderMap) -> Result<WebScope, We
         ));
     };
     Ok(WebScope::Share(ShareScope { share }))
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 async fn invoke_local_admin_scoped(

@@ -146,6 +146,13 @@ pub enum AuthStrategy {
     /// 使用动态获取的 Anthropic OAuth access_token（通过浏览器 PKCE 流程获取）
     /// 注意：OAuth token 不能放在 x-api-key 头，那是给 sk-ant-* 格式 API key 用的。
     ClaudeOAuth,
+
+    /// Ollama Cloud API Key 认证方式
+    ///
+    /// - Header: `Authorization: Bearer <api_key>`
+    ///
+    /// API Key 由 OllamaCloudAccountManager 在转发时动态注入。
+    OllamaCloudApiKey,
 }
 
 #[cfg(test)]

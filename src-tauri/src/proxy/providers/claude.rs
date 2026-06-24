@@ -446,6 +446,7 @@ impl ClaudeAdapter {
     /// - KiroOAuth: meta.provider_type 为 kiro_oauth
     /// - CursorOAuth: meta.provider_type 为 cursor_oauth
     /// - CursorApiKey: meta.provider_type 为 cursor_apikey
+    /// - OllamaCloud: meta.provider_type 为 ollama_cloud
     /// - OpenRouter: base_url 包含 openrouter.ai
     /// - ClaudeAuth: auth_mode 为 bearer_only
     /// - Claude: 默认 Anthropic 官方
@@ -453,6 +454,10 @@ impl ClaudeAdapter {
         // 检测 Claude OAuth（官方订阅）
         if self.is_claude_oauth(provider) {
             return ProviderType::ClaudeOAuth;
+        }
+
+        if provider.is_ollama_cloud_provider() {
+            return ProviderType::OllamaCloud;
         }
 
         if self.is_kiro_oauth(provider) {
@@ -705,6 +710,10 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
+        if provider.is_ollama_cloud_provider() {
+            return Ok("https://ollama.com".to_string());
+        }
+
         // Codex OAuth: 强制使用 ChatGPT 后端 API 端点（忽略用户配置的 base_url）
         if self.is_codex_oauth(provider) {
             return Ok("https://chatgpt.com/backend-api/codex".to_string());
@@ -775,6 +784,13 @@ impl ProviderAdapter for ClaudeAdapter {
             return Some(AuthInfo::new(
                 "claude_oauth_placeholder".to_string(),
                 AuthStrategy::ClaudeOAuth,
+            ));
+        }
+
+        if provider_type == ProviderType::OllamaCloud {
+            return Some(AuthInfo::new(
+                "ollama_cloud_placeholder".to_string(),
+                AuthStrategy::OllamaCloudApiKey,
             ));
         }
 
@@ -866,7 +882,7 @@ impl ProviderAdapter for ClaudeAdapter {
             AuthStrategy::Anthropic => {
                 vec![(HeaderName::from_static("x-api-key"), hv(&auth.api_key)?)]
             }
-            AuthStrategy::ClaudeAuth | AuthStrategy::Bearer => {
+            AuthStrategy::ClaudeAuth | AuthStrategy::Bearer | AuthStrategy::OllamaCloudApiKey => {
                 vec![(HeaderName::from_static("authorization"), hv(&bearer)?)]
             }
             AuthStrategy::ClaudeOAuth => {

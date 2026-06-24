@@ -48,6 +48,8 @@ pub mod gemini_shadow;
 pub mod kiro_claude;
 pub mod kiro_oauth_auth;
 pub mod models;
+pub mod ollama_cloud;
+pub mod ollama_cloud_auth;
 pub mod streaming;
 pub mod streaming_codex_chat;
 pub mod streaming_gemini;
@@ -114,6 +116,8 @@ pub enum ProviderType {
     AntigravityOAuth,
     /// Antigravity CLI / agy (same OAuth account pool, CLI/harness profile)
     AgyOAuth,
+    /// Ollama Cloud API Key (OpenAI-compatible Chat Completions)
+    OllamaCloud,
 }
 
 impl ProviderType {
@@ -133,6 +137,7 @@ impl ProviderType {
             ProviderType::CursorOAuth => false,
             ProviderType::CursorApiKey => false,
             ProviderType::AntigravityOAuth | ProviderType::AgyOAuth => true,
+            ProviderType::OllamaCloud => false,
             _ => false,
         }
     }
@@ -158,6 +163,7 @@ impl ProviderType {
             ProviderType::AntigravityOAuth | ProviderType::AgyOAuth => {
                 "https://daily-cloudcode-pa.googleapis.com"
             }
+            ProviderType::OllamaCloud => "https://ollama.com",
         }
     }
 
@@ -198,6 +204,9 @@ impl ProviderType {
                     }
                     if meta.provider_type.as_deref() == Some("deepseek_account") {
                         return ProviderType::DeepSeekAccount;
+                    }
+                    if meta.provider_type.as_deref() == Some("ollama_cloud") {
+                        return ProviderType::OllamaCloud;
                     }
                     if meta.provider_type.as_deref() == Some("kiro_oauth") {
                         return ProviderType::KiroOAuth;
@@ -255,6 +264,9 @@ impl ProviderType {
                     }
                     if provider_type == "cursor_apikey" {
                         return ProviderType::CursorApiKey;
+                    }
+                    if provider_type == "ollama_cloud" {
+                        return ProviderType::OllamaCloud;
                     }
                 }
                 ProviderType::Codex
@@ -324,6 +336,7 @@ impl ProviderType {
             ProviderType::CursorApiKey => "cursor_apikey",
             ProviderType::AntigravityOAuth => "antigravity_oauth",
             ProviderType::AgyOAuth => "agy_oauth",
+            ProviderType::OllamaCloud => "ollama_cloud",
         }
     }
 }
@@ -362,6 +375,7 @@ impl std::str::FromStr for ProviderType {
                 Ok(ProviderType::AntigravityOAuth)
             }
             "agy_oauth" | "agy-oauth" | "agyoauth" | "agy" => Ok(ProviderType::AgyOAuth),
+            "ollama_cloud" | "ollama-cloud" | "ollamacloud" => Ok(ProviderType::OllamaCloud),
             _ => Err(format!("Invalid provider type: {s}")),
         }
     }
@@ -395,7 +409,8 @@ pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> Box<dyn Pr
         | ProviderType::CursorOAuth
         | ProviderType::CursorApiKey
         | ProviderType::AntigravityOAuth
-        | ProviderType::AgyOAuth => Box::new(ClaudeAdapter::new()),
+        | ProviderType::AgyOAuth
+        | ProviderType::OllamaCloud => Box::new(ClaudeAdapter::new()),
         ProviderType::Codex => Box::new(CodexAdapter::new()),
         ProviderType::Gemini | ProviderType::GeminiCli => Box::new(GeminiAdapter::new()),
     }

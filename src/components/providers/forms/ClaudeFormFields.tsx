@@ -34,6 +34,7 @@ import { AntigravityOAuthSection } from "./AntigravityOAuthSection";
 import { CursorOAuthSection } from "./CursorOAuthSection";
 import { KiroOAuthSection } from "./KiroOAuthSection";
 import { DeepSeekAccountSection } from "./DeepSeekAccountSection";
+import { OllamaCloudApiKeySection } from "./OllamaCloudApiKeySection";
 import { SingleModelMappingField } from "./SingleModelMappingField";
 import {
   copilotGetModels,
@@ -47,6 +48,7 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { authApi } from "@/lib/api/auth";
 import { CustomUserAgentField } from "./CustomUserAgentField";
 import type {
   ProviderCategory,
@@ -119,6 +121,11 @@ interface ClaudeFormFieldsProps {
   isDeepSeekAccountPreset?: boolean;
   selectedDeepSeekAccountId?: string | null;
   onDeepSeekAccountSelect?: (accountId: string | null) => void;
+
+  // Ollama Cloud API Key
+  isOllamaCloudPreset?: boolean;
+  selectedOllamaCloudAccountId?: string | null;
+  onOllamaCloudAccountSelect?: (accountId: string | null) => void;
 
   // Template Values
   templateValueEntries: Array<[string, TemplateValueConfig]>;
@@ -203,6 +210,9 @@ export function ClaudeFormFields({
   isDeepSeekAccountPreset,
   selectedDeepSeekAccountId,
   onDeepSeekAccountSelect,
+  isOllamaCloudPreset,
+  selectedOllamaCloudAccountId,
+  onOllamaCloudAccountSelect,
   codexFastMode,
   onCodexFastModeChange,
   templateValueEntries,
@@ -274,6 +284,14 @@ export function ClaudeFormFields({
   const [antigravityOauthModelsLoading, setAntigravityOauthModelsLoading] =
     useState(false);
   const antigravityOauthModelsRequestRef = useRef(0);
+
+  // Ollama Cloud 可用模型列表
+  const [ollamaCloudModels, setOllamaCloudModels] = useState<FetchedModel[]>(
+    [],
+  );
+  const [ollamaCloudModelsLoading, setOllamaCloudModelsLoading] =
+    useState(false);
+  const ollamaCloudModelsRequestRef = useRef(0);
 
   // 通用模型获取（非 Copilot 供应商）
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
@@ -429,6 +447,34 @@ export function ClaudeFormFields({
     t,
   ]);
 
+  const handleFetchOllamaCloudModels = useCallback(() => {
+    const requestId = ollamaCloudModelsRequestRef.current + 1;
+    ollamaCloudModelsRequestRef.current = requestId;
+    setOllamaCloudModelsLoading(true);
+    authApi
+      .ollamaCloudListModels(selectedOllamaCloudAccountId)
+      .then((models) => {
+        if (ollamaCloudModelsRequestRef.current !== requestId) return;
+        const fetched = models.map<FetchedModel>((model) => ({
+          id: model.id,
+          displayName: model.displayName,
+          ownedBy: model.ownedBy ?? "ollama",
+        }));
+        setOllamaCloudModels(fetched);
+        showModelFetchResult(fetched.length);
+      })
+      .catch((err) => {
+        if (ollamaCloudModelsRequestRef.current !== requestId) return;
+        console.warn("[OllamaCloud] Failed to fetch models:", err);
+        showFetchModelsError(err, t);
+      })
+      .finally(() => {
+        if (ollamaCloudModelsRequestRef.current === requestId) {
+          setOllamaCloudModelsLoading(false);
+        }
+      });
+  }, [selectedOllamaCloudAccountId, showModelFetchResult, t]);
+
   useEffect(() => {
     copilotModelsRequestRef.current += 1;
     setCopilotModels([]);
@@ -447,20 +493,30 @@ export function ClaudeFormFields({
     setAntigravityOauthModelsLoading(false);
   }, [isAntigravityOauthPreset, selectedAntigravityAccountId]);
 
+  useEffect(() => {
+    ollamaCloudModelsRequestRef.current += 1;
+    setOllamaCloudModels([]);
+    setOllamaCloudModelsLoading(false);
+  }, [isOllamaCloudPreset, selectedOllamaCloudAccountId]);
+
   const modelFetchLoading = isCopilotPreset
     ? modelsLoading
     : isCodexOauthPreset
       ? codexOauthModelsLoading
       : isAntigravityOauthPreset
         ? antigravityOauthModelsLoading
-        : isFetchingModels;
+        : isOllamaCloudPreset
+          ? ollamaCloudModelsLoading
+          : isFetchingModels;
   const handleModelFetchClick = isCopilotPreset
     ? handleFetchCopilotModels
     : isCodexOauthPreset
       ? handleFetchCodexOauthModels
       : isAntigravityOauthPreset
         ? handleFetchAntigravityOauthModels
-        : handleFetchModels;
+        : isOllamaCloudPreset
+          ? handleFetchOllamaCloudModels
+          : handleFetchModels;
 
   // 模型输入框：支持手动输入 + 下拉选择
   const renderModelInput = (
@@ -495,6 +551,19 @@ export function ClaudeFormFields({
           placeholder={placeholder}
           fetchedModels={antigravityOauthModels}
           isLoading={antigravityOauthModelsLoading}
+        />
+      );
+    }
+
+    if (isOllamaCloudPreset) {
+      return (
+        <ModelInputWithFetch
+          id={id}
+          value={value}
+          onChange={updateValue}
+          placeholder={placeholder}
+          fetchedModels={ollamaCloudModels}
+          isLoading={ollamaCloudModelsLoading}
         />
       );
     }
@@ -648,6 +717,13 @@ export function ClaudeFormFields({
         <DeepSeekAccountSection
           selectedAccountId={selectedDeepSeekAccountId}
           onAccountSelect={onDeepSeekAccountSelect}
+        />
+      )}
+
+      {isOllamaCloudPreset && (
+        <OllamaCloudApiKeySection
+          selectedAccountId={selectedOllamaCloudAccountId}
+          onAccountSelect={onOllamaCloudAccountSelect}
         />
       )}
 

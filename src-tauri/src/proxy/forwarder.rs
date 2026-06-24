@@ -23,6 +23,7 @@ use super::{
 };
 use crate::commands::{
     AntigravityOAuthState, ClaudeOAuthState, CodexOAuthState, CopilotAuthState, GeminiOAuthState,
+    OllamaCloudState,
 };
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
@@ -1846,6 +1847,30 @@ impl RequestForwarder {
                         log::error!("[ClaudeOAuth] AppHandle 不可用");
                         return Err(ProxyError::AuthError(
                             "Claude OAuth 认证不可用（无 AppHandle）".to_string(),
+                        ));
+                    }
+                }
+
+                // Ollama Cloud API Key: 从 OllamaCloudAccountManager 获取真实 API Key。
+                if auth.strategy == AuthStrategy::OllamaCloudApiKey {
+                    if let Some(app_handle) = &self.app_handle {
+                        let state = app_handle.state::<OllamaCloudState>();
+                        let manager = state.0.read().await;
+                        let api_key =
+                            manager
+                                .get_api_key_for_provider(provider)
+                                .await
+                                .map_err(|e| {
+                                    ProxyError::AuthError(format!(
+                                        "Ollama Cloud API Key 认证失败: {e}"
+                                    ))
+                                })?;
+                        auth.api_key = api_key;
+                        log::debug!("[OllamaCloud] 成功解析托管 API Key");
+                    } else {
+                        log::error!("[OllamaCloud] AppHandle 不可用");
+                        return Err(ProxyError::AuthError(
+                            "Ollama Cloud API Key 认证不可用（无 AppHandle）".to_string(),
                         ));
                     }
                 }

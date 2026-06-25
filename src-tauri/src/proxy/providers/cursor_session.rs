@@ -57,6 +57,8 @@ pub enum SessionState {
 pub struct CursorSession {
     pub conversation_id: String,
     pub stream: CursorH2Stream,
+    /// MCP tool names declared on the inbound turn (for shell→MCP bridging).
+    pub declared_tool_names: Vec<String>,
     /// Map: client-facing tool call id → cursor exec metadata.
     pub pending_tool_calls: HashMap<String, PendingToolCall>,
     /// Request-scoped KV blob store (system blob, future attachments).
@@ -130,6 +132,7 @@ impl CursorSessionManager {
         conversation_id: String,
         stream: CursorH2Stream,
         blob_store: HashMap<String, Bytes>,
+        declared_tool_names: Vec<String>,
     ) -> Arc<Mutex<CursorSession>> {
         // Close any existing entry first.
         let existing = {
@@ -149,6 +152,7 @@ impl CursorSessionManager {
         let session = CursorSession {
             conversation_id: conversation_id.clone(),
             stream,
+            declared_tool_names,
             pending_tool_calls: HashMap::new(),
             blob_store,
             state: SessionState::Running,

@@ -253,14 +253,22 @@ pub async fn handle_streaming(
         );
     }
 
+    // Locally generated SSE (Cursor AgentService) manages its own stall
+    // deadlines; the generic idle timeout would RST the HTTP/2 stream mid-turn.
+    let timeout_config = if response.is_local_stream() {
+        StreamingTimeoutConfig {
+            first_byte_timeout: 0,
+            idle_timeout: 0,
+        }
+    } else {
+        ctx.streaming_timeout_config()
+    };
+
     // 创建字节流
     let stream = response.bytes_stream();
 
     // 创建使用量收集器；关闭 usage logging 时不要在流式热路径上解析每个 SSE event。
     let usage_collector = create_usage_collector(ctx, state, status.as_u16(), parser_config);
-
-    // 获取流式超时配置
-    let timeout_config = ctx.streaming_timeout_config();
 
     // 创建带日志和超时的透传流
     let logged_stream = create_logged_passthrough_stream(

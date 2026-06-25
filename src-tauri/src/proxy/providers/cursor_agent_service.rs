@@ -25,10 +25,16 @@ use crate::proxy::ProxyError;
 use async_stream::stream;
 use bytes::Bytes;
 use http::StatusCode;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+
+/// Wall-clock deadline for meaningful upstream output. Heartbeats and h2
+/// keepalives reset the inter-frame timer but must not stall tool turns forever.
+const MEANINGFUL_PROGRESS_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub struct AgentRunOptions<'a> {
     pub account: &'a CursorAccountData,
@@ -161,8 +167,14 @@ async fn acquire_or_open_session(
     };
     let first_frame = proto::wrap_connect_frame(&encoded_body);
     let stream_handle = CursorH2Stream::open(headers, first_frame).await?;
+    let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
     let session = session_manager
-        .open(session_key.to_string(), stream_handle, blob_store)
+        .open(
+            session_key.to_string(),
+            stream_handle,
+            blob_store,
+            tool_names,
+        )
         .await;
     if should_half_close_after_run_request(tools.len(), tool_results.len()) {
         let mut s = session.lock().await;
@@ -270,6 +282,29 @@ async fn drive_loop(
             Err(e) => return Err(e),
         };
 
+        if let Some(kv) = decode_kv_server_event(&frame.payload) {
+            handle_kv_event(kv, &session_entry).await;
+        }
+
+        if let Some(exec) = decode_exec_server_event(&frame.payload) {
+            let should_return_for_tool = handle_exec_event(
+                exec,
+                &mut exec_dedup,
+                &session_entry,
+                session_manager,
+                session_key,
+                writer,
+                &mut events,
+            )
+            .await;
+            if should_return_for_tool {
+                session_manager
+                    .release(session_entry.clone(), SessionState::AwaitingToolResult)
+                    .await;
+                return Ok(events);
+            }
+        }
+
         for delta in decode_agent_server_message(&frame.payload) {
             match delta {
                 InteractionDelta::Text(t) => {
@@ -305,29 +340,6 @@ async fn drive_loop(
                     return Ok(events);
                 }
             }
-        }
-
-        if let Some(exec) = decode_exec_server_event(&frame.payload) {
-            let should_return_for_tool = handle_exec_event(
-                exec,
-                &mut exec_dedup,
-                &session_entry,
-                session_manager,
-                session_key,
-                writer,
-                &mut events,
-            )
-            .await;
-            if should_return_for_tool {
-                session_manager
-                    .release(session_entry.clone(), SessionState::AwaitingToolResult)
-                    .await;
-                return Ok(events);
-            }
-        }
-
-        if let Some(kv) = decode_kv_server_event(&frame.payload) {
-            handle_kv_event(kv, &session_entry).await;
         }
     }
 
@@ -477,14 +489,43 @@ async fn handle_exec_event(
             command,
             working_dir,
         } => {
+            let bridge_name = {
+                let s = session_entry.lock().await;
+                resolve_shell_mcp_tool_name(&s.declared_tool_names)
+            };
+            if let Some(name) = bridge_name {
+                let mut args_map = serde_json::Map::new();
+                args_map.insert("command".into(), Value::String(command));
+                if !working_dir.is_empty() {
+                    args_map.insert("workdir".into(), Value::String(working_dir));
+                }
+                log::debug!("[CursorAgent] bridging built-in shell exec → MCP tool {name}");
+                return surface_mcp_tool_call(
+                    exec_msg_id,
+                    &exec_id,
+                    name,
+                    "",
+                    Value::Object(args_map),
+                    session_entry,
+                    session_manager,
+                    session_key,
+                    writer,
+                    events,
+                )
+                .await;
+            }
             let s = session_entry.lock().await;
-            let _ = s.stream.send_frame(proto::encode_exec_shell_rejected(
-                exec_msg_id,
-                &exec_id,
-                &command,
-                &working_dir,
-                "cc-switch 不执行 Cursor 内置 shell 工具。请改用客户端 MCP 工具。",
-            ));
+            send_exec_frame(
+                &s.stream,
+                proto::encode_exec_shell_rejected(
+                    exec_msg_id,
+                    &exec_id,
+                    &command,
+                    &working_dir,
+                    "cc-switch 不执行 Cursor 内置 shell 工具。请改用客户端 MCP 工具。",
+                ),
+                "shell_reject",
+            );
             false
         }
         ExecServerEvent::BackgroundShell {
@@ -493,16 +534,43 @@ async fn handle_exec_event(
             command,
             working_dir,
         } => {
+            let bridge_name = {
+                let s = session_entry.lock().await;
+                resolve_shell_mcp_tool_name(&s.declared_tool_names)
+            };
+            if let Some(name) = bridge_name {
+                let mut args_map = serde_json::Map::new();
+                args_map.insert("command".into(), Value::String(command));
+                if !working_dir.is_empty() {
+                    args_map.insert("workdir".into(), Value::String(working_dir));
+                }
+                log::debug!("[CursorAgent] bridging background shell exec → MCP tool {name}");
+                return surface_mcp_tool_call(
+                    exec_msg_id,
+                    &exec_id,
+                    name,
+                    "",
+                    Value::Object(args_map),
+                    session_entry,
+                    session_manager,
+                    session_key,
+                    writer,
+                    events,
+                )
+                .await;
+            }
             let s = session_entry.lock().await;
-            let _ = s
-                .stream
-                .send_frame(proto::encode_exec_background_shell_rejected(
+            send_exec_frame(
+                &s.stream,
+                proto::encode_exec_background_shell_rejected(
                     exec_msg_id,
                     &exec_id,
                     &command,
                     &working_dir,
                     "cc-switch 不执行 Cursor 内置 shell 工具。",
-                ));
+                ),
+                "background_shell_reject",
+            );
             false
         }
         ExecServerEvent::Fetch {
@@ -540,32 +608,19 @@ async fn handle_exec_event(
             tool_call_id,
             args,
         } => {
-            let client_call_id = if tool_call_id.is_empty() {
-                format!("call_{}", uuid::Uuid::new_v4().simple())
-            } else {
-                tool_call_id
-            };
-            {
-                let mut s = session_entry.lock().await;
-                s.pending_tool_calls.insert(
-                    client_call_id.clone(),
-                    PendingToolCall {
-                        exec_msg_id,
-                        exec_id: exec_id.clone(),
-                        tool_name: tool_name.clone(),
-                    },
-                );
-            }
-            session_manager
-                .bind_tool_call_id(&client_call_id, session_key)
-                .await;
-            let tc = CapturedToolCall {
-                id: client_call_id,
-                name: tool_name,
-                arguments_json: args.to_string(),
-            };
-            events.extend(writer.event(&AgentEvent::ToolCall(tc)));
-            true
+            surface_mcp_tool_call(
+                exec_msg_id,
+                &exec_id,
+                tool_name,
+                &tool_call_id,
+                args,
+                session_entry,
+                session_manager,
+                session_key,
+                writer,
+                events,
+            )
+            .await
         }
     }
 }
@@ -619,16 +674,34 @@ async fn run_stream(
         }
         let mut filter = ComposerMarkerFilter::default();
         let mut exec_dedup = ExecDedup::default();
+        let mut last_meaningful = Instant::now();
         loop {
-            let next = {
+            let stall_left = MEANINGFUL_PROGRESS_TIMEOUT.saturating_sub(last_meaningful.elapsed());
+            let frame_result = tokio::time::timeout(stall_left, async {
                 let mut s = session_entry.lock().await;
                 s.stream.next_frame().await
-            };
-            let frame = match next {
-                Ok(Some(f)) => f,
-                Ok(None) => break,
-                Err(e) => {
+            })
+            .await;
+
+            let frame = match frame_result {
+                Ok(Ok(Some(f))) => f,
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => {
                     for ev in writer.error_events(&format!("{e}")) {
+                        yield Ok::<_, io::Error>(Bytes::from(ev));
+                    }
+                    session_manager
+                        .release(session_entry.clone(), SessionState::Closed)
+                        .await;
+                    for ev in writer.done_events() {
+                        yield Ok::<_, io::Error>(Bytes::from(ev));
+                    }
+                    return;
+                }
+                Err(_) => {
+                    for ev in writer.error_events(
+                        "Cursor AgentService 响应超时：上游在 90s 内无实质输出",
+                    ) {
                         yield Ok::<_, io::Error>(Bytes::from(ev));
                     }
                     session_manager
@@ -641,7 +714,44 @@ async fn run_stream(
                 }
             };
 
+            let mut meaningful = false;
+
+            if let Some(kv) = decode_kv_server_event(&frame.payload) {
+                handle_kv_event(kv, &session_entry).await;
+                meaningful = true;
+            }
+
+            if let Some(exec) = decode_exec_server_event(&frame.payload) {
+                let mut sink = Vec::new();
+                let should_return_for_tool = handle_exec_event(
+                    exec,
+                    &mut exec_dedup,
+                    &session_entry,
+                    &session_manager,
+                    &session_key,
+                    &mut writer,
+                    &mut sink,
+                )
+                .await;
+                for out in sink {
+                    yield Ok::<_, io::Error>(Bytes::from(out));
+                }
+                if should_return_for_tool {
+                    session_manager
+                        .release(session_entry.clone(), SessionState::AwaitingToolResult)
+                        .await;
+                    for ev in writer.done_events() {
+                        yield Ok::<_, io::Error>(Bytes::from(ev));
+                    }
+                    return;
+                }
+                meaningful = true;
+            }
+
             for delta in decode_agent_server_message(&frame.payload) {
+                if is_meaningful_interaction(&delta) {
+                    meaningful = true;
+                }
                 match delta {
                     InteractionDelta::Text(t) => {
                         for ev in filter.push(&t) {
@@ -693,34 +803,8 @@ async fn run_stream(
                 }
             }
 
-            if let Some(exec) = decode_exec_server_event(&frame.payload) {
-                let mut sink = Vec::new();
-                let should_return_for_tool = handle_exec_event(
-                    exec,
-                    &mut exec_dedup,
-                    &session_entry,
-                    &session_manager,
-                    &session_key,
-                    &mut writer,
-                    &mut sink,
-                )
-                .await;
-                for out in sink {
-                    yield Ok::<_, io::Error>(Bytes::from(out));
-                }
-                if should_return_for_tool {
-                    session_manager
-                        .release(session_entry.clone(), SessionState::AwaitingToolResult)
-                        .await;
-                    for ev in writer.done_events() {
-                        yield Ok::<_, io::Error>(Bytes::from(ev));
-                    }
-                    return;
-                }
-            }
-
-            if let Some(kv) = decode_kv_server_event(&frame.payload) {
-                handle_kv_event(kv, &session_entry).await;
+            if meaningful {
+                last_meaningful = Instant::now();
             }
         }
 
@@ -817,9 +901,98 @@ mod tests {
         assert!(!should_half_close_after_run_request(1, 0));
         assert!(!should_half_close_after_run_request(0, 1));
     }
+
+    #[test]
+    fn resolve_shell_mcp_tool_name_prefers_bash_alias() {
+        let names = vec!["WebSearch".into(), "Bash".into()];
+        assert_eq!(
+            resolve_shell_mcp_tool_name(&names).as_deref(),
+            Some("Bash")
+        );
+    }
 }
 
 /// Whether to half-close the AgentService client stream right after RunRequest.
 fn should_half_close_after_run_request(tool_count: usize, tool_result_count: usize) -> bool {
     tool_count == 0 && tool_result_count == 0
+}
+
+fn is_meaningful_interaction(delta: &InteractionDelta) -> bool {
+    !matches!(
+        delta,
+        InteractionDelta::TokenDelta(_)
+            | InteractionDelta::Heartbeat
+            | InteractionDelta::KvServerMessage
+            | InteractionDelta::ToolCallStarted
+            | InteractionDelta::ToolCallCompleted
+            | InteractionDelta::Unknown(_)
+    )
+}
+
+/// Map Cursor built-in shell exec to a declared client MCP tool when possible.
+fn resolve_shell_mcp_tool_name(declared: &[String]) -> Option<String> {
+    const SHELL_ALIASES: &[&str] = &[
+        "bash",
+        "shell",
+        "run_terminal_cmd",
+        "run_terminal_command",
+        "terminal",
+    ];
+    for name in declared {
+        let lower = name.to_ascii_lowercase();
+        if SHELL_ALIASES
+            .iter()
+            .any(|alias| lower == *alias || lower.contains(alias))
+        {
+            return Some(name.clone());
+        }
+    }
+    declared.first().cloned()
+}
+
+fn send_exec_frame(stream: &CursorH2Stream, frame: Bytes, label: &str) {
+    if let Err(e) = stream.send_frame(frame) {
+        log::warn!("[CursorAgent] {label} 写入失败：{e}");
+    }
+}
+
+async fn surface_mcp_tool_call(
+    exec_msg_id: u64,
+    exec_id: &str,
+    tool_name: String,
+    tool_call_id: &str,
+    args: Value,
+    session_entry: &Arc<Mutex<CursorSession>>,
+    session_manager: &CursorSessionManager,
+    session_key: &str,
+    writer: &mut AgentSseWriter,
+    events: &mut Vec<String>,
+) -> bool {
+    let client_call_id = if tool_call_id.is_empty() {
+        format!("call_{}", uuid::Uuid::new_v4().simple())
+    } else {
+        tool_call_id.to_string()
+    };
+    {
+        let mut s = session_entry.lock().await;
+        s.pending_tool_calls.insert(
+            client_call_id.clone(),
+            PendingToolCall {
+                exec_msg_id,
+                exec_id: exec_id.to_string(),
+                tool_name: tool_name.clone(),
+            },
+        );
+    }
+    session_manager
+        .bind_tool_call_id(&client_call_id, session_key)
+        .await;
+    let arguments_json = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
+    let tc = CapturedToolCall {
+        id: client_call_id,
+        name: tool_name,
+        arguments_json,
+    };
+    events.extend(writer.event(&AgentEvent::ToolCall(tc)));
+    true
 }

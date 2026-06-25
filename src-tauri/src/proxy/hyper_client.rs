@@ -96,6 +96,13 @@ pub enum ProxyResponse {
 }
 
 impl ProxyResponse {
+    /// Locally generated SSE (e.g. Cursor AgentService driver). These streams
+    /// may block internally on upstream h2 while heartbeats arrive; they must
+    /// not be subject to the generic proxy idle timeout.
+    pub fn is_local_stream(&self) -> bool {
+        matches!(self, Self::LocalStream { .. })
+    }
+
     pub fn local_json(status: http::StatusCode, body: Bytes) -> Self {
         let mut headers = http::HeaderMap::new();
         headers.insert(

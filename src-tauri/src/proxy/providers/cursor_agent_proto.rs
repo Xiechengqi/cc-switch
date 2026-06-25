@@ -105,6 +105,12 @@ pub const ARG_PATH: u64 = 1;
 pub const ARG_SHELL_COMMAND: u64 = 1;
 pub const ARG_SHELL_WORKING_DIR: u64 = 2;
 pub const ARG_FETCH_URL: u64 = 1;
+pub const ARG_READ_TOOL_CALL_ID: u64 = 2;
+pub const ARG_WRITE_FILE_TEXT: u64 = 2;
+pub const ARG_WRITE_TOOL_CALL_ID: u64 = 3;
+pub const ARG_READ_OFFSET: u64 = 4;
+pub const ARG_READ_LIMIT: u64 = 5;
+pub const ARG_WRITE_STREAM_CONTENT: u64 = 6;
 
 pub const REJ_PATH: u64 = 1;
 pub const REJ_REASON: u64 = 2;
@@ -121,6 +127,19 @@ pub const RES_REJECTED: u64 = 2;
 pub const RCR_SUCCESS: u64 = 1;
 pub const RCS_REQUEST_CONTEXT: u64 = 1;
 pub const RCS_TOOLS: u64 = 2;
+pub const RCS_ENV: u64 = 4;
+
+/// Nested environment block inside RequestContext (composer-api / Cursor SDK).
+pub const RCE_HOSTNAME: u64 = 1;
+pub const RCE_WORKING_DIR: u64 = 2;
+pub const RCE_SHELL: u64 = 3;
+pub const RCE_FLAG_5: u64 = 5;
+pub const RCE_TIMEZONE: u64 = 10;
+pub const RCE_CWD_ALT: u64 = 11;
+pub const RCE_CWD_ALT2: u64 = 21;
+
+/// Upper bound on a single Connect-RPC frame payload (OmniRoute: 16 MiB).
+pub const CONNECT_MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 pub const MTD_NAME: u64 = 1;
 pub const MTD_DESCRIPTION: u64 = 2;
@@ -208,6 +227,8 @@ pub enum ProtoError {
     UnsupportedWireType(u8),
     #[error("gzip decode failed: {0}")]
     Gzip(String),
+    #[error("connect frame exceeds max size ({size} > {max})")]
+    FrameTooLarge { size: usize, max: usize },
 }
 
 pub type ProtoResult<T> = Result<T, ProtoError>;
@@ -441,6 +462,52 @@ fn decode_string_field(src: &[u8], field: u64) -> String {
         .unwrap_or_default()
 }
 
+fn decode_varint_field(src: &[u8], field: u64) -> Option<u64> {
+    for f in FieldIter::new(src).flatten() {
+        if f.field == field {
+            if let FieldValue::Varint(v) = f.value {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Decode repeated protobuf map-entry messages (`key` + `value` fields).
+fn decode_repeated_map_entries(payload: &[u8], entry_field: u64) -> serde_json::Map<String, Value> {
+    let mut map = serde_json::Map::new();
+    for f in FieldIter::new(payload).flatten() {
+        if f.field != entry_field {
+            continue;
+        }
+        let FieldValue::Bytes(entry) = f.value else {
+            continue;
+        };
+        let key = decode_string_field(entry, MAP_KEY);
+        if key.is_empty() {
+            continue;
+        }
+        if let Some(vb) = find_bytes_field(entry, MAP_VALUE) {
+            map.insert(key, decode_proto_value(vb));
+        }
+    }
+    map
+}
+
+fn decode_mcp_args_map(body: &[u8]) -> serde_json::Map<String, Value> {
+    let mut args = decode_repeated_map_entries(body, MCA_ARGS);
+    for f in FieldIter::new(body).flatten() {
+        if f.field == MCA_ARGS {
+            if let FieldValue::Bytes(b) = f.value {
+                for (k, v) in decode_repeated_map_entries(b, 2) {
+                    args.insert(k, v);
+                }
+            }
+        }
+    }
+    args
+}
+
 // ─── Connect-RPC framing ───────────────────────────────────────────────────
 
 pub fn wrap_connect_frame(payload: &[u8]) -> Bytes {
@@ -480,13 +547,25 @@ impl ConnectFrameParser {
             let flags = self.buf[0];
             let length =
                 u32::from_be_bytes([self.buf[1], self.buf[2], self.buf[3], self.buf[4]]) as usize;
+            if length > CONNECT_MAX_FRAME_BYTES {
+                return Err(ProtoError::FrameTooLarge {
+                    size: length,
+                    max: CONNECT_MAX_FRAME_BYTES,
+                });
+            }
             if self.buf.len() < 5 + length {
                 break;
             }
             self.buf.advance(5);
             let raw = self.buf.split_to(length).freeze();
             let payload = if flags & FLAG_GZIP != 0 {
-                gunzip(&raw)?
+                match gunzip(&raw) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!("[CursorProto] skip undecodable gzip frame: {e}");
+                        continue;
+                    }
+                }
             } else {
                 raw
             };
@@ -887,7 +966,7 @@ pub fn anthropic_tools_to_mcp_defs(tools: &Value) -> Vec<McpToolDef> {
 
 // ─── RunRequest builder ────────────────────────────────────────────────────
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct EncodedImage {
     pub data: Bytes,
     pub mime_type: Option<String>,
@@ -1059,6 +1138,58 @@ pub fn encode_request_context_response(
         rc_parts.push(encode_message(RCS_TOOLS, &[encode_mcp_tool_def_body(t)]));
     }
     let request_context = encode_message(RCS_REQUEST_CONTEXT, &rc_parts);
+    let success = encode_message(RCR_SUCCESS, &[request_context]);
+    wrap_exec_client_message(exec_msg_id, exec_id, ECM_REQUEST_CONTEXT_RESULT, success)
+}
+
+fn normalize_working_directory(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("undefined")
+        || trimmed.eq_ignore_ascii_case("null")
+    {
+        "."
+    } else {
+        trimmed
+    }
+}
+
+/// Rich RequestContext ack with environment + capability flags (composer-api SDK).
+/// Tools are **not** re-sent — only env metadata.
+pub fn encode_rich_request_context_response(
+    exec_msg_id: u64,
+    exec_id: &str,
+    working_directory: &str,
+) -> Bytes {
+    let wd = normalize_working_directory(working_directory);
+    let env_inner = concat_bytes(&[
+        encode_string(RCE_HOSTNAME, "cc-switch"),
+        encode_string(RCE_WORKING_DIR, wd),
+        encode_string(RCE_SHELL, "sh"),
+        encode_bool(RCE_FLAG_5, false),
+        encode_string(RCE_TIMEZONE, "UTC"),
+        encode_string(RCE_CWD_ALT, wd),
+        encode_string(RCE_CWD_ALT2, wd),
+    ]);
+    let request_context = encode_message(
+        RCS_REQUEST_CONTEXT,
+        &[
+            encode_message(RCS_ENV, &[env_inner]),
+            encode_bool(17, false),
+            encode_bool(24, false),
+            encode_bool(32, true),
+            encode_bool(33, true),
+            encode_bool(35, false),
+            encode_bool(36, true),
+            encode_bool(39, true),
+            encode_bool(40, true),
+            encode_bool(41, true),
+            encode_bool(42, true),
+            encode_bool(43, true),
+            encode_bool(44, true),
+            encode_bool(45, true),
+        ],
+    );
     let success = encode_message(RCR_SUCCESS, &[request_context]);
     wrap_exec_client_message(exec_msg_id, exec_id, ECM_REQUEST_CONTEXT_RESULT, success)
 }
@@ -1366,11 +1497,17 @@ pub enum ExecServerEvent {
         exec_msg_id: u64,
         exec_id: String,
         path: String,
+        tool_call_id: String,
+        offset: Option<u64>,
+        limit: Option<u64>,
     },
     Write {
         exec_msg_id: u64,
         exec_id: String,
         path: String,
+        file_text: String,
+        stream_content: String,
+        tool_call_id: String,
     },
     Delete {
         exec_msg_id: u64,
@@ -1385,6 +1522,12 @@ pub enum ExecServerEvent {
     Grep {
         exec_msg_id: u64,
         exec_id: String,
+        pattern: String,
+        path: String,
+        glob: String,
+        output_mode: String,
+        case_insensitive: bool,
+        head_limit: Option<u64>,
     },
     Diagnostics {
         exec_msg_id: u64,
@@ -1458,10 +1601,12 @@ impl ExecServerEvent {
             ExecServerEvent::Grep {
                 exec_msg_id,
                 exec_id,
+                ..
             } => ("grep", *exec_msg_id, exec_id.as_str()),
             ExecServerEvent::Diagnostics {
                 exec_msg_id,
                 exec_id,
+                ..
             } => ("diagnostics", *exec_msg_id, exec_id.as_str()),
             ExecServerEvent::Shell {
                 exec_msg_id,
@@ -1537,11 +1682,17 @@ pub fn decode_exec_server_event(payload: &[u8]) -> Option<ExecServerEvent> {
                 exec_msg_id,
                 exec_id,
                 path: decode_string_field(body, ARG_PATH),
+                tool_call_id: decode_string_field(body, ARG_READ_TOOL_CALL_ID),
+                offset: decode_varint_field(body, ARG_READ_OFFSET),
+                limit: decode_varint_field(body, ARG_READ_LIMIT),
             },
             x if x == ESM_WRITE_ARGS => ExecServerEvent::Write {
                 exec_msg_id,
                 exec_id,
                 path: decode_string_field(body, ARG_PATH),
+                file_text: decode_string_field(body, ARG_WRITE_FILE_TEXT),
+                stream_content: decode_string_field(body, ARG_WRITE_STREAM_CONTENT),
+                tool_call_id: decode_string_field(body, ARG_WRITE_TOOL_CALL_ID),
             },
             x if x == ESM_DELETE_ARGS => ExecServerEvent::Delete {
                 exec_msg_id,
@@ -1553,10 +1704,20 @@ pub fn decode_exec_server_event(payload: &[u8]) -> Option<ExecServerEvent> {
                 exec_id,
                 path: decode_string_field(body, ARG_PATH),
             },
-            x if x == ESM_GREP_ARGS => ExecServerEvent::Grep {
-                exec_msg_id,
-                exec_id,
-            },
+            x if x == ESM_GREP_ARGS => {
+                let case_insensitive = decode_varint_field(body, 8).unwrap_or(0) != 0;
+                let head_limit = decode_varint_field(body, 10);
+                ExecServerEvent::Grep {
+                    exec_msg_id,
+                    exec_id,
+                    pattern: decode_string_field(body, 1),
+                    path: decode_string_field(body, 2),
+                    glob: decode_string_field(body, 3),
+                    output_mode: decode_string_field(body, 4),
+                    case_insensitive,
+                    head_limit,
+                }
+            }
             x if x == ESM_DIAGNOSTICS_ARGS => ExecServerEvent::Diagnostics {
                 exec_msg_id,
                 exec_id,
@@ -1591,7 +1752,6 @@ pub fn decode_exec_server_event(payload: &[u8]) -> Option<ExecServerEvent> {
             x if x == ESM_MCP_ARGS => {
                 let mut tool_name = String::new();
                 let mut tool_call_id = String::new();
-                let mut args = serde_json::Map::new();
                 for f in FieldIter::new(body).flatten() {
                     match (f.field, f.value) {
                         (k, FieldValue::Bytes(b)) if k == MCA_TOOL_NAME => {
@@ -1603,29 +1763,10 @@ pub fn decode_exec_server_event(payload: &[u8]) -> Option<ExecServerEvent> {
                         (k, FieldValue::Bytes(b)) if k == MCA_TOOL_CALL_ID => {
                             tool_call_id = String::from_utf8_lossy(b).into_owned();
                         }
-                        (k, FieldValue::Bytes(b)) if k == MCA_ARGS => {
-                            let mut key = String::new();
-                            let mut value_bytes: Option<&[u8]> = None;
-                            for entry in FieldIter::new(b).flatten() {
-                                match (entry.field, entry.value) {
-                                    (k, FieldValue::Bytes(eb)) if k == MAP_KEY => {
-                                        key = String::from_utf8_lossy(eb).into_owned();
-                                    }
-                                    (k, FieldValue::Bytes(eb)) if k == MAP_VALUE => {
-                                        value_bytes = Some(eb);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            if !key.is_empty() {
-                                if let Some(vb) = value_bytes {
-                                    args.insert(key, decode_proto_value(vb));
-                                }
-                            }
-                        }
                         _ => {}
                     }
                 }
+                let args = decode_mcp_args_map(body);
                 ExecServerEvent::Mcp {
                     exec_msg_id,
                     exec_id,
@@ -1770,6 +1911,102 @@ mod tests {
             empty.len() < with_tools.len(),
             "production empty ack must be smaller than tools-bearing ack"
         );
+    }
+
+    #[test]
+    fn decode_read_exec_includes_offset_limit() {
+        let args = concat_bytes(&[
+            encode_string(ARG_PATH, "/src/main.rs"),
+            encode_uint32(ARG_READ_OFFSET, 10),
+            encode_uint32(ARG_READ_LIMIT, 200),
+        ]);
+        let esm = concat_bytes(&[
+            encode_uint32(ESM_ID, 3),
+            encode_string(ESM_EXEC_ID, "exec-r"),
+            encode_message(ESM_READ_ARGS, &[args]),
+        ]);
+        let payload = encode_message(ASM_EXEC_SERVER_MESSAGE, &[esm]);
+        let event = decode_exec_server_event(&payload).expect("read");
+        match event {
+            ExecServerEvent::Read {
+                path,
+                offset,
+                limit,
+                ..
+            } => {
+                assert_eq!(path, "/src/main.rs");
+                assert_eq!(offset, Some(10));
+                assert_eq!(limit, Some(200));
+            }
+            other => panic!("expected read, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_mcp_args_collects_multiple_keys() {
+        let entry_a = concat_bytes(&[
+            encode_string(MAP_KEY, "path"),
+            encode_message(MAP_VALUE, &[encode_proto_value(&Value::String("/tmp".into()))]),
+        ]);
+        let entry_b = concat_bytes(&[
+            encode_string(MAP_KEY, "pattern"),
+            encode_message(MAP_VALUE, &[encode_proto_value(&Value::String("main".into()))]),
+        ]);
+        let body = concat_bytes(&[
+            encode_string(MCA_TOOL_NAME, "Grep"),
+            encode_message(MCA_ARGS, &[entry_a]),
+            encode_message(MCA_ARGS, &[entry_b]),
+        ]);
+        let esm = concat_bytes(&[
+            encode_uint32(ESM_ID, 4),
+            encode_string(ESM_EXEC_ID, "exec-m"),
+            encode_message(ESM_MCP_ARGS, &[body]),
+        ]);
+        let payload = encode_message(ASM_EXEC_SERVER_MESSAGE, &[esm]);
+        let event = decode_exec_server_event(&payload).expect("mcp");
+        match event {
+            ExecServerEvent::Mcp { tool_name, args, .. } => {
+                assert_eq!(tool_name, "Grep");
+                assert_eq!(args.get("path").and_then(Value::as_str), Some("/tmp"));
+                assert_eq!(args.get("pattern").and_then(Value::as_str), Some("main"));
+            }
+            other => panic!("expected mcp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_grep_exec_event_fields() {
+        let grep_args = concat_bytes(&[
+            encode_string(1, "fn main"),
+            encode_string(2, "/proj"),
+            encode_string(3, "*.rs"),
+            encode_uint32(8, 1),
+            encode_uint32(10, 50),
+        ]);
+        let esm = concat_bytes(&[
+            encode_uint32(ESM_ID, 9),
+            encode_string(ESM_EXEC_ID, "exec-g"),
+            encode_message(ESM_GREP_ARGS, &[grep_args]),
+        ]);
+        let payload = encode_message(ASM_EXEC_SERVER_MESSAGE, &[esm]);
+        let event = decode_exec_server_event(&payload).expect("grep event");
+        match event {
+            ExecServerEvent::Grep {
+                pattern,
+                path,
+                glob,
+                case_insensitive,
+                head_limit,
+                ..
+            } => {
+                assert_eq!(pattern, "fn main");
+                assert_eq!(path, "/proj");
+                assert_eq!(glob, "*.rs");
+                assert!(case_insensitive);
+                assert_eq!(head_limit, Some(50));
+            }
+            other => panic!("expected grep, got {other:?}"),
+        }
     }
 
     #[test]

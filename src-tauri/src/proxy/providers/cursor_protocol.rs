@@ -544,7 +544,7 @@ pub fn cursor_identity_headers(account: &CursorAccountData, token: &str) -> Vec<
         ),
         (
             "x-cursor-client-version".to_string(),
-            account.client_version().to_string(),
+            account.resolved_client_version(),
         ),
         ("x-cursor-client-type".to_string(), "ide".to_string()),
         ("x-cursor-client-os".to_string(), cursor_os().to_string()),

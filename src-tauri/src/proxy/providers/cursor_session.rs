@@ -23,10 +23,22 @@ use tokio::sync::RwLock;
 const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_MAX_SESSIONS: usize = 100;
 
+fn session_manager_from_env() -> CursorSessionManager {
+    let idle_secs = std::env::var("CC_SWITCH_CURSOR_SESSION_IDLE_TTL_SEC")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_IDLE_TTL.as_secs());
+    let max_sessions = std::env::var("CC_SWITCH_CURSOR_MAX_SESSIONS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_SESSIONS);
+    CursorSessionManager::new(Duration::from_secs(idle_secs), max_sessions)
+}
+
 /// Process-wide cursor session registry. Every entry point (OAuth Claude,
 /// OAuth Codex, API-key) shares this manager so a tool-result follow-up
 /// finds the right parked stream regardless of which entry it came from.
-pub static GLOBAL: Lazy<CursorSessionManager> = Lazy::new(CursorSessionManager::default);
+pub static GLOBAL: Lazy<CursorSessionManager> = Lazy::new(session_manager_from_env);
 
 pub fn global() -> &'static CursorSessionManager {
     &GLOBAL
@@ -59,6 +71,8 @@ pub struct CursorSession {
     pub stream: CursorH2Stream,
     /// MCP tool names declared on the inbound turn (for shell→MCP bridging).
     pub declared_tool_names: Vec<String>,
+    /// Working directory for RequestContext ack.
+    pub working_directory: String,
     /// Map: client-facing tool call id → cursor exec metadata.
     pub pending_tool_calls: HashMap<String, PendingToolCall>,
     /// Request-scoped KV blob store (system blob, future attachments).
@@ -133,6 +147,7 @@ impl CursorSessionManager {
         stream: CursorH2Stream,
         blob_store: HashMap<String, Bytes>,
         declared_tool_names: Vec<String>,
+        working_directory: String,
     ) -> Arc<Mutex<CursorSession>> {
         // Close any existing entry first.
         let existing = {
@@ -153,6 +168,7 @@ impl CursorSessionManager {
             conversation_id: conversation_id.clone(),
             stream,
             declared_tool_names,
+            working_directory,
             pending_tool_calls: HashMap::new(),
             blob_store,
             state: SessionState::Running,

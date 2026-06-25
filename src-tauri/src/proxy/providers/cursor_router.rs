@@ -4,10 +4,9 @@
 //! The router exposes [`select_protocol`], a pure function over the request
 //! body + provider settings + protocol shape. It returns `CursorProtocol`:
 //!
-//! * `ChatService` — text-only, no tools/images/tool-results. Preserves
-//!   today's behaviour.
-//! * `AgentService` — anything with tools, images, tool-results, or an
-//!   explicit `previous_response_id`.
+//! * `ChatService` — legacy text path; only used when provider sets
+//!   `cursor_protocol: chat_service` explicitly.
+//! * `AgentService` — default for `auto`; tools, images, Responses, Claude/Codex.
 //!
 //! Provider settings may override the choice:
 //!
@@ -16,6 +15,7 @@
 //!                       "cursor_tool_mode": "disabled|agent_mcp" } }
 //! ```
 
+use super::cursor_debug;
 use crate::provider::Provider;
 use serde_json::Value;
 
@@ -44,15 +44,33 @@ pub fn select_protocol(
 ) -> CursorProtocol {
     // Provider explicit override wins.
     if let Some(forced) = provider_cursor_protocol(provider) {
+        cursor_debug::log_protocol_choice(
+            match forced {
+                CursorProtocol::ChatService => "chat_service",
+                CursorProtocol::AgentService => "agent_service",
+            },
+            protocol_label(protocol),
+            "provider_override",
+        );
         return forced;
     }
 
-    // Anthropic clients always benefit from AgentService (Claude Code is the
-    // primary tool-using client cc-switch ships).
+    // Composer models are unreliable on legacy ChatService — always use AgentService.
+    if is_composer_model(body) {
+        cursor_debug::log_protocol_choice("agent_service", protocol_label(protocol), "composer_model");
+        return CursorProtocol::AgentService;
+    }
+
+    // Claude Code always uses AgentService (OmniRoute default; avoids ChatService drift).
     if matches!(protocol, InboundProtocol::AnthropicMessages) {
-        if has_anthropic_tools_or_results(body) || has_images(body) {
-            return CursorProtocol::AgentService;
-        }
+        cursor_debug::log_protocol_choice("agent_service", protocol_label(protocol), "anthropic");
+        return CursorProtocol::AgentService;
+    }
+
+    // Codex CLI primary path is OpenAI Responses — always AgentService.
+    if matches!(protocol, InboundProtocol::OpenAiResponses) {
+        cursor_debug::log_protocol_choice("agent_service", protocol_label(protocol), "openai_responses");
+        return CursorProtocol::AgentService;
     }
 
     if has_openai_tools_or_results(body)
@@ -62,10 +80,13 @@ pub fn select_protocol(
             .is_some()
         || has_images(body)
     {
+        cursor_debug::log_protocol_choice("agent_service", protocol_label(protocol), "tools_or_images");
         return CursorProtocol::AgentService;
     }
 
-    CursorProtocol::ChatService
+    // `auto` default: AgentService (ChatService only via explicit provider override).
+    cursor_debug::log_protocol_choice("agent_service", protocol_label(protocol), "auto_default");
+    CursorProtocol::AgentService
 }
 
 pub fn select_tool_mode(provider: &Provider) -> CursorToolMode {
@@ -105,14 +126,22 @@ fn provider_settings(provider: &Provider) -> Option<&Value> {
     }
 }
 
-fn has_anthropic_tools_or_results(body: &Value) -> bool {
-    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
-        if !tools.is_empty() {
-            return true;
-        }
+fn is_composer_model(body: &Value) -> bool {
+    body.get("model")
+        .and_then(Value::as_str)
+        .map(|m| {
+            let lower = m.to_ascii_lowercase();
+            lower.starts_with("composer") || lower.contains("composer-")
+        })
+        .unwrap_or(false)
+}
+
+fn protocol_label(protocol: InboundProtocol) -> &'static str {
+    match protocol {
+        InboundProtocol::AnthropicMessages => "anthropic_messages",
+        InboundProtocol::OpenAiChat => "openai_chat",
+        InboundProtocol::OpenAiResponses => "openai_responses",
     }
-    has_tool_blocks_in_messages(body, "tool_result")
-        || has_tool_blocks_in_messages(body, "tool_use")
 }
 
 fn has_openai_tools_or_results(body: &Value) -> bool {
@@ -142,26 +171,6 @@ fn has_openai_tools_or_results(body: &Value) -> bool {
             let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
             if matches!(kind, "function_call" | "function_call_output") {
                 return true;
-            }
-        }
-    }
-    false
-}
-
-fn has_tool_blocks_in_messages(body: &Value, target: &str) -> bool {
-    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
-        return false;
-    };
-    for m in messages {
-        let content = match m.get("content") {
-            Some(c) => c,
-            None => continue,
-        };
-        if let Some(arr) = content.as_array() {
-            for block in arr {
-                if block.get("type").and_then(Value::as_str) == Some(target) {
-                    return true;
-                }
             }
         }
     }
@@ -216,12 +225,12 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_picks_chat_service() {
+    fn plain_text_anthropic_picks_agent_service() {
         let p = make_provider();
         let body = json!({ "messages": [{ "role": "user", "content": "hi" }] });
         assert_eq!(
             select_protocol(&p, InboundProtocol::AnthropicMessages, &body),
-            CursorProtocol::ChatService
+            CursorProtocol::AgentService
         );
     }
 
@@ -284,5 +293,37 @@ mod tests {
         assert_eq!(select_tool_mode(&p), CursorToolMode::Disabled);
         let p2 = make_provider();
         assert_eq!(select_tool_mode(&p2), CursorToolMode::AgentMcp);
+    }
+
+    #[test]
+    fn plain_text_openai_responses_picks_agent_service() {
+        let p = make_provider();
+        let body = json!({ "input": "hi", "model": "gpt-5" });
+        assert_eq!(
+            select_protocol(&p, InboundProtocol::OpenAiResponses, &body),
+            CursorProtocol::AgentService
+        );
+    }
+
+    #[test]
+    fn auto_default_plain_chat_completions_picks_agent_service() {
+        let p = make_provider();
+        let body = json!({
+            "messages": [{ "role": "user", "content": "hi" }]
+        });
+        assert_eq!(
+            select_protocol(&p, InboundProtocol::OpenAiChat, &body),
+            CursorProtocol::AgentService
+        );
+    }
+
+    #[test]
+    fn composer_model_picks_agent_service() {
+        let p = make_provider();
+        let body = json!({ "model": "composer-2.5", "input": "hi" });
+        assert_eq!(
+            select_protocol(&p, InboundProtocol::OpenAiResponses, &body),
+            CursorProtocol::AgentService
+        );
     }
 }

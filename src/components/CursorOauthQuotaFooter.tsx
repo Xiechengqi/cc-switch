@@ -116,6 +116,9 @@ const CursorOauthQuotaFooter: React.FC<CursorOauthQuotaFooterProps> = ({
           </button>
         </div>
         <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-muted-foreground/80 hidden sm:inline">
+            Agent · Tools · Images
+          </span>
           <span className="font-medium tabular-nums text-foreground">
             {used} / {limit}
           </span>

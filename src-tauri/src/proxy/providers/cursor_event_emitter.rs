@@ -301,6 +301,25 @@ impl AgentSseWriter {
         &self.msg_id
     }
 
+    /// Clear per-turn output so a tool-call retry does not duplicate aggregated text.
+    /// Preserves `msg_id` and `started` so OpenAI Responses session binding stays stable.
+    pub fn reset_for_retry(&mut self) {
+        self.next_block_idx = 0;
+        self.text_block = None;
+        self.thinking_block = None;
+        self.chat_tool_call_count = 0;
+        self.next_output_idx = 0;
+        self.reasoning_item = None;
+        self.text_item = None;
+        self.tool_items.clear();
+        self.aggregate_text.clear();
+        self.aggregate_reasoning.clear();
+        self.aggregate_tool_calls.clear();
+        self.error_mode = false;
+        self.output_tokens = 0;
+        // input_tokens intentionally preserved across retries for stable usage.
+    }
+
     pub fn start_events(&mut self) -> Vec<String> {
         if self.started {
             return Vec::new();
@@ -354,8 +373,12 @@ impl AgentSseWriter {
             AgentEvent::ToolCall(tc) => self.tool_call(tc),
             AgentEvent::TurnEnded => Vec::new(),
             AgentEvent::Usage { input, output } => {
-                self.input_tokens = *input;
-                self.output_tokens = *output;
+                if *input > 0 {
+                    self.input_tokens = *input;
+                }
+                if *output > 0 {
+                    self.output_tokens = self.output_tokens.saturating_add(*output);
+                }
                 Vec::new()
             }
             AgentEvent::Error(msg) => self.error_events(msg),

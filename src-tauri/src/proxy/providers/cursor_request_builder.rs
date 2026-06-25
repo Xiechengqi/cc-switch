@@ -2,15 +2,10 @@
 //! request body shapes cc-switch accepts (Anthropic Messages, OpenAI Chat
 //! Completions, OpenAI Responses).
 //!
-//! The output is intentionally narrow: cursor's AgentService takes a single
-//! flat `user_text`, optional `system_prompt`, an `mcp_tools` inventory,
-//! optional vision inputs, and (on follow-up turns) a stash of tool-call
-//! results that we need to map onto a parked session.
-//!
-//! Anything cursor doesn't understand (custom OpenAI params, sampling
-//! controls, `tool_choice`) is dropped here — we communicate constraints
-//! through the system prompt where it matters and rely on tool-presence to
-//! steer the model otherwise.
+//! Tool-steering directives (`TOOL_COMMIT_DIRECTIVE`, `tool_choice` hints) and
+//! output constraints (`max_tokens`, `stop`, `response_format`) are injected
+//! into `user_text` because Cursor's AgentService has no native equivalents
+//! (ported from OmniRoute / composer-api).
 
 use super::cursor_agent_proto::{
     anthropic_tools_to_mcp_defs, openai_tools_to_mcp_defs, McpToolDef,
@@ -18,6 +13,17 @@ use super::cursor_agent_proto::{
 use super::cursor_image::ImageRef;
 use bytes::Bytes;
 use serde_json::Value;
+
+/// Prepended when the client declares tools — measurably raises tool-call rate
+/// on Cursor's agent endpoint (OmniRoute A/B: ~53% → ~88%).
+const TOOL_COMMIT_DIRECTIVE: &str = "\
+You are serving an OpenAI-compatible API request and the client has provided executable tools.\n\
+When a tool is needed to answer (real-time data, web/search lookups, file or project operations), you MUST issue the actual tool call. Do NOT describe what you are about to do as prose and then stop — call the tool.\n\
+Answer directly only when no tool is needed.\n\
+Do not emit duplicate tool calls: call each operation once, then continue after the tool result is returned.\n\
+Never claim that tools are unavailable.";
+
+const DEFAULT_WORKING_DIRECTORY: &str = ".";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InboundProtocol {
@@ -49,6 +55,8 @@ pub struct AgentRunPlan {
     /// Optional Responses API `previous_response_id` — used to find a parked
     /// session.
     pub previous_response_id: Option<String>,
+    /// Working directory surfaced in RequestContext ack (composer-api SDK).
+    pub working_directory: String,
 }
 
 /// Validate tool-result context for AgentService routing. Returns an error
@@ -98,6 +106,13 @@ pub fn build_plan(protocol: InboundProtocol, body: &Value) -> AgentRunPlan {
             .map(openai_tools_to_mcp_defs)
             .unwrap_or_default(),
     };
+    let tool_choice = extract_tool_choice(body, protocol);
+    let mut tools = tools;
+    if tool_choice_disables_tools(&tool_choice) {
+        tools.clear();
+    }
+    let working_directory = extract_working_directory(body);
+    let user_text = enhance_agent_user_text(&user_text, &tool_choice, &tools, body, protocol);
 
     AgentRunPlan {
         system_prompt,
@@ -107,6 +122,7 @@ pub fn build_plan(protocol: InboundProtocol, body: &Value) -> AgentRunPlan {
         tool_results,
         model_id,
         previous_response_id,
+        working_directory,
     }
 }
 
@@ -602,6 +618,240 @@ fn role_label(role: &str) -> &'static str {
     }
 }
 
+// ─── Tool directives & output constraints (OmniRoute / composer-api) ───────
+
+#[derive(Debug, Clone, Default)]
+pub enum ExtractedToolChoice {
+    #[default]
+    Auto,
+    None,
+    Required,
+    Named(String),
+}
+
+pub fn extract_tool_choice(body: &Value, protocol: InboundProtocol) -> ExtractedToolChoice {
+    let Some(raw) = body.get("tool_choice") else {
+        return ExtractedToolChoice::Auto;
+    };
+    match protocol {
+        InboundProtocol::AnthropicMessages => match raw.get("type").and_then(Value::as_str) {
+            Some("none") => ExtractedToolChoice::None,
+            Some("any") => ExtractedToolChoice::Required,
+            Some("tool") => raw
+                .get("name")
+                .and_then(Value::as_str)
+                .map(|n| ExtractedToolChoice::Named(n.to_string()))
+                .unwrap_or(ExtractedToolChoice::Auto),
+            Some("auto") | None => ExtractedToolChoice::Auto,
+            _ => ExtractedToolChoice::Auto,
+        },
+        InboundProtocol::OpenAiChat | InboundProtocol::OpenAiResponses => {
+            if raw.as_str() == Some("none") {
+                ExtractedToolChoice::None
+            } else if raw.as_str() == Some("required") {
+                ExtractedToolChoice::Required
+            } else if raw.get("type").and_then(Value::as_str) == Some("function") {
+                raw.get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .map(|n| ExtractedToolChoice::Named(n.to_string()))
+                    .unwrap_or(ExtractedToolChoice::Auto)
+            } else {
+                ExtractedToolChoice::Auto
+            }
+        }
+    }
+}
+
+pub fn tool_choice_disables_tools(choice: &ExtractedToolChoice) -> bool {
+    matches!(choice, ExtractedToolChoice::None)
+}
+
+fn tool_choice_directive_line(choice: &ExtractedToolChoice) -> &'static str {
+    match choice {
+        ExtractedToolChoice::Required => {
+            "\nYou MUST call at least one of the available tools now; do not answer without calling a tool."
+        }
+        ExtractedToolChoice::Named(_) => {
+            "\nYou MUST call the specified tool now and not any other tool."
+        }
+        _ => "",
+    }
+}
+
+fn tool_choice_named_suffix(choice: &ExtractedToolChoice) -> String {
+    if let ExtractedToolChoice::Named(name) = choice {
+        format!("\nYou MUST call the `{name}` tool now and not any other tool.")
+    } else {
+        String::new()
+    }
+}
+
+pub fn build_output_constraints(body: &Value, protocol: InboundProtocol) -> String {
+    let mut constraints: Vec<String> = Vec::new();
+
+    let max_tokens = match protocol {
+        InboundProtocol::OpenAiResponses => body
+            .get("max_output_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| body.get("max_tokens").and_then(Value::as_u64)),
+        _ => body
+            .get("max_completion_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| body.get("max_tokens").and_then(Value::as_u64)),
+    };
+    if let Some(n) = max_tokens {
+        if n > 0 {
+            constraints.push(format!("Keep the answer within about {n} output tokens."));
+        }
+    }
+
+    if let Some(stop) = body.get("stop") {
+        match stop {
+            Value::String(s) if !s.is_empty() => {
+                constraints.push(format!(
+                    "Do not include any text at or after this stop sequence: {s}"
+                ));
+            }
+            Value::Array(arr) => {
+                let parts: Vec<&str> = arr
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !parts.is_empty() {
+                    constraints.push(format!(
+                        "Stop before any of these sequences: {}",
+                        parts.join(", ")
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let fmt = body.get("response_format").or_else(|| body.get("text"));
+    if let Some(fmt) = fmt {
+        let fmt_type = fmt.get("type").and_then(Value::as_str);
+        if fmt_type == Some("json_object") {
+            constraints.push(
+                "Return a single valid JSON object and no surrounding prose or code fences."
+                    .to_string(),
+            );
+        } else if fmt_type == Some("json_schema") {
+            let schema = fmt
+                .get("json_schema")
+                .and_then(|js| js.get("schema"))
+                .or_else(|| fmt.get("schema"));
+            constraints.push(format!(
+                "Return only valid JSON (no prose or code fences) matching this schema: {}",
+                schema.map(|s| s.to_string()).unwrap_or_else(|| fmt.to_string())
+            ));
+        }
+    }
+
+    if constraints.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nOUTPUT CONSTRAINTS:\n{}",
+            constraints
+                .iter()
+                .map(|c| format!("- {c}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    }
+}
+
+pub fn tool_commit_enabled() -> bool {
+    match std::env::var("CC_SWITCH_CURSOR_TOOL_DIRECTIVE")
+        .or_else(|_| std::env::var("CURSOR_TOOL_DIRECTIVE"))
+    {
+        Ok(v) => !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off")),
+        Err(_) => true,
+    }
+}
+
+pub fn enhance_agent_user_text(
+    user_text: &str,
+    tool_choice: &ExtractedToolChoice,
+    tools: &[McpToolDef],
+    body: &Value,
+    protocol: InboundProtocol,
+) -> String {
+    let mut prefix = String::new();
+    if !tools.is_empty() && tool_commit_enabled() {
+        prefix.push_str(TOOL_COMMIT_DIRECTIVE);
+        if matches!(tool_choice, ExtractedToolChoice::Named(_)) {
+            prefix.push_str(&tool_choice_named_suffix(tool_choice));
+        } else {
+            prefix.push_str(tool_choice_directive_line(tool_choice));
+        }
+        prefix.push_str("\n\n");
+    }
+    let constraints = build_output_constraints(body, protocol);
+    if prefix.is_empty() && constraints.is_empty() {
+        user_text.to_string()
+    } else {
+        format!("{prefix}{user_text}{constraints}")
+    }
+}
+
+pub fn extract_working_directory(body: &Value) -> String {
+    body.get("metadata")
+        .and_then(|m| m.get("working_directory"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            body.get("metadata")
+                .and_then(|m| m.get("cwd"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            std::env::var("CC_SWITCH_CURSOR_WORKING_DIR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_WORKING_DIRECTORY.to_string())
+        })
+}
+
+/// Retry prompt when a tool-using turn ended without surfacing a tool call.
+pub fn retry_prompt_after_missing_tool(user_text: &str, attempt: usize, max_attempts: usize) -> String {
+    format!(
+        "{user_text}\n\n\
+         [cc-switch retry {attempt}/{max_attempts}] \
+         You declared tools but did not call any. You MUST call an appropriate tool now \
+         instead of describing what you would do."
+    )
+}
+
+/// Retry when the model invoked a tool outside the client inventory.
+pub fn retry_prompt_after_unmapped_tool(
+    user_text: &str,
+    tool_name: &str,
+    attempt: usize,
+    max_attempts: usize,
+) -> String {
+    format!(
+        "{user_text}\n\n\
+         [cc-switch retry {attempt}/{max_attempts}] \
+         Tool `{tool_name}` is not in the client tool inventory. \
+         You MUST call one of the declared tools with valid arguments."
+    )
+}
+
+/// Rough input token estimate for usage events (chars / 4).
+pub fn estimate_input_tokens(text: &str) -> u32 {
+    let len = text.len();
+    if len == 0 {
+        return 0;
+    }
+    ((len / 4).max(1)) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,5 +983,74 @@ mod tests {
         let body = json!({ "model": "gpt-5", "input": "hello" });
         let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
         assert!(validate_tool_result_context(&plan).is_ok());
+    }
+
+    #[test]
+    fn tool_choice_none_strips_tools() {
+        let body = json!({
+            "model": "gpt-5",
+            "tool_choice": "none",
+            "tools": [{ "type": "function", "function": { "name": "Bash", "parameters": {} } }],
+            "input": "hello"
+        });
+        let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
+        assert!(plan.tools.is_empty());
+        assert!(!plan.user_text.contains("executable tools"));
+    }
+
+    #[test]
+    fn tools_inject_commit_directive() {
+        let body = json!({
+            "model": "gpt-5",
+            "tools": [{ "type": "function", "function": { "name": "Bash", "parameters": {} } }],
+            "input": "run ls"
+        });
+        let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
+        assert!(plan.user_text.contains("MUST issue the actual tool call"));
+        assert!(plan.user_text.contains("run ls"));
+    }
+
+    #[test]
+    fn tool_choice_required_adds_directive() {
+        let body = json!({
+            "model": "gpt-5",
+            "tool_choice": "required",
+            "tools": [{ "type": "function", "function": { "name": "Bash", "parameters": {} } }],
+            "input": "go"
+        });
+        let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
+        assert!(plan.user_text.contains("MUST call at least one"));
+    }
+
+    #[test]
+    fn output_constraints_max_tokens() {
+        let body = json!({
+            "model": "gpt-5",
+            "max_output_tokens": 512,
+            "input": "hi"
+        });
+        let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
+        assert!(plan.user_text.contains("512 output tokens"));
+    }
+
+    #[test]
+    fn estimate_input_tokens_nonzero_for_text() {
+        assert!(estimate_input_tokens("hello world this is a test") > 0);
+        assert_eq!(estimate_input_tokens(""), 0);
+    }
+
+    #[test]
+    fn tool_commit_can_be_disabled_via_env() {
+        std::env::set_var("CC_SWITCH_CURSOR_TOOL_DIRECTIVE", "0");
+        assert!(!tool_commit_enabled());
+        std::env::remove_var("CC_SWITCH_CURSOR_TOOL_DIRECTIVE");
+        assert!(tool_commit_enabled());
+    }
+
+    #[test]
+    fn composer_model_forces_working_directory_default() {
+        let body = json!({ "model": "composer-2.5", "input": "hi" });
+        let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
+        assert_eq!(plan.working_directory, ".");
     }
 }

@@ -20,6 +20,8 @@ use super::copilot_auth::{GitHubAccount, GitHubDeviceCodeResponse};
 pub const CURSOR_CLIENT_ID: &str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
 pub const DEFAULT_CURSOR_CLIENT_VERSION: &str = "cli-2026.01.09-231024f";
 
+const CURSOR_IDE_VERSION_DB_KEY: &str = "cursorupdate.lastUpdatedAndShown.version";
+
 const LOGIN_URL: &str = "https://www.cursor.com/loginDeepControl";
 const POLL_URL: &str = "https://api2.cursor.sh/auth/poll";
 const TOKEN_URL: &str = "https://api2.cursor.sh/oauth/token";
@@ -162,6 +164,16 @@ impl CursorAccountData {
         self.cursor_client_version
             .as_deref()
             .unwrap_or(DEFAULT_CURSOR_CLIENT_VERSION)
+    }
+
+    /// Resolved client version for upstream headers: account override → IDE DB → default.
+    pub fn resolved_client_version(&self) -> String {
+        if let Some(v) = self.cursor_client_version.as_deref() {
+            return v.to_string();
+        }
+        detect_cursor_ide_version_from_db()
+            .map(|v| format!("cli-{v}"))
+            .unwrap_or_else(|| DEFAULT_CURSOR_CLIENT_VERSION.to_string())
     }
 
     pub fn config_version(&self) -> String {
@@ -930,6 +942,35 @@ fn default_cursor_storage_path() -> Option<PathBuf> {
                 .join("state.vscdb")
         })
     }
+}
+
+/// Read installed Cursor IDE version from `state.vscdb` (OmniRoute `getCursorVersion`).
+pub fn detect_cursor_ide_version_from_db() -> Option<String> {
+    let path = default_cursor_storage_path()?;
+    if !path.exists() {
+        return None;
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    for table in ["ItemTable", "itemTable"] {
+        let sql = format!(
+            "SELECT value FROM {table} WHERE key = ?1 LIMIT 1"
+        );
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            if let Ok(version) = stmt.query_row([CURSOR_IDE_VERSION_DB_KEY], |row| {
+                row.get::<_, String>(0)
+            }) {
+                let trimmed = version.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn read_cursor_local_storage(path: &Path) -> Result<HashMap<String, String>, CursorOAuthError> {

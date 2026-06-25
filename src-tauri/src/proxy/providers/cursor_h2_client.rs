@@ -38,7 +38,7 @@ type BodyStream = Pin<Box<dyn futures::Stream<Item = Result<Frame<Bytes>, std::i
 /// (`hyper::body::Incoming` → `ConnectFrameParser`). Drop closes the request
 /// body channel, which signals end-of-client-stream to hyper.
 pub struct CursorH2Stream {
-    writer: UnboundedSender<Bytes>,
+    writer: Option<UnboundedSender<Bytes>>,
     response: hyper::Response<Incoming>,
     parser: ConnectFrameParser,
     trailers: Option<HeaderMap>,
@@ -128,7 +128,7 @@ impl CursorH2Stream {
             .map_err(|e| ProxyError::ForwardFailed(format!("Cursor AgentService 请求失败: {e}")))?;
 
         Ok(Self {
-            writer: tx,
+            writer: Some(tx),
             response,
             parser: ConnectFrameParser::new(),
             trailers: None,
@@ -149,19 +149,18 @@ impl CursorH2Stream {
     /// Send a Connect-RPC framed payload on the request body. Returns Err if
     /// the writer has been dropped (i.e. the request body has been closed).
     pub fn send_frame(&self, frame: Bytes) -> Result<(), ProxyError> {
-        self.writer.send(frame).map_err(|_| {
+        let tx = self.writer.as_ref().ok_or_else(|| {
+            ProxyError::ForwardFailed("Cursor h2 stream 已关闭，无法继续写入".to_string())
+        })?;
+        tx.send(frame).map_err(|_| {
             ProxyError::ForwardFailed("Cursor h2 stream 已关闭，无法继续写入".to_string())
         })
     }
 
-    /// Signal end-of-client-stream. After this, no more frames can be sent.
+    /// Signal end-of-client-stream. Drops the live mpsc sender so hyper emits
+    /// H2 END_STREAM on the request body. After this, [`send_frame`] fails fast.
     pub fn close_writer(&mut self) {
-        // Closing the channel happens implicitly when the sender is dropped,
-        // but we expose this explicitly so the session manager can choose to
-        // half-close while continuing to read.
-        // Replace with an already-closed sender; this drops the live one.
-        let (closed_tx, _) = unbounded_channel::<Bytes>();
-        self.writer = closed_tx;
+        self.writer = None;
     }
 
     /// Pull the next decoded Connect-RPC frame from the response body. Returns

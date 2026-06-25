@@ -164,13 +164,7 @@ async fn acquire_or_open_session(
     let session = session_manager
         .open(session_key.to_string(), stream_handle, blob_store)
         .await;
-    // Half-close the client-stream after the initial RunRequest. Cursor's
-    // AgentService is client-streaming + server-streaming: if the writer
-    // stays open, upstream may wait forever for more client data before it
-    // starts processing a tool-bearing request. For a fresh session with no
-    // pending tool results, the initial RunRequest is the only client frame
-    // this turn, so we signal EOF now. The server-stream remains readable.
-    {
+    if should_half_close_after_run_request(tools.len(), tool_results.len()) {
         let mut s = session.lock().await;
         s.stream.close_writer();
     }
@@ -388,7 +382,9 @@ async fn handle_exec_event(
             log::debug!("[CursorAgent] RequestContext ack (empty; tools already in RunRequest)");
             let reply = proto::encode_request_context_response(exec_msg_id, &exec_id, &[]);
             let s = session_entry.lock().await;
-            let _ = s.stream.send_frame(reply);
+            if let Err(e) = s.stream.send_frame(reply) {
+                log::warn!("[CursorAgent] RequestContext ack 写入失败：{e}");
+            }
             false
         }
         ExecServerEvent::Read {
@@ -814,4 +810,16 @@ mod tests {
         let with_tools = proto::encode_request_context_response(5, "exec-rc", &[tool]);
         assert!(frame.len() < with_tools.len());
     }
+
+    #[test]
+    fn half_close_only_when_no_tools_or_results() {
+        assert!(should_half_close_after_run_request(0, 0));
+        assert!(!should_half_close_after_run_request(1, 0));
+        assert!(!should_half_close_after_run_request(0, 1));
+    }
+}
+
+/// Whether to half-close the AgentService client stream right after RunRequest.
+fn should_half_close_after_run_request(tool_count: usize, tool_result_count: usize) -> bool {
+    tool_count == 0 && tool_result_count == 0
 }

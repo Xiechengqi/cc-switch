@@ -14,7 +14,7 @@ use super::cursor_protocol::{
     conversation_id_from_headers, prepare_cursor_codex_body, response_error_body, response_to_json,
     response_to_sse_stream, send_cursor_request, CursorRequestContext, CursorResponseFormat,
 };
-use super::cursor_request_builder::{build_plan, InboundProtocol, ToolResultBlock};
+use super::cursor_request_builder::{build_plan, validate_tool_result_context, InboundProtocol, ToolResultBlock};
 use super::cursor_router::{select_protocol, select_tool_mode, CursorProtocol, CursorToolMode};
 use super::cursor_session::CursorSessionManager;
 
@@ -76,6 +76,9 @@ pub async fn forward_cursor_codex(
         CursorProtocol::AgentService => {
             let session_state = app_handle.state::<CursorSessionState>();
             let mut plan = build_plan(inbound_protocol, &mapped_body);
+            if let Err(msg) = validate_tool_result_context(&plan) {
+                return Err(ProxyError::InvalidRequest(msg));
+            }
             let session_key = derive_session_key(
                 headers,
                 &session_state.0,

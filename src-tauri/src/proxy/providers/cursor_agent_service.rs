@@ -159,6 +159,16 @@ async fn acquire_or_open_session(
     let session = session_manager
         .open(session_key.to_string(), stream_handle, blob_store)
         .await;
+    // Half-close the client-stream after the initial RunRequest. Cursor's
+    // AgentService is client-streaming + server-streaming: if the writer
+    // stays open, upstream may wait forever for more client data before it
+    // starts processing a tool-bearing request. For a fresh session with no
+    // pending tool results, the initial RunRequest is the only client frame
+    // this turn, so we signal EOF now. The server-stream remains readable.
+    {
+        let mut s = session.lock().await;
+        s.stream.close_writer();
+    }
     Ok(session)
 }
 
@@ -181,13 +191,19 @@ async fn try_resume_with_tool_results(
                 &tr.content,
                 tr.is_error,
             );
-            if let Err(e) = s.stream.send_frame(frame) {
-                log::warn!("[CursorAgent] 写 tool_result 失败：{e}");
-                return false;
-            }
+        if let Err(e) = s.stream.send_frame(frame) {
+            log::warn!("[CursorAgent] 写 tool_result 失败：{e}");
+            return false;
+        }
         }
     }
-    s.pending_tool_calls.is_empty()
+    let all_done = s.pending_tool_calls.is_empty();
+    if all_done {
+        // All tool results sent — signal client-stream EOF so upstream
+        // knows no more MCP results are coming on this turn.
+        s.stream.close_writer();
+    }
+    all_done
 }
 
 fn build_agent_headers(account: &CursorAccountData, access_token: &str) -> Vec<(String, String)> {

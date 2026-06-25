@@ -22,6 +22,7 @@ import GeminiOauthQuotaFooter from "@/components/GeminiOauthQuotaFooter";
 import KiroOauthQuotaFooter from "@/components/KiroOauthQuotaFooter";
 import AntigravityOauthQuotaFooter from "@/components/AntigravityOauthQuotaFooter";
 import CursorOauthQuotaFooter from "@/components/CursorOauthQuotaFooter";
+import OllamaQuotaFooter from "@/components/OllamaQuotaFooter";
 import { TEMPLATE_TYPES } from "@/config/constants";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
@@ -548,6 +549,14 @@ export function ProviderCard({
                   providerId={provider.id}
                   isCurrent={isCurrent}
                 />
+              ) : quotaSource === "ollama_cloud" ? (
+                <OllamaQuotaFooter
+                  meta={provider.meta}
+                  providerId={provider.id}
+                  appId={appId}
+                  inline={true}
+                  isCurrent={isCurrent}
+                />
               ) : isOfficial ? (
                 officialSubscriptionEnabled ? (
                   <SubscriptionQuotaFooter
@@ -626,7 +635,9 @@ export function ProviderCard({
                   : undefined
               }
               onConfigureUsage={
-                (isOfficial && !supportsOfficialSubscription) || isManagedOauth
+                (isOfficial && !supportsOfficialSubscription) ||
+                isManagedOauth ||
+                provider.meta?.providerType === PROVIDER_TYPES.OLLAMA_CLOUD
                   ? undefined
                   : () => onConfigureUsage(provider)
               }

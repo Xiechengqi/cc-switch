@@ -258,6 +258,7 @@ pub struct AgentSseWriter {
     aggregate_text: String,
     aggregate_reasoning: String,
     aggregate_tool_calls: Vec<CapturedToolCall>,
+    error_mode: bool,
 }
 
 #[derive(Clone)]
@@ -292,6 +293,7 @@ impl AgentSseWriter {
             aggregate_text: String::new(),
             aggregate_reasoning: String::new(),
             aggregate_tool_calls: Vec::new(),
+            error_mode: false,
         }
     }
 
@@ -383,6 +385,7 @@ impl AgentSseWriter {
             } else {
                 "tool_use"
             };
+            let stop_reason = if self.error_mode { "error" } else { stop_reason };
             out.push(anthropic_event(
                 "message_delta",
                 json!({
@@ -399,6 +402,10 @@ impl AgentSseWriter {
         }
 
         if let CursorResponseFormat::OpenAiResponses = self.format {
+            if self.error_mode {
+                out.push("data: [DONE]\n\n".to_string());
+                return out;
+            }
             // Close reasoning item.
             if let Some(r) = self.reasoning_item.take() {
                 out.push(event(
@@ -611,6 +618,7 @@ impl AgentSseWriter {
     }
 
     pub fn error_events(&mut self, message: &str) -> Vec<String> {
+        self.error_mode = true;
         match self.format {
             CursorResponseFormat::AnthropicMessages => vec![anthropic_event(
                 "error",
@@ -1302,5 +1310,47 @@ mod tests {
         assert!(joined.contains("\"type\":\"response.output_text.done\""));
         assert!(joined.contains("\"text\":\"checking\""));
         assert!(joined.contains("\"type\":\"function_call\""));
+    }
+
+    // ── Regression: first-frame timeout terminal events ───────────────────
+
+    #[test]
+    fn responses_error_then_done_emits_response_failed_and_done() {
+        let mut w = AgentSseWriter::new(
+            "gpt-5".to_string(),
+            CursorResponseFormat::OpenAiResponses,
+            0,
+        );
+        w.start_events();
+        let mut events = Vec::new();
+        events.extend(w.error_events("首帧超时"));
+        events.extend(w.done_events());
+        let joined = events.join("");
+        // Must contain response.failed (the terminal event for Codex CLI).
+        assert!(joined.contains("event: response.failed"));
+        assert!(joined.contains("\"type\":\"response.failed\""));
+        assert!(joined.contains("\"status\":\"failed\""));
+        // Must NOT contain response.completed (error mode skips it).
+        assert!(!joined.contains("response.completed"));
+        // Must end with [DONE].
+        assert!(joined.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn anthropic_error_then_done_emits_message_stop_with_error_stop_reason() {
+        let mut w = AgentSseWriter::new(
+            "claude-3".to_string(),
+            CursorResponseFormat::AnthropicMessages,
+            0,
+        );
+        w.start_events();
+        let mut events = Vec::new();
+        events.extend(w.error_events("首帧超时"));
+        events.extend(w.done_events());
+        let joined = events.join("");
+        // Must contain message_stop (the terminal event for Claude CLI).
+        assert!(joined.contains("event: message_stop"));
+        // stop_reason must be "error", not "end_turn".
+        assert!(joined.contains("\"stop_reason\":\"error\""));
     }
 }

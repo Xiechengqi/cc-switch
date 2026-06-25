@@ -44,11 +44,19 @@ pub struct CursorH2Stream {
     trailers: Option<HeaderMap>,
     pending: std::collections::VecDeque<ConnectFrame>,
     closed: bool,
+    received_any_frame: bool,
 }
 
 /// Default per-call deadline. The session manager arms its own idle timer,
 /// so this is just a backstop against an upstream stall.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Timeout for the *first* server frame. Cursor's AgentService should start
+/// producing output within seconds; if it hasn't after this deadline the
+/// upstream is almost certainly waiting for a client-stream EOF we never
+/// sent. A short timeout here lets the caller emit a compliant terminal
+/// error event instead of hanging for 600s.
+const FIRST_FRAME_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl CursorH2Stream {
     /// Open a fresh h2 stream to Cursor's AgentService endpoint,
@@ -120,6 +128,7 @@ impl CursorH2Stream {
             trailers: None,
             pending: std::collections::VecDeque::new(),
             closed: false,
+            received_any_frame: false,
         })
     }
 
@@ -154,6 +163,7 @@ impl CursorH2Stream {
     /// captured into `self.trailers` and don't surface as frames.
     pub async fn next_frame(&mut self) -> Result<Option<ConnectFrame>, ProxyError> {
         if let Some(frame) = self.pending.pop_front() {
+            self.received_any_frame = true;
             return Ok(Some(frame));
         }
         if self.closed {
@@ -161,11 +171,24 @@ impl CursorH2Stream {
         }
 
         loop {
+            let timeout = if self.received_any_frame {
+                DEFAULT_TIMEOUT
+            } else {
+                FIRST_FRAME_IDLE_TIMEOUT
+            };
             let frame_result =
-                tokio::time::timeout(DEFAULT_TIMEOUT, self.response.body_mut().frame())
+                tokio::time::timeout(timeout, self.response.body_mut().frame())
                     .await
                     .map_err(|_| {
-                        ProxyError::ForwardFailed("Cursor AgentService 响应超时".to_string())
+                        if !self.received_any_frame {
+                            ProxyError::ForwardFailed(
+                                "Cursor AgentService 首帧超时：上游在 30s 内未返回任何帧，\
+                                 可能需要 client-stream EOF 信号"
+                                    .to_string(),
+                            )
+                        } else {
+                            ProxyError::ForwardFailed("Cursor AgentService 响应超时".to_string())
+                        }
                     })?;
 
             let body_frame = match frame_result {
@@ -193,12 +216,18 @@ impl CursorH2Stream {
                     self.pending.push_back(f);
                 }
                 if let Some(f) = self.pending.pop_front() {
+                    self.received_any_frame = true;
                     return Ok(Some(f));
                 }
                 // Empty data frame — keep reading.
                 continue;
             }
         }
+    }
+
+    /// Whether we have received at least one server frame on this stream.
+    pub fn received_any_frame(&self) -> bool {
+        self.received_any_frame
     }
 
     /// Trailers captured after the response body ended. `grpc-status` /

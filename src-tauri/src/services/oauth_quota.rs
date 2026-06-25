@@ -293,6 +293,14 @@ impl OauthQuotaService {
                 crate::proxy::providers::cursor_apikey::account_id_for_api_key(&api_key),
                 Some(api_key),
             )
+        } else if auth_provider == "ollama_cloud" {
+            // Ollama API Key 供应商：从 provider 配置提取 API Key，
+            // 用 provider_id 作为缓存 key（没有 managed account ID）。
+            let api_key = provider.resolve_usage_credentials(app_type).1;
+            if api_key.is_empty() {
+                return None;
+            }
+            (provider_id.to_string(), Some(api_key))
         } else {
             (
                 resolve_provider_account_id(&auth_provider, provider, managers).await?,
@@ -388,6 +396,7 @@ impl OauthQuotaService {
             }
             "cursor_oauth" => refresh_cursor_quota(managers, &target.account_id).await,
             "cursor_apikey" => refresh_cursor_apikey_quota(target.cursor_api_key.as_deref()).await,
+            "ollama_cloud" => refresh_ollama_cloud_quota(target.cursor_api_key.as_deref()).await,
             other => SubscriptionQuota::error(
                 other,
                 CredentialStatus::NotFound,
@@ -581,6 +590,11 @@ fn provider_auth_provider(app_type: &AppType, provider: &Provider) -> Option<Str
         && provider_type == Some("cursor_apikey")
     {
         return Some("cursor_apikey".to_string());
+    }
+    if matches!(app_type, AppType::Claude | AppType::Codex)
+        && provider_type == Some("ollama_cloud")
+    {
+        return Some("ollama_cloud".to_string());
     }
     None
 }
@@ -827,6 +841,10 @@ async fn refresh_cursor_apikey_quota(api_key: Option<&str>) -> SubscriptionQuota
         "cursor_apikey",
     )
     .await
+}
+
+async fn refresh_ollama_cloud_quota(api_key: Option<&str>) -> SubscriptionQuota {
+    crate::services::ollama_cloud_usage::get_ollama_cloud_account_info(api_key.unwrap_or("")).await
 }
 
 fn kiro_usage_to_subscription_quota(usage: KiroUsageLimitsResponse) -> SubscriptionQuota {

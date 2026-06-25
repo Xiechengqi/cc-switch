@@ -191,6 +191,7 @@ export type ProviderQuotaSource =
   | "cursor_oauth"
   | "cursor_apikey"
   | "kiro_oauth"
+  | "ollama_cloud"
   | "official"
   | "none";
 
@@ -238,6 +239,10 @@ export function getProviderQuotaSource(
 
   if (provider.meta?.providerType === PROVIDER_TYPES.KIRO_OAUTH) {
     return "kiro_oauth";
+  }
+
+  if (provider.meta?.providerType === PROVIDER_TYPES.OLLAMA_CLOUD) {
+    return "ollama_cloud";
   }
 
   if (appId === "gemini" && isGoogleGeminiOfficialWithManagedAuth(provider)) {

@@ -51,6 +51,24 @@ pub struct AgentRunPlan {
     pub previous_response_id: Option<String>,
 }
 
+/// Validate tool-result context for AgentService routing. Returns an error
+/// message if the request carries a `function_call_output` / `tool_result`
+/// whose `call_id` is empty — Cursor's AgentService cannot match it to a
+/// pending exec_id and the turn would silently fail. Mirrors sub2api's
+/// `validateFunctionCallOutputRequest` guard.
+pub fn validate_tool_result_context(plan: &AgentRunPlan) -> Result<(), String> {
+    for tr in &plan.tool_results {
+        if tr.tool_call_id.trim().is_empty() {
+            return Err(
+                "function_call_output requires a non-empty call_id; \
+                 continuation via previous_response_id without call_id is not supported"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Build a plan from a request body. The body is the **upstream-mapped**
 /// version (after `apply_model_mapping`), so `model_id` here is what cursor
 /// will see on the wire.
@@ -684,5 +702,36 @@ mod tests {
         });
         let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
         assert_eq!(plan.previous_response_id.as_deref(), Some("resp_abc"));
+    }
+
+    #[test]
+    fn validate_tool_result_context_rejects_empty_call_id() {
+        let body = json!({
+            "model": "gpt-5",
+            "input": [
+                { "type": "function_call_output", "call_id": "", "output": "bad" }
+            ]
+        });
+        let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
+        assert!(validate_tool_result_context(&plan).is_err());
+    }
+
+    #[test]
+    fn validate_tool_result_context_accepts_non_empty_call_id() {
+        let body = json!({
+            "model": "gpt-5",
+            "input": [
+                { "type": "function_call_output", "call_id": "fc_1", "output": "ok" }
+            ]
+        });
+        let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
+        assert!(validate_tool_result_context(&plan).is_ok());
+    }
+
+    #[test]
+    fn validate_tool_result_context_accepts_no_tool_results() {
+        let body = json!({ "model": "gpt-5", "input": "hello" });
+        let plan = build_plan(InboundProtocol::OpenAiResponses, &body);
+        assert!(validate_tool_result_context(&plan).is_ok());
     }
 }

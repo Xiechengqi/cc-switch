@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod model_fetch;
 pub mod model_test;
 pub mod oauth_quota;
+pub mod ollama_cloud_usage;
 pub mod omo;
 pub mod prompt;
 pub mod provider;

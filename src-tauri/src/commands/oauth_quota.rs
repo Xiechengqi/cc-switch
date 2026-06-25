@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::Arc;
 
 use tauri::State;
@@ -135,6 +136,11 @@ async fn resolve_quota_account_id(
                 .ok()??;
         return Some(crate::proxy::providers::cursor_apikey::account_id_for_api_key(&api_key));
     }
+    if auth_provider == "ollama_cloud" {
+        // Ollama API Key 供应商：account_id 即 provider_id，
+        // API Key 从 provider 配置提取（和 cursor_apikey 模式一致）。
+        return provider_id.map(|id| id.to_string());
+    }
     resolve_account_id_for_auth_provider(auth_provider, account_id, managers).await
 }
 
@@ -145,6 +151,26 @@ fn resolve_cursor_apikey_for_quota(
     provider_id: Option<&str>,
 ) -> Result<Option<String>, String> {
     if auth_provider != "cursor_apikey" {
+        if auth_provider == "ollama_cloud" {
+            let Some(app_type) = app_type else {
+                return Ok(None);
+            };
+            let Some(provider_id) = provider_id else {
+                return Ok(None);
+            };
+            let provider = app_state
+                .db
+                .get_provider_by_id(provider_id, app_type)
+                .map_err(|e| format!("Failed to get provider: {e}"))?
+                .ok_or_else(|| format!("Provider not found: {provider_id}"))?;
+            let app_type = crate::app_config::AppType::from_str(app_type)
+                .map_err(|e| format!("Invalid app type: {e}"))?;
+            let api_key = provider.resolve_usage_credentials(&app_type).1;
+            if api_key.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(api_key));
+        }
         return Ok(None);
     }
     let Some(app_type) = app_type else {

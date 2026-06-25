@@ -58,6 +58,12 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 /// error event instead of hanging for 600s.
 const FIRST_FRAME_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Timeout between subsequent server frames after the handshake. A bad
+/// RequestContext ack or upstream stall used to fall through to
+/// `DEFAULT_TIMEOUT` (600s); this shorter deadline surfaces errors to the
+/// client within a minute.
+const INTER_FRAME_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl CursorH2Stream {
     /// Open a fresh h2 stream to Cursor's AgentService endpoint,
     /// write the first Connect-RPC frame containing the encoded RunRequest,
@@ -172,7 +178,7 @@ impl CursorH2Stream {
 
         loop {
             let timeout = if self.received_any_frame {
-                DEFAULT_TIMEOUT
+                INTER_FRAME_IDLE_TIMEOUT
             } else {
                 FIRST_FRAME_IDLE_TIMEOUT
             };
@@ -187,7 +193,10 @@ impl CursorH2Stream {
                                     .to_string(),
                             )
                         } else {
-                            ProxyError::ForwardFailed("Cursor AgentService 响应超时".to_string())
+                            ProxyError::ForwardFailed(
+                                "Cursor AgentService 响应超时：上游在 60s 内未返回后续帧"
+                                    .to_string(),
+                            )
                         }
                     })?;
 

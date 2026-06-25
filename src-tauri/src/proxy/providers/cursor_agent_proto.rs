@@ -1043,6 +1043,12 @@ fn wrap_exec_client_message(
     wrap_connect_frame(&ecm)
 }
 
+/// Encode a `RequestContextResult` ack for Cursor's AgentService handshake.
+///
+/// **Production must pass an empty `tools` slice.** Tools are already declared in
+/// the initial `AgentRunRequest.mcp_tools` envelope; re-sending them here causes
+/// Cursor's upstream to stall silently (OmniRoute `cursor.ts` uses an empty ack
+/// at runtime). The `tools` parameter is retained for protobuf round-trip tests.
 pub fn encode_request_context_response(
     exec_msg_id: u64,
     exec_id: &str,
@@ -1420,6 +1426,81 @@ pub enum ExecServerEvent {
     },
 }
 
+impl ExecServerEvent {
+    /// Dedup key for exec server events. `request_context` and `mcp` may share an
+    /// empty `exec_id` in the current Cursor schema, so kind + ids are required.
+    pub fn dedup_key(&self) -> String {
+        let (kind, exec_msg_id, exec_id) = match self {
+            ExecServerEvent::RequestContext {
+                exec_msg_id,
+                exec_id,
+            } => ("request_context", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::Read {
+                exec_msg_id,
+                exec_id,
+                ..
+            } => ("read", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::Write {
+                exec_msg_id,
+                exec_id,
+                ..
+            } => ("write", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::Delete {
+                exec_msg_id,
+                exec_id,
+                ..
+            } => ("delete", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::Ls {
+                exec_msg_id,
+                exec_id,
+                ..
+            } => ("ls", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::Grep {
+                exec_msg_id,
+                exec_id,
+            } => ("grep", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::Diagnostics {
+                exec_msg_id,
+                exec_id,
+            } => ("diagnostics", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::Shell {
+                exec_msg_id,
+                exec_id,
+                ..
+            }
+            | ExecServerEvent::ShellStream {
+                exec_msg_id,
+                exec_id,
+                ..
+            } => ("shell", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::BackgroundShell {
+                exec_msg_id,
+                exec_id,
+                ..
+            } => ("background_shell", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::Fetch {
+                exec_msg_id,
+                exec_id,
+                ..
+            } => ("fetch", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::WriteShellStdin {
+                exec_msg_id,
+                exec_id,
+            } => ("write_shell_stdin", *exec_msg_id, exec_id.as_str()),
+            ExecServerEvent::Mcp {
+                exec_msg_id,
+                exec_id,
+                tool_name,
+                tool_call_id,
+                ..
+            } => {
+                return format!("mcp:{exec_id}:{exec_msg_id}:{tool_name}:{tool_call_id}");
+            }
+        };
+        format!("{kind}:{exec_id}:{exec_msg_id}")
+    }
+}
+
 pub fn decode_exec_server_event(payload: &[u8]) -> Option<ExecServerEvent> {
     for top in FieldIter::new(payload).flatten() {
         if top.field != ASM_EXEC_SERVER_MESSAGE {
@@ -1672,6 +1753,52 @@ mod tests {
         // The body is an AgentClientMessage with exec_client_message (2) set.
         let first = FieldIter::new(&frames[0].payload).next().unwrap().unwrap();
         assert_eq!(first.field, ACM_EXEC_CLIENT_MESSAGE);
+    }
+
+    #[test]
+    fn request_context_empty_ack_smaller_than_tools_ack() {
+        let tool = McpToolDef {
+            name: "Bash".to_string(),
+            description: "run bash".to_string(),
+            input_schema: Bytes::from_static(br#"{"type":"object"}"#),
+            provider_identifier: "cc-switch".to_string(),
+            tool_name: "Bash".to_string(),
+        };
+        let empty = encode_request_context_response(1, "exec-a", &[]);
+        let with_tools = encode_request_context_response(1, "exec-a", &[tool]);
+        assert!(
+            empty.len() < with_tools.len(),
+            "production empty ack must be smaller than tools-bearing ack"
+        );
+    }
+
+    #[test]
+    fn exec_dedup_key_distinguishes_request_context_and_mcp() {
+        let rc = ExecServerEvent::RequestContext {
+            exec_msg_id: 1,
+            exec_id: String::new(),
+        };
+        let mcp = ExecServerEvent::Mcp {
+            exec_msg_id: 1,
+            exec_id: String::new(),
+            tool_name: "Bash".to_string(),
+            tool_call_id: "call_1".to_string(),
+            args: serde_json::json!({}),
+        };
+        assert_ne!(rc.dedup_key(), mcp.dedup_key());
+    }
+
+    #[test]
+    fn exec_dedup_key_is_stable_for_same_event() {
+        let a = ExecServerEvent::RequestContext {
+            exec_msg_id: 9,
+            exec_id: "exec-z".to_string(),
+        };
+        let b = ExecServerEvent::RequestContext {
+            exec_msg_id: 9,
+            exec_id: "exec-z".to_string(),
+        };
+        assert_eq!(a.dedup_key(), b.dedup_key());
     }
 
     #[test]

@@ -25,7 +25,7 @@ use crate::proxy::ProxyError;
 use async_stream::stream;
 use bytes::Bytes;
 use http::StatusCode;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -55,6 +55,13 @@ pub async fn run_agent(options: AgentRunOptions<'_>) -> Result<ProxyResponse, Pr
     } = options;
 
     let images = load_images(plan.images).await?;
+
+    log::debug!(
+        "[CursorAgent] AgentService stream={} tools={} model={}",
+        want_stream,
+        plan.tools.len(),
+        plan.model_id
+    );
 
     let session_entry = acquire_or_open_session(
         account,
@@ -95,7 +102,6 @@ pub async fn run_agent(options: AgentRunOptions<'_>) -> Result<ProxyResponse, Pr
             session_key,
             format,
             response_model,
-            plan.tools,
         )
         .await
     } else {
@@ -105,7 +111,6 @@ pub async fn run_agent(options: AgentRunOptions<'_>) -> Result<ProxyResponse, Pr
             session_key,
             format,
             response_model,
-            plan.tools,
         )
         .await
     }
@@ -233,6 +238,19 @@ async fn upstream_status_message(stream: &mut CursorH2Stream) -> String {
     String::from_utf8_lossy(&acc).into_owned()
 }
 
+// ─── Exec event dedup ──────────────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+struct ExecDedup {
+    seen: HashSet<String>,
+}
+
+impl ExecDedup {
+    fn track(&mut self, exec: &ExecServerEvent) -> bool {
+        self.seen.insert(exec.dedup_key())
+    }
+}
+
 // ─── Drive loop ────────────────────────────────────────────────────────────
 
 /// Run the read/write loop until the cursor stream signals turn_ended or the
@@ -244,9 +262,9 @@ async fn drive_loop(
     session_key: &str,
     writer: &mut AgentSseWriter,
     filter: &mut ComposerMarkerFilter,
-    tools_inventory: &[McpToolDef],
 ) -> Result<Vec<String>, ProxyError> {
     let mut events: Vec<String> = Vec::new();
+    let mut exec_dedup = ExecDedup::default();
     loop {
         let next = {
             let mut s = session_entry.lock().await;
@@ -298,11 +316,11 @@ async fn drive_loop(
         if let Some(exec) = decode_exec_server_event(&frame.payload) {
             let should_return_for_tool = handle_exec_event(
                 exec,
+                &mut exec_dedup,
                 &session_entry,
                 session_manager,
                 session_key,
                 writer,
-                tools_inventory,
                 &mut events,
             )
             .await;
@@ -347,20 +365,28 @@ fn push_marker_event(writer: &mut AgentSseWriter, ev: MarkerEvent, sink: &mut Ve
 
 async fn handle_exec_event(
     exec: ExecServerEvent,
+    exec_dedup: &mut ExecDedup,
     session_entry: &Arc<Mutex<CursorSession>>,
     session_manager: &CursorSessionManager,
     session_key: &str,
     writer: &mut AgentSseWriter,
-    tools_inventory: &[McpToolDef],
     events: &mut Vec<String>,
 ) -> bool {
+    if !exec_dedup.track(&exec) {
+        log::debug!(
+            "[CursorAgent] skip duplicate exec event: {}",
+            exec.dedup_key()
+        );
+        return false;
+    }
+
     match exec {
         ExecServerEvent::RequestContext {
             exec_msg_id,
             exec_id,
         } => {
-            let reply =
-                proto::encode_request_context_response(exec_msg_id, &exec_id, tools_inventory);
+            log::debug!("[CursorAgent] RequestContext ack (empty; tools already in RunRequest)");
+            let reply = proto::encode_request_context_response(exec_msg_id, &exec_id, &[]);
             let s = session_entry.lock().await;
             let _ = s.stream.send_frame(reply);
             false
@@ -584,7 +610,6 @@ async fn run_stream(
     session_key: String,
     format: CursorResponseFormat,
     response_model: String,
-    tools_inventory: Vec<McpToolDef>,
 ) -> Result<ProxyResponse, ProxyError> {
     let body = stream! {
         let mut writer = AgentSseWriter::new(response_model, format, 0);
@@ -597,6 +622,7 @@ async fn run_stream(
             yield Ok::<_, io::Error>(Bytes::from(e));
         }
         let mut filter = ComposerMarkerFilter::default();
+        let mut exec_dedup = ExecDedup::default();
         loop {
             let next = {
                 let mut s = session_entry.lock().await;
@@ -675,11 +701,11 @@ async fn run_stream(
                 let mut sink = Vec::new();
                 let should_return_for_tool = handle_exec_event(
                     exec,
+                    &mut exec_dedup,
                     &session_entry,
                     &session_manager,
                     &session_key,
                     &mut writer,
-                    &tools_inventory,
                     &mut sink,
                 )
                 .await;
@@ -736,7 +762,6 @@ async fn run_non_stream(
     session_key: String,
     format: CursorResponseFormat,
     response_model: String,
-    tools_inventory: Vec<McpToolDef>,
 ) -> Result<ProxyResponse, ProxyError> {
     let mut writer = AgentSseWriter::new(response_model.clone(), format, 0);
     if matches!(format, CursorResponseFormat::OpenAiResponses) {
@@ -752,10 +777,41 @@ async fn run_non_stream(
         &session_key,
         &mut writer,
         &mut filter,
-        &tools_inventory,
     )
     .await?;
     let _ = writer.done_events();
     let body = Bytes::from(serde_json::to_vec(&writer.json_response()).unwrap_or_default());
     Ok(ProxyResponse::local_json(StatusCode::OK, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proto;
+    use super::*;
+    use bytes::Bytes;
+
+    #[test]
+    fn exec_dedup_rejects_duplicate_request_context() {
+        let mut dedup = ExecDedup::default();
+        let event = ExecServerEvent::RequestContext {
+            exec_msg_id: 3,
+            exec_id: "exec-dup".to_string(),
+        };
+        assert!(dedup.track(&event));
+        assert!(!dedup.track(&event));
+    }
+
+    #[test]
+    fn request_context_ack_uses_empty_tools_slice() {
+        let frame = proto::encode_request_context_response(5, "exec-rc", &[]);
+        let tool = McpToolDef {
+            name: "Bash".to_string(),
+            description: "bash".to_string(),
+            input_schema: Bytes::from_static(br#"{"type":"object"}"#),
+            provider_identifier: "cc-switch".to_string(),
+            tool_name: "Bash".to_string(),
+        };
+        let with_tools = proto::encode_request_context_response(5, "exec-rc", &[tool]);
+        assert!(frame.len() < with_tools.len());
+    }
 }

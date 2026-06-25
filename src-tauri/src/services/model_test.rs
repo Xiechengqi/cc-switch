@@ -2245,6 +2245,23 @@ impl ModelTestService {
         provider: &Provider,
         config: &StreamCheckConfig,
     ) -> String {
+        // Provider-level testConfig.testModel has the highest priority — it
+        // must override the model baked into the provider's settings_config
+        // (e.g. TOML `model = "kimi-k2.7-code"` for Codex, or
+        // `ANTHROPIC_MODEL` env for Claude). Without this early return,
+        // resolve_test_model → extract_codex_model/extract_env_model would
+        // return the provider-config model, silently ignoring the user's
+        // per-provider testModel override.
+        if let Some(tc) = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.test_config.as_ref())
+            .filter(|tc| tc.enabled)
+            .and_then(|tc| tc.test_model.as_ref())
+            .filter(|s| !s.is_empty())
+        {
+            return tc.clone();
+        }
         let effective_config = Self::merge_provider_config(provider, config);
         Self::resolve_test_model(app_type, provider, &effective_config)
     }

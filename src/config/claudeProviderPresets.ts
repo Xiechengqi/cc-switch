@@ -1,7 +1,7 @@
 /**
  * 预设供应商配置模板
  */
-import { ProviderCategory } from "../types";
+import { ProviderCategory, ProviderTestConfig } from "../types";
 
 export interface TemplateValueConfig {
   label: string;
@@ -88,6 +88,8 @@ export interface ProviderPreset {
   // 获取模型列表使用的完整 URL（覆写自动候选逻辑）
   // 缺省时后端基于 baseURL 自动尝试 /v1/models、/models 以及剥离已知兼容子路径后的变体。
   modelsUrl?: string;
+  // 供应商单独的模型测试配置（预设默认值，创建时初始化）
+  testConfig?: ProviderTestConfig;
 }
 
 export const providerPresets: ProviderPreset[] = [
@@ -184,6 +186,10 @@ export const providerPresets: ProviderPreset[] = [
     providerType: "ollama_cloud",
     requiresOAuth: false,
     modelsUrl: "https://ollama.com/v1/models",
+    testConfig: {
+      enabled: true,
+      testModel: "gpt-oss:20b",
+    },
     theme: {
       backgroundColor: "#111111",
       textColor: "#FFFFFF",

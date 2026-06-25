@@ -2350,6 +2350,7 @@ function ProviderFormFull({
     if (value === "custom") {
       setActivePreset(null);
       form.reset(defaultValues);
+      setTestConfig({ enabled: false });
 
       if (appId === "codex") {
         const template = getCodexCustomTemplate();
@@ -2419,6 +2420,7 @@ function ProviderFormFull({
           "openai_responses",
       );
 
+      setTestConfig(preset.testConfig ?? { enabled: false });
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
         websiteUrl: preset.websiteUrl ?? "",
@@ -2533,6 +2535,7 @@ function ProviderFormFull({
     setLocalApiKeyField(preset.apiKeyField ?? "ANTHROPIC_AUTH_TOKEN");
     setLocalIsFullUrl(false);
 
+    setTestConfig(preset.testConfig ?? { enabled: false });
     form.reset({
       name: preset.nameKey ? t(preset.nameKey) : preset.name,
       websiteUrl: preset.websiteUrl ?? "",

@@ -1,7 +1,7 @@
 /**
  * Codex 预设供应商配置模板
  */
-import { ProviderCategory } from "../types";
+import { ProviderCategory, ProviderTestConfig } from "../types";
 import type {
   CodexApiFormat,
   CodexCatalogModel,
@@ -45,6 +45,8 @@ export interface CodexProviderPreset {
   modelMapping?: SingleModelMapping;
   // Codex Responses -> Chat Completions reasoning capability defaults
   codexChatReasoning?: CodexChatReasoning;
+  // 供应商单独的模型测试配置（预设默认值，创建时初始化）
+  testConfig?: ProviderTestConfig;
 }
 
 /**
@@ -264,6 +266,10 @@ export const codexProviderPresets: CodexProviderPreset[] = [
       icon: "codex",
       backgroundColor: "#111111",
       textColor: "#FFFFFF",
+    },
+    testConfig: {
+      enabled: true,
+      testModel: "gpt-oss:20b",
     },
     icon: "ollama",
   },

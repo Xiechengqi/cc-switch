@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Provider, ProviderMeta } from "@/types";
 import {
+  canTestLinkProvider,
+  canTestModelProvider,
   canTestProvider,
   getProviderQuotaSource,
   hasManagedAuthBinding,
@@ -299,13 +301,14 @@ describe("isManagedOauthProvider", () => {
   });
 });
 
-describe("canTestProvider", () => {
+describe("canTestModelProvider", () => {
   it("allows Claude OAuth providers", () => {
     const provider: Pick<Provider, "category" | "meta"> = {
       category: "official",
       meta: { providerType: "claude_oauth" },
     };
 
+    expect(canTestModelProvider(provider, "claude")).toBe(true);
     expect(canTestProvider(provider, "claude")).toBe(true);
   });
 
@@ -321,7 +324,7 @@ describe("canTestProvider", () => {
       },
     };
 
-    expect(canTestProvider(provider, "codex")).toBe(true);
+    expect(canTestModelProvider(provider, "codex")).toBe(true);
   });
 
   it("allows managed Google Gemini official providers", () => {
@@ -336,7 +339,7 @@ describe("canTestProvider", () => {
       },
     };
 
-    expect(canTestProvider(provider, "gemini")).toBe(true);
+    expect(canTestModelProvider(provider, "gemini")).toBe(true);
   });
 
   it("rejects plain official providers", () => {
@@ -345,12 +348,12 @@ describe("canTestProvider", () => {
       meta: undefined,
     };
 
-    expect(canTestProvider(provider, "gemini")).toBe(false);
+    expect(canTestModelProvider(provider, "gemini")).toBe(false);
   });
 
   it("allows Copilot and Codex OAuth provider types", () => {
     expect(
-      canTestProvider(
+      canTestModelProvider(
         {
           category: "third_party",
           meta: { providerType: "github_copilot" },
@@ -359,7 +362,7 @@ describe("canTestProvider", () => {
       ),
     ).toBe(true);
     expect(
-      canTestProvider(
+      canTestModelProvider(
         {
           category: "third_party",
           meta: { providerType: "codex_oauth" },
@@ -375,8 +378,8 @@ describe("canTestProvider", () => {
       meta: { providerType: "cursor_apikey" },
     };
 
-    expect(canTestProvider(provider, "claude")).toBe(true);
-    expect(canTestProvider(provider, "codex")).toBe(true);
+    expect(canTestModelProvider(provider, "claude")).toBe(true);
+    expect(canTestModelProvider(provider, "codex")).toBe(true);
   });
 
   it("allows third-party Claude providers", () => {
@@ -385,7 +388,7 @@ describe("canTestProvider", () => {
       meta: { apiFormat: "openai_chat" },
     };
 
-    expect(canTestProvider(provider, "claude")).toBe(true);
+    expect(canTestModelProvider(provider, "claude")).toBe(true);
   });
 
   it("allows normal non-official providers", () => {
@@ -394,6 +397,33 @@ describe("canTestProvider", () => {
       meta: undefined,
     };
 
-    expect(canTestProvider(provider, "codex")).toBe(true);
+    expect(canTestModelProvider(provider, "codex")).toBe(true);
+  });
+});
+
+describe("canTestLinkProvider", () => {
+  it("rejects official providers", () => {
+    expect(
+      canTestLinkProvider({ category: "official", meta: undefined }, "codex"),
+    ).toBe(false);
+  });
+
+  it("allows third-party providers", () => {
+    expect(
+      canTestLinkProvider(
+        { category: "third_party", meta: undefined },
+        "claude",
+      ),
+    ).toBe(true);
+  });
+
+  it("allows official Cursor OAuth for model test but not link test", () => {
+    const provider: Pick<Provider, "category" | "meta"> = {
+      category: "official",
+      meta: { providerType: "cursor_oauth" },
+    };
+
+    expect(canTestLinkProvider(provider, "codex")).toBe(false);
+    expect(canTestModelProvider(provider, "codex")).toBe(true);
   });
 });

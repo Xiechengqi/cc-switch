@@ -32,7 +32,8 @@ import {
   extractCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
 import {
-  canTestProvider,
+  canTestLinkProvider,
+  canTestModelProvider,
   getProviderQuotaSource,
   isManagedOauthProvider,
 } from "@/utils/providerMetaUtils";
@@ -489,9 +490,8 @@ export function ProviderCard({
           </div>
         </div>
 
-        <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-1 gap-y-1">
+        <div className="flex w-full flex-col gap-2 sm:ml-auto sm:w-auto sm:shrink-0">
+          <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-1">
               {quotaSource === "copilot" ? (
                 <CopilotQuotaFooter
                   meta={provider.meta}
@@ -609,9 +609,8 @@ export function ProviderCard({
                 </button>
               )}
             </div>
-          </div>
 
-          <div className="flex items-center gap-1.5 flex-shrink-0 opacity-0 pointer-events-none group-hover:opacity-100 group-focus-within:opacity-100 group-hover:pointer-events-auto group-focus-within:pointer-events-auto transition-opacity duration-200">
+          <div className="flex justify-end opacity-0 pointer-events-none group-hover:opacity-100 group-focus-within:opacity-100 group-hover:pointer-events-auto group-focus-within:pointer-events-auto max-sm:opacity-100 max-sm:pointer-events-auto transition-opacity duration-200">
             <ProviderActions
               appId={appId}
               isCurrent={isCurrent}
@@ -625,12 +624,12 @@ export function ProviderCard({
               onEdit={() => onEdit(provider)}
               onDuplicate={() => onDuplicate(provider)}
               onTestLink={
-                onTestLink && canTestProvider(provider, appId)
+                onTestLink && canTestLinkProvider(provider, appId)
                   ? () => onTestLink(provider)
                   : undefined
               }
               onTestModel={
-                onTestModel && canTestProvider(provider, appId)
+                onTestModel && canTestModelProvider(provider, appId)
                   ? () => onTestModel(provider)
                   : undefined
               }

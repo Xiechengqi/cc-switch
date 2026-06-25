@@ -100,6 +100,7 @@
   "provider": {
     "connectivityCheck": "檢測連通",
     "testLink": "測試連結",
+    "testModel": "測試模型",
     "tabProvider": "供應商",
     "tabUniversal": "通用供應商",
     "noProviders": "尚未新增任何供應商",

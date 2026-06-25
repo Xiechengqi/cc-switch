@@ -102,6 +102,7 @@
   "provider": {
     "connectivityCheck": "Connectivity check",
     "testLink": "Test link",
+    "testModel": "Test model",
     "tabProvider": "Provider",
     "tabUniversal": "Universal",
     "noProviders": "No providers added yet",

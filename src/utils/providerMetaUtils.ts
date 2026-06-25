@@ -129,7 +129,7 @@ export function isManagedOauthProvider(
   );
 }
 
-export function canTestProvider(
+export function canTestModelProvider(
   provider: Pick<Provider, "category" | "meta">,
   appId: AppId,
 ): boolean {
@@ -180,6 +180,27 @@ export function canTestProvider(
   }
 
   return true;
+}
+
+/// HTTP reachability probe ("测试链接"). Official providers intentionally leave
+/// base_url empty and route through the client's default/OAuth endpoint, so
+/// cc-switch has no reliable reachability target for them.
+export function canTestLinkProvider(
+  provider: Pick<Provider, "category" | "meta">,
+  appId: AppId,
+): boolean {
+  if (appId === "claude-desktop" && provider.category === "official") {
+    return false;
+  }
+  return provider.category !== "official";
+}
+
+/** @deprecated Use [`canTestModelProvider`] for model tests or [`canTestLinkProvider`] for link tests. */
+export function canTestProvider(
+  provider: Pick<Provider, "category" | "meta">,
+  appId: AppId,
+): boolean {
+  return canTestModelProvider(provider, appId);
 }
 
 export type ProviderQuotaSource =

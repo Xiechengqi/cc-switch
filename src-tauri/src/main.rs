@@ -2,7 +2,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    if std::env::args().any(|arg| arg == "--no-desktop") {
+    let args: Vec<String> = std::env::args().collect();
+    if cc_switch_lib::cli::try_handle(&args) {
+        return;
+    }
+
+    if args.iter().any(|arg| arg == "--no-desktop") {
         std::env::set_var("CC_SWITCH_NO_DESKTOP", "1");
     }
 

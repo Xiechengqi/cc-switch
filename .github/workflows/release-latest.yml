@@ -302,14 +302,11 @@ jobs:
           set -euo pipefail
           EXPECTED="${{ steps.expect.outputs.sha }}"
           IMG="${{ steps.expect.outputs.image }}:${EXPECTED}"
-          # cc-switch is a Tauri GUI binary; we cannot run --version. Instead grep
-          # the literal CC_SWITCH_BUILD_SHA value baked into .rodata via env!().
           if docker run --rm --entrypoint sh "$IMG" -c \
-               "command -v cc-switch >/dev/null && grep -aF '$EXPECTED' \"\$(command -v cc-switch)\" >/dev/null"; then
-            echo "✅ image $IMG embeds expected commit $EXPECTED"
+               "cc-switch version | grep -F '$EXPECTED'"; then
+            echo "✅ image $IMG: cc-switch version reports commit $EXPECTED"
           else
-            echo "❌ image $IMG does NOT embed $EXPECTED" >&2
-            docker run --rm --entrypoint sh "$IMG" -c \
-              "command -v cc-switch && ls -l \"\$(command -v cc-switch)\"" || true
+            echo "❌ image $IMG: cc-switch version missing commit $EXPECTED" >&2
+            docker run --rm --entrypoint sh "$IMG" -c "cc-switch version" || true
             exit 1
           fi

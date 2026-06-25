@@ -2,6 +2,7 @@ mod app_config;
 mod app_store;
 mod auto_launch;
 mod build_info;
+pub mod cli;
 mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;

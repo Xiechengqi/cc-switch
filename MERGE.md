@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-23
+
+- **上游分支：** `main`
+- **上游 HEAD：** `524b9d98`
+- **共同祖先：** `169d58ac`
+- **合并提交数：** 6
+- **主要变更：**
+  - fix(proxy): Copilot/Codex OAuth 模块不再创建独立 reqwest::Client，统一走全局代理（避免 Claude 模型 400 错误）
+  - feat(proxy): 本地代理请求覆盖（`ProviderMeta.localProxyRequestOverrides`），支持 provider 级自定义请求头和请求体
+  - feat(db): 数据库版本过新时显示应用内升级界面（`get_init_error` 返回 `kind: "db_version_too_new"`）
+  - feat(ui): 多处 JsonEditor 暗色模式
+  - feat(usage): 自定义日期范围支持 live end time
+  - ci: 添加 Windows ARM64 release 构建（本仓 CI 已深度定制，按 HEAD 接受不引入）
+- **冲突解决：**
+  - `src-tauri/src/provider.rs`：tests 的 import 同时含本仓 `AuthBinding`/`AuthBindingSource` 与上游 `LocalProxyRequestOverrides`；两个 `#[test]` 槽位拆分成独立测试 `provider_meta_serializes_codex_image_generation_enabled` + `provider_meta_roundtrips_local_proxy_request_overrides`
+  - `src-tauri/src/proxy/forwarder.rs`：保留本仓 codex_oauth body 标准化 + claude_oauth signing；并入上游 `apply_local_proxy_body_overrides` body 覆盖 + `apply_local_proxy_header_overrides` header 覆盖（在 content-type 检查后、`reject_proxy_placeholder_for_managed_account_upstream` 前）；保留本仓 accept-encoding identity fallback
+  - `src-tauri/src/proxy/providers/codex_oauth_auth.rs`：保留 HEAD 的 CLI flow 字段（`pending_cli_flows` / `cli_flow_results` / `active_cli_flow_handle`）；移除 HEAD 的独立 `http_client: Client` 字段（与上游修复对齐，实际使用本就走 `crate::proxy::http_client::get()` 全局代理客户端）
+  - `src/main.tsx`：保留本仓 `isTauriRuntime()` 守卫 + `invokeCommand` runtime 抽象；并入上游新增 `db_version_too_new` 分支渲染 `DatabaseUpgrade` 恢复界面
+  - `src-tauri/Cargo.lock`：直接 `rm` 后由 cargo 重新生成（HEAD 与 upstream 都因 dependabot 升级造成大量包版本冲突，让 cargo 决议最稳）
+  - `.github/workflows/release.yml`：本仓 CI 已深度定制（跳过 macOS 签名/公证、MSI 版本兼容、tag 重跑清理等共 8 个修复 commit），按 HEAD 全盘采纳，暂不引入上游 Windows ARM64 矩阵
+  - `src/config/{claude,codex,gemini}ProviderPresets.ts`、`tests/config/codexChatProviderPresets.test.ts`：按"禁止新添加 API Key 类供应商"无新增冲突，已与最新预设兼容
+- **验证：** `cargo check` exit 0（14 条遗留 dead-code warning，主要来自 cursor_agent_proto / share_events 等已有遗留）；`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-21
 
 - **上游分支：** `main`

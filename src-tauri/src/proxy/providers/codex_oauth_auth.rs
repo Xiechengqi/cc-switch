@@ -16,7 +16,7 @@
 //! - 通过 JWT id_token 提取 chatgpt_account_id 作为账号唯一标识
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use reqwest::Client;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -279,7 +279,6 @@ pub struct CodexOAuthManager {
     pending_cli_flows: Arc<RwLock<HashMap<String, PendingCliOAuthFlow>>>,
     cli_flow_results: Arc<RwLock<HashMap<String, CliOAuthFlowResult>>>,
     active_cli_flow_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
-    http_client: Client,
     storage_path: PathBuf,
 }
 
@@ -296,7 +295,6 @@ impl CodexOAuthManager {
             pending_cli_flows: Arc::new(RwLock::new(HashMap::new())),
             cli_flow_results: Arc::new(RwLock::new(HashMap::new())),
             active_cli_flow_handle: Arc::new(Mutex::new(None)),
-            http_client: Client::new(),
             storage_path,
         };
 
@@ -318,8 +316,7 @@ impl CodexOAuthManager {
     pub async fn start_device_flow(&self) -> Result<GitHubDeviceCodeResponse, CodexOAuthError> {
         log::info!("[CodexOAuth] 启动 Device Code 流程");
 
-        let response = self
-            .http_client
+        let response = crate::proxy::http_client::get()
             .post(DEVICE_AUTH_USERCODE_URL)
             .header("Content-Type", "application/json")
             .header("User-Agent", CODEX_USER_AGENT)
@@ -401,8 +398,7 @@ impl CodexOAuthManager {
 
         log::debug!("[CodexOAuth] 轮询 Device Code");
 
-        let poll_response = self
-            .http_client
+        let poll_response = crate::proxy::http_client::get()
             .post(DEVICE_AUTH_TOKEN_URL)
             .header("Content-Type", "application/json")
             .header("User-Agent", CODEX_USER_AGENT)
@@ -745,8 +741,7 @@ impl CodexOAuthManager {
         code_verifier: &str,
         redirect_uri: &str,
     ) -> Result<OAuthTokenResponse, CodexOAuthError> {
-        let response = self
-            .http_client
+        let response = crate::proxy::http_client::get()
             .post(OAUTH_TOKEN_URL)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("User-Agent", CODEX_USER_AGENT)
@@ -779,8 +774,7 @@ impl CodexOAuthManager {
         &self,
         refresh_token: &str,
     ) -> Result<OAuthTokenResponse, CodexOAuthError> {
-        let response = self
-            .http_client
+        let response = crate::proxy::http_client::get()
             .post(OAUTH_TOKEN_URL)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("User-Agent", CODEX_USER_AGENT)

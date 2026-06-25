@@ -576,6 +576,21 @@ pub struct CodexChatReasoningConfig {
     pub output_format: Option<String>,
 }
 
+/// Local proxy request overrides applied after route/protocol transforms.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalProxyRequestOverrides {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
+}
+
+impl LocalProxyRequestOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.headers.is_empty() && self.body.is_none()
+    }
+}
+
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
@@ -678,6 +693,12 @@ pub struct ProviderMeta {
     /// Custom User-Agent for local proxy routing.
     #[serde(rename = "customUserAgent", skip_serializing_if = "Option::is_none")]
     pub custom_user_agent: Option<String>,
+    /// Local proxy request overrides applied to the transformed upstream request.
+    #[serde(
+        rename = "localProxyRequestOverrides",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub local_proxy_request_overrides: Option<LocalProxyRequestOverrides>,
     /// 累加模式应用中，该 provider 是否已写入 live config。
     /// `None` 表示旧数据/未知状态，`Some(false)` 表示明确仅存在于数据库中。
     #[serde(rename = "liveConfigManaged", skip_serializing_if = "Option::is_none")]
@@ -1151,10 +1172,12 @@ pub struct OpenCodeModelLimit {
 mod tests {
     use super::{
         AuthBinding, AuthBindingSource, ClaudeModelConfig, CodexModelConfig, GeminiModelConfig,
-        OpenCodeProviderConfig, Provider, ProviderManager, ProviderMeta, UniversalProvider,
+        LocalProxyRequestOverrides, OpenCodeProviderConfig, Provider, ProviderManager,
+        ProviderMeta, UniversalProvider,
     };
     use crate::app_config::AppType;
     use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn provider_meta_serializes_pricing_model_source() {
@@ -1199,6 +1222,33 @@ mod tests {
         );
         assert!(meta.codex_image_generation_enabled());
         assert!(value.get("codex_image_generation_enabled").is_none());
+    }
+
+    #[test]
+    fn provider_meta_roundtrips_local_proxy_request_overrides() {
+        let meta = ProviderMeta {
+            local_proxy_request_overrides: Some(LocalProxyRequestOverrides {
+                headers: HashMap::from([("X-Test".to_string(), "yes".to_string())]),
+                body: Some(json!({ "temperature": 0.2 })),
+            }),
+            ..ProviderMeta::default()
+        };
+
+        let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
+        assert_eq!(
+            value["localProxyRequestOverrides"]["headers"]["X-Test"],
+            "yes"
+        );
+        assert_eq!(
+            value["localProxyRequestOverrides"]["body"]["temperature"],
+            0.2
+        );
+
+        let decoded: ProviderMeta =
+            serde_json::from_value(value).expect("deserialize ProviderMeta");
+        let overrides = decoded.local_proxy_request_overrides.unwrap();
+        assert_eq!(overrides.headers.get("X-Test"), Some(&"yes".to_string()));
+        assert_eq!(overrides.body.unwrap()["temperature"], 0.2);
     }
 
     #[test]

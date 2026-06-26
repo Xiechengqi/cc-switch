@@ -41,7 +41,7 @@ const OllamaQuotaFooter: React.FC<OllamaQuotaFooterProps> = ({
     data: cached,
     isFetching: loading,
     refetch,
-  } = useOllamaQuota(providerId, { enabled: true });
+  } = useOllamaQuota(providerId, { enabled: true, appId });
 
   const handleRefresh = React.useCallback(async () => {
     await subscriptionApi.refreshOauthQuota(

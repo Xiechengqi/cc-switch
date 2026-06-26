@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
+import type { AppId } from "@/lib/api";
 import { subscriptionApi } from "@/lib/api/subscription";
 import type { CachedOauthQuota } from "@/lib/api/subscription";
 
 export interface UseOllamaQuotaOptions {
   enabled?: boolean;
+  appId?: AppId;
 }
 
 /**
@@ -17,12 +19,14 @@ export function useOllamaQuota(
   providerId: string,
   options: UseOllamaQuotaOptions = {},
 ) {
-  const { enabled = true } = options;
+  const { enabled = true, appId } = options;
   return useQuery<CachedOauthQuota | null>({
     queryKey: ["ollama", "quota", providerId],
     queryFn: async () => {
       const cached = await subscriptionApi.getCachedOauthQuota(
         "ollama_cloud",
+        null,
+        appId,
         providerId,
       );
       return cached ?? null;

@@ -1032,6 +1032,7 @@ pub fn create_logged_passthrough_stream(
         let inspect_sse_events =
             collector.is_some() || log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
+        let mut emitted_any_bytes = false;
 
         // 超时配置
         let first_byte_timeout = if timeout_config.first_byte_timeout > 0 {
@@ -1081,6 +1082,9 @@ pub fn create_logged_passthrough_stream(
                         );
                     }
                     is_first_chunk = false;
+                    if !bytes.is_empty() {
+                        emitted_any_bytes = true;
+                    }
                     if inspect_sse_events {
                         crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
@@ -1120,6 +1124,12 @@ pub fn create_logged_passthrough_stream(
                     yield Ok(bytes);
                 }
                 Some(Err(e)) => {
+                    if emitted_any_bytes && is_trailing_sse_transport_close_error(&e) {
+                        log::warn!(
+                            "[{tag}] 上游 SSE 已输出数据后连接以可忽略的传输错误关闭: {e}"
+                        );
+                        break;
+                    }
                     log::error!("[{tag}] 流错误: {e}");
                     yield Err(std::io::Error::other(e.to_string()));
                     break;
@@ -1138,6 +1148,17 @@ pub fn create_logged_passthrough_stream(
             guard.disarm();
         }
     }
+}
+
+fn is_trailing_sse_transport_close_error(error: &std::io::Error) -> bool {
+    let lower = error.to_string().to_ascii_lowercase();
+    lower.contains("error decoding response body")
+        || (lower.contains("http/2") || lower.contains("h2") || lower.contains("stream"))
+            && (lower.contains("internal_error")
+                || lower.contains("not closed cleanly")
+                || lower.contains("unspecific protocol error")
+                || lower.contains("stream error received")
+                || lower.contains("reset"))
 }
 
 fn format_headers(headers: &HeaderMap) -> String {
@@ -1687,5 +1708,81 @@ mod tests {
             Decimal::from_str("1.5").unwrap()
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn logged_passthrough_ignores_trailing_h2_reset_after_data() {
+        let upstream = futures::stream::iter(vec![
+            Ok(Bytes::from_static(b"data: ok\n\n")),
+            Err(std::io::Error::other(
+                "error decoding response body: HTTP/2 stream 0 was not closed cleanly: INTERNAL_ERROR",
+            )),
+        ]);
+        let mut stream = Box::pin(create_logged_passthrough_stream(
+            upstream,
+            "test",
+            None,
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+        ));
+
+        let first = stream
+            .next()
+            .await
+            .expect("first chunk")
+            .expect("first chunk ok");
+        assert_eq!(first, Bytes::from_static(b"data: ok\n\n"));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn logged_passthrough_preserves_initial_h2_reset_error() {
+        let upstream = futures::stream::iter(vec![Err(std::io::Error::other(
+            "error decoding response body: HTTP/2 stream 0 was not closed cleanly: INTERNAL_ERROR",
+        ))]);
+        let mut stream = Box::pin(create_logged_passthrough_stream(
+            upstream,
+            "test",
+            None,
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+        ));
+
+        let err = stream
+            .next()
+            .await
+            .expect("initial error")
+            .expect_err("initial h2 reset must remain an error");
+        assert!(
+            err.to_string().contains("error decoding response body"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn logged_passthrough_ignores_plain_decode_error_after_data() {
+        let upstream = futures::stream::iter(vec![
+            Ok(Bytes::from_static(b"event: response.created\n\n")),
+            Err(std::io::Error::other("error decoding response body")),
+        ]);
+        let mut stream = Box::pin(create_logged_passthrough_stream(
+            upstream,
+            "test",
+            None,
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+        ));
+
+        assert!(stream.next().await.expect("first chunk").is_ok());
+        assert!(stream.next().await.is_none());
     }
 }

@@ -196,6 +196,26 @@ pub fn get() -> Client {
         })
 }
 
+pub fn should_force_http1_for_share_tunnel_url(base_url: &str) -> bool {
+    crate::tunnel::config::is_share_tunnel_url(base_url)
+}
+
+/// Share router SSE currently behaves more reliably over HTTP/1.1 than HTTP/2:
+/// Cloudflare/router may close an otherwise valid SSE response with an h2
+/// INTERNAL_ERROR, which reqwest surfaces as a body decoding/read error.
+/// Keep this scoped to share tunnel URLs so ordinary providers retain their
+/// negotiated protocol behavior.
+pub fn force_http1_for_share_tunnel_url(
+    request_builder: reqwest::RequestBuilder,
+    base_url: &str,
+) -> reqwest::RequestBuilder {
+    if should_force_http1_for_share_tunnel_url(base_url) {
+        request_builder.version(reqwest::Version::HTTP_11)
+    } else {
+        request_builder
+    }
+}
+
 /// 获取当前代理 URL
 ///
 /// 返回当前配置的代理 URL，None 表示直连。
@@ -389,6 +409,19 @@ mod tests {
         // 使用明确无效的 scheme 来触发错误
         let result = build_client(Some("invalid-scheme://127.0.0.1:7890"));
         assert!(result.is_err(), "Should reject invalid proxy scheme");
+    }
+
+    #[test]
+    fn force_http1_scope_is_limited_to_share_tunnel_urls() {
+        assert!(should_force_http1_for_share_tunnel_url(
+            "https://route-demo.jptokenswitch.cc/v1"
+        ));
+        assert!(should_force_http1_for_share_tunnel_url(
+            "https://route-demo.sgptokenswitch.cc/v1"
+        ));
+        assert!(!should_force_http1_for_share_tunnel_url(
+            "https://api.openai.com/v1"
+        ));
     }
 
     #[test]

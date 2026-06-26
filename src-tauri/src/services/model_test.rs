@@ -191,7 +191,9 @@ impl ModelTestService {
         base_url: &str,
         api_key: &str,
     ) -> reqwest::RequestBuilder {
-        if crate::tunnel::config::is_share_tunnel_url(base_url) {
+        let request_builder =
+            crate::proxy::http_client::force_http1_for_share_tunnel_url(request_builder, base_url);
+        if crate::proxy::http_client::should_force_http1_for_share_tunnel_url(base_url) {
             request_builder.header("x-api-key", api_key)
         } else {
             request_builder

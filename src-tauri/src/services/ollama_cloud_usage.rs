@@ -27,6 +27,7 @@ pub async fn get_ollama_cloud_account_info(api_key: &str) -> SubscriptionQuota {
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
+        .body("{}")
         .timeout(Duration::from_secs(15))
         .send()
         .await;

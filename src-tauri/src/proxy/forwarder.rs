@@ -2468,7 +2468,10 @@ impl RequestForwarder {
                     log::debug!("[Antigravity] Using reqwest transport");
                 }
                 let client = super::http_client::get();
-                let mut request = client.post(&url);
+                let mut request = super::http_client::force_http1_for_share_tunnel_url(
+                    client.post(&url),
+                    &base_url,
+                );
                 if !self.non_streaming_timeout.is_zero() {
                     request = request.timeout(self.non_streaming_timeout);
                 }

@@ -20,8 +20,8 @@ use super::cursor_image::load_images;
 use super::cursor_oauth_auth::CursorAccountData;
 use super::cursor_protocol::CursorResponseFormat;
 use super::cursor_request_builder::{
-    estimate_input_tokens, retry_prompt_after_missing_tool, retry_prompt_after_unmapped_tool,
-    AgentRunPlan, ToolResultBlock,
+    estimate_input_tokens, retry_prompt_after_invalid_tool, retry_prompt_after_missing_tool,
+    retry_prompt_after_unmapped_tool, AgentRunPlan, ToolResultBlock,
 };
 use super::cursor_session::{CursorSession, CursorSessionManager, PendingToolCall, SessionState};
 use super::cursor_tool_bridge::{
@@ -29,6 +29,7 @@ use super::cursor_tool_bridge::{
     bridge_read_lints_tool, bridge_read_tool, bridge_write_or_edit_tool, is_declared_tool,
     resolve_shell_mcp_tool_name, BuiltinBridgeKind,
 };
+use super::cursor_tool_resolver::{resolve_tool_call, InvalidToolCall};
 use crate::proxy::hyper_client::ProxyResponse;
 use crate::proxy::ProxyError;
 use async_stream::stream;
@@ -192,13 +193,12 @@ async fn acquire_or_open_session(
     };
     let first_frame = proto::wrap_connect_frame(&encoded_body);
     let stream_handle = CursorH2Stream::open(headers, first_frame).await?;
-    let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
     let session = session_manager
         .open(
             session_key.to_string(),
             stream_handle,
             blob_store,
-            tool_names,
+            tools.to_vec(),
             working_directory.to_string(),
         )
         .await;
@@ -331,8 +331,10 @@ async fn drive_loop(
     session_key: &str,
     writer: &mut AgentSseWriter,
     filter: &mut ComposerMarkerFilter,
+    tools: &[McpToolDef],
     saw_tool_call: &mut bool,
     unmapped_tool_name: &mut Option<String>,
+    invalid_tool_call: &mut Option<String>,
     release_session: bool,
 ) -> Result<DriveEnd, ProxyError> {
     let mut exec_dedup = ExecDedup::default();
@@ -362,6 +364,7 @@ async fn drive_loop(
                 &mut Vec::new(),
                 saw_tool_call,
                 unmapped_tool_name,
+                invalid_tool_call,
             )
             .await;
             if exec_result == ExecHandleResult::StopForTool {
@@ -378,7 +381,7 @@ async fn drive_loop(
             if matches!(delta, InteractionDelta::TurnEnded) {
                 for ev in filter.flush() {
                     let mut sink = Vec::new();
-                    push_marker_event(writer, ev, &mut sink);
+                    push_marker_event(writer, ev, &mut sink, tools, invalid_tool_call);
                 }
                 if release_session {
                     let has_pending = {
@@ -396,14 +399,14 @@ async fn drive_loop(
                 }
                 return Ok(DriveEnd::Completed);
             }
-            let _ = emit_interaction_delta(delta, writer, filter);
+            let _ = emit_interaction_delta(delta, writer, filter, tools, invalid_tool_call);
         }
     }
 
     // Stream ended without TurnEnded.
     for ev in filter.flush() {
         let mut sink = Vec::new();
-        push_marker_event(writer, ev, &mut sink);
+        push_marker_event(writer, ev, &mut sink, tools, invalid_tool_call);
     }
     if release_session {
         let has_pending = {
@@ -422,10 +425,23 @@ async fn drive_loop(
     Ok(DriveEnd::Completed)
 }
 
-fn push_marker_event(writer: &mut AgentSseWriter, ev: MarkerEvent, sink: &mut Vec<String>) {
+fn push_marker_event(
+    writer: &mut AgentSseWriter,
+    ev: MarkerEvent,
+    sink: &mut Vec<String>,
+    tools: &[McpToolDef],
+    invalid_tool_call: &mut Option<String>,
+) {
     match ev {
         MarkerEvent::Text(txt) => sink.extend(writer.event(&AgentEvent::Text(txt))),
-        MarkerEvent::ToolCall(tc) => sink.extend(writer.event(&AgentEvent::ToolCall(tc))),
+        MarkerEvent::ToolCall(tc) => match resolve_captured_tool_call(tc, tools) {
+            Ok(tc) => sink.extend(writer.event(&AgentEvent::ToolCall(tc))),
+            Err(err) => {
+                let reason = invalid_tool_reason(&err);
+                cursor_debug::log_exec("marker_invalid_tool", "", &reason);
+                *invalid_tool_call = Some(reason);
+            }
+        },
     }
 }
 
@@ -433,12 +449,14 @@ fn emit_interaction_delta(
     delta: InteractionDelta,
     writer: &mut AgentSseWriter,
     filter: &mut ComposerMarkerFilter,
+    tools: &[McpToolDef],
+    invalid_tool_call: &mut Option<String>,
 ) -> Vec<String> {
     let mut out = Vec::new();
     match delta {
         InteractionDelta::Text(t) => {
             for ev in filter.push(&t) {
-                push_marker_event(writer, ev, &mut out);
+                push_marker_event(writer, ev, &mut out, tools, invalid_tool_call);
             }
         }
         InteractionDelta::Thinking(t) => {
@@ -465,6 +483,24 @@ fn emit_interaction_delta(
     out
 }
 
+fn resolve_captured_tool_call(
+    tc: CapturedToolCall,
+    tools: &[McpToolDef],
+) -> Result<CapturedToolCall, InvalidToolCall> {
+    let args = serde_json::from_str::<Value>(&tc.arguments_json)
+        .unwrap_or(Value::Object(serde_json::Map::new()));
+    let resolved = resolve_tool_call(tools, &tc.name, args)?;
+    Ok(CapturedToolCall {
+        id: tc.id,
+        name: resolved.name,
+        arguments_json: serde_json::to_string(&resolved.args).unwrap_or_else(|_| "{}".to_string()),
+    })
+}
+
+fn invalid_tool_reason(err: &InvalidToolCall) -> String {
+    format!("{}: {}", err.original_name, err.reason)
+}
+
 async fn handle_exec_event(
     exec: ExecServerEvent,
     exec_dedup: &mut ExecDedup,
@@ -475,6 +511,7 @@ async fn handle_exec_event(
     events: &mut Vec<String>,
     saw_tool_call: &mut bool,
     unmapped_tool_name: &mut Option<String>,
+    invalid_tool_call: &mut Option<String>,
 ) -> ExecHandleResult {
     if !exec_dedup.track(&exec) {
         log::debug!(
@@ -533,6 +570,7 @@ async fn handle_exec_event(
                     writer,
                     events,
                     saw_tool_call,
+                    invalid_tool_call,
                 )
                 .await;
             }
@@ -573,6 +611,7 @@ async fn handle_exec_event(
                     writer,
                     events,
                     saw_tool_call,
+                    invalid_tool_call,
                 )
                 .await;
             }
@@ -610,6 +649,7 @@ async fn handle_exec_event(
                     writer,
                     events,
                     saw_tool_call,
+                    invalid_tool_call,
                 )
                 .await;
             }
@@ -645,6 +685,7 @@ async fn handle_exec_event(
                     writer,
                     events,
                     saw_tool_call,
+                    invalid_tool_call,
                 )
                 .await;
             }
@@ -693,6 +734,7 @@ async fn handle_exec_event(
                     writer,
                     events,
                     saw_tool_call,
+                    invalid_tool_call,
                 )
                 .await;
             }
@@ -726,6 +768,7 @@ async fn handle_exec_event(
                     writer,
                     events,
                     saw_tool_call,
+                    invalid_tool_call,
                 )
                 .await;
             }
@@ -770,6 +813,7 @@ async fn handle_exec_event(
                     writer,
                     events,
                     saw_tool_call,
+                    invalid_tool_call,
                 )
                 .await;
             }
@@ -816,6 +860,7 @@ async fn handle_exec_event(
                     writer,
                     events,
                     saw_tool_call,
+                    invalid_tool_call,
                 )
                 .await;
             }
@@ -858,6 +903,7 @@ async fn handle_exec_event(
                     writer,
                     events,
                     saw_tool_call,
+                    invalid_tool_call,
                 )
                 .await;
             }
@@ -925,6 +971,7 @@ async fn handle_exec_event(
                 writer,
                 events,
                 saw_tool_call,
+                invalid_tool_call,
             )
             .await
         }
@@ -1051,6 +1098,7 @@ async fn run_stream(
             let mut exec_dedup = ExecDedup::default();
             let mut saw_tool_call = false;
             let mut unmapped_tool_name: Option<String> = None;
+            let mut invalid_tool_call: Option<String> = None;
             let stream_started = Instant::now();
             let mut last_meaningful = Instant::now();
 
@@ -1134,6 +1182,7 @@ async fn run_stream(
                         &mut sink,
                         &mut saw_tool_call,
                         &mut unmapped_tool_name,
+                        &mut invalid_tool_call,
                     )
                     .await;
                     if buffer_this_attempt {
@@ -1167,7 +1216,13 @@ async fn run_stream(
                     if matches!(delta, InteractionDelta::TurnEnded) {
                         break;
                     }
-                    let lines = emit_interaction_delta(delta, &mut writer, &mut filter);
+                    let lines = emit_interaction_delta(
+                        delta,
+                        &mut writer,
+                        &mut filter,
+                        &plan.tools,
+                        &mut invalid_tool_call,
+                    );
                     if buffer_this_attempt {
                         attempt_buffer.extend(lines);
                     } else {
@@ -1184,7 +1239,13 @@ async fn run_stream(
 
             for ev in filter.flush() {
                 let mut sink = Vec::new();
-                push_marker_event(&mut writer, ev, &mut sink);
+                push_marker_event(
+                    &mut writer,
+                    ev,
+                    &mut sink,
+                    &plan.tools,
+                    &mut invalid_tool_call,
+                );
                 if buffer_this_attempt {
                     attempt_buffer.extend(sink);
                 } else {
@@ -1223,19 +1284,10 @@ async fn run_stream(
                 && plan.tool_results.is_empty()
                 && attempt < max_attempts;
 
-            if should_retry_missing {
-                cursor_debug::log_retry("missing_tool_call", attempt, max_attempts);
-                log::warn!(
-                    "[CursorAgent] 工具回合未产生 tool_call，重试 {}/{}",
-                    attempt,
-                    max_attempts
-                );
-                attempt_buffer.clear();
-                writer.reset_for_retry();
-                attempt_user_text =
-                    retry_prompt_after_missing_tool(&base_user_text, attempt, max_attempts);
-                continue;
-            }
+            let should_retry_invalid = invalid_tool_call.is_some()
+                && !saw_tool_call
+                && plan.tool_results.is_empty()
+                && attempt < max_attempts;
 
             if should_retry_unmapped {
                 let tool = unmapped_tool_name.clone().unwrap_or_default();
@@ -1253,6 +1305,41 @@ async fn run_stream(
                     attempt,
                     max_attempts,
                 );
+                continue;
+            }
+
+            if should_retry_invalid {
+                let reason = invalid_tool_call.clone().unwrap_or_default();
+                let allowed: Vec<String> = plan.tools.iter().map(|t| t.name.clone()).collect();
+                cursor_debug::log_retry("schema_invalid_tool", attempt, max_attempts);
+                log::warn!(
+                    "[CursorAgent] 工具参数 schema 不匹配：{reason}，重试 {}/{}",
+                    attempt,
+                    max_attempts
+                );
+                attempt_buffer.clear();
+                writer.reset_for_retry();
+                attempt_user_text = retry_prompt_after_invalid_tool(
+                    &base_user_text,
+                    &reason,
+                    &allowed,
+                    attempt,
+                    max_attempts,
+                );
+                continue;
+            }
+
+            if should_retry_missing {
+                cursor_debug::log_retry("missing_tool_call", attempt, max_attempts);
+                log::warn!(
+                    "[CursorAgent] 工具回合未产生 tool_call，重试 {}/{}",
+                    attempt,
+                    max_attempts
+                );
+                attempt_buffer.clear();
+                writer.reset_for_retry();
+                attempt_user_text =
+                    retry_prompt_after_missing_tool(&base_user_text, attempt, max_attempts);
                 continue;
             }
 
@@ -1306,6 +1393,7 @@ async fn run_non_stream(
         let mut filter = ComposerMarkerFilter::default();
         let mut saw_tool_call = false;
         let mut unmapped_tool_name: Option<String> = None;
+        let mut invalid_tool_call: Option<String> = None;
         let session_entry = acquire_or_open_session(
             account,
             access_token,
@@ -1346,8 +1434,10 @@ async fn run_non_stream(
             &session_key,
             &mut writer,
             &mut filter,
+            &plan.tools,
             &mut saw_tool_call,
             &mut unmapped_tool_name,
+            &mut invalid_tool_call,
             false,
         )
         .await?;
@@ -1384,6 +1474,22 @@ async fn run_non_stream(
                         attempt,
                         max_attempts,
                     );
+                } else if let Some(reason) = invalid_tool_call.clone() {
+                    let allowed: Vec<String> = plan.tools.iter().map(|t| t.name.clone()).collect();
+                    cursor_debug::log_retry("schema_invalid_tool", attempt, max_attempts);
+                    log::warn!(
+                        "[CursorAgent] 工具参数 schema 不匹配：{reason}，重试 {}/{}",
+                        attempt,
+                        max_attempts
+                    );
+                    writer.reset_for_retry();
+                    attempt_user_text = retry_prompt_after_invalid_tool(
+                        &base_user_text,
+                        &reason,
+                        &allowed,
+                        attempt,
+                        max_attempts,
+                    );
                 } else {
                     cursor_debug::log_retry("missing_tool_call", attempt, max_attempts);
                     log::warn!(
@@ -1412,6 +1518,17 @@ mod tests {
         bridge_builtin_tool, bridge_grep_tool, resolve_shell_mcp_tool_name, BuiltinBridgeKind,
     };
     use bytes::Bytes;
+    use serde_json::json;
+
+    fn test_tool(name: &str, schema: Value) -> McpToolDef {
+        McpToolDef {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: Bytes::from(schema.to_string()),
+            provider_identifier: "cc-switch".to_string(),
+            tool_name: name.to_string(),
+        }
+    }
 
     #[test]
     fn exec_dedup_rejects_duplicate_request_context() {
@@ -1507,6 +1624,74 @@ mod tests {
         };
         assert_eq!(tool_retry_max(&plan), 1);
     }
+
+    #[test]
+    fn marker_websearch_filesystem_args_resolve_to_glob() {
+        let tools = vec![
+            test_tool(
+                "WebSearch",
+                json!({"type":"object","additionalProperties":false,"properties":{"query":{"type":"string"}},"required":["query"]}),
+            ),
+            test_tool(
+                "Glob",
+                json!({"type":"object","additionalProperties":false,"properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}),
+            ),
+        ];
+        let mut writer = AgentSseWriter::new(
+            "claude-3".to_string(),
+            CursorResponseFormat::AnthropicMessages,
+            0,
+        );
+        let mut sink = Vec::new();
+        let mut invalid = None;
+        push_marker_event(
+            &mut writer,
+            MarkerEvent::ToolCall(CapturedToolCall {
+                id: "call_1".to_string(),
+                name: "WebSearch".to_string(),
+                arguments_json: json!({"path":"/root","glob":"**/claude-api/**"}).to_string(),
+            }),
+            &mut sink,
+            &tools,
+            &mut invalid,
+        );
+        let joined = sink.join("");
+        assert!(invalid.is_none());
+        assert!(joined.contains("\"name\":\"Glob\""));
+        assert!(!joined.contains("\"name\":\"WebSearch\""));
+        assert!(joined.contains("\\\"pattern\\\":\\\"**/claude-api/**\\\""));
+    }
+
+    #[test]
+    fn marker_schema_invalid_tool_is_not_emitted() {
+        let tools = vec![test_tool(
+            "WebSearch",
+            json!({"type":"object","additionalProperties":false,"properties":{"query":{"type":"string"}},"required":["query"]}),
+        )];
+        let mut writer = AgentSseWriter::new(
+            "claude-3".to_string(),
+            CursorResponseFormat::AnthropicMessages,
+            0,
+        );
+        let mut sink = Vec::new();
+        let mut invalid = None;
+        push_marker_event(
+            &mut writer,
+            MarkerEvent::ToolCall(CapturedToolCall {
+                id: "call_1".to_string(),
+                name: "WebSearch".to_string(),
+                arguments_json: json!({"path":"/root","glob":"*.rs"}).to_string(),
+            }),
+            &mut sink,
+            &tools,
+            &mut invalid,
+        );
+        assert!(sink.is_empty());
+        assert!(invalid
+            .as_deref()
+            .unwrap_or_default()
+            .contains("filesystem-search"));
+    }
 }
 
 fn is_meaningful_interaction(delta: &InteractionDelta) -> bool {
@@ -1541,7 +1726,25 @@ async fn surface_mcp_tool_call(
     writer: &mut AgentSseWriter,
     events: &mut Vec<String>,
     saw_tool_call: &mut bool,
+    invalid_tool_call: &mut Option<String>,
 ) -> ExecHandleResult {
+    let declared_tools = {
+        let s = session_entry.lock().await;
+        s.declared_tools.clone()
+    };
+    let resolved = match resolve_tool_call(&declared_tools, &tool_name, args) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            let reason = invalid_tool_reason(&err);
+            cursor_debug::log_exec("mcp_invalid_tool", exec_id, &reason);
+            let s = session_entry.lock().await;
+            let _ =
+                s.stream
+                    .send_frame(proto::encode_exec_mcp_error(exec_msg_id, exec_id, &reason));
+            *invalid_tool_call = Some(reason);
+            return ExecHandleResult::Continue;
+        }
+    };
     let client_call_id = if tool_call_id.is_empty() {
         format!("call_{}", uuid::Uuid::new_v4().simple())
     } else {
@@ -1554,17 +1757,17 @@ async fn surface_mcp_tool_call(
             PendingToolCall {
                 exec_msg_id,
                 exec_id: exec_id.to_string(),
-                tool_name: tool_name.clone(),
+                tool_name: resolved.name.clone(),
             },
         );
     }
     session_manager
         .bind_tool_call_id(&client_call_id, session_key)
         .await;
-    let arguments_json = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
+    let arguments_json = serde_json::to_string(&resolved.args).unwrap_or_else(|_| "{}".to_string());
     let tc = CapturedToolCall {
         id: client_call_id,
-        name: tool_name,
+        name: resolved.name,
         arguments_json,
     };
     events.extend(writer.event(&AgentEvent::ToolCall(tc)));

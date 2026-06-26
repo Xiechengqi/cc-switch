@@ -11,6 +11,7 @@
 //! See `OmniRoute/open-sse/services/cursorSessionManager.ts` for the
 //! reference behaviour.
 
+use super::cursor_agent_proto::McpToolDef;
 use super::cursor_h2_client::CursorH2Stream;
 use bytes::Bytes;
 use once_cell::sync::Lazy;
@@ -71,6 +72,8 @@ pub struct CursorSession {
     pub stream: CursorH2Stream,
     /// MCP tool names declared on the inbound turn (for shell→MCP bridging).
     pub declared_tool_names: Vec<String>,
+    /// Full declared MCP tool definitions for response-side schema validation.
+    pub declared_tools: Vec<McpToolDef>,
     /// Working directory for RequestContext ack.
     pub working_directory: String,
     /// Map: client-facing tool call id → cursor exec metadata.
@@ -146,7 +149,7 @@ impl CursorSessionManager {
         conversation_id: String,
         stream: CursorH2Stream,
         blob_store: HashMap<String, Bytes>,
-        declared_tool_names: Vec<String>,
+        declared_tools: Vec<McpToolDef>,
         working_directory: String,
     ) -> Arc<Mutex<CursorSession>> {
         // Close any existing entry first.
@@ -164,10 +167,12 @@ impl CursorSessionManager {
             self.remove_indexes_for_session(&conversation_id).await;
         }
 
+        let declared_tool_names = declared_tools.iter().map(|t| t.name.clone()).collect();
         let session = CursorSession {
             conversation_id: conversation_id.clone(),
             stream,
             declared_tool_names,
+            declared_tools,
             working_directory,
             pending_tool_calls: HashMap::new(),
             blob_store,

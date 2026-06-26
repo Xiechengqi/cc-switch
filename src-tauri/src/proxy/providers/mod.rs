@@ -38,6 +38,7 @@ pub mod cursor_request_builder;
 pub mod cursor_router;
 pub mod cursor_session;
 pub mod cursor_tool_bridge;
+pub mod cursor_tool_resolver;
 pub mod deepseek_account_auth;
 pub mod deepseek_claude;
 pub mod deepseek_client;

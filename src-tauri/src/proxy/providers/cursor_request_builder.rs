@@ -861,6 +861,30 @@ pub fn retry_prompt_after_unmapped_tool(
     )
 }
 
+/// Retry when Cursor invoked a declared tool with arguments that do not satisfy
+/// the client's schema, or when the arguments clearly belong to another tool.
+pub fn retry_prompt_after_invalid_tool(
+    user_text: &str,
+    reason: &str,
+    allowed_tools: &[String],
+    attempt: usize,
+    max_attempts: usize,
+) -> String {
+    let allowed = if allowed_tools.is_empty() {
+        "none".to_string()
+    } else {
+        allowed_tools.join(", ")
+    };
+    format!(
+        "{user_text}\n\n\
+         [cc-switch retry {attempt}/{max_attempts}] \
+         The previous tool call was rejected before reaching the client because its \
+         arguments did not match the declared tool schema: {reason}. \
+         Allowed tool names: {allowed}. \
+         You MUST call one of the declared tools with valid arguments."
+    )
+}
+
 /// Rough input token estimate for usage events (chars / 4).
 pub fn estimate_input_tokens(text: &str) -> u32 {
     let len = text.len();

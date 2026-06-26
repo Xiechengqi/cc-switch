@@ -65,6 +65,29 @@ pub fn share_user_email_from_headers(headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
+pub fn share_user_country_from_headers(headers: &HeaderMap) -> Option<String> {
+    valid_ascii_country_header(headers, "X-CC-Switch-User-Country", 2)
+}
+
+pub fn share_user_country_iso3_from_headers(headers: &HeaderMap) -> Option<String> {
+    valid_ascii_country_header(headers, "X-CC-Switch-User-Country-Iso3", 3)
+}
+
+fn valid_ascii_country_header(headers: &HeaderMap, name: &str, len: usize) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|value| {
+            value.len() == len
+                && value
+                    .as_bytes()
+                    .iter()
+                    .all(|byte| byte.is_ascii_uppercase())
+        })
+        .map(str::to_string)
+}
+
 fn share_id_from_headers(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("X-CC-Switch-Share-Id")
@@ -117,5 +140,37 @@ mod tests {
     fn share_id_from_headers_returns_none_without_header() {
         let headers = HeaderMap::new();
         assert!(share_id_from_headers(&headers).is_none());
+    }
+
+    #[test]
+    fn share_user_country_headers_accept_router_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-cc-switch-user-country", HeaderValue::from_static("JP"));
+        headers.insert(
+            "x-cc-switch-user-country-iso3",
+            HeaderValue::from_static("JPN"),
+        );
+
+        assert_eq!(
+            share_user_country_from_headers(&headers).as_deref(),
+            Some("JP")
+        );
+        assert_eq!(
+            share_user_country_iso3_from_headers(&headers).as_deref(),
+            Some("JPN")
+        );
+    }
+
+    #[test]
+    fn share_user_country_headers_reject_untrusted_shapes() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-cc-switch-user-country", HeaderValue::from_static("jp"));
+        headers.insert(
+            "x-cc-switch-user-country-iso3",
+            HeaderValue::from_static("JPN1"),
+        );
+
+        assert!(share_user_country_from_headers(&headers).is_none());
+        assert!(share_user_country_iso3_from_headers(&headers).is_none());
     }
 }

@@ -124,6 +124,8 @@ impl Database {
                     is_streaming: row.get::<_, i64>(19)? != 0,
                     session_id: row.get(20)?,
                     user_email: row.get(21)?,
+                    user_country: None,
+                    user_country_iso3: None,
                     created_at: row.get(22)?,
                 })
             })

@@ -8,7 +8,10 @@ use crate::proxy::{
     extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
-    share_guard::{check_share_request, share_user_email_from_headers, ShareGuardResult},
+    share_guard::{
+        check_share_request, share_user_country_from_headers, share_user_country_iso3_from_headers,
+        share_user_email_from_headers, ShareGuardResult,
+    },
     types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
     ProxyError,
 };
@@ -82,6 +85,10 @@ pub struct RequestContext {
     pub share_name: Option<String>,
     /// Router 已认证的调用用户邮箱，仅用于 share 请求日志。
     pub share_user_email: Option<String>,
+    /// Router 解析出的调用方 ISO2 国家码，仅用于 share 请求日志。
+    pub share_user_country: Option<String>,
+    /// Router 解析出的调用方 ISO3 国家码，仅用于 share 请求日志。
+    pub share_user_country_iso3: Option<String>,
     /// 由 cc-switch-router 透传的请求 ID，用于让 live ticker 与 share request log
     /// 共享同一个 request identity。
     pub incoming_request_id: Option<String>,
@@ -214,6 +221,8 @@ impl RequestContext {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
+        let share_user_country = share_user_country_from_headers(headers);
+        let share_user_country_iso3 = share_user_country_iso3_from_headers(headers);
 
         let (share_id, share_name, share_user_email) = match share_outcome {
             ShareOutcome::Share {
@@ -223,6 +232,11 @@ impl RequestContext {
                 ..
             } => (Some(id), Some(name), user_email),
             ShareOutcome::NotShare => (None, None, None),
+        };
+        let (share_user_country, share_user_country_iso3) = if share_id.is_some() {
+            (share_user_country, share_user_country_iso3)
+        } else {
+            (None, None)
         };
 
         Ok(Self {
@@ -245,6 +259,8 @@ impl RequestContext {
             share_id,
             share_name,
             share_user_email,
+            share_user_country,
+            share_user_country_iso3,
             incoming_request_id,
             override_provider_id,
         })

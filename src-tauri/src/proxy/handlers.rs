@@ -658,6 +658,8 @@ async fn handle_claude_transform(
             let share_id = ctx.share_id.clone();
             let share_name = ctx.share_name.clone();
             let share_user_email = ctx.share_user_email.clone();
+            let share_user_country = ctx.share_user_country.clone();
+            let share_user_country_iso3 = ctx.share_user_country_iso3.clone();
             let session_id = ctx.session_id.clone();
             let incoming_request_id = ctx.incoming_request_id.clone();
             // 用 ctx 的 app_type：Claude Desktop 网关也走此转换路径，硬编码
@@ -696,6 +698,8 @@ async fn handle_claude_transform(
                     let share_id = share_id.clone();
                     let share_name = share_name.clone();
                     let share_user_email = share_user_email.clone();
+                    let share_user_country = share_user_country.clone();
+                    let share_user_country_iso3 = share_user_country_iso3.clone();
                     let session_id = session_id.clone();
                     let incoming_request_id = incoming_request_id.clone();
 
@@ -741,6 +745,8 @@ async fn handle_claude_transform(
                                     true,
                                     Some(session_id),
                                     share_user_email,
+                                    share_user_country,
+                                    share_user_country_iso3,
                                 ),
                             );
                             crate::proxy::share_guard::record_share_request(
@@ -877,6 +883,8 @@ async fn handle_claude_transform(
         let share_id = ctx.share_id.clone();
         let share_name = ctx.share_name.clone();
         let share_user_email = ctx.share_user_email.clone();
+        let share_user_country = ctx.share_user_country.clone();
+        let share_user_country_iso3 = ctx.share_user_country_iso3.clone();
         let provider_name = ctx.provider.name.clone();
         let incoming_request_id = ctx.incoming_request_id.clone();
         let outbound_model = ctx
@@ -930,6 +938,8 @@ async fn handle_claude_transform(
                             false,
                             Some(session_id),
                             share_user_email,
+                            share_user_country,
+                            share_user_country_iso3,
                         ),
                     );
                     crate::proxy::share_guard::record_share_request(&state.db, &sid, total_tokens);

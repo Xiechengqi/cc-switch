@@ -584,6 +584,8 @@ fn create_usage_collector(
     let share_id = ctx.share_id.clone();
     let share_name = ctx.share_name.clone();
     let share_user_email = ctx.share_user_email.clone();
+    let share_user_country = ctx.share_user_country.clone();
+    let share_user_country_iso3 = ctx.share_user_country_iso3.clone();
     let incoming_request_id = ctx.incoming_request_id.clone();
 
     Some(SseUsageCollector::new(
@@ -603,6 +605,8 @@ fn create_usage_collector(
                 let share_id = share_id.clone();
                 let share_name = share_name.clone();
                 let share_user_email = share_user_email.clone();
+                let share_user_country = share_user_country.clone();
+                let share_user_country_iso3 = share_user_country_iso3.clone();
                 let incoming_request_id = incoming_request_id.clone();
                 let outbound_model = fallback_model.clone();
                 let total_tokens = share_total_tokens(app_type_str, &usage);
@@ -617,6 +621,8 @@ fn create_usage_collector(
                 let share_name_for_sync = share_name.clone();
                 let share_user_email_for_log = share_user_email.clone();
                 let share_user_email_for_sync = share_user_email.clone();
+                let share_user_country_for_sync = share_user_country.clone();
+                let share_user_country_iso3_for_sync = share_user_country_iso3.clone();
                 let provider_name_for_sync = provider_name.clone();
 
                 tokio::spawn(async move {
@@ -659,6 +665,8 @@ fn create_usage_collector(
                                 true,
                                 Some(session_id_for_sync),
                                 share_user_email_for_sync,
+                                share_user_country_for_sync,
+                                share_user_country_iso3_for_sync,
                             ),
                         );
                         crate::proxy::share_guard::record_share_request(
@@ -680,6 +688,8 @@ fn create_usage_collector(
                 let share_id = share_id.clone();
                 let share_name = share_name.clone();
                 let share_user_email = share_user_email.clone();
+                let share_user_country = share_user_country.clone();
+                let share_user_country_iso3 = share_user_country_iso3.clone();
                 let incoming_request_id = incoming_request_id.clone();
                 let outbound_model = fallback_model.clone();
                 let request_id = incoming_request_id
@@ -691,6 +701,8 @@ fn create_usage_collector(
                 let share_name_for_sync = share_name.clone();
                 let share_user_email_for_log = share_user_email.clone();
                 let share_user_email_for_sync = share_user_email.clone();
+                let share_user_country_for_sync = share_user_country.clone();
+                let share_user_country_iso3_for_sync = share_user_country_iso3.clone();
                 let provider_name_for_sync = provider_name.clone();
 
                 tokio::spawn(async move {
@@ -733,6 +745,8 @@ fn create_usage_collector(
                                 true,
                                 Some(session_id_for_sync),
                                 share_user_email_for_sync,
+                                share_user_country_for_sync,
+                                share_user_country_iso3_for_sync,
                             ),
                         );
                         crate::proxy::share_guard::record_share_request(&state.db, &sid, 0);
@@ -776,6 +790,8 @@ fn spawn_log_usage(
     let share_id = ctx.share_id.clone();
     let share_name = ctx.share_name.clone();
     let share_user_email = ctx.share_user_email.clone();
+    let share_user_country = ctx.share_user_country.clone();
+    let share_user_country_iso3 = ctx.share_user_country_iso3.clone();
     let incoming_request_id = ctx.incoming_request_id.clone();
     let total_tokens = share_total_tokens(&app_type_str, &usage);
     let should_log_request = enable_logging || share_id.is_some();
@@ -790,6 +806,8 @@ fn spawn_log_usage(
     let share_name_for_sync = share_name.clone();
     let share_user_email_for_log = share_user_email.clone();
     let share_user_email_for_sync = share_user_email.clone();
+    let share_user_country_for_sync = share_user_country.clone();
+    let share_user_country_iso3_for_sync = share_user_country_iso3.clone();
 
     tokio::spawn(async move {
         if should_log_request {
@@ -832,6 +850,8 @@ fn spawn_log_usage(
                 is_streaming,
                 Some(session_id_for_sync),
                 share_user_email_for_sync,
+                share_user_country_for_sync,
+                share_user_country_iso3_for_sync,
             ));
             crate::proxy::share_guard::record_share_request(&state.db, &sid, total_tokens);
         }
@@ -937,6 +957,8 @@ pub(crate) fn build_share_request_log(
     is_streaming: bool,
     session_id: Option<String>,
     user_email: Option<String>,
+    user_country: Option<String>,
+    user_country_iso3: Option<String>,
 ) -> crate::tunnel::config::ShareTunnelRequestLog {
     let usage = share_usage_for_display(app_type, usage);
 
@@ -967,6 +989,8 @@ pub(crate) fn build_share_request_log(
         is_streaming,
         session_id,
         user_email,
+        user_country,
+        user_country_iso3,
         created_at: Utc::now().timestamp(),
     }
 }
@@ -1324,12 +1348,16 @@ mod tests {
             true,
             Some("session-1".to_string()),
             Some("user@example.com".to_string()),
+            Some("JP".to_string()),
+            Some("JPN".to_string()),
         );
 
         assert_eq!(log.input_tokens, 1_021);
         assert_eq!(log.output_tokens, 357);
         assert_eq!(log.cache_read_tokens, 155_520);
         assert_eq!(log.cache_creation_tokens, 0);
+        assert_eq!(log.user_country.as_deref(), Some("JP"));
+        assert_eq!(log.user_country_iso3.as_deref(), Some("JPN"));
         assert_eq!(share_total_tokens("codex", &usage), 156_898);
     }
 
@@ -1358,6 +1386,8 @@ mod tests {
             None,
             &usage,
             false,
+            None,
+            None,
             None,
             None,
         );

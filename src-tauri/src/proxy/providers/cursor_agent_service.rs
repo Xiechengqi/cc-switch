@@ -201,10 +201,8 @@ async fn acquire_or_open_session(
             working_directory.to_string(),
         )
         .await;
-    if should_half_close_after_run_request(tools.len(), tool_results.len()) {
-        let mut s = session.lock().await;
-        s.stream.close_writer();
-    }
+    // AgentService h2 必须保持双向可写（OmniRoute：发送 END_STREAM 后上游会停响应）。
+    // RequestContext ack / tool_result 都依赖同一 writer，禁止在 open 后 half-close。
     Ok(session)
 }
 
@@ -241,8 +239,8 @@ async fn try_resume_with_tool_results(
             return ToolResumeOutcome::NotFound;
         }
     }
+    // 保持 writer 打开，让上游继续在同一 h2 流上推送 agent 输出。
     if s.pending_tool_calls.is_empty() {
-        s.stream.close_writer();
         ToolResumeOutcome::Full
     } else {
         ToolResumeOutcome::Partial
@@ -1423,8 +1421,9 @@ mod tests {
     }
 
     #[test]
-    fn half_close_only_when_no_tools_or_results() {
-        assert!(should_half_close_after_run_request(0, 0));
+    fn agent_service_never_half_closes_writer_on_open() {
+        // Regression: plain-text AgentService must not close_writer after RunRequest.
+        assert!(!should_half_close_after_run_request(0, 0));
         assert!(!should_half_close_after_run_request(1, 0));
         assert!(!should_half_close_after_run_request(0, 1));
     }
@@ -1506,9 +1505,9 @@ mod tests {
     }
 }
 
-/// Whether to half-close the AgentService client stream right after RunRequest.
-fn should_half_close_after_run_request(tool_count: usize, tool_result_count: usize) -> bool {
-    tool_count == 0 && tool_result_count == 0
+/// Legacy helper — AgentService must keep the h2 writer open for the full turn.
+fn should_half_close_after_run_request(_tool_count: usize, _tool_result_count: usize) -> bool {
+    false
 }
 
 fn is_meaningful_interaction(delta: &InteractionDelta) -> bool {

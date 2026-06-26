@@ -187,8 +187,7 @@ impl CursorH2Stream {
                     .map_err(|_| {
                         if !self.received_any_frame {
                             ProxyError::ForwardFailed(
-                                "Cursor AgentService 首帧超时：上游在 30s 内未返回任何帧，\
-                                 可能需要 client-stream EOF 信号"
+                                "Cursor AgentService 首帧超时：上游在 30s 内未返回任何帧"
                                     .to_string(),
                             )
                         } else {

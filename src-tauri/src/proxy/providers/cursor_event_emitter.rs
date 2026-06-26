@@ -146,7 +146,7 @@ fn marker_prefix_index(buf: &str) -> Option<usize> {
     // could start. We only need to keep at most `max_marker_len - 1` chars.
     let max = MARKERS.iter().map(|m| m.len()).max().unwrap_or(0);
     let start = buf.len().saturating_sub(max);
-    for i in start..buf.len() {
+    for (i, _) in buf.char_indices().filter(|(i, _)| *i >= start) {
         let tail = &buf[i..];
         for m in MARKERS {
             if m.starts_with(tail) {
@@ -1198,6 +1198,33 @@ mod tests {
             }
         }
         assert_eq!(texts.join(""), "text and then ");
+    }
+
+    #[test]
+    fn marker_filter_handles_non_ascii_plain_text() {
+        let mut f = ComposerMarkerFilter::default();
+        let evs = f.push("我是 Composer");
+        let mut texts: Vec<String> = Vec::new();
+        for e in evs {
+            if let MarkerEvent::Text(t) = e {
+                texts.push(t);
+            }
+        }
+        assert_eq!(texts.join(""), "我是 Composer");
+    }
+
+    #[test]
+    fn marker_filter_holds_partial_prefix_after_non_ascii_text() {
+        let mut f = ComposerMarkerFilter::default();
+        let evs = f.push("我是 <|tool_calls_b");
+        let mut texts: Vec<String> = Vec::new();
+        for e in evs {
+            if let MarkerEvent::Text(t) = e {
+                texts.push(t);
+            }
+        }
+        assert_eq!(texts.join(""), "我是 ");
+        assert_eq!(f.flush().len(), 1);
     }
 
     #[test]

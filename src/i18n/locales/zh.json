@@ -2446,8 +2446,8 @@
       "fields": {
         "listenAddress": {
           "label": "监听地址",
-          "placeholder": "127.0.0.1",
-          "description": "路由服务器监听的 IP 地址（推荐 127.0.0.1）"
+          "placeholder": "0.0.0.0",
+          "description": "路由服务器监听的 IP 地址（默认 0.0.0.0，监听所有网卡）"
         },
         "listenPort": {
           "label": "监听端口",

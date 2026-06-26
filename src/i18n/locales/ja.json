@@ -2446,8 +2446,8 @@
       "fields": {
         "listenAddress": {
           "label": "リッスンアドレス",
-          "placeholder": "127.0.0.1",
-          "description": "ルーティングサーバーがリッスンするIPアドレス（推奨: 127.0.0.1）"
+          "placeholder": "0.0.0.0",
+          "description": "ルーティングサーバーがリッスンするIPアドレス（デフォルト: 0.0.0.0、全インターフェース）"
         },
         "listenPort": {
           "label": "リッスンポート",

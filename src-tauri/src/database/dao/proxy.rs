@@ -171,7 +171,7 @@ impl Database {
                 self.init_proxy_config_rows().await?;
                 Ok(GlobalProxyConfig {
                     proxy_enabled: true,
-                    listen_address: "127.0.0.1".to_string(),
+                    listen_address: "0.0.0.0".to_string(),
                     listen_port: 53000,
                     enable_logging: true,
                 })

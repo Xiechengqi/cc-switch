@@ -39,7 +39,7 @@ export function ProxyPanel() {
   const updateGlobalConfig = useUpdateGlobalProxyConfig();
 
   // 监听地址/端口的本地状态（端口用字符串以支持完全清空）
-  const [listenAddress, setListenAddress] = useState("127.0.0.1");
+  const [listenAddress, setListenAddress] = useState("0.0.0.0");
   const [listenPort, setListenPort] = useState("53000");
 
   // 同步全局配置到本地状态
@@ -503,14 +503,14 @@ export function ProxyPanel() {
                     placeholder={t(
                       "proxy.settings.fields.listenAddress.placeholder",
                       {
-                        defaultValue: "127.0.0.1",
+                        defaultValue: "0.0.0.0",
                       },
                     )}
                   />
                   <p className="text-xs text-muted-foreground">
                     {t("proxy.settings.fields.listenAddress.description", {
                       defaultValue:
-                        "代理服务器监听的 IP 地址（推荐 127.0.0.1）",
+                        "代理服务器监听的 IP 地址（默认 0.0.0.0，监听所有网卡）",
                     })}
                   </p>
                 </div>

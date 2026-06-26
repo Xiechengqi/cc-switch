@@ -2446,8 +2446,8 @@
       "fields": {
         "listenAddress": {
           "label": "Listen Address",
-          "placeholder": "127.0.0.1",
-          "description": "IP address the routing server listens on (recommended: 127.0.0.1)"
+          "placeholder": "0.0.0.0",
+          "description": "IP address the routing server listens on (default: 0.0.0.0, all interfaces)"
         },
         "listenPort": {
           "label": "Listen Port",

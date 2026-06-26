@@ -2394,8 +2394,8 @@
       "fields": {
         "listenAddress": {
           "label": "監聽位址",
-          "placeholder": "127.0.0.1",
-          "description": "路由伺服器監聽的 IP 位址（推薦 127.0.0.1）"
+          "placeholder": "0.0.0.0",
+          "description": "路由伺服器監聽的 IP 位址（預設 0.0.0.0，監聽所有網卡）"
         },
         "listenPort": {
           "label": "監聽連接埠",

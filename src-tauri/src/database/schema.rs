@@ -123,7 +123,7 @@ impl Database {
         // 8. Proxy Config 表（三行结构，app_type 主键）
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
             app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
-            proxy_enabled INTEGER NOT NULL DEFAULT 1, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+            proxy_enabled INTEGER NOT NULL DEFAULT 1, listen_address TEXT NOT NULL DEFAULT '0.0.0.0',
             listen_port INTEGER NOT NULL DEFAULT 53000, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 1, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
@@ -319,7 +319,7 @@ impl Database {
             [],
         );
         let _ = conn.execute(
-            "ALTER TABLE proxy_config ADD COLUMN listen_address TEXT NOT NULL DEFAULT '127.0.0.1'",
+            "ALTER TABLE proxy_config ADD COLUMN listen_address TEXT NOT NULL DEFAULT '0.0.0.0'",
             [],
         );
         let _ = conn.execute(
@@ -653,6 +653,11 @@ impl Database {
                         Self::migrate_v28_to_v29(conn)?;
                         Self::set_user_version(conn, 29)?;
                     }
+                    29 => {
+                        log::info!("迁移数据库从 v29 到 v30（默认本地路由监听所有网卡）");
+                        Self::migrate_v29_to_v30(conn)?;
+                        Self::set_user_version(conn, 30)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -770,7 +775,7 @@ impl Database {
                 conn,
                 "proxy_config",
                 "listen_address",
-                "TEXT NOT NULL DEFAULT '127.0.0.1'",
+                "TEXT NOT NULL DEFAULT '0.0.0.0'",
             )?;
             Self::add_column_if_missing(
                 conn,
@@ -940,7 +945,7 @@ impl Database {
                     ))
                 },
             )
-            .unwrap_or_else(|_| ("127.0.0.1".to_string(), 5000, 3, 1, 30, 60, 300));
+            .unwrap_or_else(|_| ("0.0.0.0".to_string(), 5000, 3, 1, 30, 60, 300));
 
         let old_cb = conn.query_row(
             "SELECT failure_threshold, success_threshold, timeout_seconds, error_rate_threshold, min_requests
@@ -1003,7 +1008,7 @@ impl Database {
         conn.execute("DROP TABLE IF EXISTS proxy_config_new", [])?;
         conn.execute("CREATE TABLE proxy_config_new (
             app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
-            proxy_enabled INTEGER NOT NULL DEFAULT 1, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+            proxy_enabled INTEGER NOT NULL DEFAULT 1, listen_address TEXT NOT NULL DEFAULT '0.0.0.0',
             listen_port INTEGER NOT NULL DEFAULT 53000, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 1, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
@@ -2213,6 +2218,31 @@ impl Database {
             "v28 -> v29 迁移完成：已对齐 {} 个 Cursor OAuth provider 的模型映射",
             updates.len()
         );
+        Ok(())
+    }
+
+    /// v29 -> v30：把默认本地路由监听地址从 127.0.0.1 调整为 0.0.0.0。
+    ///
+    /// 只迁移仍保持旧默认端口 15721 的记录，避免覆盖用户主动配置的
+    /// 其它监听地址或当前 53000 路由端口。
+    fn migrate_v29_to_v30(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")?
+            || !Self::has_column(conn, "proxy_config", "listen_address")?
+            || !Self::has_column(conn, "proxy_config", "listen_port")?
+        {
+            return Ok(());
+        }
+
+        let updated = conn
+            .execute(
+                "UPDATE proxy_config
+                 SET listen_address = '0.0.0.0', updated_at = datetime('now')
+                 WHERE listen_address = '127.0.0.1' AND listen_port = 15721",
+                [],
+            )
+            .map_err(|e| AppError::Database(format!("更新默认监听地址失败: {e}")))?;
+
+        log::info!("v29 -> v30 迁移完成：已更新 {updated} 条默认监听地址");
         Ok(())
     }
 

@@ -649,6 +649,63 @@ fn schema_create_tables_repairs_legacy_proxy_config_singleton_to_per_app() {
 }
 
 #[test]
+fn migration_v29_to_v30_updates_only_default_15721_loopback_listeners() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE proxy_config (
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+            proxy_enabled INTEGER NOT NULL DEFAULT 1,
+            listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+            listen_port INTEGER NOT NULL DEFAULT 53000,
+            enable_logging INTEGER NOT NULL DEFAULT 1,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+            max_retries INTEGER NOT NULL DEFAULT 3,
+            streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
+            streaming_idle_timeout INTEGER NOT NULL DEFAULT 120,
+            non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
+            circuit_failure_threshold INTEGER NOT NULL DEFAULT 4,
+            circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
+            circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60,
+            circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
+            circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+            default_cost_multiplier TEXT NOT NULL DEFAULT '1',
+            pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO proxy_config (app_type, listen_address, listen_port) VALUES
+            ('claude', '127.0.0.1', 15721),
+            ('codex', '127.0.0.1', 53000),
+            ('gemini', '192.168.1.10', 15721);
+        "#,
+    )
+    .expect("seed proxy_config");
+    Database::set_user_version(&conn, 29).expect("set user_version");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    let rows: HashMap<String, String> = conn
+        .prepare("SELECT app_type, listen_address FROM proxy_config")
+        .expect("prepare")
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .expect("query")
+        .map(|row| row.expect("row"))
+        .collect();
+
+    assert_eq!(rows.get("claude").map(String::as_str), Some("0.0.0.0"));
+    assert_eq!(rows.get("codex").map(String::as_str), Some("127.0.0.1"));
+    assert_eq!(rows.get("gemini").map(String::as_str), Some("192.168.1.10"));
+    assert_eq!(
+        Database::get_user_version(&conn).expect("post-migration version"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
 fn migration_from_v3_8_schema_v1_to_current_schema_v3() {
     let conn = Connection::open_in_memory().expect("open memory db");
     conn.execute("PRAGMA foreign_keys = ON;", [])

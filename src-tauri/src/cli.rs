@@ -93,7 +93,10 @@ mod tests {
 
     #[test]
     fn version_subcommand_is_handled() {
-        assert!(matches!(parse_command(&args(&["version"])), CliCommand::Version));
+        assert!(matches!(
+            parse_command(&args(&["version"])),
+            CliCommand::Version
+        ));
         assert!(matches!(
             parse_command(&args(&["--version"])),
             CliCommand::Version
@@ -104,7 +107,10 @@ mod tests {
     #[test]
     fn help_subcommand_is_handled() {
         assert!(matches!(parse_command(&args(&["help"])), CliCommand::Help));
-        assert!(matches!(parse_command(&args(&["--help"])), CliCommand::Help));
+        assert!(matches!(
+            parse_command(&args(&["--help"])),
+            CliCommand::Help
+        ));
         assert!(matches!(parse_command(&args(&["-h"])), CliCommand::Help));
     }
 

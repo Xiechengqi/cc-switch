@@ -184,14 +184,18 @@ impl Provider {
 
     pub fn is_cursor_oauth_provider(&self) -> bool {
         Self::provider_type_matches(
-            self.meta.as_ref().and_then(|meta| meta.provider_type.as_deref()),
+            self.meta
+                .as_ref()
+                .and_then(|meta| meta.provider_type.as_deref()),
             &["cursor_oauth", "cursor-oauth", "cursoroauth"],
         )
     }
 
     pub fn is_cursor_apikey_provider(&self) -> bool {
         Self::provider_type_matches(
-            self.meta.as_ref().and_then(|meta| meta.provider_type.as_deref()),
+            self.meta
+                .as_ref()
+                .and_then(|meta| meta.provider_type.as_deref()),
             &[
                 "cursor_apikey",
                 "cursor-apikey",

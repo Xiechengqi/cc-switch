@@ -1946,11 +1946,17 @@ mod tests {
     fn decode_mcp_args_collects_multiple_keys() {
         let entry_a = concat_bytes(&[
             encode_string(MAP_KEY, "path"),
-            encode_message(MAP_VALUE, &[encode_proto_value(&Value::String("/tmp".into()))]),
+            encode_message(
+                MAP_VALUE,
+                &[encode_proto_value(&Value::String("/tmp".into()))],
+            ),
         ]);
         let entry_b = concat_bytes(&[
             encode_string(MAP_KEY, "pattern"),
-            encode_message(MAP_VALUE, &[encode_proto_value(&Value::String("main".into()))]),
+            encode_message(
+                MAP_VALUE,
+                &[encode_proto_value(&Value::String("main".into()))],
+            ),
         ]);
         let body = concat_bytes(&[
             encode_string(MCA_TOOL_NAME, "Grep"),
@@ -1965,7 +1971,9 @@ mod tests {
         let payload = encode_message(ASM_EXEC_SERVER_MESSAGE, &[esm]);
         let event = decode_exec_server_event(&payload).expect("mcp");
         match event {
-            ExecServerEvent::Mcp { tool_name, args, .. } => {
+            ExecServerEvent::Mcp {
+                tool_name, args, ..
+            } => {
                 assert_eq!(tool_name, "Grep");
                 assert_eq!(args.get("path").and_then(Value::as_str), Some("/tmp"));
                 assert_eq!(args.get("pattern").and_then(Value::as_str), Some("main"));

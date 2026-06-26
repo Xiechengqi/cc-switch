@@ -591,8 +591,7 @@ fn provider_auth_provider(app_type: &AppType, provider: &Provider) -> Option<Str
     {
         return Some("cursor_apikey".to_string());
     }
-    if matches!(app_type, AppType::Claude | AppType::Codex)
-        && provider_type == Some("ollama_cloud")
+    if matches!(app_type, AppType::Claude | AppType::Codex) && provider_type == Some("ollama_cloud")
     {
         return Some("ollama_cloud".to_string());
     }

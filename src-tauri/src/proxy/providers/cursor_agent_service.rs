@@ -18,7 +18,7 @@ use super::cursor_event_emitter::{
 use super::cursor_h2_client::{agent_connect_headers, CursorH2Stream};
 use super::cursor_image::load_images;
 use super::cursor_oauth_auth::CursorAccountData;
-use super::cursor_protocol::{cursor_identity_headers, CursorResponseFormat};
+use super::cursor_protocol::CursorResponseFormat;
 use super::cursor_request_builder::{
     estimate_input_tokens, retry_prompt_after_missing_tool, retry_prompt_after_unmapped_tool,
     AgentRunPlan, ToolResultBlock,
@@ -142,7 +142,10 @@ async fn acquire_or_open_session(
                     cursor_debug::log_session(
                         "resume",
                         session_key,
-                        &format!("tool_results={} pending_after=partial_or_full", tool_results.len()),
+                        &format!(
+                            "tool_results={} pending_after=partial_or_full",
+                            tool_results.len()
+                        ),
                     );
                     return Ok(entry);
                 }
@@ -158,9 +161,7 @@ async fn acquire_or_open_session(
         cursor_debug::log_session(
             "cold_resume",
             session_key,
-            &format!(
-                "tool_results={pending_count} previous_response_id={prev} parked=false"
-            ),
+            &format!("tool_results={pending_count} previous_response_id={prev} parked=false"),
         );
         if cold_resume_reject() {
             return Err(ProxyError::InvalidRequest(format!(
@@ -254,19 +255,38 @@ enum ToolResumeOutcome {
     NotFound,
 }
 
+fn cursor_os() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macos",
+        "windows" => "windows",
+        _ => "linux",
+    }
+}
+
 fn build_agent_headers(account: &CursorAccountData, access_token: &str) -> Vec<(String, String)> {
     let mut headers = agent_connect_headers();
     headers.push((
         "authorization".to_string(),
         format!("Bearer {access_token}"),
     ));
-    for (k, v) in cursor_identity_headers(account, access_token) {
-        headers.push((k.to_ascii_lowercase(), v));
-    }
+    // AgentService headers mirror cursor-agent CLI, not the IDE.
+    // OmniRoute confirmed: no x-cursor-checksum, no x-client-key, no
+    // x-amzn-trace-id — the agent endpoint doesn't need IDE identity.
+    // Only send client metadata + request IDs.
+    let request_id = uuid::Uuid::new_v4().to_string();
     headers.push((
-        "x-amzn-trace-id".to_string(),
-        uuid::Uuid::new_v4().to_string(),
+        "x-cursor-client-version".to_string(),
+        account.resolved_client_version(),
     ));
+    headers.push(("x-cursor-client-type".to_string(), "cli".to_string()));
+    headers.push(("x-cursor-client-os".to_string(), cursor_os().to_string()));
+    headers.push((
+        "x-cursor-client-arch".to_string(),
+        std::env::consts::ARCH.to_string(),
+    ));
+    headers.push(("x-ghost-mode".to_string(), "true".to_string()));
+    headers.push(("x-request-id".to_string(), request_id.clone()));
+    headers.push(("x-original-request-id".to_string(), request_id));
     headers
 }
 
@@ -430,11 +450,18 @@ fn emit_interaction_delta(
         }
         InteractionDelta::TokenDelta(tokens) if tokens > 0 => {
             let output = tokens.min(u64::from(u32::MAX)) as u32;
-            out.extend(writer.event(&AgentEvent::Usage { input: 0, output }));
+            // Preserve the writer's existing input_tokens (estimated at
+            // construction time) so usage events report meaningful input.
+            out.extend(writer.event(&AgentEvent::Usage {
+                input: writer.input_tokens(),
+                output,
+            }));
         }
         InteractionDelta::ToolCallStarted | InteractionDelta::ToolCallCompleted => {}
         InteractionDelta::TokenDelta(_) | InteractionDelta::Heartbeat => {}
-        InteractionDelta::Unknown(_) | InteractionDelta::KvServerMessage | InteractionDelta::TurnEnded => {}
+        InteractionDelta::Unknown(_)
+        | InteractionDelta::KvServerMessage
+        | InteractionDelta::TurnEnded => {}
     }
     out
 }
@@ -881,11 +908,9 @@ async fn handle_exec_event(
                 let msg = format!("Tool `{tool_name}` is not in the client tool inventory");
                 cursor_debug::log_exec("mcp_unmapped", &exec_id, &tool_name);
                 let s = session_entry.lock().await;
-                let _ = s.stream.send_frame(proto::encode_exec_mcp_error(
-                    exec_msg_id,
-                    &exec_id,
-                    &msg,
-                ));
+                let _ =
+                    s.stream
+                        .send_frame(proto::encode_exec_mcp_error(exec_msg_id, &exec_id, &msg));
                 *unmapped_tool_name = Some(tool_name);
                 return ExecHandleResult::Continue;
             }
@@ -1388,11 +1413,11 @@ async fn run_non_stream(
 
 #[cfg(test)]
 mod tests {
+    use super::proto;
+    use super::*;
     use crate::proxy::providers::cursor_tool_bridge::{
         bridge_builtin_tool, bridge_grep_tool, resolve_shell_mcp_tool_name, BuiltinBridgeKind,
     };
-    use super::proto;
-    use super::*;
     use bytes::Bytes;
 
     #[test]
@@ -1431,23 +1456,14 @@ mod tests {
     #[test]
     fn resolve_shell_mcp_tool_name_prefers_bash_alias() {
         let names = vec!["WebSearch".into(), "Bash".into()];
-        assert_eq!(
-            resolve_shell_mcp_tool_name(&names).as_deref(),
-            Some("Bash")
-        );
+        assert_eq!(resolve_shell_mcp_tool_name(&names).as_deref(), Some("Bash"));
     }
 
     #[test]
     fn bridge_read_maps_to_declared_tool() {
         let names = vec!["Read".into(), "Bash".into()];
-        let (name, args) = bridge_builtin_tool(
-            BuiltinBridgeKind::Read,
-            &names,
-            "/tmp/x",
-            "",
-            "",
-        )
-        .unwrap();
+        let (name, args) =
+            bridge_builtin_tool(BuiltinBridgeKind::Read, &names, "/tmp/x", "", "").unwrap();
         assert_eq!(name, "Read");
         assert_eq!(args.get("path").and_then(Value::as_str), Some("/tmp/x"));
     }
@@ -1469,7 +1485,10 @@ mod tests {
         assert_eq!(args.get("pattern").and_then(Value::as_str), Some("fn main"));
         assert_eq!(args.get("path").and_then(Value::as_str), Some("/proj"));
         assert_eq!(args.get("glob").and_then(Value::as_str), Some("*.rs"));
-        assert!(args.get("case_insensitive").and_then(Value::as_bool).unwrap());
+        assert!(args
+            .get("case_insensitive")
+            .and_then(Value::as_bool)
+            .unwrap());
     }
 
     #[test]
@@ -1514,12 +1533,12 @@ fn is_meaningful_interaction(delta: &InteractionDelta) -> bool {
     match delta {
         InteractionDelta::TokenDelta(n) if *n > 0 => true,
         InteractionDelta::TokenDelta(_)
-            | InteractionDelta::Heartbeat
-            | InteractionDelta::KvServerMessage
-            | InteractionDelta::ToolCallStarted
-            | InteractionDelta::ToolCallCompleted
-            | InteractionDelta::Unknown(_)
-            | InteractionDelta::TurnEnded => false,
+        | InteractionDelta::Heartbeat
+        | InteractionDelta::KvServerMessage
+        | InteractionDelta::ToolCallStarted
+        | InteractionDelta::ToolCallCompleted
+        | InteractionDelta::Unknown(_)
+        | InteractionDelta::TurnEnded => false,
         _ => true,
     }
 }

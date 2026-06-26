@@ -956,13 +956,11 @@ pub fn detect_cursor_ide_version_from_db() -> Option<String> {
     )
     .ok()?;
     for table in ["ItemTable", "itemTable"] {
-        let sql = format!(
-            "SELECT value FROM {table} WHERE key = ?1 LIMIT 1"
-        );
+        let sql = format!("SELECT value FROM {table} WHERE key = ?1 LIMIT 1");
         if let Ok(mut stmt) = conn.prepare(&sql) {
-            if let Ok(version) = stmt.query_row([CURSOR_IDE_VERSION_DB_KEY], |row| {
-                row.get::<_, String>(0)
-            }) {
+            if let Ok(version) =
+                stmt.query_row([CURSOR_IDE_VERSION_DB_KEY], |row| row.get::<_, String>(0))
+            {
                 let trimmed = version.trim();
                 if !trimmed.is_empty() {
                     return Some(trimmed.to_string());

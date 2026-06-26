@@ -181,22 +181,19 @@ impl CursorH2Stream {
             } else {
                 FIRST_FRAME_IDLE_TIMEOUT
             };
-            let frame_result =
-                tokio::time::timeout(timeout, self.response.body_mut().frame())
-                    .await
-                    .map_err(|_| {
-                        if !self.received_any_frame {
-                            ProxyError::ForwardFailed(
-                                "Cursor AgentService 首帧超时：上游在 30s 内未返回任何帧"
-                                    .to_string(),
-                            )
-                        } else {
-                            ProxyError::ForwardFailed(
-                                "Cursor AgentService 响应超时：上游在 60s 内未返回后续帧"
-                                    .to_string(),
-                            )
-                        }
-                    })?;
+            let frame_result = tokio::time::timeout(timeout, self.response.body_mut().frame())
+                .await
+                .map_err(|_| {
+                    if !self.received_any_frame {
+                        ProxyError::ForwardFailed(
+                            "Cursor AgentService 首帧超时：上游在 30s 内未返回任何帧".to_string(),
+                        )
+                    } else {
+                        ProxyError::ForwardFailed(
+                            "Cursor AgentService 响应超时：上游在 60s 内未返回后续帧".to_string(),
+                        )
+                    }
+                })?;
 
             let body_frame = match frame_result {
                 Some(Ok(f)) => f,
@@ -289,8 +286,12 @@ pub fn agent_connect_headers() -> Vec<(String, String)> {
             "application/connect+proto".to_string(),
         ),
         ("connect-protocol-version".to_string(), "1".to_string()),
-        ("accept-encoding".to_string(), "gzip, br".to_string()),
-        ("te".to_string(), "trailers".to_string()),
+        // Connect-RPC uses the connect-accept-encoding header (not standard
+        // Accept-Encoding). Only advertise gzip — our frame decoder only
+        // handles gzip, and brotli-compressed frames would be silently
+        // skipped. Matches OmniRoute's cursor executor.
+        ("connect-accept-encoding".to_string(), "gzip".to_string()),
+        ("user-agent".to_string(), "connect-es/1.6.1".to_string()),
     ]
 }
 
@@ -305,6 +306,11 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "content-type" && v == "application/connect+proto"));
         assert!(hs.iter().any(|(k, _)| k == "connect-protocol-version"));
-        assert!(hs.iter().any(|(k, v)| k == "te" && v == "trailers"));
+        assert!(hs
+            .iter()
+            .any(|(k, v)| k == "connect-accept-encoding" && v == "gzip"));
+        assert!(hs
+            .iter()
+            .any(|(k, v)| k == "user-agent" && v == "connect-es/1.6.1"));
     }
 }

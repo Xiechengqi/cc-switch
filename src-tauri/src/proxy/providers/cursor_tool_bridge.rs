@@ -30,9 +30,7 @@ pub fn normalize_tool_name(name: &str) -> String {
 
 pub fn is_declared_tool(declared: &[String], tool_name: &str) -> bool {
     let norm = normalize_tool_name(tool_name);
-    declared
-        .iter()
-        .any(|d| normalize_tool_name(d) == norm)
+    declared.iter().any(|d| normalize_tool_name(d) == norm)
 }
 
 pub fn resolve_mcp_tool_by_aliases(declared: &[String], aliases: &[&str]) -> Option<String> {
@@ -153,7 +151,11 @@ pub fn bridge_builtin_tool(
         BuiltinBridgeKind::Ls => {
             args_map.insert(
                 "path".into(),
-                Value::String(if path.is_empty() { ".".into() } else { path.to_string() }),
+                Value::String(if path.is_empty() {
+                    ".".into()
+                } else {
+                    path.to_string()
+                }),
             );
         }
         BuiltinBridgeKind::Fetch => {
@@ -200,8 +202,14 @@ pub fn bridge_write_or_edit_tool(
     if !stream_content.is_empty() {
         const EDIT_ALIASES: &[&str] = &["edit", "str_replace", "apply_patch", "write"];
         let name = resolve_mcp_tool_by_aliases(declared, EDIT_ALIASES)?;
-        args_map.insert("streamContent".into(), Value::String(stream_content.to_string()));
-        args_map.insert("stream_content".into(), Value::String(stream_content.to_string()));
+        args_map.insert(
+            "streamContent".into(),
+            Value::String(stream_content.to_string()),
+        );
+        args_map.insert(
+            "stream_content".into(),
+            Value::String(stream_content.to_string()),
+        );
         return Some((name, Value::Object(args_map)));
     }
     if file_text.is_empty() {
@@ -231,7 +239,10 @@ pub fn bridge_glob_tool(
     let name = resolve_mcp_tool_by_aliases(declared, GLOB_ALIASES)?;
     let mut args_map = Map::new();
     if !glob_pattern.is_empty() {
-        args_map.insert("globPattern".into(), Value::String(glob_pattern.to_string()));
+        args_map.insert(
+            "globPattern".into(),
+            Value::String(glob_pattern.to_string()),
+        );
         args_map.insert("pattern".into(), Value::String(glob_pattern.to_string()));
     }
     let dir = if target_directory.is_empty() {
@@ -359,8 +370,7 @@ mod tests {
     fn mcp_exec_remaps_semsearch_name() {
         let d = declared(&["codebase_search"]);
         let args = json!({ "query": "auth" });
-        let (name, _) =
-            bridge_mcp_exec_tool(&d, "semSearch", args).expect("remap");
+        let (name, _) = bridge_mcp_exec_tool(&d, "semSearch", args).expect("remap");
         assert_eq!(name, "codebase_search");
     }
 

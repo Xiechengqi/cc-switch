@@ -22,8 +22,13 @@ use super::cursor_protocol::{
     response_to_json, response_to_sse_stream, send_cursor_request, stable_uuid_like,
     CursorRequestContext, CursorResponseFormat,
 };
-use super::cursor_request_builder::{build_plan, InboundProtocol, ToolResultBlock};
-use super::cursor_router::{select_protocol, select_tool_mode, CursorProtocol, CursorToolMode};
+use super::cursor_request_builder::{
+    build_plan, validate_tool_result_context, InboundProtocol, ToolResultBlock,
+};
+use super::cursor_router::{
+    select_protocol, select_tool_mode, should_fallback_to_chat_service, CursorProtocol,
+    CursorToolMode,
+};
 use super::cursor_session::{self, CursorSessionManager};
 
 const DEFAULT_CURSOR_BACKEND_BASE_URL: &str = "https://api2.cursor.sh";
@@ -126,6 +131,9 @@ async fn forward_cursor_apikey(
     match protocol {
         CursorProtocol::AgentService => {
             let mut plan = build_plan(inbound, mapped_body);
+            if let Err(msg) = validate_tool_result_context(&plan) {
+                return Err(ProxyError::InvalidRequest(msg));
+            }
             let session_key = derive_session_key(
                 headers,
                 mapped_body,
@@ -160,7 +168,7 @@ async fn forward_cursor_apikey(
                     .await
                 }
             };
-            match try_once(access_token.clone()).await {
+            let agent_result = match try_once(access_token.clone()).await {
                 Ok(resp) => Ok(resp),
                 Err(ProxyError::UpstreamError { status: 401, .. }) => {
                     invalidate_cached_access_token(&api_key).await;
@@ -168,57 +176,98 @@ async fn forward_cursor_apikey(
                     try_once(refreshed).await
                 }
                 Err(e) => Err(e),
+            };
+            match agent_result {
+                Ok(resp) => Ok(resp),
+                Err(err) if should_fallback_to_chat_service(mapped_body) => {
+                    log::warn!("[CursorApiKey] AgentService 失败，回退 ChatService: {err}");
+                    run_chat_service_apikey(
+                        &api_key,
+                        access_token,
+                        account,
+                        headers,
+                        mapped_body,
+                        response_model,
+                        response_format,
+                        original_body,
+                    )
+                    .await
+                }
+                Err(err) => Err(err),
             }
         }
         CursorProtocol::ChatService => {
-            let request_body = normalize_cursor_body(mapped_body);
-            let conversation_id = conversation_id_from_headers(headers);
-            let response = send_cursor_request(&CursorRequestContext {
-                account: account.clone(),
-                access_token: access_token.clone(),
-                body: request_body.clone(),
-                conversation_id: conversation_id.clone(),
-            })
-            .await?;
-            let response = if response.status() == StatusCode::UNAUTHORIZED {
-                invalidate_cached_access_token(&api_key).await;
-                let access_token = get_cursor_access_token(&api_key, true).await?;
-                send_cursor_request(&CursorRequestContext {
-                    account,
-                    access_token,
-                    body: request_body,
-                    conversation_id,
-                })
-                .await?
-            } else {
-                response
-            };
-
-            if !response.status().is_success() {
-                let status = response.status().as_u16();
-                let body = response_error_body(response).await;
-                return Err(ProxyError::UpstreamError { status, body });
-            }
-
-            let is_stream = original_body
-                .get("stream")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if is_stream {
-                let stream = response_to_sse_stream(
-                    response,
-                    response_model,
-                    mapped_body.clone(),
-                    response_format,
-                );
-                Ok(ProxyResponse::local_sse(Box::pin(stream)))
-            } else {
-                let (_, bytes) =
-                    response_to_json(response, &response_model, mapped_body, response_format)
-                        .await?;
-                Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
-            }
+            run_chat_service_apikey(
+                &api_key,
+                access_token,
+                account,
+                headers,
+                mapped_body,
+                response_model,
+                response_format,
+                original_body,
+            )
+            .await
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_chat_service_apikey(
+    api_key: &str,
+    access_token: String,
+    account: CursorAccountData,
+    headers: Option<&HeaderMap>,
+    mapped_body: &Value,
+    response_model: String,
+    response_format: CursorResponseFormat,
+    original_body: &Value,
+) -> Result<ProxyResponse, ProxyError> {
+    let request_body = normalize_cursor_body(mapped_body);
+    let conversation_id = conversation_id_from_headers(headers);
+    let response = send_cursor_request(&CursorRequestContext {
+        account: account.clone(),
+        access_token: access_token.clone(),
+        body: request_body.clone(),
+        conversation_id: conversation_id.clone(),
+    })
+    .await?;
+    let response = if response.status() == StatusCode::UNAUTHORIZED {
+        invalidate_cached_access_token(api_key).await;
+        let access_token = get_cursor_access_token(api_key, true).await?;
+        send_cursor_request(&CursorRequestContext {
+            account,
+            access_token,
+            body: request_body,
+            conversation_id,
+        })
+        .await?
+    } else {
+        response
+    };
+
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let body = response_error_body(response).await;
+        return Err(ProxyError::UpstreamError { status, body });
+    }
+
+    let is_stream = original_body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if is_stream {
+        let stream = response_to_sse_stream(
+            response,
+            response_model,
+            mapped_body.clone(),
+            response_format,
+        );
+        Ok(ProxyResponse::local_sse(Box::pin(stream)))
+    } else {
+        let (_, bytes) =
+            response_to_json(response, &response_model, mapped_body, response_format).await?;
+        Ok(ProxyResponse::local_json(StatusCode::OK, bytes))
     }
 }
 

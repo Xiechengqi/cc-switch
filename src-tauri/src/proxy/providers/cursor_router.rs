@@ -24,6 +24,10 @@ use super::cursor_request_builder::InboundProtocol;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorProtocol {
     /// Legacy `aiserver.v1.ChatService/StreamUnifiedChatWithTools`.
+    /// Deprecated: AgentService is the default for all protocols. ChatService
+    /// is retained as a fallback for text-only requests and explicit provider
+    /// override (`cursor_protocol=chat_service`). It does not support tools,
+    /// images, or session-based tool-result continuation.
     ChatService,
     /// New `agent.v1.AgentService/Run`.
     AgentService,
@@ -57,7 +61,11 @@ pub fn select_protocol(
 
     // Composer models are unreliable on legacy ChatService — always use AgentService.
     if is_composer_model(body) {
-        cursor_debug::log_protocol_choice("agent_service", protocol_label(protocol), "composer_model");
+        cursor_debug::log_protocol_choice(
+            "agent_service",
+            protocol_label(protocol),
+            "composer_model",
+        );
         return CursorProtocol::AgentService;
     }
 
@@ -69,7 +77,11 @@ pub fn select_protocol(
 
     // Codex CLI primary path is OpenAI Responses — always AgentService.
     if matches!(protocol, InboundProtocol::OpenAiResponses) {
-        cursor_debug::log_protocol_choice("agent_service", protocol_label(protocol), "openai_responses");
+        cursor_debug::log_protocol_choice(
+            "agent_service",
+            protocol_label(protocol),
+            "openai_responses",
+        );
         return CursorProtocol::AgentService;
     }
 
@@ -80,7 +92,11 @@ pub fn select_protocol(
             .is_some()
         || has_images(body)
     {
-        cursor_debug::log_protocol_choice("agent_service", protocol_label(protocol), "tools_or_images");
+        cursor_debug::log_protocol_choice(
+            "agent_service",
+            protocol_label(protocol),
+            "tools_or_images",
+        );
         return CursorProtocol::AgentService;
     }
 
@@ -91,6 +107,28 @@ pub fn select_protocol(
 
 pub fn select_tool_mode(provider: &Provider) -> CursorToolMode {
     provider_cursor_tool_mode(provider).unwrap_or(CursorToolMode::AgentMcp)
+}
+
+/// Whether a failed AgentService attempt should fall back to ChatService for
+/// text-only requests. Returns true only when the request has no tools, no
+/// images, no tool results, and no previous_response_id — i.e. a plain text
+/// turn that ChatService can handle. Enabled by default; set
+/// `CC_SWITCH_CURSOR_AGENT_FALLBACK=0` to disable.
+pub fn should_fallback_to_chat_service(body: &Value) -> bool {
+    if std::env::var("CC_SWITCH_CURSOR_AGENT_FALLBACK")
+        .ok()
+        .map(|v| v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    !has_openai_tools_or_results(body)
+        && !has_anthropic_tool_blocks(body)
+        && body
+            .get("previous_response_id")
+            .and_then(Value::as_str)
+            .is_none()
+        && !has_images(body)
 }
 
 fn provider_cursor_protocol(provider: &Provider) -> Option<CursorProtocol> {
@@ -170,6 +208,24 @@ fn has_openai_tools_or_results(body: &Value) -> bool {
         for item in input {
             let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
             if matches!(kind, "function_call" | "function_call_output") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn has_anthropic_tool_blocks(body: &Value) -> bool {
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return false;
+    };
+    for message in messages {
+        let Some(content) = message.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for block in content {
+            let kind = block.get("type").and_then(Value::as_str).unwrap_or("");
+            if matches!(kind, "tool_use" | "tool_result") {
                 return true;
             }
         }
@@ -325,5 +381,34 @@ mod tests {
             select_protocol(&p, InboundProtocol::OpenAiResponses, &body),
             CursorProtocol::AgentService
         );
+    }
+
+    #[test]
+    fn fallback_allows_plain_text_only() {
+        let body = json!({
+            "messages": [{ "role": "user", "content": "hi" }]
+        });
+        assert!(should_fallback_to_chat_service(&body));
+    }
+
+    #[test]
+    fn fallback_rejects_openai_tool_context() {
+        let body = json!({
+            "messages": [{ "role": "tool", "tool_call_id": "call_1", "content": "ok" }]
+        });
+        assert!(!should_fallback_to_chat_service(&body));
+    }
+
+    #[test]
+    fn fallback_rejects_anthropic_tool_context() {
+        let body = json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_1", "content": "ok" }
+                ]
+            }]
+        });
+        assert!(!should_fallback_to_chat_service(&body));
     }
 }

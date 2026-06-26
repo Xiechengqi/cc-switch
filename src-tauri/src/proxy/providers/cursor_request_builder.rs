@@ -67,11 +67,9 @@ pub struct AgentRunPlan {
 pub fn validate_tool_result_context(plan: &AgentRunPlan) -> Result<(), String> {
     for tr in &plan.tool_results {
         if tr.tool_call_id.trim().is_empty() {
-            return Err(
-                "function_call_output requires a non-empty call_id; \
+            return Err("function_call_output requires a non-empty call_id; \
                  continuation via previous_response_id without call_id is not supported"
-                    .to_string(),
-            );
+                .to_string());
         }
     }
     Ok(())
@@ -112,7 +110,21 @@ pub fn build_plan(protocol: InboundProtocol, body: &Value) -> AgentRunPlan {
         tools.clear();
     }
     let working_directory = extract_working_directory(body);
-    let user_text = enhance_agent_user_text(&user_text, &tool_choice, &tools, body, protocol);
+    // OmniRoute found that Cursor's AgentService does not reliably honor
+    // system prompts delivered via the KV blob channel. Prepend system
+    // content into the UserMessage text as a pragmatic workaround. The
+    // KV-blob is still sent as a complementary channel.
+    let user_text_with_system = if let Some(ref sys) = system_prompt {
+        if !sys.trim().is_empty() {
+            format!("{sys}\n\n{user_text}")
+        } else {
+            user_text.clone()
+        }
+    } else {
+        user_text.clone()
+    };
+    let user_text =
+        enhance_agent_user_text(&user_text_with_system, &tool_choice, &tools, body, protocol);
 
     AgentRunPlan {
         system_prompt,
@@ -745,7 +757,9 @@ pub fn build_output_constraints(body: &Value, protocol: InboundProtocol) -> Stri
                 .or_else(|| fmt.get("schema"));
             constraints.push(format!(
                 "Return only valid JSON (no prose or code fences) matching this schema: {}",
-                schema.map(|s| s.to_string()).unwrap_or_else(|| fmt.to_string())
+                schema
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| fmt.to_string())
             ));
         }
     }
@@ -819,7 +833,11 @@ pub fn extract_working_directory(body: &Value) -> String {
 }
 
 /// Retry prompt when a tool-using turn ended without surfacing a tool call.
-pub fn retry_prompt_after_missing_tool(user_text: &str, attempt: usize, max_attempts: usize) -> String {
+pub fn retry_prompt_after_missing_tool(
+    user_text: &str,
+    attempt: usize,
+    max_attempts: usize,
+) -> String {
     format!(
         "{user_text}\n\n\
          [cc-switch retry {attempt}/{max_attempts}] \

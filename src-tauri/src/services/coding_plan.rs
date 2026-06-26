@@ -994,9 +994,9 @@ fn parse_afp_tiers(result: &serde_json::Value) -> Vec<QuotaTier> {
             resets_at,
             used_value_usd: None,
             max_value_usd: None,
-    used: None,
-    limit: None,
-    unit: None,
+            used: None,
+            limit: None,
+            unit: None,
         });
     }
     tiers
@@ -1056,9 +1056,9 @@ fn parse_coding_plan_tiers(result: &serde_json::Value) -> Vec<QuotaTier> {
             resets_at,
             used_value_usd: None,
             max_value_usd: None,
-    used: None,
-    limit: None,
-    unit: None,
+            used: None,
+            limit: None,
+            unit: None,
         });
     }
     tiers
@@ -1074,7 +1074,7 @@ fn volcengine_success(tiers: Vec<QuotaTier>, plan: Option<String>) -> Subscripti
         extra_usage: None,
         error: None,
         queried_at: Some(now_millis()),
-    failure: None,
+        failure: None,
     }
 }
 
@@ -1088,7 +1088,7 @@ fn volcengine_auth_error(detail: String) -> SubscriptionQuota {
         extra_usage: None,
         error: Some(detail),
         queried_at: Some(now_millis()),
-    failure: None,
+        failure: None,
     }
 }
 
@@ -1178,7 +1178,7 @@ fn coding_plan_not_found(error: &str) -> SubscriptionQuota {
         extra_usage: None,
         error: Some(error.to_string()),
         queried_at: None,
-    failure: None,
+        failure: None,
     }
 }
 

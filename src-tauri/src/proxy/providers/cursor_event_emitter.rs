@@ -301,6 +301,12 @@ impl AgentSseWriter {
         &self.msg_id
     }
 
+    /// Current estimated input token count (set at construction, updated by
+    /// Usage events). Used by the agent service to report meaningful usage.
+    pub fn input_tokens(&self) -> u32 {
+        self.input_tokens
+    }
+
     /// Clear per-turn output so a tool-call retry does not duplicate aggregated text.
     /// Preserves `msg_id` and `started` so OpenAI Responses session binding stays stable.
     pub fn reset_for_retry(&mut self) {
@@ -408,7 +414,11 @@ impl AgentSseWriter {
             } else {
                 "tool_use"
             };
-            let stop_reason = if self.error_mode { "error" } else { stop_reason };
+            let stop_reason = if self.error_mode {
+                "error"
+            } else {
+                stop_reason
+            };
             out.push(anthropic_event(
                 "message_delta",
                 json!({

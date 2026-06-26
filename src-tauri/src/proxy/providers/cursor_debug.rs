@@ -21,9 +21,7 @@ macro_rules! cursor_dbg {
 pub(crate) use cursor_dbg;
 
 pub fn log_protocol_choice(protocol: &str, inbound: &str, reason: &str) {
-    cursor_dbg!(
-        "[CursorDebug] protocol={protocol} inbound={inbound} reason={reason}"
-    );
+    cursor_dbg!("[CursorDebug] protocol={protocol} inbound={inbound} reason={reason}");
 }
 
 pub fn log_session(event: &str, session_key: &str, detail: &str) {

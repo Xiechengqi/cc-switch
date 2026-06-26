@@ -16,6 +16,7 @@ mod email_auth;
 mod error;
 mod gemini_config;
 mod gemini_mcp;
+mod headless;
 pub mod hermes_config;
 mod init_status;
 mod lightweight;
@@ -228,6 +229,14 @@ fn macos_tray_icon() -> Option<Image<'static>> {
 pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 <app_config_dir>/crash.log（默认 ~/.cc-switch/crash.log）
     panic_hook::setup_panic_hook();
+
+    if crate::runtime_mode::is_no_desktop() {
+        if let Err(err) = crate::headless::run() {
+            eprintln!("cc-switch no-desktop startup failed: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let mut builder = tauri::Builder::default();
 

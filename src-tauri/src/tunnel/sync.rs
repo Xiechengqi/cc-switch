@@ -798,6 +798,7 @@ async fn build_oauth_provider_snapshot(
         kind: "official_oauth".to_string(),
         app: auth_provider.to_string(),
         provider_name: cached.provider_name,
+        provider_type: Some(auth_provider.to_string()),
         for_sale_official_price_percent: None,
         account_email,
         api_url: None,
@@ -868,6 +869,10 @@ async fn build_upstream_provider_snapshot_for_app(
         kind: "custom_provider".to_string(),
         app: app.as_str().to_string(),
         provider_name: Some(provider.name.clone()),
+        provider_type: provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.clone()),
         for_sale_official_price_percent: provider_sale_percent(&provider),
         account_email: None,
         api_url: custom_provider_api_url(&app, &provider),
@@ -891,6 +896,7 @@ fn unknown_upstream_provider(app: &str) -> ShareUpstreamProvider {
         kind: "unknown".to_string(),
         app: app.to_string(),
         provider_name: None,
+        provider_type: None,
         for_sale_official_price_percent: None,
         account_email: None,
         api_url: None,
@@ -1050,10 +1056,11 @@ async fn ollama_cloud_account_summary(
         .first()
         .map(|tier| tier.name.trim().to_string())
         .filter(|value| !value.is_empty());
-    (
-        account_email,
-        Some(subscription_quota_to_upstream(cached.quota)),
-    )
+    let mut quota = subscription_quota_to_upstream(cached.quota);
+    // Ollama Cloud exposes plan/account metadata but not utilization percent.
+    // Do not publish the synthetic 0% tier as quota signal.
+    quota.tiers.clear();
+    (account_email, Some(quota))
 }
 
 async fn default_oauth_account_id(auth_provider: &str) -> Option<String> {
@@ -1350,6 +1357,10 @@ async fn build_codex_oauth_snapshot(provider: &Provider) -> Option<ShareUpstream
         kind: "official_oauth".to_string(),
         app: "codex".to_string(),
         provider_name: Some(provider.name.clone()),
+        provider_type: provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.clone()),
         for_sale_official_price_percent: provider_sale_percent(provider),
         account_email,
         api_url: None,
@@ -1384,6 +1395,10 @@ async fn build_claude_oauth_snapshot(provider: &Provider) -> Option<ShareUpstrea
         kind: "official_oauth".to_string(),
         app: "claude".to_string(),
         provider_name: Some(provider.name.clone()),
+        provider_type: provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.clone()),
         for_sale_official_price_percent: provider_sale_percent(provider),
         account_email,
         api_url: None,
@@ -1418,6 +1433,10 @@ async fn build_github_copilot_snapshot(provider: &Provider) -> Option<ShareUpstr
         kind: "official_oauth".to_string(),
         app: "claude".to_string(),
         provider_name: Some(provider.name.clone()),
+        provider_type: provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.clone()),
         for_sale_official_price_percent: provider_sale_percent(provider),
         account_email,
         api_url: None,
@@ -1451,6 +1470,10 @@ async fn build_gemini_oauth_snapshot(provider: &Provider) -> Option<ShareUpstrea
         kind: "official_oauth".to_string(),
         app: "gemini".to_string(),
         provider_name: Some(provider.name.clone()),
+        provider_type: provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.clone()),
         for_sale_official_price_percent: provider_sale_percent(provider),
         account_email,
         api_url: None,

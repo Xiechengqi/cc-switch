@@ -11,7 +11,9 @@ use crate::services::subscription::{CredentialStatus, QuotaTier, SubscriptionQuo
 /// 调用 `/api/me` 获取 Ollama 账户信息，返回 `SubscriptionQuota`。
 ///
 /// `credential_message` 携带 Plan 等级（如 "pro"），
-/// `tiers[0].name` 携带邮箱地址，`utilization` 固定为 0（无用量百分比数据）。
+/// `tiers[0].name` 携带邮箱地址，`utilization` 仅为内部缓存占位。
+/// Ollama Cloud 不提供用量百分比，share runtime 上报时会清空 tier，
+/// 避免 router 把占位 0% 当作真实 quota 信号。
 pub async fn get_ollama_cloud_account_info(api_key: &str) -> SubscriptionQuota {
     if api_key.trim().is_empty() {
         return SubscriptionQuota::error(

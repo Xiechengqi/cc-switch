@@ -869,19 +869,25 @@ impl ModelTestService {
                 return Err(Self::http_status_error(status, error_text));
             }
 
+            // 与 check_claude_stream 一致：只验证首包可达。
+            // 读完整条 SSE 会在 Share/代理链路上因上游提前关流触发
+            // reqwest「error decoding response body」，而首包已足以证明可用。
             let mut stream = response.bytes_stream();
-            let mut chunks = Vec::new();
-            while let Some(chunk) = stream.next().await {
-                let chunk =
-                    chunk.map_err(|e| AppError::Message(format!("Stream read failed: {e}")))?;
-                chunks.extend_from_slice(&chunk);
-            }
+            let first_chunk = match stream.next().await {
+                Some(Ok(bytes)) => bytes,
+                Some(Err(e)) => {
+                    return Err(AppError::Message(format!("Stream read failed: {e}")));
+                }
+                None => {
+                    return Err(AppError::Message("No response data received".to_string()));
+                }
+            };
 
-            if chunks.is_empty() {
+            if first_chunk.is_empty() {
                 return Err(AppError::Message("No response data received".to_string()));
             }
 
-            let usage = std::str::from_utf8(&chunks)
+            let usage = std::str::from_utf8(&first_chunk)
                 .ok()
                 .and_then(Self::parse_sse_json_events)
                 .and_then(|events| TokenUsage::from_codex_stream_events_auto(&events));

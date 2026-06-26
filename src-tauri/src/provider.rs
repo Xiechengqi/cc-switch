@@ -183,17 +183,31 @@ impl Provider {
     }
 
     pub fn is_cursor_oauth_provider(&self) -> bool {
-        self.meta
-            .as_ref()
-            .and_then(|meta| meta.provider_type.as_deref())
-            == Some("cursor_oauth")
+        Self::provider_type_matches(
+            self.meta.as_ref().and_then(|meta| meta.provider_type.as_deref()),
+            &["cursor_oauth", "cursor-oauth", "cursoroauth"],
+        )
     }
 
     pub fn is_cursor_apikey_provider(&self) -> bool {
-        self.meta
-            .as_ref()
-            .and_then(|meta| meta.provider_type.as_deref())
-            == Some("cursor_apikey")
+        Self::provider_type_matches(
+            self.meta.as_ref().and_then(|meta| meta.provider_type.as_deref()),
+            &[
+                "cursor_apikey",
+                "cursor-apikey",
+                "cursor-api-key",
+                "cursorapikey",
+            ],
+        )
+    }
+
+    fn provider_type_matches(provider_type: Option<&str>, aliases: &[&str]) -> bool {
+        provider_type.is_some_and(|value| {
+            let normalized = value.to_lowercase().replace('-', "_");
+            aliases
+                .iter()
+                .any(|alias| normalized == alias.replace('-', "_"))
+        })
     }
 
     /// 是否为通过代理访问的托管 OAuth 官方订阅。

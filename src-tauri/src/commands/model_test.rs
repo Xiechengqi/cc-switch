@@ -1136,7 +1136,13 @@ async fn check_cursor_oauth_provider_once(
                     "model": model,
                     "max_output_tokens": 1,
                     "stream": true,
-                    "input": config.test_prompt
+                    "input": [{
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": config.test_prompt
+                        }]
+                    }]
                 });
                 if provider.is_cursor_apikey_provider() {
                     crate::proxy::providers::cursor_apikey::forward_cursor_apikey_codex(

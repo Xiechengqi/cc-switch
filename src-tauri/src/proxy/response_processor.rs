@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
     io::Read,
     sync::{
@@ -277,6 +277,7 @@ pub async fn handle_streaming(
         usage_collector,
         timeout_config,
         connection_guard,
+        terminal_fallback_for_context(ctx),
     );
 
     let body = axum::body::Body::from_stream(logged_stream);
@@ -286,6 +287,14 @@ pub async fn handle_streaming(
             log::error!("[{}] 构建流式响应失败: {e}", ctx.tag);
             ProxyError::Internal(format!("Failed to build streaming response: {e}")).into_response()
         }
+    }
+}
+
+fn terminal_fallback_for_context(ctx: &RequestContext) -> SseTerminalFallback {
+    match ctx.app_type_str {
+        "codex" => SseTerminalFallback::OpenAiResponses,
+        "claude" | "claude-desktop" => SseTerminalFallback::AnthropicMessages,
+        _ => SseTerminalFallback::Disabled,
     }
 }
 
@@ -1016,12 +1025,221 @@ fn share_usage_for_display(app_type: &str, usage: &TokenUsage) -> TokenUsage {
 }
 
 /// 创建带日志记录和超时控制的透传流
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SseTerminalFallback {
+    Disabled,
+    OpenAiResponses,
+    AnthropicMessages,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservedSseKind {
+    OpenAiResponses,
+    AnthropicMessages,
+    OpenAiChat,
+}
+
+struct SseTerminationTracker {
+    fallback: SseTerminalFallback,
+    observed: Option<ObservedSseKind>,
+    terminal_seen: bool,
+    response_id: Option<String>,
+}
+
+impl SseTerminationTracker {
+    fn new(fallback: SseTerminalFallback) -> Self {
+        Self {
+            fallback,
+            observed: None,
+            terminal_seen: false,
+            response_id: None,
+        }
+    }
+
+    fn observe_event(&mut self, event_text: &str) {
+        let mut event_name: Option<&str> = None;
+        let mut data_lines = Vec::new();
+        for line in event_text.lines() {
+            if let Some(event) = strip_sse_field(line, "event") {
+                let event = event.trim();
+                if !event.is_empty() {
+                    event_name = Some(event);
+                    self.observe_event_name(event);
+                }
+            } else if let Some(data) = strip_sse_field(line, "data") {
+                data_lines.push(data);
+            }
+        }
+
+        if data_lines.is_empty() {
+            return;
+        }
+        let data = data_lines.join("\n");
+        let trimmed = data.trim();
+        if trimmed == "[DONE]" {
+            self.terminal_seen = true;
+            return;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            self.observe_json(event_name, &value);
+        }
+    }
+
+    fn observe_event_name(&mut self, event: &str) {
+        if event.starts_with("response.") || event == "error" {
+            self.observed
+                .get_or_insert(ObservedSseKind::OpenAiResponses);
+            if matches!(
+                event,
+                "response.completed" | "response.failed" | "response.done" | "error"
+            ) {
+                self.terminal_seen = true;
+            }
+        } else if event.starts_with("message_") || event.starts_with("content_block_") {
+            self.observed
+                .get_or_insert(ObservedSseKind::AnthropicMessages);
+            if event == "message_stop" {
+                self.terminal_seen = true;
+            }
+        }
+    }
+
+    fn observe_json(&mut self, event_name: Option<&str>, value: &Value) {
+        if value.get("choices").is_some() {
+            self.observed.get_or_insert(ObservedSseKind::OpenAiChat);
+            if value
+                .get("choices")
+                .and_then(Value::as_array)
+                .is_some_and(|choices| {
+                    choices.iter().any(|choice| {
+                        choice
+                            .get("finish_reason")
+                            .is_some_and(|reason| !reason.is_null())
+                    })
+                })
+            {
+                self.terminal_seen = true;
+            }
+        }
+
+        let typ = value.get("type").and_then(Value::as_str).or(event_name);
+        if let Some(typ) = typ {
+            if typ.starts_with("response.") {
+                self.observed
+                    .get_or_insert(ObservedSseKind::OpenAiResponses);
+                if matches!(
+                    typ,
+                    "response.completed" | "response.failed" | "response.done"
+                ) {
+                    self.terminal_seen = true;
+                }
+            } else if typ.starts_with("message_") || typ.starts_with("content_block_") {
+                self.observed
+                    .get_or_insert(ObservedSseKind::AnthropicMessages);
+                if typ == "message_stop" {
+                    self.terminal_seen = true;
+                }
+            }
+        }
+
+        if let Some(id) = value
+            .get("response")
+            .and_then(|response| response.get("id"))
+            .and_then(Value::as_str)
+            .or_else(|| value.get("id").and_then(Value::as_str))
+            .filter(|id| id.starts_with("resp_"))
+        {
+            self.response_id = Some(id.to_string());
+        }
+
+        let status = value
+            .get("response")
+            .and_then(|response| response.get("status"))
+            .and_then(Value::as_str);
+        if matches!(status, Some("completed" | "failed" | "cancelled")) {
+            self.terminal_seen = true;
+        }
+    }
+
+    fn fallback_bytes(&self, reason: &str) -> Option<Bytes> {
+        if self.terminal_seen || self.fallback == SseTerminalFallback::Disabled {
+            return None;
+        }
+        let kind = self.observed.or_else(|| match self.fallback {
+            SseTerminalFallback::OpenAiResponses => Some(ObservedSseKind::OpenAiResponses),
+            SseTerminalFallback::AnthropicMessages => Some(ObservedSseKind::AnthropicMessages),
+            SseTerminalFallback::Disabled => None,
+        })?;
+
+        let body = match kind {
+            ObservedSseKind::OpenAiResponses => {
+                let response_id = self
+                    .response_id
+                    .clone()
+                    .unwrap_or_else(|| format!("resp_{}", uuid::Uuid::new_v4().simple()));
+                format!(
+                    "{}data: [DONE]\n\n",
+                    sse_event(
+                        "response.failed",
+                        json!({
+                            "type": "response.failed",
+                            "response": {
+                                "id": response_id,
+                                "object": "response",
+                                "status": "failed",
+                                "error": {
+                                    "type": "stream_error",
+                                    "code": "stream_disconnected",
+                                    "message": reason,
+                                }
+                            }
+                        })
+                    )
+                )
+            }
+            ObservedSseKind::AnthropicMessages => format!(
+                "{}{}",
+                sse_event(
+                    "error",
+                    json!({
+                        "type": "error",
+                        "error": {
+                            "type": "upstream_error",
+                            "message": reason,
+                        }
+                    })
+                ),
+                sse_event("message_stop", json!({ "type": "message_stop" }))
+            ),
+            ObservedSseKind::OpenAiChat => format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                json!({
+                    "id": format!("chatcmpl_{}", uuid::Uuid::new_v4().simple()),
+                    "object": "chat.completion.chunk",
+                    "created": Utc::now().timestamp(),
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop"
+                    }]
+                })
+            ),
+        };
+        Some(Bytes::from(body))
+    }
+}
+
+fn sse_event(event: &str, data: Value) -> String {
+    format!("event: {event}\ndata: {data}\n\n")
+}
+
 pub fn create_logged_passthrough_stream(
     stream: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
     tag: &'static str,
     usage_collector: Option<SseUsageCollector>,
     timeout_config: StreamingTimeoutConfig,
     connection_guard: Option<ActiveConnectionGuard>,
+    terminal_fallback: SseTerminalFallback,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let _conn_guard = connection_guard;
@@ -1033,6 +1251,7 @@ pub fn create_logged_passthrough_stream(
             collector.is_some() || log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
         let mut emitted_any_bytes = false;
+        let mut termination = SseTerminationTracker::new(terminal_fallback);
 
         // 超时配置
         let first_byte_timeout = if timeout_config.first_byte_timeout > 0 {
@@ -1065,6 +1284,12 @@ pub fn create_logged_passthrough_stream(
                             // 超时
                             let timeout_type = if is_first_chunk { "首字节" } else { "静默期" };
                             log::error!("[{tag}] 流式响应{}超时 ({}秒)", timeout_type, duration.as_secs());
+                            if emitted_any_bytes {
+                                if let Some(bytes) = termination.fallback_bytes(&format!("stream {timeout_type} timeout before terminal event")) {
+                                    yield Ok(bytes);
+                                    break;
+                                }
+                            }
                             yield Err(std::io::Error::other(format!("流式响应{timeout_type}超时")));
                             break;
                         }
@@ -1085,36 +1310,37 @@ pub fn create_logged_passthrough_stream(
                     if !bytes.is_empty() {
                         emitted_any_bytes = true;
                     }
-                    if inspect_sse_events {
-                        crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
+                    crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
-                        // 尝试解析并记录完整的 SSE 事件
-                        while let Some(event_text) = take_sse_block(&mut buffer) {
-                            if !event_text.trim().is_empty() {
-                                // 提取 data 部分；只有 usage collector 存在时才解析 JSON。
-                                for line in event_text.lines() {
-                                    if let Some(data) = strip_sse_field(line, "data") {
-                                        if data.trim() != "[DONE]" {
-                                            let collected = match &collector {
-                                                Some(c) if c.should_collect(data) => {
-                                                    match serde_json::from_str::<Value>(data) {
-                                                        Ok(json_value) => {
-                                                            c.push(json_value).await;
-                                                            true
-                                                        }
-                                                        Err(_) => false,
+                    // 尝试解析并记录完整的 SSE 事件
+                    while let Some(event_text) = take_sse_block(&mut buffer) {
+                        if !event_text.trim().is_empty() {
+                            termination.observe_event(&event_text);
+                            // 提取 data 部分；只有 usage collector 存在时才解析 JSON。
+                            for line in event_text.lines() {
+                                if let Some(data) = strip_sse_field(line, "data") {
+                                    if data.trim() != "[DONE]" {
+                                        let collected = match &collector {
+                                            Some(c) if c.should_collect(data) => {
+                                                match serde_json::from_str::<Value>(data) {
+                                                    Ok(json_value) => {
+                                                        c.push(json_value).await;
+                                                        true
                                                     }
+                                                    Err(_) => false,
                                                 }
-                                                _ => false,
-                                            };
+                                            }
+                                            _ => false,
+                                        };
+                                        if inspect_sse_events {
                                             if collected {
                                                 log::debug!("[{tag}] <<< SSE 事件: {data}");
                                             } else {
                                                 log::debug!("[{tag}] <<< SSE 数据: {data}");
                                             }
-                                        } else {
-                                            log::debug!("[{tag}] <<< SSE: [DONE]");
                                         }
+                                    } else if inspect_sse_events {
+                                        log::debug!("[{tag}] <<< SSE: [DONE]");
                                     }
                                 }
                             }
@@ -1124,6 +1350,18 @@ pub fn create_logged_passthrough_stream(
                     yield Ok(bytes);
                 }
                 Some(Err(e)) => {
+                    if emitted_any_bytes {
+                        let reason = if is_trailing_sse_transport_close_error(&e) {
+                            "stream transport closed before terminal event".to_string()
+                        } else {
+                            format!("stream error before terminal event: {e}")
+                        };
+                        if let Some(bytes) = termination.fallback_bytes(&reason) {
+                            log::warn!("[{tag}] {reason}");
+                            yield Ok(bytes);
+                            break;
+                        }
+                    }
                     if emitted_any_bytes && is_trailing_sse_transport_close_error(&e) {
                         log::warn!(
                             "[{tag}] 上游 SSE 已输出数据后连接以可忽略的传输错误关闭: {e}"
@@ -1135,6 +1373,12 @@ pub fn create_logged_passthrough_stream(
                     break;
                 }
                 None => {
+                    if emitted_any_bytes {
+                        if let Some(bytes) = termination.fallback_bytes("stream closed before terminal event") {
+                            log::warn!("[{tag}] stream closed before terminal SSE event; synthesizing terminal event");
+                            yield Ok(bytes);
+                        }
+                    }
                     // 流正常结束
                     break;
                 }
@@ -1727,6 +1971,7 @@ mod tests {
                 idle_timeout: 0,
             },
             None,
+            SseTerminalFallback::Disabled,
         ));
 
         let first = stream
@@ -1752,6 +1997,7 @@ mod tests {
                 idle_timeout: 0,
             },
             None,
+            SseTerminalFallback::Disabled,
         ));
 
         let err = stream
@@ -1780,9 +2026,118 @@ mod tests {
                 idle_timeout: 0,
             },
             None,
+            SseTerminalFallback::Disabled,
         ));
 
         assert!(stream.next().await.expect("first chunk").is_ok());
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn logged_passthrough_synthesizes_responses_terminal_after_transport_error() {
+        let upstream = futures::stream::iter(vec![
+            Ok(Bytes::from_static(
+                br#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_test","status":"in_progress"}}
+
+"#,
+            )),
+            Err(std::io::Error::other(
+                "error decoding response body: HTTP/2 stream 0 was not closed cleanly: INTERNAL_ERROR",
+            )),
+        ]);
+        let mut stream = Box::pin(create_logged_passthrough_stream(
+            upstream,
+            "test",
+            None,
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+            SseTerminalFallback::OpenAiResponses,
+        ));
+
+        let first = stream
+            .next()
+            .await
+            .expect("first chunk")
+            .expect("first chunk ok");
+        assert!(String::from_utf8_lossy(&first).contains("response.created"));
+
+        let fallback = stream
+            .next()
+            .await
+            .expect("fallback chunk")
+            .expect("fallback chunk ok");
+        let fallback = String::from_utf8_lossy(&fallback);
+        assert!(fallback.contains("event: response.failed"), "{fallback}");
+        assert!(fallback.contains(r#""id":"resp_test""#), "{fallback}");
+        assert!(fallback.contains("data: [DONE]"), "{fallback}");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn logged_passthrough_synthesizes_anthropic_terminal_on_clean_early_close() {
+        let upstream = futures::stream::iter(vec![Ok(Bytes::from_static(
+            br#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_test","type":"message"}}
+
+"#,
+        ))]);
+        let mut stream = Box::pin(create_logged_passthrough_stream(
+            upstream,
+            "test",
+            None,
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+            SseTerminalFallback::AnthropicMessages,
+        ));
+
+        assert!(stream.next().await.expect("first chunk").is_ok());
+        let fallback = stream
+            .next()
+            .await
+            .expect("fallback chunk")
+            .expect("fallback chunk ok");
+        let fallback = String::from_utf8_lossy(&fallback);
+        assert!(fallback.contains("event: error"), "{fallback}");
+        assert!(fallback.contains("event: message_stop"), "{fallback}");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn logged_passthrough_does_not_synthesize_after_terminal_event() {
+        let upstream = futures::stream::iter(vec![Ok(Bytes::from_static(
+            br#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_test","status":"completed"}}
+
+data: [DONE]
+
+"#,
+        ))]);
+        let mut stream = Box::pin(create_logged_passthrough_stream(
+            upstream,
+            "test",
+            None,
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+            SseTerminalFallback::OpenAiResponses,
+        ));
+
+        let only = stream
+            .next()
+            .await
+            .expect("terminal chunk")
+            .expect("terminal chunk ok");
+        let only = String::from_utf8_lossy(&only);
+        assert!(only.contains("response.completed"), "{only}");
         assert!(stream.next().await.is_none());
     }
 }

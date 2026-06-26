@@ -20,15 +20,12 @@ export const createShareSchema = z.object({
         (value.gemini?.length ?? 0) > 0,
       "share.validation.providerRequired",
     )
-    .refine(
-      (value) => {
-        const fixedProviderIds = [value.claude, value.codex, value.gemini]
-          .map((item) => item?.trim() ?? "")
-          .filter((item) => item.length > 0 && item !== "__dynamic__");
-        return new Set(fixedProviderIds).size === fixedProviderIds.length;
-      },
-      "share.validation.providerDuplicate",
-    ),
+    .refine((value) => {
+      const fixedProviderIds = [value.claude, value.codex, value.gemini]
+        .map((item) => item?.trim() ?? "")
+        .filter((item) => item.length > 0 && item !== "__dynamic__");
+      return new Set(fixedProviderIds).size === fixedProviderIds.length;
+    }, "share.validation.providerDuplicate"),
   description: z
     .string()
     .trim()
@@ -71,7 +68,14 @@ export const createShareSchema = z.object({
 });
 
 export const tunnelConfigSchema = z.object({
-  domain: z.string().trim().min(1, "share.validation.required"),
+  domain: z
+    .string()
+    .trim()
+    .min(1, "share.validation.required")
+    .refine(
+      (value) => !/[/?#]/.test(value.replace(/^https?:\/\//i, "")),
+      "share.validation.invalidRouterDomain",
+    ),
 });
 
 export type CreateShareFormValues = z.infer<typeof createShareSchema>;

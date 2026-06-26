@@ -3115,6 +3115,9 @@
       "domain": "ドメイン",
       "region": "ルーティングノード",
       "selectRegion": "ルーティングノードを選択",
+      "customRouter": "カスタム Router",
+      "customRouterDomain": "Router ドメイン",
+      "customRouterHint": "カスタム cc-switch-router ドメインを使用します。パスやクエリは含めないでください。",
       "loading": "読み込み中...",
       "notConfigured": "Tunnel 未設定",
       "configured": "Tunnel 設定済み",
@@ -3160,6 +3163,7 @@
       "invalidTokenLimit": "Token 上限は正の整数、または無上限を表す -1 である必要があります",
       "invalidParallelLimit": "最大同時実行数は 3 以上、または無上限を表す -1 である必要があります",
       "invalidSubdomain": "サブドメイン形式が不正か予約語です",
+      "invalidRouterDomain": "Router ドメインが不正です。ホスト名、IPv4 アドレス、または host:port を入力し、パスは含めないでください。",
       "invalidApiKey": "API Key 形式が不正です",
       "descriptionTooLong": "説明は 200 文字以内で入力してください。"
     },

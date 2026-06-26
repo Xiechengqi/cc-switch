@@ -490,125 +490,125 @@ export function ProviderCard({
           </div>
         </div>
 
-        <div className="flex w-full flex-col gap-2 sm:ml-auto sm:w-auto sm:shrink-0">
-          <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-1">
-              {quotaSource === "copilot" ? (
-                <CopilotQuotaFooter
-                  meta={provider.meta}
+        <div className="flex w-full min-w-0 flex-col gap-2 sm:ml-auto sm:w-auto sm:max-w-[55%]">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-x-1 gap-y-1">
+            {quotaSource === "copilot" ? (
+              <CopilotQuotaFooter
+                meta={provider.meta}
+                appId={appId}
+                providerId={provider.id}
+                inline={true}
+                isCurrent={isCurrent}
+              />
+            ) : quotaSource === "codex_oauth" ? (
+              <CodexOauthQuotaFooter
+                meta={provider.meta}
+                appId={appId}
+                providerId={provider.id}
+                inline={true}
+                isCurrent={isCurrent}
+              />
+            ) : quotaSource === "claude_oauth" ? (
+              <ClaudeOauthQuotaFooter
+                meta={provider.meta}
+                appId={appId}
+                providerId={provider.id}
+                inline={true}
+                isCurrent={isCurrent}
+              />
+            ) : quotaSource === "google_gemini_oauth" ? (
+              <GeminiOauthQuotaFooter
+                meta={provider.meta}
+                inline={true}
+                appId={appId}
+                providerId={provider.id}
+                isCurrent={isCurrent}
+              />
+            ) : quotaSource === "antigravity_oauth" ? (
+              <AntigravityOauthQuotaFooter
+                meta={provider.meta}
+                inline={true}
+                appId={appId}
+                providerId={provider.id}
+                isCurrent={isCurrent}
+              />
+            ) : quotaSource === "cursor_oauth" ||
+              quotaSource === "cursor_apikey" ? (
+              <CursorOauthQuotaFooter
+                meta={provider.meta}
+                inline={true}
+                appId={appId}
+                providerId={provider.id}
+                isCurrent={isCurrent}
+              />
+            ) : quotaSource === "kiro_oauth" ? (
+              <KiroOauthQuotaFooter
+                meta={provider.meta}
+                inline={true}
+                appId={appId}
+                providerId={provider.id}
+                isCurrent={isCurrent}
+              />
+            ) : quotaSource === "ollama_cloud" ? (
+              <OllamaQuotaFooter
+                meta={provider.meta}
+                providerId={provider.id}
+                appId={appId}
+                inline={true}
+                isCurrent={isCurrent}
+              />
+            ) : isOfficial ? (
+              officialSubscriptionEnabled ? (
+                <SubscriptionQuotaFooter
                   appId={appId}
-                  providerId={provider.id}
                   inline={true}
                   isCurrent={isCurrent}
-                />
-              ) : quotaSource === "codex_oauth" ? (
-                <CodexOauthQuotaFooter
-                  meta={provider.meta}
-                  appId={appId}
-                  providerId={provider.id}
-                  inline={true}
-                  isCurrent={isCurrent}
-                />
-              ) : quotaSource === "claude_oauth" ? (
-                <ClaudeOauthQuotaFooter
-                  meta={provider.meta}
-                  appId={appId}
-                  providerId={provider.id}
-                  inline={true}
-                  isCurrent={isCurrent}
-                />
-              ) : quotaSource === "google_gemini_oauth" ? (
-                <GeminiOauthQuotaFooter
-                  meta={provider.meta}
-                  inline={true}
-                  appId={appId}
-                  providerId={provider.id}
-                  isCurrent={isCurrent}
-                />
-              ) : quotaSource === "antigravity_oauth" ? (
-                <AntigravityOauthQuotaFooter
-                  meta={provider.meta}
-                  inline={true}
-                  appId={appId}
-                  providerId={provider.id}
-                  isCurrent={isCurrent}
-                />
-              ) : quotaSource === "cursor_oauth" ||
-                quotaSource === "cursor_apikey" ? (
-                <CursorOauthQuotaFooter
-                  meta={provider.meta}
-                  inline={true}
-                  appId={appId}
-                  providerId={provider.id}
-                  isCurrent={isCurrent}
-                />
-              ) : quotaSource === "kiro_oauth" ? (
-                <KiroOauthQuotaFooter
-                  meta={provider.meta}
-                  inline={true}
-                  appId={appId}
-                  providerId={provider.id}
-                  isCurrent={isCurrent}
-                />
-              ) : quotaSource === "ollama_cloud" ? (
-                <OllamaQuotaFooter
-                  meta={provider.meta}
-                  providerId={provider.id}
-                  appId={appId}
-                  inline={true}
-                  isCurrent={isCurrent}
-                />
-              ) : isOfficial ? (
-                officialSubscriptionEnabled ? (
-                  <SubscriptionQuotaFooter
-                    appId={appId}
-                    inline={true}
-                    isCurrent={isCurrent}
-                    autoQueryInterval={
-                      provider.meta?.usage_script?.autoQueryInterval ?? 0
-                    }
-                  />
-                ) : null
-              ) : hasMultiplePlans ? (
-                <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-                  <span className="font-medium">
-                    {t("usage.multiplePlans", {
-                      count: usage?.data?.length || 0,
-                      defaultValue: `${usage?.data?.length || 0} 个套餐`,
-                    })}
-                  </span>
-                </div>
-              ) : (
-                <UsageFooter
-                  provider={provider}
-                  providerId={provider.id}
-                  appId={appId}
-                  usageEnabled={usageEnabled}
-                  isCurrent={isCurrent}
-                  isInConfig={isInConfig}
-                  inline={true}
-                />
-              )}
-              {hasMultiplePlans && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsExpanded(!isExpanded);
-                  }}
-                  className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-500 dark:text-gray-400 flex-shrink-0"
-                  title={
-                    isExpanded
-                      ? t("usage.collapse", { defaultValue: "收起" })
-                      : t("usage.expand", { defaultValue: "展开" })
+                  autoQueryInterval={
+                    provider.meta?.usage_script?.autoQueryInterval ?? 0
                   }
-                >
-                  {isExpanded ? (
-                    <ChevronUp size={14} />
-                  ) : (
-                    <ChevronDown size={14} />
-                  )}
-                </button>
-              )}
-            </div>
+                />
+              ) : null
+            ) : hasMultiplePlans ? (
+              <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                <span className="font-medium">
+                  {t("usage.multiplePlans", {
+                    count: usage?.data?.length || 0,
+                    defaultValue: `${usage?.data?.length || 0} 个套餐`,
+                  })}
+                </span>
+              </div>
+            ) : (
+              <UsageFooter
+                provider={provider}
+                providerId={provider.id}
+                appId={appId}
+                usageEnabled={usageEnabled}
+                isCurrent={isCurrent}
+                isInConfig={isInConfig}
+                inline={true}
+              />
+            )}
+            {hasMultiplePlans && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsExpanded(!isExpanded);
+                }}
+                className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-500 dark:text-gray-400 flex-shrink-0"
+                title={
+                  isExpanded
+                    ? t("usage.collapse", { defaultValue: "收起" })
+                    : t("usage.expand", { defaultValue: "展开" })
+                }
+              >
+                {isExpanded ? (
+                  <ChevronUp size={14} />
+                ) : (
+                  <ChevronDown size={14} />
+                )}
+              </button>
+            )}
+          </div>
 
           <div className="flex justify-end opacity-0 pointer-events-none group-hover:opacity-100 group-focus-within:opacity-100 group-hover:pointer-events-auto group-focus-within:pointer-events-auto max-sm:opacity-100 max-sm:pointer-events-auto transition-opacity duration-200">
             <ProviderActions

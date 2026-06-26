@@ -22,7 +22,8 @@ impl TunnelConfig {
 
     /// Whether this is a local/dev domain (localhost, 127.0.0.1, 0.0.0.0)
     pub fn is_local(&self) -> bool {
-        let host = self.domain.split(':').next().unwrap_or(&self.domain);
+        let authority = extract_authority(&self.domain).unwrap_or_else(|| self.domain.clone());
+        let host = authority.split(':').next().unwrap_or(&authority);
         matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0")
     }
 
@@ -36,8 +37,9 @@ impl TunnelConfig {
     }
 
     pub fn get_tunnel_addr(&self, subdomain: &str) -> String {
+        let domain = extract_authority(&self.domain).unwrap_or_else(|| self.domain.clone());
         let proto = if self.is_local() { "http" } else { "https" };
-        format!("{proto}://{subdomain}.{}", self.domain)
+        format!("{proto}://{subdomain}.{domain}")
     }
 
     pub fn matches_tunnel_url(&self, url_or_host: &str) -> bool {
@@ -47,6 +49,100 @@ impl TunnelConfig {
 
         authority == self.domain || authority.ends_with(&format!(".{}", self.domain))
     }
+}
+
+pub fn normalize_tunnel_domain(input: &str) -> Result<String, String> {
+    let trimmed = input.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("Router domain is required".to_string());
+    }
+    if trimmed.chars().any(char::is_whitespace) {
+        return Err("Router domain must not contain spaces".to_string());
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let authority = if lower.starts_with("http://") || lower.starts_with("https://") {
+        let url =
+            reqwest::Url::parse(trimmed).map_err(|_| "Router domain URL is invalid".to_string())?;
+        if url.scheme() != "http" && url.scheme() != "https" {
+            return Err("Router domain must use http or https".to_string());
+        }
+        if url.username() != "" || url.password().is_some() {
+            return Err("Router domain must not include credentials".to_string());
+        }
+        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+            return Err("Router domain must not include path, query, or fragment".to_string());
+        }
+        url.host_str()
+            .map(|host| match url.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host.to_string(),
+            })
+            .ok_or_else(|| "Router domain host is required".to_string())?
+    } else {
+        if trimmed.contains("://") {
+            return Err("Router domain must use http or https".to_string());
+        }
+        if trimmed.contains('/') || trimmed.contains('?') || trimmed.contains('#') {
+            return Err("Router domain must not include path, query, or fragment".to_string());
+        }
+        trimmed.to_string()
+    }
+    .to_ascii_lowercase();
+
+    validate_tunnel_authority(&authority)?;
+    Ok(authority)
+}
+
+fn validate_tunnel_authority(authority: &str) -> Result<(), String> {
+    if authority.is_empty() || authority.len() > 253 {
+        return Err("Router domain is invalid".to_string());
+    }
+    if authority.contains('@') || authority.contains('[') || authority.contains(']') {
+        return Err("Router domain must be a hostname or IPv4 address".to_string());
+    }
+
+    let (host, port) = authority
+        .rsplit_once(':')
+        .filter(|(_, maybe_port)| maybe_port.chars().all(|ch| ch.is_ascii_digit()))
+        .map_or((authority, None), |(host, port)| (host, Some(port)));
+
+    if let Some(port) = port {
+        let parsed = port
+            .parse::<u16>()
+            .map_err(|_| "Router domain port is invalid".to_string())?;
+        if parsed == 0 {
+            return Err("Router domain port is invalid".to_string());
+        }
+    }
+
+    if host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" {
+        return Ok(());
+    }
+
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return Ok(());
+    }
+
+    if !host.contains('.') {
+        return Err("Router domain must be a valid hostname".to_string());
+    }
+
+    for label in host.split('.') {
+        if label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .as_bytes()
+                .iter()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        {
+            return Err("Router domain must be a valid hostname".to_string());
+        }
+    }
+
+    Ok(())
 }
 
 impl Default for TunnelConfig {
@@ -469,6 +565,43 @@ mod tests {
         assert!(config.matches_tunnel_url("https://alpha.share.example.com/v1"));
         assert!(config.matches_tunnel_url("alpha.share.example.com"));
         assert!(!config.matches_tunnel_url("https://api.openai.com/v1"));
+    }
+
+    #[test]
+    fn normalizes_custom_router_domains() {
+        assert_eq!(
+            normalize_tunnel_domain(" HTTPS://Share.Example.Com/ ").unwrap(),
+            "share.example.com"
+        );
+        assert_eq!(
+            normalize_tunnel_domain("localhost:8787").unwrap(),
+            "localhost:8787"
+        );
+        assert_eq!(
+            normalize_tunnel_domain("http://127.0.0.1:8787").unwrap(),
+            "127.0.0.1:8787"
+        );
+    }
+
+    #[test]
+    fn rejects_custom_router_domains_with_paths_or_credentials() {
+        assert!(normalize_tunnel_domain("https://share.example.com/v1").is_err());
+        assert!(normalize_tunnel_domain("https://u:p@share.example.com").is_err());
+        assert!(normalize_tunnel_domain("ftp://share.example.com").is_err());
+        assert!(normalize_tunnel_domain("share").is_err());
+        assert!(normalize_tunnel_domain("bad host.example.com").is_err());
+    }
+
+    #[test]
+    fn tunnel_addr_uses_authority_for_historical_scheme_values() {
+        let config = TunnelConfig {
+            domain: "https://Share.Example.Com/".to_string(),
+        };
+
+        assert_eq!(
+            config.get_tunnel_addr("alpha"),
+            "https://alpha.share.example.com"
+        );
     }
 
     #[test]

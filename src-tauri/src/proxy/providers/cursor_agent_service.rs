@@ -334,7 +334,6 @@ async fn drive_loop(
     saw_tool_call: &mut bool,
     unmapped_tool_name: &mut Option<String>,
     release_session: bool,
-    mut close_writer_after_request_context: bool,
 ) -> Result<DriveEnd, ProxyError> {
     let mut exec_dedup = ExecDedup::default();
     loop {
@@ -353,7 +352,6 @@ async fn drive_loop(
         }
 
         if let Some(exec) = decode_exec_server_event(&frame.payload) {
-            let is_request_context = matches!(exec, ExecServerEvent::RequestContext { .. });
             let exec_result = handle_exec_event(
                 exec,
                 &mut exec_dedup,
@@ -366,10 +364,6 @@ async fn drive_loop(
                 unmapped_tool_name,
             )
             .await;
-            if is_request_context && close_writer_after_request_context {
-                close_writer_after_request_context = false;
-                close_session_writer(&session_entry).await;
-            }
             if exec_result == ExecHandleResult::StopForTool {
                 if release_session {
                     session_manager
@@ -998,8 +992,6 @@ async fn run_stream(
 
         let mut attempt_user_text = plan.user_text.clone();
         for attempt in 1..=max_attempts {
-            let mut close_writer_after_request_context =
-                should_half_close_after_request_context(&plan, images.is_empty());
             let session_entry = match acquire_or_open_session(
                 &account,
                 &access_token,
@@ -1061,8 +1053,6 @@ async fn run_stream(
             let mut unmapped_tool_name: Option<String> = None;
             let stream_started = Instant::now();
             let mut last_meaningful = Instant::now();
-            let mut turn_ended = false;
-            let mut stream_ended_naturally = false;
 
             loop {
                 let stall_left = MEANINGFUL_PROGRESS_TIMEOUT.saturating_sub(last_meaningful.elapsed());
@@ -1095,7 +1085,6 @@ async fn run_stream(
                 let frame = match frame_result {
                     Ok(Ok(Some(f))) => f,
                     Ok(Ok(None)) => {
-                        stream_ended_naturally = true;
                         break;
                     }
                     Ok(Err(e)) => {
@@ -1134,7 +1123,6 @@ async fn run_stream(
                 }
 
                 if let Some(exec) = decode_exec_server_event(&frame.payload) {
-                    let is_request_context = matches!(exec, ExecServerEvent::RequestContext { .. });
                     let mut sink = Vec::new();
                     let exec_result = handle_exec_event(
                         exec,
@@ -1148,10 +1136,6 @@ async fn run_stream(
                         &mut unmapped_tool_name,
                     )
                     .await;
-                    if is_request_context && close_writer_after_request_context {
-                        close_writer_after_request_context = false;
-                        close_session_writer(&session_entry).await;
-                    }
                     if buffer_this_attempt {
                         attempt_buffer.append(&mut sink);
                     } else {
@@ -1181,7 +1165,6 @@ async fn run_stream(
                         meaningful = true;
                     }
                     if matches!(delta, InteractionDelta::TurnEnded) {
-                        turn_ended = true;
                         break;
                     }
                     let lines = emit_interaction_delta(delta, &mut writer, &mut filter);
@@ -1233,14 +1216,12 @@ async fn run_stream(
             let should_retry_missing = !saw_tool_call
                 && !plan.tools.is_empty()
                 && plan.tool_results.is_empty()
-                && attempt < max_attempts
-                && (turn_ended || stream_ended_naturally);
+                && attempt < max_attempts;
 
             let should_retry_unmapped = unmapped_tool_name.is_some()
                 && !saw_tool_call
                 && plan.tool_results.is_empty()
-                && attempt < max_attempts
-                && (turn_ended || stream_ended_naturally);
+                && attempt < max_attempts;
 
             if should_retry_missing {
                 cursor_debug::log_retry("missing_tool_call", attempt, max_attempts);
@@ -1368,7 +1349,6 @@ async fn run_non_stream(
             &mut saw_tool_call,
             &mut unmapped_tool_name,
             false,
-            should_half_close_after_request_context(&plan, images.is_empty()),
         )
         .await?;
 
@@ -1459,55 +1439,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_service_half_closes_only_plain_text_after_request_context() {
-        let plain = AgentRunPlan {
-            system_prompt: None,
-            user_text: "hi".into(),
-            tools: vec![],
-            images: vec![],
-            tool_results: vec![],
-            model_id: "m".into(),
-            previous_response_id: None,
-            working_directory: ".".into(),
-        };
-        assert!(should_half_close_after_request_context(&plain, true));
-
-        let with_tool = AgentRunPlan {
-            tools: vec![McpToolDef {
-                name: "Bash".into(),
-                description: String::new(),
-                input_schema: Bytes::new(),
-                provider_identifier: "cc".into(),
-                tool_name: "Bash".into(),
-            }],
-            ..plain.clone()
-        };
-        assert!(!should_half_close_after_request_context(&with_tool, true));
-
-        let with_image = AgentRunPlan {
-            images: vec![crate::proxy::providers::cursor_image::ImageRef::DataUri(
-                "data:image/png;base64,iVBORw0KGgo=".into(),
-            )],
-            ..plain.clone()
-        };
-        assert!(!should_half_close_after_request_context(&with_image, true));
-        assert!(!should_half_close_after_request_context(&plain, false));
-
-        let with_tool_result = AgentRunPlan {
-            tool_results: vec![ToolResultBlock {
-                tool_call_id: "call-1".into(),
-                content: "ok".into(),
-                is_error: false,
-            }],
-            ..plain
-        };
-        assert!(!should_half_close_after_request_context(
-            &with_tool_result,
-            true
-        ));
-    }
-
-    #[test]
     fn resolve_shell_mcp_tool_name_prefers_bash_alias() {
         let names = vec!["WebSearch".into(), "Bash".into()];
         assert_eq!(resolve_shell_mcp_tool_name(&names).as_deref(), Some("Bash"));
@@ -1576,19 +1507,6 @@ mod tests {
         };
         assert_eq!(tool_retry_max(&plan), 1);
     }
-}
-
-fn should_half_close_after_request_context(plan: &AgentRunPlan, no_loaded_images: bool) -> bool {
-    plan.tools.is_empty()
-        && plan.tool_results.is_empty()
-        && plan.images.is_empty()
-        && no_loaded_images
-}
-
-async fn close_session_writer(session_entry: &Arc<Mutex<CursorSession>>) {
-    let mut s = session_entry.lock().await;
-    s.stream.close_writer();
-    log::debug!("[CursorAgent] half-closed request writer after RequestContext ack");
 }
 
 fn is_meaningful_interaction(delta: &InteractionDelta) -> bool {

@@ -134,10 +134,10 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   if (quota.credentialStatus === "expired" && !quota.success) {
     if (inline) {
       return (
-        <div className="inline-flex items-center gap-2 text-xs rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 shadow-sm">
-          <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+        <div className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-2 text-xs rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 shadow-sm">
+          <div className="flex min-w-0 items-center gap-1.5 text-amber-600 dark:text-amber-400">
             <AlertCircle size={12} />
-            <span>{t("subscription.expired")}</span>
+            <span className="break-words">{t("subscription.expired")}</span>
           </div>
           <button
             onClick={() => refetch()}
@@ -179,10 +179,10 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   if (!quota.success) {
     if (inline) {
       return (
-        <div className="inline-flex items-center gap-2 text-xs rounded-lg border border-border-default bg-card px-3 py-2 shadow-sm">
-          <div className="flex items-center gap-1.5 text-red-500 dark:text-red-400">
+        <div className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-2 text-xs rounded-lg border border-border-default bg-card px-3 py-2 shadow-sm">
+          <div className="flex min-w-0 items-center gap-1.5 text-red-500 dark:text-red-400">
             <AlertCircle size={12} />
-            <span>{t("subscription.queryFailed")}</span>
+            <span className="break-words">{t("subscription.queryFailed")}</span>
           </div>
           <button
             onClick={() => refetch()}
@@ -252,7 +252,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
         {/* 第二行：plan badge + 各 tier 使用百分比 */}
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
           {quota.credentialMessage && (
-            <span className="inline-flex items-center rounded-md bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-700 whitespace-nowrap">
+            <span className="inline-flex max-w-full items-center rounded-md bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-700 break-words">
               {quota.credentialMessage}
             </span>
           )}
@@ -337,7 +337,7 @@ export const TierBadge: React.FC<{
   const hasUsd = tier.usedValueUsd != null && tier.maxValueUsd != null;
 
   return (
-    <div className="inline-flex items-center gap-0.5 whitespace-nowrap">
+    <div className="inline-flex max-w-full flex-wrap items-center gap-x-0.5 gap-y-0 break-words">
       <span className="text-gray-500 dark:text-gray-400">{label}:</span>
       <span
         className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}

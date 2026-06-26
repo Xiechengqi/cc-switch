@@ -24,6 +24,7 @@ import {
 import { useClaudeOauth } from "./hooks/useClaudeOauth";
 import { copyText } from "@/lib/clipboard";
 import { Input } from "@/components/ui/input";
+import type { ClaudeOAuthFlowMode } from "./hooks/useClaudeOauth";
 
 interface ClaudeOAuthSectionProps {
   className?: string;
@@ -60,6 +61,7 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
     isWaitingPaste,
     isSubmittingPaste,
     isAddingAccount,
+    canUseLocalCallback,
     isRemovingAccount,
     isSettingDefaultAccount,
     defaultAccountId,
@@ -98,6 +100,57 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
     if (selectedAccountId === accountId) {
       onAccountSelect?.(null);
     }
+  };
+
+  const startClaudeLogin = (flowMode: ClaudeOAuthFlowMode) => {
+    addAccount(flowMode);
+  };
+
+  const renderLoginButtons = (mode: "login" | "add" | "retry") => {
+    const showIcon =
+      mode === "add" ? (
+        <Plus className="mr-2 h-4 w-4" />
+      ) : (
+        <Sparkles className="mr-2 h-4 w-4" />
+      );
+
+    return (
+      <div className="space-y-2">
+        {canUseLocalCallback && (
+          <Button
+            type="button"
+            onClick={() => startClaudeLogin("localhost")}
+            className="w-full justify-start"
+            variant="outline"
+            disabled={isAddingAccount}
+          >
+            {showIcon}
+            {t("claudeOauth.localCallbackLogin", "本地回调登录")}
+          </Button>
+        )}
+        <Button
+          type="button"
+          onClick={() => startClaudeLogin("web_paste")}
+          className="w-full justify-start"
+          variant="outline"
+          disabled={isAddingAccount}
+        >
+          <ExternalLink className="mr-2 h-4 w-4" />
+          {t("claudeOauth.officialCallbackLogin", "官方链接登录")}
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          {canUseLocalCallback
+            ? t(
+                "claudeOauth.callbackModeHint",
+                "本地回调会使用 127.0.0.1 自动完成授权；官方链接会在 platform.claude.com 显示授权码，复制后粘贴回这里完成登录。",
+              )
+            : t(
+                "claudeOauth.remoteCallbackModeHint",
+                "当前通过 web 入口访问，本地回调不可达，请使用官方链接回调并粘贴授权码完成登录。",
+              )}
+        </p>
+      </div>
+    );
   };
 
   return (
@@ -216,29 +269,22 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
 
       {/* 未认证 - 登录按钮 */}
       {!hasAnyAccount && authState === "idle" && (
-        <Button
-          type="button"
-          onClick={addAccount}
-          className="w-full"
-          variant="outline"
-        >
-          <Sparkles className="mr-2 h-4 w-4" />
-          {t("claudeOauth.loginWithClaude", "使用 Claude.ai 登录")}
-        </Button>
+        <div className="space-y-2">
+          <Label className="text-sm text-muted-foreground">
+            {t("claudeOauth.loginWithClaude", "使用 Claude.ai 登录")}
+          </Label>
+          {renderLoginButtons("login")}
+        </div>
       )}
 
       {/* 已有账号 - 添加更多按钮 */}
       {hasAnyAccount && authState === "idle" && (
-        <Button
-          type="button"
-          onClick={addAccount}
-          className="w-full"
-          variant="outline"
-          disabled={isAddingAccount}
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          {t("claudeOauth.addAnotherAccount", "添加其他账号")}
-        </Button>
+        <div className="space-y-2">
+          <Label className="text-sm text-muted-foreground">
+            {t("claudeOauth.addAnotherAccount", "添加其他账号")}
+          </Label>
+          {renderLoginButtons("add")}
+        </div>
       )}
 
       {/* 等待浏览器授权状态 */}
@@ -376,7 +422,11 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
                 autoComplete="off"
                 disabled={isSubmittingPaste}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && pasteCode.trim() && !isSubmittingPaste) {
+                  if (
+                    e.key === "Enter" &&
+                    pasteCode.trim() &&
+                    !isSubmittingPaste
+                  ) {
                     e.preventDefault();
                     submitPasteCode(pasteCode);
                   }
@@ -417,15 +467,8 @@ export const ClaudeOAuthSection: React.FC<ClaudeOAuthSectionProps> = ({
       {authState === "error" && error && (
         <div className="space-y-2">
           <p className="text-sm text-red-500">{error}</p>
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              onClick={addAccount}
-              variant="outline"
-              size="sm"
-            >
-              {t("claudeOauth.retry", "重试")}
-            </Button>
+          {renderLoginButtons("retry")}
+          <div className="flex justify-end">
             <Button
               type="button"
               onClick={cancelAuth}

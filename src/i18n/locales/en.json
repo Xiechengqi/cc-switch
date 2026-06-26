@@ -3115,6 +3115,9 @@
       "domain": "Domain",
       "region": "Region",
       "selectRegion": "Select region",
+      "customRouter": "Custom router",
+      "customRouterDomain": "Router domain",
+      "customRouterHint": "Use a custom cc-switch-router domain. Do not include paths or query strings.",
       "loading": "Loading...",
       "notConfigured": "Tunnel not configured",
       "configured": "Tunnel configured",
@@ -3160,6 +3163,7 @@
       "invalidTokenLimit": "Token limit must be a positive integer, or -1 for unlimited",
       "invalidParallelLimit": "Max concurrency must be at least 3, or -1 for unlimited",
       "invalidSubdomain": "Invalid or reserved subdomain",
+      "invalidRouterDomain": "Router domain is invalid. Use a hostname, IPv4 address, or host:port without paths.",
       "invalidApiKey": "Invalid API Key format",
       "descriptionTooLong": "Description must be 200 characters or fewer."
     },

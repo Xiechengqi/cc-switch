@@ -93,10 +93,10 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
   if (!usage.success) {
     if (inline) {
       return (
-        <div className="inline-flex items-center gap-2 text-xs rounded-lg border border-border-default bg-card px-3 py-2 shadow-sm">
-          <div className="flex items-center gap-1.5 text-red-500 dark:text-red-400">
+        <div className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-2 text-xs rounded-lg border border-border-default bg-card px-3 py-2 shadow-sm">
+          <div className="flex min-w-0 items-center gap-1.5 text-red-500 dark:text-red-400">
             <AlertCircle size={12} />
-            <span>{t("usage.queryFailed")}</span>
+            <span className="break-words">{t("usage.queryFailed")}</span>
           </div>
           <button
             onClick={() => refetch()}
@@ -140,7 +140,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
   // ── Token Plan：订阅风格内联渲染（百分比徽章 + 倒计时） ──
   if (isTokenPlan && inline) {
     return (
-      <div className="flex flex-col items-end gap-1 text-xs whitespace-nowrap flex-shrink-0">
+      <div className="flex min-w-0 max-w-full flex-col items-end gap-1 text-xs">
         {/* 第一行：查询时间 + 刷新 */}
         <div className="flex items-center gap-2 justify-end">
           <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
@@ -162,14 +162,14 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
           </button>
         </div>
         {/* 第二行：tier 徽章（复用官方订阅的 TierBadge） */}
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-1">
           {(() => {
             const tiers = usageDataList.map((d) => toQuotaTier(d));
             const planLabel = tiers[0]?.planLabel;
             return (
               <>
                 {planLabel && (
-                  <span className="font-semibold text-muted-foreground">
+                  <span className="break-words font-semibold text-muted-foreground">
                     💰 {planLabel}
                   </span>
                 )}
@@ -190,7 +190,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
     const isExpired = firstUsage.isValid === false;
 
     return (
-      <div className="flex flex-col items-end gap-1 text-xs whitespace-nowrap flex-shrink-0">
+      <div className="flex min-w-0 max-w-full flex-col items-end gap-1 text-xs">
         {/* 第一行：更新时间和刷新按钮 */}
         <div className="flex items-center gap-2 justify-end">
           {/* 上次查询时间 */}
@@ -216,7 +216,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
         </div>
 
         {/* 第二行：用量和剩余 */}
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-1">
           {/* 已用 */}
           {firstUsage.used !== undefined && (
             <div className="flex items-center gap-0.5">
@@ -260,7 +260,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
           {/* 扩展字段 extra */}
           {firstUsage.extra && (
             <span
-              className="text-gray-500 dark:text-gray-400 truncate max-w-[150px]"
+              className="max-w-full break-words text-gray-500 dark:text-gray-400"
               title={firstUsage.extra}
             >
               {firstUsage.extra}

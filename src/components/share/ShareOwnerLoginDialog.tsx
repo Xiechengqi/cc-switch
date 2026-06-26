@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Mail, Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TunnelConfig } from "@/lib/api";
@@ -6,7 +6,7 @@ import {
   useEmailAuthRequestCodeMutation,
   useEmailAuthVerifyCodeMutation,
 } from "@/lib/query";
-import { SHARE_REGIONS } from "@/config/shareRegions";
+import { normalizeShareRouterDomain } from "@/utils/shareRouter";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -18,13 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { ShareRouterSelector } from "./ShareRouterSelector";
 
 interface ShareOwnerLoginDialogProps {
   open: boolean;
@@ -54,6 +48,9 @@ export function ShareOwnerLoginDialog({
   const verifyCodeMutation = useEmailAuthVerifyCodeMutation();
   const [step, setStep] = useState<Step>("router");
   const [routerDomain, setRouterDomain] = useState(tunnelConfig.domain);
+  const [routerDomainError, setRouterDomainError] = useState<string | null>(
+    null,
+  );
   const [email, setEmail] = useState(currentEmail ?? "");
   const [code, setCode] = useState("");
   const wasOpenRef = useRef(false);
@@ -62,16 +59,13 @@ export function ShareOwnerLoginDialog({
     if (open && !wasOpenRef.current) {
       setStep("router");
       setRouterDomain(tunnelConfig.domain);
+      setRouterDomainError(null);
       setEmail(lockedOwnerEmail ?? currentEmail ?? "");
       setCode("");
     }
     wasOpenRef.current = open;
   }, [currentEmail, lockedOwnerEmail, open, tunnelConfig.domain]);
 
-  const selectedRegion = useMemo(
-    () => SHARE_REGIONS.find((region) => region.baseUrl === routerDomain),
-    [routerDomain],
-  );
   const normalizedEmail = email.trim().toLowerCase();
   const normalizedLockedOwnerEmail = lockedOwnerEmail?.trim().toLowerCase();
   const effectiveEmail = normalizedLockedOwnerEmail || normalizedEmail;
@@ -81,12 +75,27 @@ export function ShareOwnerLoginDialog({
     normalizedEmail !== normalizedLockedOwnerEmail;
 
   const handleContinue = async () => {
-    const domain = routerDomain.trim();
-    if (!domain) return;
+    let domain: string;
+    try {
+      domain = normalizeShareRouterDomain(routerDomain);
+      setRouterDomainError(null);
+    } catch (error) {
+      const key =
+        error instanceof Error
+          ? error.message
+          : "share.validation.invalidRouterDomain";
+      setRouterDomainError(
+        t(key, {
+          defaultValue: "Router domain is invalid",
+        }),
+      );
+      return;
+    }
     try {
       if (domain !== tunnelConfig.domain) {
         await onSaveTunnelConfig({ domain });
       }
+      setRouterDomain(domain);
       setStep("email");
     } catch {
       return;
@@ -97,7 +106,7 @@ export function ShareOwnerLoginDialog({
     if (!effectiveEmail || emailBlockedByOwner) return;
     try {
       await requestCodeMutation.mutateAsync({
-        routerDomain: routerDomain.trim(),
+        routerDomain: normalizeShareRouterDomain(routerDomain),
         email: effectiveEmail,
       });
       setCode("");
@@ -110,7 +119,7 @@ export function ShareOwnerLoginDialog({
   const handleVerify = async () => {
     try {
       await verifyCodeMutation.mutateAsync({
-        routerDomain: routerDomain.trim(),
+        routerDomain: normalizeShareRouterDomain(routerDomain),
         email: effectiveEmail,
         code: code.trim(),
       });
@@ -174,21 +183,20 @@ export function ShareOwnerLoginDialog({
                 <Label htmlFor="share-owner-router">
                   {t("share.tunnel.region")}
                 </Label>
-                <Select value={routerDomain} onValueChange={setRouterDomain}>
-                  <SelectTrigger id="share-owner-router">
-                    <SelectValue placeholder={t("share.tunnel.selectRegion")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SHARE_REGIONS.map((region) => (
-                      <SelectItem key={region.baseUrl} value={region.baseUrl}>
-                        {region.region} - {region.baseUrl}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <ShareRouterSelector
+                  value={routerDomain}
+                  onChange={(value) => {
+                    setRouterDomain(value);
+                    setRouterDomainError(null);
+                  }}
+                  selectId="share-owner-router"
+                  customInputId="share-owner-router-custom"
+                  disabled={tunnelConfigSaving}
+                  error={routerDomainError}
+                />
               </div>
               <div className="text-xs text-muted-foreground">
-                {selectedRegion?.region ?? routerDomain}
+                {routerDomain || "-"}
               </div>
             </div>
           ) : null}

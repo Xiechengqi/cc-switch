@@ -41,7 +41,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { EmailTagsInput } from "@/components/ui/tags-input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { SHARE_REGIONS } from "@/config/shareRegions";
 import {
   DEFAULT_PARALLEL_LIMIT,
   MIN_PARALLEL_LIMIT,
@@ -51,11 +50,13 @@ import {
   isUnlimitedTokenLimit,
   permanentExpiresInSecs,
 } from "@/utils/shareUtils";
+import { normalizeShareRouterDomain } from "@/utils/shareRouter";
 import { cn } from "@/lib/utils";
 import {
   formatProviderOptionLabel,
   type ProviderOption,
 } from "./providerOptions";
+import { ShareRouterSelector } from "./ShareRouterSelector";
 
 export type { ProviderOption } from "./providerOptions";
 
@@ -290,6 +291,9 @@ export function CreateShareDialog({
   const [isPermanent, setIsPermanent] = useState(true);
   const [ownerEmailInput, setOwnerEmailInput] = useState(ownerEmail ?? "");
   const [routerDomain, setRouterDomain] = useState(tunnelConfig.domain);
+  const [routerDomainError, setRouterDomainError] = useState<string | null>(
+    null,
+  );
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const [advancedOpened, setAdvancedOpened] = useState(false);
   const [lastFiniteTokenLimit, setLastFiniteTokenLimit] = useState(
@@ -353,6 +357,7 @@ export function CreateShareDialog({
     wasOpenRef.current = true;
     setOwnerEmailInput(ownerEmail ?? "");
     setRouterDomain(tunnelConfig.domain);
+    setRouterDomainError(null);
     form.reset(
       buildDefaultValues(ownerEmail ?? "", defaultApp, providersByApp),
     );
@@ -491,7 +496,22 @@ export function CreateShareDialog({
     if (marketInvalid) {
       return;
     }
-    const nextRouterDomain = routerDomain.trim();
+    let nextRouterDomain: string;
+    try {
+      nextRouterDomain = normalizeShareRouterDomain(routerDomain);
+      setRouterDomainError(null);
+    } catch (error) {
+      const key =
+        error instanceof Error
+          ? error.message
+          : "share.validation.invalidRouterDomain";
+      setRouterDomainError(
+        t(key, {
+          defaultValue: "Router domain is invalid",
+        }),
+      );
+      return;
+    }
     if (nextRouterDomain && nextRouterDomain !== tunnelConfig.domain) {
       await onSaveTunnelConfig({ domain: nextRouterDomain });
     }
@@ -609,18 +629,17 @@ export function CreateShareDialog({
             <Label htmlFor="share-create-router">
               {t("share.tunnel.region")}
             </Label>
-            <Select value={routerDomain} onValueChange={setRouterDomain}>
-              <SelectTrigger id="share-create-router">
-                <SelectValue placeholder={t("share.tunnel.selectRegion")} />
-              </SelectTrigger>
-              <SelectContent>
-                {SHARE_REGIONS.map((region) => (
-                  <SelectItem key={region.baseUrl} value={region.baseUrl}>
-                    {region.region} - {region.baseUrl}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <ShareRouterSelector
+              value={routerDomain}
+              onChange={(value) => {
+                setRouterDomain(value);
+                setRouterDomainError(null);
+              }}
+              selectId="share-create-router"
+              customInputId="share-create-router-custom"
+              disabled={tunnelConfigSaving}
+              error={routerDomainError}
+            />
             <div className="text-xs text-muted-foreground">
               {t("share.createRouterHint", {
                 defaultValue:
@@ -1515,7 +1534,6 @@ export function CreateShareDialog({
                     error={form.formState.errors.parallelLimit?.message}
                   />
                 </div>
-
               </div>
             ) : null}
           </div>

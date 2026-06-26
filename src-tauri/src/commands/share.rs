@@ -1235,6 +1235,9 @@ pub async fn configure_tunnel(
     state: State<'_, AppState>,
     config: TunnelConfig,
 ) -> Result<(), String> {
+    let domain = crate::tunnel::config::normalize_tunnel_domain(&config.domain)?;
+    let config = TunnelConfig { domain };
+
     // 持久化到 AppSettings，确保应用重启后依然可用
     let mut settings = crate::settings::get_settings();
     settings.set_share_router_domain(Some(config.domain.clone()));

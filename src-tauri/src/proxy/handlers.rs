@@ -32,7 +32,7 @@ use super::{
     response_processor::{
         create_logged_passthrough_stream, process_response, read_decoded_body,
         strip_entity_headers_for_rebuilt_body, strip_hop_by_hop_response_headers,
-        usage_logging_enabled, SseUsageCollector,
+        usage_logging_enabled, SseTerminalFallback, SseUsageCollector,
     },
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
@@ -771,6 +771,7 @@ async fn handle_claude_transform(
             usage_collector,
             timeout_config,
             connection_guard,
+            SseTerminalFallback::AnthropicMessages,
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -1740,6 +1741,7 @@ async fn handle_codex_chat_to_responses_transform(
             usage_collector,
             ctx.streaming_timeout_config(),
             connection_guard,
+            SseTerminalFallback::OpenAiResponses,
         );
 
         let mut headers = axum::http::HeaderMap::new();

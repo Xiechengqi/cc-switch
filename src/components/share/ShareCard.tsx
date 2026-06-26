@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { copyText } from "@/lib/clipboard";
 import { toast } from "sonner";
-import { SHARE_REGIONS } from "@/config/shareRegions";
+import { formatShareRouterDisplay } from "@/utils/shareRouter";
 import { EditShareDialog } from "./EditShareDialog";
 import type { ProviderOption } from "./CreateShareDialog";
 import { ShareDisplayStatusBadge } from "./ShareDisplayStatusBadge";
@@ -200,12 +200,7 @@ export function ShareCard({
   const isBusy = pendingAction === share.id;
   const tunnelDisplay = resolveShareTunnelInfo(share, tunnelConfig);
   const tunnelRuntimeStatus = getShareTunnelRuntimeStatus(share, tunnelStatus);
-  const routerRegion = SHARE_REGIONS.find(
-    (region) => region.baseUrl === tunnelConfig.domain,
-  );
-  const routerDisplay = routerRegion
-    ? `${routerRegion.region} - ${routerRegion.baseUrl}`
-    : tunnelConfig.domain;
+  const routerDisplay = formatShareRouterDisplay(tunnelConfig.domain);
   const displayStatus = getShareDisplayStatus(
     share,
     tunnelConfigured,

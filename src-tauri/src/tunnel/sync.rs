@@ -703,7 +703,7 @@ async fn build_app_provider_snapshot(
 
     if let Some(auth_provider) = managed_oauth_provider_for_app(app, &provider) {
         let (managed_account_email, managed_quota) =
-            managed_oauth_account_summary(auth_provider, &provider).await;
+            managed_oauth_account_summary(auth_provider, app, &provider).await;
         if kind.is_none() {
             kind = Some("official_oauth".to_string());
         }
@@ -876,7 +876,8 @@ async fn build_upstream_provider_snapshot_for_app(
     };
 
     if let Some(auth_provider) = managed_oauth_provider_for_app(&app, &provider) {
-        let (account_email, quota) = managed_oauth_account_summary(auth_provider, &provider).await;
+        let (account_email, quota) =
+            managed_oauth_account_summary(auth_provider, &app, &provider).await;
         snapshot.kind = "official_oauth".to_string();
         snapshot.account_email = account_email;
         snapshot.quota = with_quota_dispatch_limit(quota, &provider);
@@ -972,12 +973,24 @@ fn managed_oauth_provider_for_app(app: &AppType, provider: &Provider) -> Option<
         AppType::Claude | AppType::Gemini if provider.is_antigravity_family_provider() => {
             Some("antigravity_oauth")
         }
+        AppType::Claude | AppType::Codex if provider_is_ollama_cloud(provider) => {
+            Some("ollama_cloud")
+        }
         _ => None,
     }
 }
 
+fn provider_is_ollama_cloud(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.provider_type.as_deref())
+        == Some("ollama_cloud")
+}
+
 async fn managed_oauth_account_summary(
     auth_provider: &str,
+    app: &AppType,
     provider: &Provider,
 ) -> (Option<String>, Option<ShareUpstreamQuota>) {
     if auth_provider == "cursor_apikey" {
@@ -989,6 +1002,10 @@ async fn managed_oauth_account_summary(
         let account_id = crate::proxy::providers::cursor_apikey::account_id_for_api_key(&api_key);
         let quota = cached_upstream_quota(auth_provider, &account_id).await;
         return (None, quota);
+    }
+
+    if auth_provider == "ollama_cloud" {
+        return ollama_cloud_account_summary(app, provider).await;
     }
 
     let account_id = match provider
@@ -1010,6 +1027,33 @@ async fn managed_oauth_account_summary(
         .or(Some(account_id.clone()));
     let quota = cached_upstream_quota(auth_provider, &account_id).await;
     (account_email, quota)
+}
+
+async fn ollama_cloud_account_summary(
+    app: &AppType,
+    provider: &Provider,
+) -> (Option<String>, Option<ShareUpstreamQuota>) {
+    let api_key = provider.resolve_usage_credentials(app).1;
+    if api_key.trim().is_empty() {
+        return (None, None);
+    }
+    let service = match crate::services::oauth_quota::global_oauth_quota_service() {
+        Some(service) => service,
+        None => return (None, None),
+    };
+    let Some(cached) = service.get("ollama_cloud", &provider.id).await else {
+        return (None, None);
+    };
+    let account_email = cached
+        .quota
+        .tiers
+        .first()
+        .map(|tier| tier.name.trim().to_string())
+        .filter(|value| !value.is_empty());
+    (
+        account_email,
+        Some(subscription_quota_to_upstream(cached.quota)),
+    )
 }
 
 async fn default_oauth_account_id(auth_provider: &str) -> Option<String> {
@@ -2005,6 +2049,32 @@ mod tests {
             icon_color: None,
             in_failover_queue: false,
         }
+    }
+
+    #[test]
+    fn ollama_cloud_provider_maps_to_managed_quota_for_claude_and_codex_only() {
+        let mut provider = provider(json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "ollama-key"
+            }
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("ollama_cloud".to_string()),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            managed_oauth_provider_for_app(&AppType::Claude, &provider),
+            Some("ollama_cloud")
+        );
+        assert_eq!(
+            managed_oauth_provider_for_app(&AppType::Codex, &provider),
+            Some("ollama_cloud")
+        );
+        assert_eq!(
+            managed_oauth_provider_for_app(&AppType::Gemini, &provider),
+            None
+        );
     }
 
     #[test]

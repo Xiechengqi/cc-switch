@@ -3115,6 +3115,9 @@
       "domain": "域名",
       "region": "路由节点",
       "selectRegion": "选择路由节点",
+      "customRouter": "自定义 Router",
+      "customRouterDomain": "Router 域名",
+      "customRouterHint": "使用自定义 cc-switch-router 域名。不要包含路径或查询参数。",
       "loading": "加载中...",
       "notConfigured": "尚未配置 tunnel",
       "configured": "Tunnel 已配置",
@@ -3160,6 +3163,7 @@
       "invalidTokenLimit": "Token 上限必须为正整数，或设为 -1 表示无上限",
       "invalidParallelLimit": "最大并发数必须大于等于 3，或设为 -1 表示无上限",
       "invalidSubdomain": "子域名格式无效或为保留字",
+      "invalidRouterDomain": "Router 域名无效。请填写域名、IPv4 地址或 host:port，不要包含路径。",
       "invalidApiKey": "API Key 格式无效",
       "descriptionTooLong": "说明文字不能超过 200 个字符。"
     },

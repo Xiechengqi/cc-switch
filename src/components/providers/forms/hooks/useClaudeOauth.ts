@@ -6,7 +6,13 @@ import type {
   ManagedAuthDeviceCodeResponse,
 } from "@/lib/api";
 
-type AuthState = "idle" | "waiting_browser" | "waiting_paste" | "success" | "error";
+type AuthState =
+  | "idle"
+  | "waiting_browser"
+  | "waiting_paste"
+  | "success"
+  | "error";
+export type ClaudeOAuthFlowMode = "localhost" | "web_paste";
 
 export function useClaudeOauth() {
   const queryClient = useQueryClient();
@@ -49,19 +55,23 @@ export function useClaudeOauth() {
   }, [stopPolling]);
 
   const startLoginMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (requestedFlowMode?: ClaudeOAuthFlowMode) =>
       authApi.authStartLogin(
         "claude_oauth",
         undefined,
         // 远程 web 模式（通过 client URL 访问）走 platform.claude.com out-of-band
-        // 回调；桌面 Tauri 模式继续走 127.0.0.1:54545。
-        isRemoteWebMode() ? "web_paste" : undefined,
+        // 回调；桌面 Tauri 模式默认继续走 127.0.0.1:54545，但也允许用户
+        // 显式选择 platform.claude.com 官方回调。
+        requestedFlowMode ?? (isRemoteWebMode() ? "web_paste" : undefined),
       ),
-    onSuccess: async (response) => {
+    onSuccess: async (response, requestedFlowMode) => {
       setDeviceCode(response);
       setError(null);
 
-      if (isRemoteWebMode()) {
+      const flowMode =
+        requestedFlowMode ?? (isRemoteWebMode() ? "web_paste" : "localhost");
+
+      if (flowMode === "web_paste") {
         // Web-paste 模式：等用户从 platform.claude.com 复制 code 后调
         // submitPasteCode，没有自动轮询；只设个超时清掉 deviceCode。
         setAuthState("waiting_paste");
@@ -76,7 +86,7 @@ export function useClaudeOauth() {
         return;
       }
 
-      // 桌面模式：原有的本机回调 + 轮询。
+      // 本机回调模式：原有的本机回调 + 轮询。
       setAuthState("waiting_browser");
       const interval = (response.interval || 3) * 1000;
       const expiresAt = Date.now() + response.expires_in * 1000;
@@ -131,8 +141,13 @@ export function useClaudeOauth() {
   });
 
   const submitPasteCodeMutation = useMutation({
-    mutationFn: async ({ deviceCode: dc, code }: { deviceCode: string; code: string }) =>
-      authApi.authSubmitOauthCode("claude_oauth", dc, code),
+    mutationFn: async ({
+      deviceCode: dc,
+      code,
+    }: {
+      deviceCode: string;
+      code: string;
+    }) => authApi.authSubmitOauthCode("claude_oauth", dc, code),
     onSuccess: async () => {
       stopPolling();
       setAuthState("success");
@@ -198,13 +213,16 @@ export function useClaudeOauth() {
     },
   });
 
-  const startAuth = useCallback(() => {
-    setAuthState("idle");
-    setDeviceCode(null);
-    setError(null);
-    stopPolling();
-    startLoginMutation.mutate();
-  }, [startLoginMutation, stopPolling]);
+  const startAuth = useCallback(
+    (flowMode?: ClaudeOAuthFlowMode) => {
+      setAuthState("idle");
+      setDeviceCode(null);
+      setError(null);
+      stopPolling();
+      startLoginMutation.mutate(flowMode);
+    },
+    [startLoginMutation, stopPolling],
+  );
 
   const cancelAuth = useCallback(() => {
     stopPolling();
@@ -268,6 +286,7 @@ export function useClaudeOauth() {
       startLoginMutation.isPending ||
       authState === "waiting_browser" ||
       authState === "waiting_paste",
+    canUseLocalCallback: !isRemoteWebMode(),
     isRemovingAccount: removeAccountMutation.isPending,
     isSettingDefaultAccount: setDefaultAccountMutation.isPending,
     startAuth,

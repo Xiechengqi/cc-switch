@@ -211,6 +211,13 @@ export function ProviderActions({
   };
 
   const buttonState = getMainButtonState();
+  const testLinkDisabled = !onTestLink || Boolean(isTestingLink);
+  const testLinkTitle = !onTestLink
+    ? t("provider.testLinkUnavailable", {
+        defaultValue:
+          "当前供应商没有可测试的自定义接口地址；请使用测试模型验证账号/模型可用性。",
+      })
+    : t("provider.testLink", { defaultValue: "测试链接" });
 
   const canDelete =
     !isReadOnly && (isOmo || isAdditiveMode ? true : !isCurrent);
@@ -297,24 +304,31 @@ export function ProviderActions({
           <Copy className="h-4 w-4" />
         </Button>
 
-        <Button
-          size="icon"
-          variant="ghost"
-          onClick={onTestLink || undefined}
-          disabled={isTestingLink}
-          title={t("provider.testLink", { defaultValue: "测试链接" })}
+        <span
+          title={testLinkTitle}
           className={cn(
-            iconButtonClass,
-            !onTestLink &&
-              "opacity-40 cursor-not-allowed text-muted-foreground",
+            "inline-flex",
+            testLinkDisabled && "cursor-not-allowed",
           )}
         >
-          {isTestingLink ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Link className="h-4 w-4" />
-          )}
-        </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={onTestLink || undefined}
+            disabled={testLinkDisabled}
+            className={cn(
+              iconButtonClass,
+              !onTestLink &&
+                "opacity-40 cursor-not-allowed text-muted-foreground",
+            )}
+          >
+            {isTestingLink ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Link className="h-4 w-4" />
+            )}
+          </Button>
+        </span>
 
         <Button
           size="icon"

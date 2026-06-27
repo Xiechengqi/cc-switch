@@ -2859,6 +2859,21 @@ pub(crate) fn web_dist_candidate_paths(app_handle: Option<&tauri::AppHandle>) ->
         }
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        candidates.push(PathBuf::from("/usr/lib/CC Switch/dist"));
+        candidates.push(PathBuf::from("/usr/lib/cc-switch/dist"));
+        candidates.push(PathBuf::from("/usr/share/cc-switch/dist"));
+        candidates.push(PathBuf::from("/opt/CC Switch/dist"));
+        if let Ok(appdir) = std::env::var("APPDIR") {
+            let appdir = appdir.trim();
+            if !appdir.is_empty() {
+                candidates.push(PathBuf::from(appdir).join("usr/lib/CC Switch/dist"));
+                candidates.push(PathBuf::from(appdir).join("usr/share/cc-switch/dist"));
+            }
+        }
+    }
+
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("dist"));
     }

@@ -24,12 +24,22 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use super::copilot_auth::GitHubAccount;
+
+static GLOBAL_CLAUDE_OAUTH_MANAGER: OnceLock<Arc<RwLock<ClaudeOAuthManager>>> = OnceLock::new();
+
+pub fn set_global_claude_oauth_manager(manager: Arc<RwLock<ClaudeOAuthManager>>) {
+    let _ = GLOBAL_CLAUDE_OAUTH_MANAGER.set(manager);
+}
+
+pub fn global_claude_oauth_manager() -> Option<Arc<RwLock<ClaudeOAuthManager>>> {
+    GLOBAL_CLAUDE_OAUTH_MANAGER.get().cloned()
+}
 
 /// Claude OAuth 客户端 ID（与 Claude Code CLI 相同）
 const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";

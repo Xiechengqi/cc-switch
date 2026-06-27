@@ -90,6 +90,42 @@ fn should_refresh_oauth_token_for_status(kind: OAuthKind, status_code: u16) -> b
     status_code == 401 || (matches!(kind, OAuthKind::Antigravity) && status_code == 404)
 }
 
+fn codex_oauth_manager(
+    app_handle: Option<&tauri::AppHandle>,
+) -> Option<Arc<RwLock<CodexOAuthManager>>> {
+    app_handle
+        .and_then(|app| app.try_state::<CodexOAuthState>())
+        .map(|state| Arc::clone(&state.0))
+        .or_else(crate::proxy::providers::codex_oauth_auth::global_codex_oauth_manager)
+}
+
+fn claude_oauth_manager(
+    app_handle: Option<&tauri::AppHandle>,
+) -> Option<Arc<RwLock<crate::proxy::providers::claude_oauth_auth::ClaudeOAuthManager>>> {
+    app_handle
+        .and_then(|app| app.try_state::<ClaudeOAuthState>())
+        .map(|state| Arc::clone(&state.0))
+        .or_else(crate::proxy::providers::claude_oauth_auth::global_claude_oauth_manager)
+}
+
+fn gemini_oauth_manager(
+    app_handle: Option<&tauri::AppHandle>,
+) -> Option<Arc<RwLock<crate::proxy::providers::gemini_oauth_auth::GeminiOAuthManager>>> {
+    app_handle
+        .and_then(|app| app.try_state::<GeminiOAuthState>())
+        .map(|state| Arc::clone(&state.0))
+        .or_else(crate::proxy::providers::gemini_oauth_auth::global_gemini_oauth_manager)
+}
+
+fn antigravity_oauth_manager(
+    app_handle: Option<&tauri::AppHandle>,
+) -> Option<Arc<RwLock<crate::proxy::providers::antigravity_oauth_auth::AntigravityOAuthManager>>> {
+    app_handle
+        .and_then(|app| app.try_state::<AntigravityOAuthState>())
+        .map(|state| Arc::clone(&state.0))
+        .or_else(crate::proxy::providers::antigravity_oauth_auth::global_antigravity_oauth_manager)
+}
+
 fn should_use_reqwest_transport(
     app_type: &AppType,
     provider: &Provider,
@@ -1764,10 +1800,8 @@ impl RequestForwarder {
 
                 // Codex OAuth: 获取真实 access_token。
                 if auth.strategy == AuthStrategy::CodexOAuth {
-                    if let Some(app_handle) = &self.app_handle {
-                        let codex_state = app_handle.state::<CodexOAuthState>();
-                        let codex_auth: tokio::sync::RwLockReadGuard<'_, CodexOAuthManager> =
-                            codex_state.0.read().await;
+                    if let Some(codex_manager) = codex_oauth_manager(self.app_handle.as_ref()) {
+                        let codex_auth = codex_manager.read().await;
 
                         // 从 provider.meta 获取关联的 ChatGPT 账号 ID
                         let account_id = provider
@@ -1811,18 +1845,17 @@ impl RequestForwarder {
                             }
                         }
                     } else {
-                        log::error!("[CodexOAuth] AppHandle 不可用");
+                        log::error!("[CodexOAuth] OAuth manager 不可用");
                         return Err(ProxyError::AuthError(
-                            "OpenAI 官方认证不可用（无 AppHandle）".to_string(),
+                            "OpenAI 官方认证不可用（OAuth manager 未初始化）".to_string(),
                         ));
                     }
                 }
 
                 // Claude OAuth: 从 ClaudeOAuthManager 获取真实 access_token
                 if auth.strategy == AuthStrategy::ClaudeOAuth {
-                    if let Some(app_handle) = &self.app_handle {
-                        let claude_state = app_handle.state::<ClaudeOAuthState>();
-                        let claude_auth = claude_state.0.read().await;
+                    if let Some(claude_manager) = claude_oauth_manager(self.app_handle.as_ref()) {
+                        let claude_auth = claude_manager.read().await;
 
                         let account_id = provider
                             .meta
@@ -1857,9 +1890,9 @@ impl RequestForwarder {
                             }
                         }
                     } else {
-                        log::error!("[ClaudeOAuth] AppHandle 不可用");
+                        log::error!("[ClaudeOAuth] OAuth manager 不可用");
                         return Err(ProxyError::AuthError(
-                            "Claude OAuth 认证不可用（无 AppHandle）".to_string(),
+                            "Claude OAuth 认证不可用（OAuth manager 未初始化）".to_string(),
                         ));
                     }
                 }
@@ -1868,9 +1901,10 @@ impl RequestForwarder {
                 if auth.strategy == AuthStrategy::GoogleOAuth
                     && is_antigravity_oauth_provider(app_type, provider)
                 {
-                    if let Some(app_handle) = &self.app_handle {
-                        let antigravity_state = app_handle.state::<AntigravityOAuthState>();
-                        let antigravity_auth = antigravity_state.0.read().await;
+                    if let Some(antigravity_manager) =
+                        antigravity_oauth_manager(self.app_handle.as_ref())
+                    {
+                        let antigravity_auth = antigravity_manager.read().await;
 
                         let account_id = provider
                             .meta
@@ -1910,9 +1944,9 @@ impl RequestForwarder {
                         oauth_kind_used =
                             Some((OAuthKind::Antigravity, resolved_account_id.clone()));
                     } else {
-                        log::error!("[AntigravityOAuth] AppHandle 不可用");
+                        log::error!("[AntigravityOAuth] OAuth manager 不可用");
                         return Err(ProxyError::AuthError(
-                            "Antigravity OAuth 认证不可用（无 AppHandle）".to_string(),
+                            "Antigravity OAuth 认证不可用（OAuth manager 未初始化）".to_string(),
                         ));
                     }
                 }
@@ -1923,9 +1957,8 @@ impl RequestForwarder {
                 if auth.strategy == AuthStrategy::GoogleOAuth
                     && is_gemini_code_assist_provider(app_type, provider)
                 {
-                    if let Some(app_handle) = &self.app_handle {
-                        let gemini_state = app_handle.state::<GeminiOAuthState>();
-                        let gemini_auth = gemini_state.0.read().await;
+                    if let Some(gemini_manager) = gemini_oauth_manager(self.app_handle.as_ref()) {
+                        let gemini_auth = gemini_manager.read().await;
 
                         let account_id = provider
                             .meta
@@ -1973,9 +2006,9 @@ impl RequestForwarder {
                             oauth_kind_used = Some((OAuthKind::Gemini, id));
                         }
                     } else {
-                        log::error!("[GeminiOAuth] AppHandle 不可用");
+                        log::error!("[GeminiOAuth] OAuth manager 不可用");
                         return Err(ProxyError::AuthError(
-                            "Google Gemini OAuth 认证不可用（无 AppHandle）".to_string(),
+                            "Google Gemini OAuth 认证不可用（OAuth manager 未初始化）".to_string(),
                         ));
                     }
                 }
@@ -2531,31 +2564,31 @@ impl RequestForwarder {
                 })
             {
                 if let Some((kind, account_id)) = oauth_kind_used.clone() {
-                    if let Some(app_handle) = &self.app_handle {
-                        log::warn!(
-                            "[OAuthRetry] 上游返回 {status_code} (kind={:?}, account={account_id})，作废缓存 token 后重试一次",
-                            kind
-                        );
-                        match kind {
-                            OAuthKind::Claude => {
-                                let state = app_handle.state::<ClaudeOAuthState>();
-                                state
-                                    .0
+                    log::warn!(
+                        "[OAuthRetry] 上游返回 {status_code} (kind={:?}, account={account_id})，作废缓存 token 后重试一次",
+                        kind
+                    );
+                    match kind {
+                        OAuthKind::Claude => {
+                            if let Some(manager) = claude_oauth_manager(self.app_handle.as_ref()) {
+                                manager
                                     .read()
                                     .await
                                     .invalidate_cached_token(&account_id)
                                     .await;
                             }
-                            OAuthKind::Codex => {
-                                let state = app_handle.state::<CodexOAuthState>();
-                                state
-                                    .0
+                        }
+                        OAuthKind::Codex => {
+                            if let Some(manager) = codex_oauth_manager(self.app_handle.as_ref()) {
+                                manager
                                     .read()
                                     .await
                                     .invalidate_cached_token(&account_id)
                                     .await;
                             }
-                            OAuthKind::Copilot => {
+                        }
+                        OAuthKind::Copilot => {
+                            if let Some(app_handle) = &self.app_handle {
                                 let state = app_handle.state::<CopilotAuthState>();
                                 state
                                     .0
@@ -2564,30 +2597,32 @@ impl RequestForwarder {
                                     .invalidate_cached_token(&account_id)
                                     .await;
                             }
-                            OAuthKind::Gemini => {
-                                let state = app_handle.state::<GeminiOAuthState>();
-                                state
-                                    .0
-                                    .read()
-                                    .await
-                                    .invalidate_cached_token(&account_id)
-                                    .await;
-                            }
-                            OAuthKind::Antigravity => {
-                                let state = app_handle.state::<AntigravityOAuthState>();
-                                state
-                                    .0
+                        }
+                        OAuthKind::Gemini => {
+                            if let Some(manager) = gemini_oauth_manager(self.app_handle.as_ref()) {
+                                manager
                                     .read()
                                     .await
                                     .invalidate_cached_token(&account_id)
                                     .await;
                             }
                         }
-                        oauth_retried = true;
-                        // 消费响应体，释放底层连接
-                        let _ = response.bytes().await;
-                        continue;
+                        OAuthKind::Antigravity => {
+                            if let Some(manager) =
+                                antigravity_oauth_manager(self.app_handle.as_ref())
+                            {
+                                manager
+                                    .read()
+                                    .await
+                                    .invalidate_cached_token(&account_id)
+                                    .await;
+                            }
+                        }
                     }
+                    oauth_retried = true;
+                    // 消费响应体，释放底层连接
+                    let _ = response.bytes().await;
+                    continue;
                 }
             }
 

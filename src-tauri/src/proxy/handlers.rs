@@ -58,12 +58,25 @@ use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::str::FromStr;
+use std::sync::Arc;
 use tauri::Manager;
+use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
 
 const SHARE_ROUTER_REQUEST_LOGS_LIMIT: usize = 10;
 const CODEX_RESPONSES_WS_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
 const CODEX_RESPONSES_WS_PROTOCOL: &str = "responses_websockets=2026-02-06";
+
+fn codex_oauth_manager(
+    state: &ProxyState,
+) -> Option<Arc<RwLock<crate::proxy::providers::codex_oauth_auth::CodexOAuthManager>>> {
+    state
+        .app_handle
+        .as_ref()
+        .and_then(|app| app.try_state::<CodexOAuthState>())
+        .map(|state| Arc::clone(&state.0))
+        .or_else(crate::proxy::providers::codex_oauth_auth::global_codex_oauth_manager)
+}
 
 fn has_share_router_probe_header(headers: &axum::http::HeaderMap) -> bool {
     headers
@@ -1203,13 +1216,13 @@ pub async fn handle_responses_websocket(
             .into_response();
     };
 
-    let Some(app_handle) = &state.app_handle else {
+    let Some(codex_manager) = codex_oauth_manager(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
                 "error": {
                     "type": "auth_unavailable",
-                    "message": "OpenAI OAuth state is unavailable",
+                    "message": "OpenAI OAuth manager is unavailable",
                 }
             })),
         )
@@ -1220,8 +1233,7 @@ pub async fn handle_responses_websocket(
         .meta
         .as_ref()
         .and_then(|meta| meta.managed_account_id_for("codex_oauth"));
-    let codex_state = app_handle.state::<CodexOAuthState>();
-    let codex_auth = codex_state.0.read().await;
+    let codex_auth = codex_manager.read().await;
     let token_result = match account_id.as_deref() {
         Some(id) => codex_auth.get_valid_token_for_account(id).await,
         None => codex_auth.get_valid_token().await,
@@ -1488,9 +1500,9 @@ pub async fn handle_images_generations(
         ));
     }
 
-    let Some(app_handle) = &state.app_handle else {
+    let Some(codex_manager) = codex_oauth_manager(&state) else {
         return Err(ProxyError::AuthError(
-            "Codex OAuth image generation is unavailable without app state".to_string(),
+            "Codex OAuth image generation is unavailable without OAuth manager".to_string(),
         ));
     };
 
@@ -1502,8 +1514,7 @@ pub async fn handle_images_generations(
         .meta
         .as_ref()
         .and_then(|meta| meta.managed_account_id_for("codex_oauth"));
-    let codex_state = app_handle.state::<CodexOAuthState>();
-    let codex_auth = codex_state.0.read().await;
+    let codex_auth = codex_manager.read().await;
     let token = match account_id.as_deref() {
         Some(id) => codex_auth.get_valid_token_for_account(id).await,
         None => codex_auth.get_valid_token().await,

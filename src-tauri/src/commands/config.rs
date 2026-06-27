@@ -234,6 +234,12 @@ pub async fn open_app_config_folder(handle: AppHandle) -> Result<bool, String> {
 pub async fn get_claude_common_config_snippet(
     state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<Option<String>, String> {
+    get_claude_common_config_snippet_for_state(state.inner()).await
+}
+
+pub async fn get_claude_common_config_snippet_for_state(
+    state: &crate::store::AppState,
+) -> Result<Option<String>, String> {
     state
         .db
         .get_config_snippet("claude")
@@ -244,6 +250,13 @@ pub async fn get_claude_common_config_snippet(
 pub async fn set_claude_common_config_snippet(
     snippet: String,
     state: tauri::State<'_, crate::store::AppState>,
+) -> Result<(), String> {
+    set_claude_common_config_snippet_for_state(snippet, state.inner()).await
+}
+
+pub async fn set_claude_common_config_snippet_for_state(
+    snippet: String,
+    state: &crate::store::AppState,
 ) -> Result<(), String> {
     let is_cleared = snippet.trim().is_empty();
 
@@ -269,6 +282,13 @@ pub async fn get_common_config_snippet(
     app_type: String,
     state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<Option<String>, String> {
+    get_common_config_snippet_for_state(app_type, state.inner()).await
+}
+
+pub async fn get_common_config_snippet_for_state(
+    app_type: String,
+    state: &crate::store::AppState,
+) -> Result<Option<String>, String> {
     state
         .db
         .get_config_snippet(&app_type)
@@ -280,6 +300,14 @@ pub async fn set_common_config_snippet(
     app_type: String,
     snippet: String,
     state: tauri::State<'_, crate::store::AppState>,
+) -> Result<(), String> {
+    set_common_config_snippet_for_state(app_type, snippet, state.inner()).await
+}
+
+pub async fn set_common_config_snippet_for_state(
+    app_type: String,
+    snippet: String,
+    state: &crate::store::AppState,
 ) -> Result<(), String> {
     let is_cleared = snippet.trim().is_empty();
     let old_snippet = state
@@ -298,7 +326,7 @@ pub async fn set_common_config_snippet(
         {
             let app = AppType::from_str(&app_type).map_err(|e| e.to_string())?;
             crate::services::provider::ProviderService::migrate_legacy_common_config_usage(
-                state.inner(),
+                state,
                 app,
                 legacy_snippet,
             )
@@ -317,11 +345,8 @@ pub async fn set_common_config_snippet(
 
     if matches!(app_type.as_str(), "claude" | "codex" | "gemini") {
         let app = AppType::from_str(&app_type).map_err(|e| e.to_string())?;
-        crate::services::provider::ProviderService::sync_current_provider_for_app(
-            state.inner(),
-            app,
-        )
-        .map_err(|e| e.to_string())?;
+        crate::services::provider::ProviderService::sync_current_provider_for_app(state, app)
+            .map_err(|e| e.to_string())?;
     }
 
     if app_type == "omo"
@@ -331,11 +356,8 @@ pub async fn set_common_config_snippet(
             .map_err(|e| e.to_string())?
             .is_some()
     {
-        crate::services::OmoService::write_config_to_file(
-            state.inner(),
-            &crate::services::omo::STANDARD,
-        )
-        .map_err(|e| e.to_string())?;
+        crate::services::OmoService::write_config_to_file(state, &crate::services::omo::STANDARD)
+            .map_err(|e| e.to_string())?;
     }
     if app_type == "omo-slim"
         && state
@@ -344,11 +366,8 @@ pub async fn set_common_config_snippet(
             .map_err(|e| e.to_string())?
             .is_some()
     {
-        crate::services::OmoService::write_config_to_file(
-            state.inner(),
-            &crate::services::omo::SLIM,
-        )
-        .map_err(|e| e.to_string())?;
+        crate::services::OmoService::write_config_to_file(state, &crate::services::omo::SLIM)
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -380,6 +399,14 @@ pub async fn extract_common_config_snippet(
     settingsConfig: Option<String>,
     state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<String, String> {
+    extract_common_config_snippet_for_state(appType, settingsConfig, state.inner()).await
+}
+
+pub async fn extract_common_config_snippet_for_state(
+    appType: String,
+    settingsConfig: Option<String>,
+    state: &crate::store::AppState,
+) -> Result<String, String> {
     let app = AppType::from_str(&appType).map_err(|e| e.to_string())?;
 
     if let Some(settings_config) = settingsConfig.filter(|s| !s.trim().is_empty()) {
@@ -393,6 +420,6 @@ pub async fn extract_common_config_snippet(
         .map_err(|e| e.to_string());
     }
 
-    crate::services::provider::ProviderService::extract_common_config_snippet(&state, app)
+    crate::services::provider::ProviderService::extract_common_config_snippet(state, app)
         .map_err(|e| e.to_string())
 }

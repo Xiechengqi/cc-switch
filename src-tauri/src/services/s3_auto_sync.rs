@@ -85,7 +85,10 @@ fn persist_auto_sync_error(settings: &mut S3SyncSettings, error: &AppError) {
     let _ = settings::update_s3_sync_status(settings.status.clone());
 }
 
-fn emit_auto_sync_status_updated(app: &AppHandle, status: &str, error: Option<&str>) {
+fn emit_auto_sync_status_updated(app: Option<&AppHandle>, status: &str, error: Option<&str>) {
+    let Some(app) = app else {
+        return;
+    };
     let payload = match error {
         Some(message) => json!({
             "source": "auto",
@@ -105,7 +108,7 @@ fn emit_auto_sync_status_updated(app: &AppHandle, status: &str, error: Option<&s
 
 async fn run_auto_sync_upload(
     db: &crate::database::Database,
-    app: &AppHandle,
+    app: Option<&AppHandle>,
 ) -> Result<(), AppError> {
     let mut settings = settings::get_s3_sync_settings();
     if !should_run_auto_sync(settings.as_ref()) {
@@ -145,6 +148,14 @@ pub fn notify_db_changed(table: &str) {
 }
 
 pub fn start_worker(db: Arc<crate::database::Database>, app: tauri::AppHandle) {
+    start_worker_inner(db, Some(app));
+}
+
+pub fn start_worker_headless(db: Arc<crate::database::Database>) {
+    start_worker_inner(db, None);
+}
+
+fn start_worker_inner(db: Arc<crate::database::Database>, app: Option<tauri::AppHandle>) {
     if DB_CHANGE_TX.get().is_some() {
         return;
     }
@@ -163,7 +174,7 @@ pub fn start_worker(db: Arc<crate::database::Database>, app: tauri::AppHandle) {
 async fn run_worker_loop(
     db: Arc<crate::database::Database>,
     mut rx: Receiver<String>,
-    app: tauri::AppHandle,
+    app: Option<tauri::AppHandle>,
 ) {
     while let Some(first_table) = rx.recv().await {
         let started_at = Instant::now();
@@ -183,7 +194,7 @@ async fn run_worker_loop(
             "[S3][AutoSync] Triggered by table={first_table}, merged_changes={merged_count}"
         );
 
-        if let Err(err) = run_auto_sync_upload(&db, &app).await {
+        if let Err(err) = run_auto_sync_upload(&db, app.as_ref()).await {
             log::warn!("[S3][AutoSync] Upload failed: {err}");
         }
     }

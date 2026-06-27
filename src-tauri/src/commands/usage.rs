@@ -17,6 +17,24 @@ pub fn get_usage_summary(
     provider_name: Option<String>,
     model: Option<String>,
 ) -> Result<UsageSummary, AppError> {
+    get_usage_summary_for_state(
+        state.inner(),
+        start_date,
+        end_date,
+        app_type,
+        provider_name,
+        model,
+    )
+}
+
+pub fn get_usage_summary_for_state(
+    state: &AppState,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    app_type: Option<String>,
+    provider_name: Option<String>,
+    model: Option<String>,
+) -> Result<UsageSummary, AppError> {
     state.db.get_usage_summary(
         start_date,
         end_date,
@@ -35,6 +53,16 @@ pub fn get_usage_summary_by_app(
     provider_name: Option<String>,
     model: Option<String>,
 ) -> Result<Vec<UsageSummaryByApp>, AppError> {
+    get_usage_summary_by_app_for_state(state.inner(), start_date, end_date, provider_name, model)
+}
+
+pub fn get_usage_summary_by_app_for_state(
+    state: &AppState,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    provider_name: Option<String>,
+    model: Option<String>,
+) -> Result<Vec<UsageSummaryByApp>, AppError> {
     state.db.get_usage_summary_by_app(
         start_date,
         end_date,
@@ -47,6 +75,24 @@ pub fn get_usage_summary_by_app(
 #[tauri::command]
 pub fn get_usage_trends(
     state: State<'_, AppState>,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    app_type: Option<String>,
+    provider_name: Option<String>,
+    model: Option<String>,
+) -> Result<Vec<DailyStats>, AppError> {
+    get_usage_trends_for_state(
+        state.inner(),
+        start_date,
+        end_date,
+        app_type,
+        provider_name,
+        model,
+    )
+}
+
+pub fn get_usage_trends_for_state(
+    state: &AppState,
     start_date: Option<i64>,
     end_date: Option<i64>,
     app_type: Option<String>,
@@ -72,6 +118,24 @@ pub fn get_provider_stats(
     provider_name: Option<String>,
     model: Option<String>,
 ) -> Result<Vec<ProviderStats>, AppError> {
+    get_provider_stats_for_state(
+        state.inner(),
+        start_date,
+        end_date,
+        app_type,
+        provider_name,
+        model,
+    )
+}
+
+pub fn get_provider_stats_for_state(
+    state: &AppState,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    app_type: Option<String>,
+    provider_name: Option<String>,
+    model: Option<String>,
+) -> Result<Vec<ProviderStats>, AppError> {
     state.db.get_provider_stats(
         start_date,
         end_date,
@@ -85,6 +149,24 @@ pub fn get_provider_stats(
 #[tauri::command]
 pub fn get_model_stats(
     state: State<'_, AppState>,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    app_type: Option<String>,
+    provider_name: Option<String>,
+    model: Option<String>,
+) -> Result<Vec<ModelStats>, AppError> {
+    get_model_stats_for_state(
+        state.inner(),
+        start_date,
+        end_date,
+        app_type,
+        provider_name,
+        model,
+    )
+}
+
+pub fn get_model_stats_for_state(
+    state: &AppState,
     start_date: Option<i64>,
     end_date: Option<i64>,
     app_type: Option<String>,
@@ -108,6 +190,15 @@ pub fn get_request_logs(
     page: u32,
     page_size: u32,
 ) -> Result<PaginatedLogs, AppError> {
+    get_request_logs_for_state(state.inner(), filters, page, page_size)
+}
+
+pub fn get_request_logs_for_state(
+    state: &AppState,
+    filters: LogFilters,
+    page: u32,
+    page_size: u32,
+) -> Result<PaginatedLogs, AppError> {
     state.db.get_request_logs(&filters, page, page_size)
 }
 
@@ -117,12 +208,23 @@ pub fn get_request_detail(
     state: State<'_, AppState>,
     request_id: String,
 ) -> Result<Option<RequestLogDetail>, AppError> {
+    get_request_detail_for_state(state.inner(), request_id)
+}
+
+pub fn get_request_detail_for_state(
+    state: &AppState,
+    request_id: String,
+) -> Result<Option<RequestLogDetail>, AppError> {
     state.db.get_request_detail(&request_id)
 }
 
 /// 获取模型定价列表
 #[tauri::command]
 pub fn get_model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricingInfo>, AppError> {
+    get_model_pricing_for_state(state.inner())
+}
+
+pub fn get_model_pricing_for_state(state: &AppState) -> Result<Vec<ModelPricingInfo>, AppError> {
     log::info!("获取模型定价列表");
     state.db.ensure_model_pricing_seeded()?;
 
@@ -174,6 +276,26 @@ pub fn get_model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricingI
 #[tauri::command]
 pub fn update_model_pricing(
     state: State<'_, AppState>,
+    model_id: String,
+    display_name: String,
+    input_cost: String,
+    output_cost: String,
+    cache_read_cost: String,
+    cache_creation_cost: String,
+) -> Result<(), AppError> {
+    update_model_pricing_for_state(
+        state.inner(),
+        model_id,
+        display_name,
+        input_cost,
+        output_cost,
+        cache_read_cost,
+        cache_creation_cost,
+    )
+}
+
+pub fn update_model_pricing_for_state(
+    state: &AppState,
     model_id: String,
     display_name: String,
     input_cost: String,
@@ -254,12 +376,24 @@ pub fn check_provider_limits(
     provider_id: String,
     app_type: String,
 ) -> Result<crate::services::usage_stats::ProviderLimitStatus, AppError> {
+    check_provider_limits_for_state(state.inner(), provider_id, app_type)
+}
+
+pub fn check_provider_limits_for_state(
+    state: &AppState,
+    provider_id: String,
+    app_type: String,
+) -> Result<crate::services::usage_stats::ProviderLimitStatus, AppError> {
     state.db.check_provider_limits(&provider_id, &app_type)
 }
 
 /// 删除模型定价
 #[tauri::command]
 pub fn delete_model_pricing(state: State<'_, AppState>, model_id: String) -> Result<(), AppError> {
+    delete_model_pricing_for_state(state.inner(), model_id)
+}
+
+pub fn delete_model_pricing_for_state(state: &AppState, model_id: String) -> Result<(), AppError> {
     let db = state.db.clone();
     let conn = crate::database::lock_conn!(db.conn);
 
@@ -277,6 +411,12 @@ pub fn delete_model_pricing(state: State<'_, AppState>, model_id: String) -> Res
 #[tauri::command]
 pub fn sync_session_usage(
     state: State<'_, AppState>,
+) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
+    sync_session_usage_for_state(state.inner())
+}
+
+pub fn sync_session_usage_for_state(
+    state: &AppState,
 ) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
     // 同步 Claude 会话日志
     let mut result = crate::services::session_usage::sync_claude_session_logs(&state.db)?;
@@ -327,6 +467,12 @@ pub fn sync_session_usage(
 #[tauri::command]
 pub fn get_usage_data_sources(
     state: State<'_, AppState>,
+) -> Result<Vec<crate::services::session_usage::DataSourceSummary>, AppError> {
+    get_usage_data_sources_for_state(state.inner())
+}
+
+pub fn get_usage_data_sources_for_state(
+    state: &AppState,
 ) -> Result<Vec<crate::services::session_usage::DataSourceSummary>, AppError> {
     crate::services::session_usage::get_data_source_breakdown(&state.db)
 }

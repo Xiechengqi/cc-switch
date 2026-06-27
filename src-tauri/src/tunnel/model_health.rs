@@ -34,8 +34,20 @@ pub fn spawn_share_model_health_scheduler(db: Arc<Database>, app_handle: tauri::
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_HEALTH_CHECK_DELAY).await;
         loop {
-            if let Err(err) = run_share_model_health_cycle(&db, &app_handle).await {
+            if let Err(err) = run_share_model_health_cycle(&db, Some(&app_handle)).await {
                 log::warn!("[ShareModelHealth] model health cycle failed: {err}");
+            }
+            tokio::time::sleep(HEALTH_CHECK_INTERVAL).await;
+        }
+    });
+}
+
+pub fn spawn_share_model_health_scheduler_headless(db: Arc<Database>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(FIRST_HEALTH_CHECK_DELAY).await;
+        loop {
+            if let Err(err) = run_share_model_health_cycle(&db, None).await {
+                log::warn!("[ShareModelHealth] headless model health cycle failed: {err}");
             }
             tokio::time::sleep(HEALTH_CHECK_INTERVAL).await;
         }
@@ -98,7 +110,7 @@ pub async fn purge_share_app(share_id: &str, app_type: &str) {
 
 async fn run_share_model_health_cycle(
     db: &Arc<Database>,
-    app_handle: &tauri::AppHandle,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), AppError> {
     let shares = ShareService::list(db)?;
     let mut had_any_probe = false;
@@ -161,7 +173,7 @@ fn normalize_app_type(value: &str) -> Option<AppType> {
 
 async fn check_app(
     db: &Arc<Database>,
-    app_handle: &tauri::AppHandle,
+    app_handle: Option<&tauri::AppHandle>,
     share: &ShareRecord,
     app_type: &AppType,
     provider_id: &str,
@@ -204,7 +216,7 @@ async fn check_app(
     let started = Instant::now();
     let result = crate::commands::model_test::run_model_test_for_provider(
         db.as_ref(),
-        Some(app_handle),
+        app_handle,
         app_type,
         &provider,
     )

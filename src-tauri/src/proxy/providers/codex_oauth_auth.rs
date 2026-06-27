@@ -23,11 +23,21 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use super::copilot_auth::{GitHubAccount, GitHubDeviceCodeResponse};
+
+static GLOBAL_CODEX_OAUTH_MANAGER: OnceLock<Arc<RwLock<CodexOAuthManager>>> = OnceLock::new();
+
+pub fn set_global_codex_oauth_manager(manager: Arc<RwLock<CodexOAuthManager>>) {
+    let _ = GLOBAL_CODEX_OAUTH_MANAGER.set(manager);
+}
+
+pub fn global_codex_oauth_manager() -> Option<Arc<RwLock<CodexOAuthManager>>> {
+    GLOBAL_CODEX_OAUTH_MANAGER.get().cloned()
+}
 
 /// OpenAI OAuth 客户端 ID（OpenCode 使用，与官方 Codex CLI 相同）
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";

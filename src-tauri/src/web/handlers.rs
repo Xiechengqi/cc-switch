@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -812,7 +813,7 @@ async fn invoke_local_admin_scoped(
             Ok(json!(null))
         }
         "list_shares" => {
-            let Some(app_state) = app_state(state) else {
+            let Some(app_state) = web_app_state(state) else {
                 return Ok(json!([]));
             };
             let shares = ShareService::list(&app_state.db)?;
@@ -823,7 +824,7 @@ async fn invoke_local_admin_scoped(
         }
         "get_share_detail" => {
             let share_id = string_arg(&args, "shareId")?;
-            let Some(app_state) = app_state(state) else {
+            let Some(app_state) = web_app_state(state) else {
                 return Ok(json!(null));
             };
             let share =
@@ -944,10 +945,10 @@ async fn invoke_local_admin_scoped(
         }
         "set_auto_failover_enabled" => {
             let app_state = required_app_state(state)?;
-            let app = required_app_handle(state)?.clone();
+            let app = state.app_handle.clone();
             let app_type = string_arg(&args, "appType")?;
             let enabled = bool_arg(&args, "enabled")?;
-            set_auto_failover_enabled_for_web(app, &app_state, &app_type, enabled).await?;
+            set_auto_failover_enabled_for_web(app, app_state.as_ref(), &app_type, enabled).await?;
             Ok(json!(null))
         }
         "get_provider_health" => {
@@ -1034,7 +1035,7 @@ async fn invoke_local_admin_scoped(
         }
         "model_test_provider" => {
             let app_state = required_app_state(state)?;
-            let app = required_app_handle(state)?;
+            let app = state.app_handle.as_ref();
             let app_type = app_type_arg(&args, "appType")?;
             let provider_id = string_arg(&args, "providerId")?;
             let providers = app_state
@@ -1047,7 +1048,7 @@ async fn invoke_local_admin_scoped(
             Ok(json!(
                 crate::commands::model_test::run_model_test_for_provider(
                     &app_state.db,
-                    Some(app),
+                    app,
                     &app_type,
                     provider,
                 )
@@ -1057,7 +1058,7 @@ async fn invoke_local_admin_scoped(
         }
         "model_test_all_providers" => {
             let app_state = required_app_state(state)?;
-            let app = required_app_handle(state)?;
+            let app = state.app_handle.as_ref();
             let app_type = app_type_arg(&args, "appType")?;
             let proxy_targets_only = args
                 .get("proxyTargetsOnly")
@@ -1082,7 +1083,7 @@ async fn invoke_local_admin_scoped(
                 }
                 let result = crate::commands::model_test::run_model_test_for_provider(
                     &app_state.db,
-                    Some(app),
+                    app,
                     &app_type,
                     &provider,
                 )
@@ -1177,19 +1178,23 @@ async fn invoke_local_admin_scoped(
         .map_err(WebError::internal)?)),
         "get_custom_endpoints" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_custom_endpoints(
-                app_state,
-                string_arg(&args, "app")?,
-                string_arg(&args, "providerId")?,
+            let app_type =
+                AppType::from_str(&string_arg(&args, "app")?).map_err(WebError::bad_request)?;
+            Ok(json!(ProviderService::get_custom_endpoints(
+                app_state.as_ref(),
+                app_type,
+                &string_arg(&args, "providerId")?,
             )
             .map_err(WebError::internal)?))
         }
         "add_custom_endpoint" => {
             let app_state = required_app_state(state)?;
-            crate::commands::add_custom_endpoint(
-                app_state,
-                string_arg(&args, "app")?,
-                string_arg(&args, "providerId")?,
+            let app_type =
+                AppType::from_str(&string_arg(&args, "app")?).map_err(WebError::bad_request)?;
+            ProviderService::add_custom_endpoint(
+                app_state.as_ref(),
+                app_type,
+                &string_arg(&args, "providerId")?,
                 string_arg(&args, "url")?,
             )
             .map_err(WebError::internal)?;
@@ -1197,10 +1202,12 @@ async fn invoke_local_admin_scoped(
         }
         "remove_custom_endpoint" => {
             let app_state = required_app_state(state)?;
-            crate::commands::remove_custom_endpoint(
-                app_state,
-                string_arg(&args, "app")?,
-                string_arg(&args, "providerId")?,
+            let app_type =
+                AppType::from_str(&string_arg(&args, "app")?).map_err(WebError::bad_request)?;
+            ProviderService::remove_custom_endpoint(
+                app_state.as_ref(),
+                app_type,
+                &string_arg(&args, "providerId")?,
                 string_arg(&args, "url")?,
             )
             .map_err(WebError::internal)?;
@@ -1208,10 +1215,12 @@ async fn invoke_local_admin_scoped(
         }
         "update_endpoint_last_used" => {
             let app_state = required_app_state(state)?;
-            crate::commands::update_endpoint_last_used(
-                app_state,
-                string_arg(&args, "app")?,
-                string_arg(&args, "providerId")?,
+            let app_type =
+                AppType::from_str(&string_arg(&args, "app")?).map_err(WebError::bad_request)?;
+            ProviderService::update_endpoint_last_used(
+                app_state.as_ref(),
+                app_type,
+                &string_arg(&args, "providerId")?,
                 string_arg(&args, "url")?,
             )
             .map_err(WebError::internal)?;
@@ -1219,20 +1228,20 @@ async fn invoke_local_admin_scoped(
         }
         "get_claude_common_config_snippet" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_claude_common_config_snippet(
-                app_state
-            )
-            .await
-            .map_err(WebError::internal)?))
+            Ok(json!(
+                crate::commands::get_claude_common_config_snippet_for_state(app_state.as_ref())
+                    .await
+                    .map_err(WebError::internal)?
+            ))
         }
         "set_claude_common_config_snippet" => {
             let app_state = required_app_state(state)?;
-            crate::commands::set_claude_common_config_snippet(
+            crate::commands::set_claude_common_config_snippet_for_state(
                 args.get("snippet")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                app_state,
+                app_state.as_ref(),
             )
             .await
             .map_err(WebError::internal)?;
@@ -1240,22 +1249,22 @@ async fn invoke_local_admin_scoped(
         }
         "get_common_config_snippet" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_common_config_snippet(
+            Ok(json!(crate::commands::get_common_config_snippet_for_state(
                 string_arg(&args, "appType")?,
-                app_state,
+                app_state.as_ref(),
             )
             .await
             .map_err(WebError::internal)?))
         }
         "set_common_config_snippet" => {
             let app_state = required_app_state(state)?;
-            crate::commands::set_common_config_snippet(
+            crate::commands::set_common_config_snippet_for_state(
                 string_arg(&args, "appType")?,
                 args.get("snippet")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                app_state,
+                app_state.as_ref(),
             )
             .await
             .map_err(WebError::internal)?;
@@ -1263,49 +1272,68 @@ async fn invoke_local_admin_scoped(
         }
         "extract_common_config_snippet" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::extract_common_config_snippet(
-                string_arg(&args, "appType")?,
-                optional_string_arg(&args, "settingsConfig"),
-                app_state,
-            )
-            .await
-            .map_err(WebError::internal)?))
+            Ok(json!(
+                crate::commands::extract_common_config_snippet_for_state(
+                    string_arg(&args, "appType")?,
+                    optional_string_arg(&args, "settingsConfig"),
+                    app_state.as_ref(),
+                )
+                .await
+                .map_err(WebError::internal)?
+            ))
         }
         "queryProviderUsage" => {
-            let app = required_app_handle(state)?.clone();
             let app_state = required_app_state(state)?;
-            let copilot = required_state::<CopilotAuthState>(state, "copilot auth")?;
-            Ok(json!(crate::commands::queryProviderUsage(
-                app,
-                app_state,
-                copilot,
-                string_arg(&args, "providerId")?,
-                string_arg(&args, "app")?,
-            )
-            .await
-            .map_err(WebError::internal)?))
+            let provider_id = string_arg(&args, "providerId")?;
+            let app = string_arg(&args, "app")?;
+            if let Ok(app_handle) = required_app_handle(state) {
+                let Some(tauri_state) = tauri_app_state(state) else {
+                    return Err(WebError::internal("app state is unavailable"));
+                };
+                let copilot = required_state::<CopilotAuthState>(state, "copilot auth")?;
+                Ok(json!(crate::commands::queryProviderUsage(
+                    app_handle.clone(),
+                    tauri_state,
+                    copilot,
+                    provider_id,
+                    app,
+                )
+                .await
+                .map_err(WebError::internal)?))
+            } else {
+                let app_type = AppType::from_str(&app).map_err(WebError::bad_request)?;
+                Ok(json!(ProviderService::query_usage(
+                    app_state.as_ref(),
+                    app_type,
+                    &provider_id,
+                )
+                .await
+                .map_err(WebError::internal)?))
+            }
         }
         "testUsageScript" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::testUsageScript(
-                app_state,
-                string_arg(&args, "providerId")?,
-                string_arg(&args, "app")?,
-                string_arg(&args, "scriptCode")?,
-                args.get("timeout").and_then(Value::as_u64),
-                optional_string_arg(&args, "apiKey"),
-                optional_string_arg(&args, "baseUrl"),
-                optional_string_arg(&args, "accessToken"),
-                optional_string_arg(&args, "userId"),
-                optional_string_arg(&args, "templateType"),
+            let app_type =
+                AppType::from_str(&string_arg(&args, "app")?).map_err(WebError::bad_request)?;
+            Ok(json!(ProviderService::test_usage_script(
+                app_state.as_ref(),
+                app_type,
+                &string_arg(&args, "providerId")?,
+                &string_arg(&args, "scriptCode")?,
+                args.get("timeout").and_then(Value::as_u64).unwrap_or(10),
+                optional_string_arg(&args, "apiKey").as_deref(),
+                optional_string_arg(&args, "baseUrl").as_deref(),
+                optional_string_arg(&args, "accessToken").as_deref(),
+                optional_string_arg(&args, "userId").as_deref(),
+                optional_string_arg(&args, "templateType").as_deref(),
             )
             .await
             .map_err(WebError::internal)?))
         }
         "get_usage_summary" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_usage_summary(
-                app_state,
+            Ok(json!(crate::commands::get_usage_summary_for_state(
+                app_state.as_ref(),
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
                 optional_string_arg(&args, "appType"),
@@ -1316,8 +1344,8 @@ async fn invoke_local_admin_scoped(
         }
         "get_usage_summary_by_app" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_usage_summary_by_app(
-                app_state,
+            Ok(json!(crate::commands::get_usage_summary_by_app_for_state(
+                app_state.as_ref(),
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
                 optional_string_arg(&args, "providerName"),
@@ -1327,8 +1355,8 @@ async fn invoke_local_admin_scoped(
         }
         "get_usage_trends" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_usage_trends(
-                app_state,
+            Ok(json!(crate::commands::get_usage_trends_for_state(
+                app_state.as_ref(),
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
                 optional_string_arg(&args, "appType"),
@@ -1339,8 +1367,8 @@ async fn invoke_local_admin_scoped(
         }
         "get_provider_stats" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_provider_stats(
-                app_state,
+            Ok(json!(crate::commands::get_provider_stats_for_state(
+                app_state.as_ref(),
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
                 optional_string_arg(&args, "appType"),
@@ -1351,8 +1379,8 @@ async fn invoke_local_admin_scoped(
         }
         "get_model_stats" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_model_stats(
-                app_state,
+            Ok(json!(crate::commands::get_model_stats_for_state(
+                app_state.as_ref(),
                 optional_i64_arg(&args, "startDate"),
                 optional_i64_arg(&args, "endDate"),
                 optional_string_arg(&args, "appType"),
@@ -1363,8 +1391,8 @@ async fn invoke_local_admin_scoped(
         }
         "get_request_logs" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_request_logs(
-                app_state,
+            Ok(json!(crate::commands::get_request_logs_for_state(
+                app_state.as_ref(),
                 value_arg(&args, "filters")?,
                 optional_u32_arg(&args, "page").unwrap_or(0),
                 optional_u32_arg(&args, "pageSize").unwrap_or(20),
@@ -1373,22 +1401,23 @@ async fn invoke_local_admin_scoped(
         }
         "get_request_detail" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::get_request_detail(
-                app_state,
+            Ok(json!(crate::commands::get_request_detail_for_state(
+                app_state.as_ref(),
                 string_arg(&args, "requestId")?
             )
             .map_err(WebError::internal)?))
         }
         "get_model_pricing" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(
-                crate::commands::get_model_pricing(app_state).map_err(WebError::internal)?
-            ))
+            Ok(json!(crate::commands::get_model_pricing_for_state(
+                app_state.as_ref()
+            )
+            .map_err(WebError::internal)?))
         }
         "update_model_pricing" => {
             let app_state = required_app_state(state)?;
-            crate::commands::update_model_pricing(
-                app_state,
+            crate::commands::update_model_pricing_for_state(
+                app_state.as_ref(),
                 string_arg(&args, "modelId")?,
                 string_arg(&args, "displayName")?,
                 string_arg(&args, "inputCost")?,
@@ -1401,14 +1430,17 @@ async fn invoke_local_admin_scoped(
         }
         "delete_model_pricing" => {
             let app_state = required_app_state(state)?;
-            crate::commands::delete_model_pricing(app_state, string_arg(&args, "modelId")?)
-                .map_err(WebError::internal)?;
+            crate::commands::delete_model_pricing_for_state(
+                app_state.as_ref(),
+                string_arg(&args, "modelId")?,
+            )
+            .map_err(WebError::internal)?;
             Ok(json!(null))
         }
         "check_provider_limits" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(crate::commands::check_provider_limits(
-                app_state,
+            Ok(json!(crate::commands::check_provider_limits_for_state(
+                app_state.as_ref(),
                 string_arg(&args, "providerId")?,
                 string_arg(&args, "appType")?,
             )
@@ -1416,15 +1448,17 @@ async fn invoke_local_admin_scoped(
         }
         "sync_session_usage" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(
-                crate::commands::sync_session_usage(app_state).map_err(WebError::internal)?
-            ))
+            Ok(json!(crate::commands::sync_session_usage_for_state(
+                app_state.as_ref()
+            )
+            .map_err(WebError::internal)?))
         }
         "get_usage_data_sources" => {
             let app_state = required_app_state(state)?;
-            Ok(json!(
-                crate::commands::get_usage_data_sources(app_state).map_err(WebError::internal)?
-            ))
+            Ok(json!(crate::commands::get_usage_data_sources_for_state(
+                app_state.as_ref()
+            )
+            .map_err(WebError::internal)?))
         }
         "check_env_conflicts" => Ok(json!(crate::commands::check_env_conflicts(string_arg(
             &args, "app"
@@ -2052,11 +2086,7 @@ fn sanitize_share_for_web(mut share: crate::database::ShareRecord) -> crate::dat
 }
 
 async fn proxy_status(state: &ProxyState) -> ProxyStatus {
-    if let Some(app_state) = state
-        .app_handle
-        .as_ref()
-        .and_then(|app| app.try_state::<AppState>())
-    {
+    if let Some(app_state) = web_app_state(state) {
         if let Ok(status) = app_state.proxy_service.get_status().await {
             return status;
         }
@@ -2088,11 +2118,7 @@ async fn share_tunnel_status(
     state: &ProxyState,
     share_id: &str,
 ) -> Result<ShareTunnelStatus, WebError> {
-    let Some(app_state) = state
-        .app_handle
-        .as_ref()
-        .and_then(|app| app.try_state::<AppState>())
-    else {
+    let Some(app_state) = web_app_state(state) else {
         return Ok(ShareTunnelStatus {
             info: None,
             last_error: None,
@@ -2113,6 +2139,10 @@ async fn share_tunnel_status(
 }
 
 fn app_state(state: &ProxyState) -> Option<tauri::State<'_, AppState>> {
+    tauri_app_state(state)
+}
+
+fn tauri_app_state(state: &ProxyState) -> Option<tauri::State<'_, AppState>> {
     state
         .app_handle
         .as_ref()
@@ -2133,6 +2163,14 @@ impl WebAppState<'_> {
     }
 }
 
+impl Deref for WebAppState<'_> {
+    type Target = AppState;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
 fn web_app_state(state: &ProxyState) -> Option<WebAppState<'_>> {
     app_state(state)
         .map(WebAppState::Tauri)
@@ -2146,8 +2184,12 @@ fn required_app_handle(state: &ProxyState) -> Result<&tauri::AppHandle, WebError
         .ok_or_else(|| WebError::internal("app handle is unavailable"))
 }
 
-fn required_app_state(state: &ProxyState) -> Result<tauri::State<'_, AppState>, WebError> {
-    app_state(state).ok_or_else(|| WebError::internal("app state is unavailable"))
+fn required_app_state(state: &ProxyState) -> Result<WebAppState<'_>, WebError> {
+    web_app_state(state).ok_or_else(|| WebError::internal("app state is unavailable"))
+}
+
+fn required_tauri_app_state(state: &ProxyState) -> Result<tauri::State<'_, AppState>, WebError> {
+    tauri_app_state(state).ok_or_else(|| WebError::internal("app state is unavailable"))
 }
 
 fn required_state<'a, T: Send + Sync + 'static>(
@@ -2219,7 +2261,7 @@ fn proxy_target_provider_ids(
 }
 
 async fn set_auto_failover_enabled_for_web(
-    app: tauri::AppHandle,
+    app: Option<tauri::AppHandle>,
     state: &AppState,
     app_type: &str,
     enabled: bool,
@@ -2290,19 +2332,21 @@ async fn set_auto_failover_enabled_for_web(
         .await
         .map_err(WebError::internal)?;
 
-    if enabled {
-        let _ = app.emit(
-            "provider-switched",
-            json!({
-                "appType": app_type,
-                "providerId": p1_provider_id,
-                "source": "failoverEnabled"
-            }),
-        );
-    }
-    if let Ok(new_menu) = crate::tray::create_tray_menu(&app, state) {
-        if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
-            let _ = tray.set_menu(Some(new_menu));
+    if let Some(app) = app {
+        if enabled {
+            let _ = app.emit(
+                "provider-switched",
+                json!({
+                    "appType": app_type,
+                    "providerId": p1_provider_id,
+                    "source": "failoverEnabled"
+                }),
+            );
+        }
+        if let Ok(new_menu) = crate::tray::create_tray_menu(&app, state) {
+            if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
+                let _ = tray.set_menu(Some(new_menu));
+            }
         }
     }
     Ok(())
@@ -2606,7 +2650,7 @@ async fn oauth_quota_command(
             optional_string_arg(&args, "appType"),
             optional_string_arg(&args, "providerId"),
             quota,
-            required_app_state(state)?,
+            required_tauri_app_state(state)?,
             codex,
             claude,
             gemini,
@@ -2624,7 +2668,7 @@ async fn oauth_quota_command(
             optional_string_arg(&args, "providerType"),
             optional_string_arg(&args, "appType"),
             optional_string_arg(&args, "providerId"),
-            required_app_state(state)?,
+            required_tauri_app_state(state)?,
             quota,
             codex,
             claude,
@@ -2662,7 +2706,7 @@ async fn subscription_command(
     match command {
         "get_subscription_quota" => {
             let app = required_app_handle(state)?.clone();
-            let app_state = required_app_state(state)?;
+            let app_state = required_tauri_app_state(state)?;
             Ok(json!(crate::commands::get_subscription_quota(
                 app,
                 app_state,
@@ -2692,7 +2736,7 @@ async fn subscription_command(
 }
 
 async fn client_tunnel_status(state: &ProxyState) -> ShareTunnelStatus {
-    let Some(app_state) = app_state(state) else {
+    let Some(app_state) = web_app_state(state) else {
         return ShareTunnelStatus {
             info: None,
             last_error: None,

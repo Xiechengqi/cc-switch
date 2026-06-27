@@ -22,6 +22,7 @@ mod init_status;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
+mod local_ext;
 mod local_web_auth;
 mod mcp;
 mod openclaw_config;
@@ -268,11 +269,6 @@ pub fn run() {
                 log::info!("ℹ No deep link URL found in args (this is expected on macOS when launched via system)");
             }
 
-            if crate::runtime_mode::is_no_desktop() {
-                log::info!("no-desktop 模式：忽略第二实例窗口唤起请求");
-                return;
-            }
-
             // Show and focus window regardless
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -332,10 +328,6 @@ pub fn run() {
         )
         .setup(|app| {
             let _ = rustls::crypto::ring::default_provider().install_default();
-            let no_desktop = crate::runtime_mode::is_no_desktop();
-            if no_desktop {
-                log::info!("cc-switch 正在以 no-desktop 模式启动");
-            }
 
             // 预先刷新 Store 覆盖配置，确保后续路径读取正确（日志/数据库等）
             app_store::refresh_app_config_dir_override(app.handle());
@@ -346,14 +338,12 @@ pub fn run() {
             // 注册 Updater 插件（桌面端）
             #[cfg(desktop)]
             {
-                if !no_desktop {
-                    if let Err(e) = app
-                        .handle()
-                        .plugin(tauri_plugin_updater::Builder::new().build())
-                    {
-                        // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
-                        log::warn!("初始化 Updater 插件失败，已跳过：{e}");
-                    }
+                if let Err(e) = app
+                    .handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                {
+                    // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
+                    log::warn!("初始化 Updater 插件失败，已跳过：{e}");
                 }
             }
             // 初始化日志（单文件输出到 <app_config_dir>/logs/cc-switch.log）
@@ -970,9 +960,8 @@ pub fn run() {
 
             // 启动阶段不再无条件保存,避免意外覆盖用户配置。
 
-            if !no_desktop {
-                // 注册 deep-link URL 处理器（使用正确的 DeepLinkExt API）
-                log::info!("=== Registering deep-link URL handler ===");
+            // 注册 deep-link URL 处理器（使用正确的 DeepLinkExt API）
+            log::info!("=== Registering deep-link URL handler ===");
 
                 // Linux 和 Windows 调试模式需要显式注册
                 #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
@@ -1081,10 +1070,7 @@ pub fn run() {
                     }
                 }
 
-                let _tray = tray_builder.build(app)?;
-            } else {
-                log::info!("no-desktop 模式：跳过 deep-link 注册和系统托盘创建");
-            }
+            let _tray = tray_builder.build(app)?;
             crate::services::webdav_auto_sync::start_worker(
                 app_state.db.clone(),
                 app.handle().clone(),
@@ -1127,25 +1113,33 @@ pub fn run() {
 
             // 初始化 CodexOAuthManager (ChatGPT Plus/Pro 反代)
             {
-                use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+                use crate::proxy::providers::codex_oauth_auth::{
+                    set_global_codex_oauth_manager, CodexOAuthManager,
+                };
                 use commands::CodexOAuthState;
                 use tokio::sync::RwLock;
 
                 let app_config_dir = crate::config::get_app_config_dir();
-                let codex_oauth_manager = CodexOAuthManager::new(app_config_dir);
-                app.manage(CodexOAuthState(Arc::new(RwLock::new(codex_oauth_manager))));
+                let codex_oauth_manager =
+                    Arc::new(RwLock::new(CodexOAuthManager::new(app_config_dir)));
+                set_global_codex_oauth_manager(Arc::clone(&codex_oauth_manager));
+                app.manage(CodexOAuthState(codex_oauth_manager));
                 log::info!("✓ CodexOAuthManager initialized");
             }
 
             // 初始化 ClaudeOAuthManager (Claude 官方订阅 OAuth 反代)
             {
-                use crate::proxy::providers::claude_oauth_auth::ClaudeOAuthManager;
+                use crate::proxy::providers::claude_oauth_auth::{
+                    set_global_claude_oauth_manager, ClaudeOAuthManager,
+                };
                 use commands::ClaudeOAuthState;
                 use tokio::sync::RwLock;
 
                 let app_config_dir = crate::config::get_app_config_dir();
-                let claude_oauth_manager = ClaudeOAuthManager::new(app_config_dir);
-                app.manage(ClaudeOAuthState(Arc::new(RwLock::new(claude_oauth_manager))));
+                let claude_oauth_manager =
+                    Arc::new(RwLock::new(ClaudeOAuthManager::new(app_config_dir)));
+                set_global_claude_oauth_manager(Arc::clone(&claude_oauth_manager));
+                app.manage(ClaudeOAuthState(claude_oauth_manager));
                 log::info!("✓ ClaudeOAuthManager initialized");
             }
 
@@ -1299,162 +1293,10 @@ pub fn run() {
                 }
             }
 
-            // 异常退出恢复 + 代理状态自动恢复
+            // 本地扩展启动任务：异常退出恢复、proxy 接管、share/router 同步和用量同步。
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let state = app_handle.state::<AppState>();
-
-                // 检查是否有 Live 备份（表示上次异常退出时可能处于接管状态）
-                let has_backups = match state.db.has_any_live_backup().await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::error!("检查 Live 备份失败: {e}");
-                        false
-                    }
-                };
-                // 检查 Live 配置是否仍处于被接管状态（包含占位符）
-                let live_taken_over = state.proxy_service.detect_takeover_in_live_configs();
-
-                if has_backups || live_taken_over {
-                    log::warn!("检测到上次异常退出（存在接管残留），正在恢复 Live 配置...");
-                    if let Err(e) = state.proxy_service.recover_from_crash().await {
-                        log::error!("恢复 Live 配置失败: {e}");
-                    } else {
-                        log::info!("Live 配置已恢复");
-                    }
-                }
-
-                initialize_common_config_snippets(&state);
-
-                // 检查 settings 表中的代理状态，自动恢复代理服务
-                restore_proxy_state_on_startup(&state).await;
-                if no_desktop && !state.proxy_service.is_running().await {
-                    match state.proxy_service.start().await {
-                        Ok(info) => log::info!(
-                            "no-desktop 模式：Web/代理入口已启动于 {}:{}",
-                            info.address,
-                            info.port
-                        ),
-                        Err(e) => log::error!("no-desktop 模式启动 Web/代理入口失败: {e}"),
-                    }
-                }
-
-                // 恢复 active share 的 tunnel，避免 cc-switch-router 或桌面端重启后
-                // 本地状态仍是 active，但真实隧道长期停留在离线状态。
-                if let Err(e) = crate::commands::share::restore_active_share_tunnel(&state).await {
-                    log::warn!("恢复 active share tunnel 失败: {e}");
-                }
-                if let Err(e) = crate::commands::share::restore_client_tunnel(&state).await {
-                    log::warn!("恢复 client tunnel 失败: {e}");
-                }
-                crate::tunnel::sync::reconcile_share_router_state(state.db.clone());
-                crate::tunnel::sync::schedule_pull_pending_share_edits(state.db.clone());
-                crate::tunnel::sync::spawn_share_edit_event_listener(state.db.clone());
-                crate::tunnel::model_health::spawn_share_model_health_scheduler(
-                    state.db.clone(),
-                    app_handle.clone(),
-                );
-
-                let app_handle_for_share_restore = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    const SHARE_RESTORE_INTERVAL_SECS: u64 = 15;
-                    let state = app_handle_for_share_restore.state::<AppState>();
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-                        SHARE_RESTORE_INTERVAL_SECS,
-                    ));
-                    interval.tick().await;
-                    loop {
-                        interval.tick().await;
-                        if let Err(e) = crate::commands::share::restore_active_share_tunnel(&state).await {
-                            log::warn!("周期性恢复 active share tunnel 失败: {e}");
-                        }
-                        if let Err(e) = crate::commands::share::restore_client_tunnel(&state).await {
-                            log::warn!("周期性恢复 client tunnel 失败: {e}");
-                        }
-                    }
-                });
-
-                // Periodic backup check (on startup)
-                if let Err(e) = state.db.periodic_backup_if_needed() {
-                    log::warn!("Periodic backup failed on startup: {e}");
-                }
-
-                // Periodic maintenance timer: run once per day while the app is running
-                let db_for_timer = state.db.clone();
-                tauri::async_runtime::spawn(async move {
-                    const PERIODIC_MAINTENANCE_INTERVAL_SECS: u64 = 24 * 60 * 60;
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-                        PERIODIC_MAINTENANCE_INTERVAL_SECS,
-                    ));
-                    interval.tick().await; // skip immediate first tick (already checked above)
-                    loop {
-                        interval.tick().await;
-                        if let Err(e) = db_for_timer.periodic_backup_if_needed() {
-                            log::warn!("Periodic maintenance timer failed: {e}");
-                        }
-                    }
-                });
-
-                // Session log usage sync: 启动时同步一次，之后每 60 秒检查
-                let db_for_session_sync = state.db.clone();
-                tauri::async_runtime::spawn(async move {
-                    const SESSION_SYNC_INTERVAL_SECS: u64 = 60;
-
-                    fn run_step<T>(name: &str, result: Result<T, crate::error::AppError>) {
-                        if let Err(e) = result {
-                            log::warn!("{name} failed: {e}");
-                        }
-                    }
-
-                    let db = &db_for_session_sync;
-
-                    // 首次同步
-                    run_step(
-                        "Usage cost startup backfill",
-                        db.backfill_missing_usage_costs(),
-                    );
-                    run_step(
-                        "Session usage initial sync",
-                        crate::services::session_usage::sync_claude_session_logs(db),
-                    );
-                    run_step(
-                        "Codex usage initial sync",
-                        crate::services::session_usage_codex::sync_codex_usage(db),
-                    );
-                    run_step(
-                        "Gemini usage initial sync",
-                        crate::services::session_usage_gemini::sync_gemini_usage(db),
-                    );
-                    run_step(
-                        "OpenCode usage initial sync",
-                        crate::services::session_usage_opencode::sync_opencode_usage(db),
-                    );
-
-                    // 定期同步
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-                        SESSION_SYNC_INTERVAL_SECS,
-                    ));
-                    interval.tick().await; // skip immediate first tick
-                    loop {
-                        interval.tick().await;
-                        run_step(
-                            "Session usage periodic sync",
-                            crate::services::session_usage::sync_claude_session_logs(db),
-                        );
-                        run_step(
-                            "Codex usage periodic sync",
-                            crate::services::session_usage_codex::sync_codex_usage(db),
-                        );
-                        run_step(
-                            "Gemini usage periodic sync",
-                            crate::services::session_usage_gemini::sync_gemini_usage(db),
-                        );
-                        run_step(
-                            "OpenCode usage periodic sync",
-                            crate::services::session_usage_opencode::sync_opencode_usage(db),
-                        );
-                    }
-                });
+                crate::local_ext::startup::run_desktop_post_init(app_handle).await;
             });
 
             // Linux: 禁用 WebKitGTK 硬件加速，防止 EGL 初始化失败导致白屏
@@ -1475,15 +1317,6 @@ pub fn run() {
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
             if let Some(window) = app.get_webview_window("main") {
-                if no_desktop {
-                    let _ = window.hide();
-                    if let Err(err) = window.destroy() {
-                        log::warn!("no-desktop 模式销毁主窗口失败: {err}");
-                    } else {
-                        log::info!("no-desktop 模式：主窗口已销毁，仅保留 Web/代理入口");
-                    }
-                    return Ok(());
-                }
                 // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
                 #[cfg(target_os = "linux")]
@@ -2110,166 +1943,6 @@ pub(crate) fn remove_tray_icon_before_exit(app_handle: &tauri::AppHandle) {
             log::warn!("退出时移除托盘图标失败: {e}");
         } else {
             log::info!("已显式从系统托盘移除图标");
-        }
-    }
-}
-
-// ============================================================
-// 启动时恢复代理状态
-// ============================================================
-
-/// 启动时确保本地路由基础设施可用。
-///
-/// Claude / Codex / Gemini 的本地路由默认常开：启动代理服务，并确保
-/// 三个应用的 Live 配置指向本地代理。分享功能只决定是否对外暴露 share，
-/// 不再承担代理/接管开关语义。
-async fn restore_proxy_state_on_startup(state: &store::AppState) {
-    if let Ok(mut global_config) = state.db.get_global_proxy_config().await {
-        if !global_config.proxy_enabled {
-            global_config.proxy_enabled = true;
-            if let Err(e) = state.db.update_global_proxy_config(global_config).await {
-                log::warn!("修正本地路由全局开关失败: {e}");
-            }
-        }
-    }
-
-    let apps_to_restore = ["claude", "codex", "gemini"];
-    for app_type in apps_to_restore {
-        match state.db.get_proxy_config_for_app(app_type).await {
-            Ok(mut config) => {
-                if !config.enabled {
-                    config.enabled = true;
-                    if let Err(e) = state.db.update_proxy_config_for_app(config).await {
-                        log::warn!("修正 {app_type} 本地路由状态失败: {e}");
-                    }
-                }
-            }
-            Err(e) => log::warn!("读取 {app_type} 本地路由配置失败: {e}"),
-        }
-    }
-
-    log::info!("正在确保本地路由常开，应用列表: {apps_to_restore:?}");
-
-    // 逐个恢复接管状态。
-    //
-    // 守卫：只有 app 真的存在 current provider 时才接管 Live，否则只保留
-    // proxy_config.enabled=true 的意图位，把 server 撑起来但不污染 Live。
-    // 之后用户添加首个 provider 时会通过 ProviderService::add → auto_takeover_if_pending
-    // 触发接管。这样可以让「0 预设供应商」与「默认启用代理」共存。
-    for app_type in apps_to_restore {
-        let app_enum = match app_type {
-            "claude" => AppType::Claude,
-            "codex" => AppType::Codex,
-            "gemini" => AppType::Gemini,
-            _ => continue,
-        };
-        let has_current = crate::settings::get_effective_current_provider(&state.db, &app_enum)
-            .ok()
-            .flatten()
-            .and_then(|id| {
-                state
-                    .db
-                    .get_provider_by_id(&id, app_type)
-                    .ok()
-                    .flatten()
-                    .map(|_| ())
-            })
-            .is_some();
-        if !has_current {
-            log::info!("[{app_type}] 当前无可用 provider，跳过接管；待添加 provider 后自动接管");
-            continue;
-        }
-
-        match state
-            .proxy_service
-            .set_takeover_for_app(app_type, true)
-            .await
-        {
-            Ok(()) => {
-                log::info!("✓ 已恢复 {app_type} 的代理接管状态");
-            }
-            Err(e) => {
-                log::error!("✗ 恢复 {app_type} 的代理接管状态失败: {e}");
-            }
-        }
-    }
-}
-
-fn initialize_common_config_snippets(state: &store::AppState) {
-    // Auto-extract common config snippets from clean live files when snippet is missing.
-    // This must run before proxy takeover is restored on startup, otherwise we'd read
-    // proxy-placeholder configs instead of the user's actual live settings.
-    for app_type in crate::app_config::AppType::all() {
-        if !state
-            .db
-            .should_auto_extract_config_snippet(app_type.as_str())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-
-        let settings = match crate::services::provider::ProviderService::read_live_settings(
-            app_type.clone(),
-        ) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        match crate::services::provider::ProviderService::extract_common_config_snippet_from_settings(
-            app_type.clone(),
-            &settings,
-        ) {
-            Ok(snippet) if !snippet.is_empty() && snippet != "{}" => {
-                match state.db.set_config_snippet(app_type.as_str(), Some(snippet)) {
-                    Ok(()) => {
-                        let _ = state.db.set_config_snippet_cleared(app_type.as_str(), false);
-                        log::info!(
-                            "✓ Auto-extracted common config snippet for {}",
-                            app_type.as_str()
-                        );
-                    }
-                    Err(e) => log::warn!(
-                        "✗ Failed to save config snippet for {}: {e}",
-                        app_type.as_str()
-                    ),
-                }
-            }
-            Ok(_) => log::debug!(
-                "○ Live config for {} has no extractable common fields",
-                app_type.as_str()
-            ),
-            Err(e) => log::warn!(
-                "✗ Failed to extract config snippet for {}: {e}",
-                app_type.as_str()
-            ),
-        }
-    }
-
-    let should_run_legacy_migration = state
-        .db
-        .is_legacy_common_config_migrated()
-        .map(|done| !done)
-        .unwrap_or(true);
-
-    if should_run_legacy_migration {
-        for app_type in [
-            crate::app_config::AppType::Claude,
-            crate::app_config::AppType::Codex,
-            crate::app_config::AppType::Gemini,
-        ] {
-            if let Err(e) = crate::services::provider::ProviderService::migrate_legacy_common_config_usage_if_needed(
-                state,
-                app_type.clone(),
-            ) {
-                log::warn!(
-                    "✗ Failed to migrate legacy common-config usage for {}: {e}",
-                    app_type.as_str()
-                );
-            }
-        }
-
-        if let Err(e) = state.db.set_legacy_common_config_migrated(true) {
-            log::warn!("✗ Failed to persist legacy common-config migration flag: {e}");
         }
     }
 }

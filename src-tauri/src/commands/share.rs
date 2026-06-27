@@ -1181,7 +1181,7 @@ fn base36_suffix(mut value: u64, len: usize) -> String {
         .collect()
 }
 
-fn normalize_subdomain(value: &str) -> Result<String, String> {
+pub(crate) fn normalize_subdomain(value: &str) -> Result<String, String> {
     let value = value.trim().to_ascii_lowercase();
     if value.len() < 3 || value.len() > 63 {
         return Err("subdomain 长度必须在 3-63 之间".to_string());
@@ -1222,9 +1222,24 @@ pub fn get_share_connect_info(
     })
 }
 
-fn normalize_owner_email(email: &str) -> Result<String, String> {
+pub(crate) fn normalize_owner_email(email: &str) -> Result<String, String> {
     let email = email.trim().to_ascii_lowercase();
-    if email.is_empty() || !email.contains('@') || email.len() > 254 {
+    if email.is_empty()
+        || email.len() > 254
+        || email.chars().any(char::is_whitespace)
+        || email.matches('@').count() != 1
+    {
+        return Err("邮箱格式无效".to_string());
+    }
+    let (local, domain) = email
+        .split_once('@')
+        .ok_or_else(|| "邮箱格式无效".to_string())?;
+    if local.is_empty()
+        || domain.is_empty()
+        || !domain.contains('.')
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+    {
         return Err("邮箱格式无效".to_string());
     }
     Ok(email)
@@ -1310,6 +1325,20 @@ mod tests {
             "https://share-market.example.com"
         );
         assert_eq!(body.markets[0].market_kind, "share");
+    }
+
+    #[test]
+    fn owner_email_validation_rejects_ambiguous_addresses() {
+        assert_eq!(
+            normalize_owner_email(" Owner@Example.COM ").unwrap(),
+            "owner@example.com"
+        );
+        assert!(normalize_owner_email("owner").is_err());
+        assert!(normalize_owner_email("owner@").is_err());
+        assert!(normalize_owner_email("@example.com").is_err());
+        assert!(normalize_owner_email("owner@@example.com").is_err());
+        assert!(normalize_owner_email("owner@example").is_err());
+        assert!(normalize_owner_email("owner @example.com").is_err());
     }
 
     #[test]

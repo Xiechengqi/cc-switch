@@ -57,8 +57,10 @@ import {
   loginWithWebPassword,
   requestRouterEmailCodeWithIdentityRetry,
   setRouterApiToken,
+  setupInitialClientWeb,
   setupWebPassword,
   verifyRouterEmailCode,
+  type InitialWebSetupSummary,
   type WebAuthMethods,
 } from "@/lib/routerAuth";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
@@ -99,6 +101,14 @@ import { UniversalProviderPanel } from "@/components/universal";
 import { McpIcon } from "@/components/BrandIcons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
 import {
   useDisableCurrentOmo,
@@ -165,6 +175,7 @@ const getInitialApp = (): AppId => {
 };
 
 const VIEW_STORAGE_KEY = "cc-switch-last-view";
+const INITIAL_SETUP_SUMMARY_KEY = "cc-switch-initial-setup-summary";
 const VALID_VIEWS: View[] = [
   "providers",
   "settings",
@@ -232,7 +243,92 @@ function App() {
     return <ClientWebLoginPage onAuthenticated={refreshWebRuntimeContext} />;
   }
 
-  return <DesktopApp />;
+  return (
+    <>
+      <DesktopApp />
+      <InitialSetupSummaryDialog />
+    </>
+  );
+}
+
+function persistInitialSetupSummary(summary: InitialWebSetupSummary) {
+  try {
+    sessionStorage.setItem(INITIAL_SETUP_SUMMARY_KEY, JSON.stringify(summary));
+  } catch {
+    // Best effort only; setup itself already succeeded.
+  }
+}
+
+function InitialSetupSummaryDialog() {
+  const [summary, setSummary] = useState<InitialWebSetupSummary | null>(() => {
+    if (typeof sessionStorage === "undefined") return null;
+    try {
+      const raw = sessionStorage.getItem(INITIAL_SETUP_SUMMARY_KEY);
+      return raw ? (JSON.parse(raw) as InitialWebSetupSummary) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const close = useCallback(() => {
+    try {
+      sessionStorage.removeItem(INITIAL_SETUP_SUMMARY_KEY);
+    } catch {
+      // Ignore storage errors.
+    }
+    setSummary(null);
+  }, []);
+
+  return (
+    <Dialog open={Boolean(summary)}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>cc-switch server 初始化完成</DialogTitle>
+          <DialogDescription>
+            client web 已完成配置，之后可以通过 Client URL 访问此 cc-switch。
+          </DialogDescription>
+        </DialogHeader>
+        {summary ? (
+          <div className="grid gap-2 px-6 py-4 text-sm">
+            <SetupSummaryRow label="Owner email" value={summary.ownerEmail} />
+            <SetupSummaryRow label="Router" value={summary.routerDomain} />
+            <SetupSummaryRow
+              label="Subdomain"
+              value={summary.clientSubdomain}
+            />
+            <SetupSummaryRow label="Client URL" value={summary.clientUrl} />
+            <SetupSummaryRow
+              label="Tunnel"
+              value={summary.clientTunnelStarted ? "已启动" : "已配置，等待重试"}
+            />
+            <div className="mt-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-muted-foreground">
+              请保存 Web 管理密码；密码不会明文保存。
+            </div>
+          </div>
+        ) : null}
+        <DialogFooter>
+          <Button type="button" onClick={close}>
+            知道了
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SetupSummaryRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="break-all font-medium">{value}</span>
+    </div>
+  );
 }
 
 function ClientWebLoginPage({
@@ -249,7 +345,9 @@ function ClientWebLoginPage({
   const [apiToken, setApiToken] = useState("");
   const [password, setPassword] = useState("");
   const [setupPasswordValue, setSetupPasswordValue] = useState("");
-  const [setupToken, setSetupToken] = useState("");
+  const [setupOwnerEmail, setSetupOwnerEmail] = useState("");
+  const [setupRouterDomain, setSetupRouterDomain] = useState("jptokenswitch.cc");
+  const [setupClientSubdomain, setSetupClientSubdomain] = useState("");
   const [codeSent, setCodeSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -359,15 +457,12 @@ function ClientWebLoginPage({
     }
   }, [busy, finishAuth, password]);
 
-  const setupPassword = useCallback(async () => {
+  const setupPasswordOnly = useCallback(async () => {
     if (!setupPasswordValue || busy) return;
     setBusy(true);
     setError("");
     try {
-      await setupWebPassword(
-        setupPasswordValue,
-        setupToken.trim() || undefined,
-      );
+      await setupWebPassword(setupPasswordValue);
       await finishAuth();
       toast.success("Web 密码已设置");
     } catch (err) {
@@ -376,13 +471,51 @@ function ClientWebLoginPage({
     } finally {
       setBusy(false);
     }
-  }, [busy, finishAuth, setupPasswordValue, setupToken]);
+  }, [busy, finishAuth, setupPasswordValue]);
+
+  const runInitialSetup = useCallback(async () => {
+    if (
+      !setupPasswordValue ||
+      !setupOwnerEmail.trim() ||
+      !setupRouterDomain.trim() ||
+      busy
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const summary = await setupInitialClientWeb({
+        password: setupPasswordValue,
+        ownerEmail: setupOwnerEmail.trim(),
+        routerDomain: setupRouterDomain.trim(),
+        clientSubdomain: setupClientSubdomain.trim() || undefined,
+      });
+      persistInitialSetupSummary(summary);
+      await finishAuth();
+      toast.success("初始化完成");
+    } catch (err) {
+      clearRouterSessionTokens();
+      setError(extractErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    busy,
+    finishAuth,
+    setupClientSubdomain,
+    setupOwnerEmail,
+    setupPasswordValue,
+    setupRouterDomain,
+  ]);
 
   const canUseEmail = authMethods?.methods.includes("email") ?? false;
   const canUseToken = authMethods?.methods.includes("apiToken") ?? false;
   const canUsePassword = authMethods?.methods.includes("password") ?? false;
   const needsPasswordSetup =
     authMethods?.methods.includes("passwordSetup") ?? false;
+  const needsInitialClientSetup =
+    needsPasswordSetup && (authMethods?.initialClientSetupRequired ?? false);
   const tabCount = [canUseEmail, canUseToken, canUsePassword].filter(
     Boolean,
   ).length;
@@ -391,9 +524,19 @@ function ClientWebLoginPage({
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10 text-foreground">
       <div className="w-full max-w-sm rounded-lg border border-border bg-card p-5 shadow-sm">
         <div className="mb-5">
-          <div className="text-lg font-semibold">Client Web 登录</div>
+          <div className="text-lg font-semibold">
+            {needsInitialClientSetup
+              ? "初始化 cc-switch server"
+              : needsPasswordSetup
+                ? "设置 Web 密码"
+                : "Client Web 登录"}
+          </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            使用可用的鉴权方式访问当前 client。
+            {needsInitialClientSetup
+              ? "设置管理密码，并注册 client web 到 router。"
+              : needsPasswordSetup
+                ? "首次访问需要设置 Web 管理密码。"
+              : "使用可用的鉴权方式访问当前 client。"}
           </div>
         </div>
         {needsPasswordSetup ? null : tabCount > 1 ? (
@@ -437,17 +580,11 @@ function ClientWebLoginPage({
             className="grid gap-3"
             onSubmit={(event) => {
               event.preventDefault();
-              void setupPassword();
+              void (needsInitialClientSetup
+                ? runInitialSetup()
+                : setupPasswordOnly());
             }}
           >
-            <Input
-              value={setupToken}
-              placeholder="Setup token"
-              type="password"
-              autoComplete="one-time-code"
-              disabled={busy}
-              onChange={(event) => setSetupToken(event.currentTarget.value)}
-            />
             <Input
               value={setupPasswordValue}
               placeholder="设置 Web 密码"
@@ -458,11 +595,74 @@ function ClientWebLoginPage({
                 setSetupPasswordValue(event.currentTarget.value)
               }
             />
+            {needsInitialClientSetup ? (
+              <>
+                <Input
+                  value={setupOwnerEmail}
+                  placeholder="Owner email"
+                  type="email"
+                  autoComplete="email"
+                  disabled={busy}
+                  onChange={(event) =>
+                    setSetupOwnerEmail(event.currentTarget.value)
+                  }
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    type="button"
+                    variant={
+                      setupRouterDomain === "jptokenswitch.cc"
+                        ? "default"
+                        : "outline"
+                    }
+                    disabled={busy}
+                    onClick={() => setSetupRouterDomain("jptokenswitch.cc")}
+                  >
+                    JP Router
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={
+                      setupRouterDomain === "sgptokenswitch.cc"
+                        ? "default"
+                        : "outline"
+                    }
+                    disabled={busy}
+                    onClick={() => setSetupRouterDomain("sgptokenswitch.cc")}
+                  >
+                    SGP Router
+                  </Button>
+                </div>
+                <Input
+                  value={setupRouterDomain}
+                  placeholder="Router domain"
+                  autoComplete="off"
+                  disabled={busy}
+                  onChange={(event) =>
+                    setSetupRouterDomain(event.currentTarget.value)
+                  }
+                />
+                <Input
+                  value={setupClientSubdomain}
+                  placeholder="Client subdomain（可选）"
+                  autoComplete="off"
+                  disabled={busy}
+                  onChange={(event) =>
+                    setSetupClientSubdomain(event.currentTarget.value)
+                  }
+                />
+              </>
+            ) : null}
             <Button
               type="submit"
-              disabled={busy || setupPasswordValue.length < 8}
+              disabled={
+                busy ||
+                setupPasswordValue.length < 8 ||
+                (needsInitialClientSetup &&
+                  (!setupOwnerEmail.trim() || !setupRouterDomain.trim()))
+              }
             >
-              设置并登录
+              {needsInitialClientSetup ? "初始化并登录" : "设置并登录"}
             </Button>
           </form>
         ) : mode === "email" && canUseEmail ? (

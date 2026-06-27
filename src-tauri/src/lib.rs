@@ -515,15 +515,8 @@ pub fn run() {
 
             let app_state = AppState::new(db);
 
-            if let Some(token) =
-                crate::local_web_auth::ensure_startup_setup_token(&app_state.db)?
-            {
-                log::warn!(
-                    "Web 管理密码尚未设置。首次设置需要 setup token: {token}"
-                );
-                if no_desktop {
-                    println!("cc-switch web setup token: {token}");
-                }
+            if !crate::local_web_auth::is_password_configured(&app_state.db)? {
+                log::warn!("Web 管理密码尚未设置。首次通过 Web 访问时请直接设置密码");
             }
 
             // 设置 AppHandle 用于代理故障转移时的 UI 更新

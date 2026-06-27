@@ -335,6 +335,10 @@ impl ProxyServer {
                 post(crate::web::handlers::password_setup),
             )
             .route(
+                "/web-api/auth/initial-setup",
+                post(crate::web::handlers::initial_setup),
+            )
+            .route(
                 "/web-api/auth/password/login",
                 post(crate::web::handlers::password_login),
             )

@@ -22,7 +22,6 @@ const LOGIN_FAILURE_WINDOW_SECS: i64 = 10 * 60;
 const LOGIN_FAILURE_LOCK_SECS: i64 = 10 * 60;
 const LOGIN_FAILURE_LIMIT: usize = 8;
 
-static SETUP_TOKEN: OnceLock<String> = OnceLock::new();
 static LOGIN_THROTTLE: OnceLock<Mutex<LoginThrottle>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,6 +30,7 @@ pub struct AuthMethods {
     pub router_available: bool,
     pub password_configured: bool,
     pub setup_token_required: bool,
+    pub initial_client_setup_required: bool,
     pub methods: Vec<&'static str>,
 }
 
@@ -68,7 +68,10 @@ struct LoginThrottle {
     locked_until: Option<DateTime<Utc>>,
 }
 
-pub fn auth_methods(db: &Database) -> Result<AuthMethods, AppError> {
+pub fn auth_methods(
+    db: &Database,
+    initial_client_setup_required: bool,
+) -> Result<AuthMethods, AppError> {
     let router_available = crate::settings::get_settings()
         .client_tunnel
         .as_ref()
@@ -88,17 +91,10 @@ pub fn auth_methods(db: &Database) -> Result<AuthMethods, AppError> {
     Ok(AuthMethods {
         router_available,
         password_configured,
-        setup_token_required: !password_configured,
+        setup_token_required: false,
+        initial_client_setup_required: !password_configured && initial_client_setup_required,
         methods,
     })
-}
-
-pub fn ensure_startup_setup_token(db: &Database) -> Result<Option<String>, AppError> {
-    if is_password_configured(db)? {
-        return Ok(None);
-    }
-    let token = SETUP_TOKEN.get_or_init(|| generate_secret(32)).to_string();
-    Ok(Some(token))
 }
 
 pub fn is_password_configured(db: &Database) -> Result<bool, AppError> {
@@ -111,16 +107,12 @@ pub fn is_password_configured(db: &Database) -> Result<bool, AppError> {
 pub fn setup_password(
     db: &Database,
     password: &str,
-    setup_token: Option<&str>,
+    _setup_token: Option<&str>,
 ) -> Result<PasswordLoginResponse, AppError> {
     if is_password_configured(db)? {
         return Err(AppError::Message(
             "web password is already configured".into(),
         ));
-    }
-    let expected = SETUP_TOKEN.get().map(String::as_str);
-    if expected.is_some() && setup_token.map(str::trim) != expected {
-        return Err(AppError::Message("invalid setup token".into()));
     }
     set_password_hash(db, password)?;
     create_session(db)

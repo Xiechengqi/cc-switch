@@ -77,7 +77,34 @@ export interface WebAuthMethods {
   routerAvailable: boolean;
   passwordConfigured: boolean;
   setupTokenRequired: boolean;
+  initialClientSetupRequired: boolean;
   methods: Array<"email" | "apiToken" | "password" | "passwordSetup">;
+}
+
+export interface InitialWebSetupInput {
+  password: string;
+  ownerEmail: string;
+  routerDomain: string;
+  clientSubdomain?: string;
+}
+
+export interface InitialWebSetupSummary {
+  ownerEmail: string;
+  routerDomain: string;
+  clientSubdomain: string;
+  clientUrl: string;
+  clientTunnelStarted: boolean;
+}
+
+interface PasswordAuthResponse {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: string;
+  refreshExpiresAt: string;
+}
+
+export interface InitialWebSetupResponse extends PasswordAuthResponse {
+  setup: InitialWebSetupSummary;
 }
 
 export async function getWebAuthMethods(): Promise<WebAuthMethods> {
@@ -304,9 +331,9 @@ async function applyPasswordAuthResponse(response: Response): Promise<boolean> {
   return true;
 }
 
-async function applyPasswordAuthResponseOrThrow(
+async function applyPasswordAuthResponseOrThrow<T extends PasswordAuthResponse = PasswordAuthResponse>(
   response: Response,
-): Promise<void> {
+): Promise<T> {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(data?.message || data?.error || `HTTP ${response.status}`);
@@ -323,6 +350,7 @@ async function applyPasswordAuthResponseOrThrow(
     expiresAt: data.expiresAt,
     refreshExpiresAt: data.refreshExpiresAt,
   });
+  return data as T;
 }
 
 export async function loginWithWebPassword(password: string): Promise<void> {
@@ -335,17 +363,27 @@ export async function loginWithWebPassword(password: string): Promise<void> {
   );
 }
 
-export async function setupWebPassword(
-  password: string,
-  setupToken?: string,
-): Promise<void> {
+export async function setupWebPassword(password: string): Promise<void> {
   await applyPasswordAuthResponseOrThrow(
     await fetch("/web-api/auth/password/setup", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password, setupToken: setupToken || null }),
+      body: JSON.stringify({ password }),
     }),
   );
+}
+
+export async function setupInitialClientWeb(
+  input: InitialWebSetupInput,
+): Promise<InitialWebSetupSummary> {
+  const data = await applyPasswordAuthResponseOrThrow<InitialWebSetupResponse>(
+    await fetch("/web-api/auth/initial-setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+  return data.setup;
 }
 
 async function applyRefreshResponse(response: Response): Promise<boolean> {

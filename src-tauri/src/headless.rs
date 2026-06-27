@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
 use crate::{store::AppState, AppError, Database};
 
 static HEADLESS_LOGGER: HeadlessLogger = HeadlessLogger;
+static HEADLESS_APP_STATE: OnceLock<Arc<AppState>> = OnceLock::new();
 
 struct HeadlessLogger;
 
@@ -49,6 +50,7 @@ async fn run_async() -> Result<(), AppError> {
 
     let db = initialize_database(&app_config_dir)?;
     let state = Arc::new(AppState::new(db));
+    let _ = HEADLESS_APP_STATE.set(state.clone());
 
     restore_tunnel_config(state.as_ref()).await;
     initialize_web_password(state.as_ref())?;
@@ -67,6 +69,10 @@ async fn run_async() -> Result<(), AppError> {
     log::info!("cc-switch no-desktop 启动完成");
     futures::future::pending::<()>().await;
     Ok(())
+}
+
+pub(crate) fn app_state() -> Option<Arc<AppState>> {
+    HEADLESS_APP_STATE.get().cloned()
 }
 
 fn initialize_database(app_config_dir: &std::path::Path) -> Result<Arc<Database>, AppError> {
@@ -124,9 +130,8 @@ fn log_web_dist_status() {
 }
 
 fn initialize_web_password(state: &AppState) -> Result<(), AppError> {
-    if let Some(token) = crate::local_web_auth::ensure_startup_setup_token(&state.db)? {
-        log::warn!("Web 管理密码尚未设置。首次设置需要 setup token: {token}");
-        println!("cc-switch web setup token: {token}");
+    if !crate::local_web_auth::is_password_configured(&state.db)? {
+        log::warn!("Web 管理密码尚未设置。首次通过 Web 访问时请直接设置密码");
     }
     Ok(())
 }

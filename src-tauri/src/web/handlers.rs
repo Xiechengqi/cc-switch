@@ -1,5 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use axum::{
     body::Bytes,
@@ -8,7 +9,8 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use serde::{de::DeserializeOwned, Deserialize};
+use rand::Rng;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 
@@ -16,10 +18,11 @@ use crate::{
     app_config::AppType,
     commands::{
         share::{
-            ClientTunnelUpdateParams, CreateShareParams, TransferShareOwnerParams,
-            UpdateShareAclParams, UpdateShareAutoStartParams, UpdateShareDescriptionParams,
-            UpdateShareExpirationParams, UpdateShareForSaleOfficialPricePercentParams,
-            UpdateShareForSaleParams, UpdateShareOwnerEmailParams, UpdateShareParallelLimitParams,
+            normalize_owner_email, normalize_subdomain, ClientTunnelUpdateParams,
+            CreateShareParams, TransferShareOwnerParams, UpdateShareAclParams,
+            UpdateShareAutoStartParams, UpdateShareDescriptionParams, UpdateShareExpirationParams,
+            UpdateShareForSaleOfficialPricePercentParams, UpdateShareForSaleParams,
+            UpdateShareOwnerEmailParams, UpdateShareParallelLimitParams,
             UpdateShareProviderBindingParams, UpdateShareSubdomainParams,
             UpdateShareTokenLimitParams,
         },
@@ -133,6 +136,36 @@ pub struct PasswordSetupRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitialSetupRequest {
+    password: String,
+    owner_email: String,
+    router_domain: String,
+    #[serde(default)]
+    client_subdomain: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitialSetupSummary {
+    owner_email: String,
+    router_domain: String,
+    client_subdomain: String,
+    client_url: String,
+    client_tunnel_started: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitialSetupResponse {
+    access_token: String,
+    refresh_token: String,
+    expires_at: String,
+    refresh_expires_at: String,
+    setup: InitialSetupSummary,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PasswordLoginRequest {
     password: String,
 }
@@ -199,7 +232,9 @@ pub async fn refresh_session(Json(input): Json<RefreshSessionRequest>) -> Respon
 }
 
 pub async fn auth_methods(State(state): State<ProxyState>) -> Response {
-    match crate::local_web_auth::auth_methods(&state.db) {
+    let initial_client_setup_required =
+        state.app_handle.is_none() && crate::settings::get_settings().client_tunnel.is_none();
+    match crate::local_web_auth::auth_methods(&state.db, initial_client_setup_required) {
         Ok(value) => Json(value).into_response(),
         Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
     }
@@ -217,6 +252,120 @@ pub async fn password_setup(
         Ok(value) => Json(value).into_response(),
         Err(err) => error_response(StatusCode::UNAUTHORIZED, &err.to_string()),
     }
+}
+
+pub async fn initial_setup(
+    State(state): State<ProxyState>,
+    Json(input): Json<InitialSetupRequest>,
+) -> Response {
+    match initial_setup_inner(&state, input).await {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(err.status, &err.message),
+    }
+}
+
+async fn initial_setup_inner(
+    state: &ProxyState,
+    input: InitialSetupRequest,
+) -> Result<InitialSetupResponse, WebError> {
+    if crate::local_web_auth::is_password_configured(&state.db).map_err(WebError::internal)? {
+        return Err(WebError::bad_request("web password is already configured"));
+    }
+    if input.password.chars().count() < 8 {
+        return Err(WebError::bad_request(
+            "web password must be at least 8 characters",
+        ));
+    }
+
+    let owner_email = normalize_owner_email(&input.owner_email).map_err(WebError::bad_request)?;
+    let router_domain = crate::tunnel::config::normalize_tunnel_domain(&input.router_domain)
+        .map_err(WebError::bad_request)?;
+    let app_state =
+        web_app_state(state).ok_or_else(|| WebError::internal("app state is unavailable"))?;
+
+    let router_config = TunnelConfig {
+        domain: router_domain.clone(),
+    };
+    {
+        let mut settings = crate::settings::get_settings();
+        settings.set_share_router_domain(Some(router_domain.clone()));
+        crate::settings::update_settings(settings).map_err(WebError::internal)?;
+    }
+    app_state
+        .as_ref()
+        .tunnel_manager
+        .write()
+        .await
+        .set_config(router_config.clone());
+
+    let requested_subdomain = input
+        .client_subdomain
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_subdomain)
+        .transpose()
+        .map_err(WebError::bad_request)?;
+    let mut last_error = None;
+    let max_attempts = if requested_subdomain.is_some() { 1 } else { 3 };
+    let mut client_state = None;
+
+    for _ in 0..max_attempts {
+        let subdomain = requested_subdomain
+            .clone()
+            .unwrap_or_else(|| generate_default_client_subdomain(&owner_email));
+        match crate::commands::share::write_client_tunnel_config(
+            app_state.as_ref(),
+            ClientTunnelUpdateParams {
+                owner_email: owner_email.clone(),
+                subdomain,
+                enabled: true,
+                auto_start: true,
+            },
+            true,
+        )
+        .await
+        {
+            Ok(state) => {
+                client_state = Some(state);
+                break;
+            }
+            Err(err) => {
+                last_error = Some(err);
+                if requested_subdomain.is_some() {
+                    break;
+                }
+            }
+        }
+    }
+
+    let client_state = client_state.ok_or_else(|| {
+        WebError::bad_request(
+            last_error.unwrap_or_else(|| "client tunnel registration failed".to_string()),
+        )
+    })?;
+    let password_response = crate::local_web_auth::setup_password(&state.db, &input.password, None)
+        .map_err(WebError::bad_request)?;
+    let client_url = client_state
+        .config
+        .tunnel_url
+        .clone()
+        .unwrap_or_else(|| router_config.get_tunnel_addr(&client_state.config.subdomain));
+    let client_tunnel_started = client_state.status.info.is_some();
+
+    Ok(InitialSetupResponse {
+        access_token: password_response.access_token,
+        refresh_token: password_response.refresh_token,
+        expires_at: password_response.expires_at,
+        refresh_expires_at: password_response.refresh_expires_at,
+        setup: InitialSetupSummary {
+            owner_email,
+            router_domain,
+            client_subdomain: client_state.config.subdomain,
+            client_url,
+            client_tunnel_started,
+        },
+    })
 }
 
 pub async fn password_login(
@@ -1970,6 +2119,26 @@ fn app_state(state: &ProxyState) -> Option<tauri::State<'_, AppState>> {
         .and_then(|app| app.try_state::<AppState>())
 }
 
+enum WebAppState<'a> {
+    Tauri(tauri::State<'a, AppState>),
+    Headless(Arc<AppState>),
+}
+
+impl WebAppState<'_> {
+    fn as_ref(&self) -> &AppState {
+        match self {
+            Self::Tauri(state) => state,
+            Self::Headless(state) => state.as_ref(),
+        }
+    }
+}
+
+fn web_app_state(state: &ProxyState) -> Option<WebAppState<'_>> {
+    app_state(state)
+        .map(WebAppState::Tauri)
+        .or_else(|| crate::headless::app_state().map(WebAppState::Headless))
+}
+
 fn required_app_handle(state: &ProxyState) -> Result<&tauri::AppHandle, WebError> {
     state
         .app_handle
@@ -2758,6 +2927,26 @@ fn sanitize_asset_path(raw: &str) -> Option<PathBuf> {
     }
 }
 
+fn generate_default_client_subdomain(owner_email: &str) -> String {
+    let local = owner_email.split('@').next().unwrap_or_default();
+    let prefix = local
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(5)
+        .collect::<String>();
+    let prefix = if prefix.is_empty() { "clien" } else { &prefix };
+    let mut rng = rand::thread_rng();
+    let suffix = (0..5)
+        .map(|_| char::from(rng.gen_range(b'a'..=b'z')))
+        .collect::<String>();
+    let candidate = format!("{prefix}{suffix}");
+    normalize_subdomain(&candidate).unwrap_or_else(|_| format!("clien{suffix}"))
+}
+
 async fn serve_dist_file(state: &ProxyState, headers: &HeaderMap, path: &Path) -> Response {
     let Some(root) = dist_root(state) else {
         return error_response(StatusCode::NOT_FOUND, "web dist directory not found");
@@ -2905,6 +3094,28 @@ fn content_type_for(path: &Path) -> &'static str {
         "ico" => "image/x-icon",
         "woff2" => "font/woff2",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_client_subdomain_uses_email_prefix_and_random_suffix() {
+        let subdomain = generate_default_client_subdomain("Xie-ChengQi01@gmail.com");
+        assert_eq!(subdomain.len(), 10);
+        assert!(subdomain.starts_with("xie-c"));
+        assert!(subdomain[5..].chars().all(|ch| ch.is_ascii_lowercase()));
+        assert!(normalize_subdomain(&subdomain).is_ok());
+    }
+
+    #[test]
+    fn default_client_subdomain_falls_back_for_symbol_local_part() {
+        let subdomain = generate_default_client_subdomain("---@example.com");
+        assert_eq!(subdomain.len(), 10);
+        assert!(subdomain.starts_with("clien"));
+        assert!(normalize_subdomain(&subdomain).is_ok());
     }
 }
 

@@ -661,6 +661,16 @@ impl AppSettings {
             }
         }
 
+        self.share_router_domain = self.share_router_domain.as_ref().and_then(|domain| {
+            match crate::tunnel::config::normalize_tunnel_domain(domain) {
+                Ok(domain) => Some(domain),
+                Err(err) => {
+                    log::warn!("已忽略无效 share router 域名配置 `{}`: {}", domain, err);
+                    None
+                }
+            }
+        });
+
         if let Some(s3) = &mut self.s3_sync {
             s3.normalize();
             if s3.is_empty() {

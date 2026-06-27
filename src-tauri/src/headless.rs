@@ -53,6 +53,7 @@ async fn run_async() -> Result<(), AppError> {
     restore_tunnel_config(state.as_ref()).await;
     initialize_web_password(state.as_ref())?;
     initialize_global_http_client(state.as_ref());
+    log_web_dist_status();
 
     initialize_startup_data(state.as_ref());
     crate::initialize_common_config_snippets(state.as_ref());
@@ -100,17 +101,26 @@ fn initialize_database(app_config_dir: &std::path::Path) -> Result<Arc<Database>
 }
 
 async fn restore_tunnel_config(state: &AppState) {
-    let settings = crate::settings::get_settings();
-    let cfg = if let Some(domain) = settings.current_share_router_domain() {
-        crate::tunnel::config::TunnelConfig {
-            domain: domain.to_string(),
-        }
-    } else {
-        crate::tunnel::config::TunnelConfig::default_public_service()
-    };
+    let cfg = crate::tunnel::config::TunnelConfig::from_settings_or_default();
 
     state.tunnel_manager.write().await.set_config(cfg);
     log::info!("已恢复 cc-switch-router 隧道配置");
+}
+
+fn log_web_dist_status() {
+    if let Some(root) = crate::web::handlers::resolve_web_dist_root(None) {
+        log::info!("Web 静态资源目录: {}", root.display());
+        return;
+    }
+
+    let candidates = crate::web::handlers::web_dist_candidate_paths(None)
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    log::warn!(
+        "未找到 Web 静态资源目录。请将 dist 放到可执行文件同级，或设置 CC_SWITCH_WEB_DIST_DIR。候选路径: {candidates}"
+    );
 }
 
 fn initialize_web_password(state: &AppState) -> Result<(), AppError> {

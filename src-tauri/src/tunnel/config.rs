@@ -20,6 +20,23 @@ impl TunnelConfig {
         }
     }
 
+    pub fn from_settings_or_default() -> Self {
+        let settings = crate::settings::get_settings();
+        if let Some(domain) = settings.current_share_router_domain() {
+            match normalize_tunnel_domain(domain) {
+                Ok(domain) => return Self { domain },
+                Err(err) => {
+                    log::warn!(
+                        "已忽略无效 share router 域名配置 `{}`，将使用默认节点: {}",
+                        domain,
+                        err
+                    );
+                }
+            }
+        }
+        Self::default_public_service()
+    }
+
     /// Whether this is a local/dev domain (localhost, 127.0.0.1, 0.0.0.0)
     pub fn is_local(&self) -> bool {
         let authority = extract_authority(&self.domain).unwrap_or_else(|| self.domain.clone());
@@ -91,7 +108,24 @@ pub fn normalize_tunnel_domain(input: &str) -> Result<String, String> {
     .to_ascii_lowercase();
 
     validate_tunnel_authority(&authority)?;
+    if is_placeholder_tunnel_domain(&authority) {
+        return Err("Router domain must not be an example placeholder".to_string());
+    }
     Ok(authority)
+}
+
+pub fn is_placeholder_tunnel_domain(input: &str) -> bool {
+    extract_authority(input)
+        .as_deref()
+        .is_some_and(is_placeholder_tunnel_authority)
+}
+
+fn is_placeholder_tunnel_authority(authority: &str) -> bool {
+    let host = authority
+        .rsplit_once(':')
+        .filter(|(_, maybe_port)| maybe_port.chars().all(|ch| ch.is_ascii_digit()))
+        .map_or(authority, |(host, _)| host);
+    host == "example.com" || host.ends_with(".example.com")
 }
 
 fn validate_tunnel_authority(authority: &str) -> Result<(), String> {
@@ -154,8 +188,12 @@ impl Default for TunnelConfig {
 pub fn current_tunnel_config() -> Option<TunnelConfig> {
     crate::settings::get_settings()
         .current_share_router_domain()
-        .map(|domain| TunnelConfig {
-            domain: domain.to_string(),
+        .and_then(|domain| match normalize_tunnel_domain(domain) {
+            Ok(domain) => Some(TunnelConfig { domain }),
+            Err(err) => {
+                log::warn!("已忽略无效 share router 域名配置 `{}`: {}", domain, err);
+                None
+            }
         })
 }
 
@@ -561,19 +599,19 @@ mod tests {
     #[test]
     fn matches_share_subdomain() {
         let config = TunnelConfig {
-            domain: "share.example.com".to_string(),
+            domain: "share.custom-router.com".to_string(),
         };
 
-        assert!(config.matches_tunnel_url("https://alpha.share.example.com/v1"));
-        assert!(config.matches_tunnel_url("alpha.share.example.com"));
+        assert!(config.matches_tunnel_url("https://alpha.share.custom-router.com/v1"));
+        assert!(config.matches_tunnel_url("alpha.share.custom-router.com"));
         assert!(!config.matches_tunnel_url("https://api.openai.com/v1"));
     }
 
     #[test]
     fn normalizes_custom_router_domains() {
         assert_eq!(
-            normalize_tunnel_domain(" HTTPS://Share.Example.Com/ ").unwrap(),
-            "share.example.com"
+            normalize_tunnel_domain(" HTTPS://Share.Custom-Router.Com/ ").unwrap(),
+            "share.custom-router.com"
         );
         assert_eq!(
             normalize_tunnel_domain("localhost:8787").unwrap(),
@@ -587,9 +625,10 @@ mod tests {
 
     #[test]
     fn rejects_custom_router_domains_with_paths_or_credentials() {
-        assert!(normalize_tunnel_domain("https://share.example.com/v1").is_err());
-        assert!(normalize_tunnel_domain("https://u:p@share.example.com").is_err());
-        assert!(normalize_tunnel_domain("ftp://share.example.com").is_err());
+        assert!(normalize_tunnel_domain("https://share.custom-router.com/v1").is_err());
+        assert!(normalize_tunnel_domain("https://u:p@share.custom-router.com").is_err());
+        assert!(normalize_tunnel_domain("ftp://share.custom-router.com").is_err());
+        assert!(normalize_tunnel_domain("share.example.com").is_err());
         assert!(normalize_tunnel_domain("share").is_err());
         assert!(normalize_tunnel_domain("bad host.example.com").is_err());
     }
@@ -597,12 +636,12 @@ mod tests {
     #[test]
     fn tunnel_addr_uses_authority_for_historical_scheme_values() {
         let config = TunnelConfig {
-            domain: "https://Share.Example.Com/".to_string(),
+            domain: "https://Share.Custom-Router.Com/".to_string(),
         };
 
         assert_eq!(
             config.get_tunnel_addr("alpha"),
-            "https://alpha.share.example.com"
+            "https://alpha.share.custom-router.com"
         );
     }
 
@@ -617,11 +656,13 @@ mod tests {
     #[test]
     fn detects_configured_share_router_domain_with_scheme_and_case() {
         let mut settings = crate::settings::AppSettings::default();
-        settings.share_router_domain = Some("HTTPS://Share.Example.Com/".to_string());
+        settings.share_router_domain = Some("HTTPS://Share.Custom-Router.Com/".to_string());
         crate::settings::update_settings(settings).unwrap();
 
-        assert!(is_share_tunnel_url("https://alpha.share.example.com/v1"));
-        assert!(is_share_tunnel_url("ALPHA.SHARE.EXAMPLE.COM"));
+        assert!(is_share_tunnel_url(
+            "https://alpha.share.custom-router.com/v1"
+        ));
+        assert!(is_share_tunnel_url("ALPHA.SHARE.CUSTOM-ROUTER.COM"));
         assert!(!is_share_tunnel_url("https://alpha.other-example.com/v1"));
     }
 

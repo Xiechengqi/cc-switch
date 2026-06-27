@@ -5,7 +5,6 @@ use std::time::Duration;
 use crate::app_config::AppType;
 use crate::database::{Database, ShareAppAccess, ShareAppSettings, ShareRecord};
 use crate::provider::Provider;
-use crate::settings;
 use crate::tunnel::config::{
     ShareAppProvider, ShareAppProviders, ShareAppRuntimes, ShareRuntimeSnapshot, ShareSupport,
     ShareTunnelMetadata, ShareTunnelRequestLog, ShareUpstreamModel, ShareUpstreamProvider,
@@ -1993,13 +1992,7 @@ async fn flush_pending_inner(allow_identity_reset_retry: bool) -> Result<(), Str
 }
 
 fn load_config() -> TunnelConfig {
-    let settings = settings::get_settings();
-    if let Some(domain) = settings.current_share_router_domain() {
-        let domain = domain.to_string();
-        TunnelConfig { domain }
-    } else {
-        TunnelConfig::default_public_service()
-    }
+    TunnelConfig::from_settings_or_default()
 }
 
 pub(crate) fn share_metadata_from_record(share: &ShareRecord) -> ShareTunnelMetadata {

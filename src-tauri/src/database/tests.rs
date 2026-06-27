@@ -1237,3 +1237,67 @@ fn create_share_works_after_v21_to_v22_drops_legacy_columns() {
     )
     .expect("create_share INSERT should succeed after v21→v22 / v22→v23");
 }
+
+#[test]
+fn current_version_database_repairs_missing_proxy_request_log_columns() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE proxy_request_logs (
+            request_id TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            input_cost_usd TEXT NOT NULL DEFAULT '0',
+            output_cost_usd TEXT NOT NULL DEFAULT '0',
+            cache_read_cost_usd TEXT NOT NULL DEFAULT '0',
+            cache_creation_cost_usd TEXT NOT NULL DEFAULT '0',
+            total_cost_usd TEXT NOT NULL DEFAULT '0',
+            latency_ms INTEGER NOT NULL,
+            status_code INTEGER NOT NULL,
+            error_message TEXT,
+            created_at INTEGER NOT NULL
+        );
+        INSERT INTO proxy_request_logs (
+            request_id, provider_id, app_type, model, latency_ms, status_code, created_at
+        ) VALUES ('r1', 'p1', 'codex', 'gpt-5.5', 123, 200, 1);
+        "#,
+    )
+    .expect("seed legacy proxy_request_logs table");
+
+    Database::set_user_version(&conn, SCHEMA_VERSION).expect("set current version");
+    Database::apply_schema_migrations_on_conn(&conn).expect("repair current-version schema");
+
+    for column in [
+        "request_agent",
+        "requested_model",
+        "actual_model",
+        "actual_model_source",
+        "pricing_model",
+        "cost_multiplier",
+        "data_source",
+        "share_id",
+        "share_name",
+        "user_email",
+    ] {
+        assert!(
+            Database::has_column(&conn, "proxy_request_logs", column).expect("has column"),
+            "proxy_request_logs should contain repaired column {column}"
+        );
+    }
+
+    let (request_agent, cost_multiplier, data_source): (String, String, String) = conn
+        .query_row(
+            "SELECT request_agent, cost_multiplier, data_source FROM proxy_request_logs WHERE request_id = 'r1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read repaired defaults");
+    assert_eq!(request_agent, "");
+    assert_eq!(cost_multiplier, "1.0");
+    assert_eq!(data_source, "proxy");
+}

@@ -1722,6 +1722,9 @@ async fn invoke_local_admin_scoped(
         "configure_tunnel" => {
             let app_state = required_app_state(state)?;
             let config: TunnelConfig = value_arg(&args, "config")?;
+            let domain = crate::tunnel::config::normalize_tunnel_domain(&config.domain)
+                .map_err(WebError::bad_request)?;
+            let config = TunnelConfig { domain };
             // 与 Tauri 一致：持久化到 AppSettings + 同步 TunnelManager 里的 config。
             let mut settings = crate::settings::get_settings();
             settings.set_share_router_domain(Some(config.domain.clone()));
@@ -2822,31 +2825,53 @@ fn encoded_dist_path(
 }
 
 fn dist_root(state: &ProxyState) -> Option<PathBuf> {
-    if let Some(resource_dist) = state
-        .app_handle
-        .as_ref()
-        .and_then(|app| app.path().resource_dir().ok())
-        .map(|resource_dir| resource_dir.join("dist"))
-        .filter(|path| path.join(INDEX_HTML).exists())
-    {
-        return Some(resource_dist);
-    }
+    resolve_web_dist_root(state.app_handle.as_ref())
+}
 
-    let manifest_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist");
-    if manifest_dist.join(INDEX_HTML).exists() {
-        return Some(manifest_dist);
-    }
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    for candidate in [
-        exe_dir.join("dist"),
-        exe_dir.join("../dist"),
-        exe_dir.join("resources/dist"),
-    ] {
-        if candidate.join(INDEX_HTML).exists() {
-            return Some(candidate);
+pub(crate) fn resolve_web_dist_root(app_handle: Option<&tauri::AppHandle>) -> Option<PathBuf> {
+    web_dist_candidate_paths(app_handle)
+        .into_iter()
+        .find(|candidate| candidate.join(INDEX_HTML).exists())
+}
+
+pub(crate) fn web_dist_candidate_paths(app_handle: Option<&tauri::AppHandle>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(override_dir) = std::env::var("CC_SWITCH_WEB_DIST_DIR") {
+        let override_dir = override_dir.trim();
+        if !override_dir.is_empty() {
+            candidates.push(PathBuf::from(override_dir));
         }
     }
-    None
+
+    if let Some(resource_dist) = app_handle
+        .and_then(|app| app.path().resource_dir().ok())
+        .map(|resource_dir| resource_dir.join("dist"))
+    {
+        candidates.push(resource_dist);
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("dist"));
+            candidates.push(exe_dir.join("resources/dist"));
+            candidates.push(exe_dir.join("../dist"));
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("dist"));
+    }
+
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist"));
+
+    let mut unique = Vec::new();
+    for candidate in candidates {
+        if !unique.iter().any(|existing| existing == &candidate) {
+            unique.push(candidate);
+        }
+    }
+    unique
 }
 
 fn content_type_for(path: &Path) -> &'static str {

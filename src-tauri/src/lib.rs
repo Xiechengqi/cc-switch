@@ -531,13 +531,7 @@ pub fn run() {
 
             // 从 AppSettings 恢复 portr 隧道配置（重启后仍然可用）
             {
-                let settings = crate::settings::get_settings();
-                let cfg = if let Some(domain) = settings.current_share_router_domain() {
-                    let domain = domain.to_string();
-                    crate::tunnel::config::TunnelConfig { domain }
-                } else {
-                    crate::tunnel::config::TunnelConfig::default_public_service()
-                };
+                let cfg = crate::tunnel::config::TunnelConfig::from_settings_or_default();
                 let tunnel_manager = app_state.tunnel_manager.clone();
                 tauri::async_runtime::block_on(async move {
                     tunnel_manager.write().await.set_config(cfg);

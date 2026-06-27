@@ -83,6 +83,9 @@ function validateShareRouterAuthority(authority: string) {
   if (["localhost", "127.0.0.1", "0.0.0.0"].includes(host)) {
     return;
   }
+  if (host === "example.com" || host.endsWith(".example.com")) {
+    throw new Error("share.validation.invalidRouterDomain");
+  }
   if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host)) {
     if (
       host.split(".").every((part) => Number(part) >= 0 && Number(part) <= 255)

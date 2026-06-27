@@ -149,9 +149,6 @@ fn ensure_owner_change_allowed(
 }
 
 fn tunnel_config_from_domain(domain: &str) -> Result<crate::tunnel::config::TunnelConfig, String> {
-    let domain = domain.trim().trim_end_matches('/').to_ascii_lowercase();
-    if domain.is_empty() {
-        return Err("请先选择分享节点".to_string());
-    }
+    let domain = crate::tunnel::config::normalize_tunnel_domain(domain)?;
     Ok(crate::tunnel::config::TunnelConfig { domain })
 }

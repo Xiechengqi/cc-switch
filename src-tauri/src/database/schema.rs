@@ -666,6 +666,7 @@ impl Database {
                 }
                 version = Self::get_user_version(conn)?;
             }
+            Self::repair_proxy_request_logs_schema(conn)?;
             Ok(())
         })();
 
@@ -739,6 +740,34 @@ impl Database {
         )?;
         Self::add_column_if_missing(conn, "skill_repos", "enabled", "BOOLEAN NOT NULL DEFAULT 1")?;
         // 注意: skills_path 字段已被移除，因为现在支持全仓库递归扫描
+
+        Ok(())
+    }
+
+    fn repair_proxy_request_logs_schema(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_request_logs")? {
+            return Ok(());
+        }
+
+        for (column, definition) in [
+            ("provider_type", "TEXT"),
+            ("request_model", "TEXT"),
+            ("request_agent", "TEXT NOT NULL DEFAULT ''"),
+            ("requested_model", "TEXT NOT NULL DEFAULT ''"),
+            ("actual_model", "TEXT NOT NULL DEFAULT ''"),
+            ("actual_model_source", "TEXT NOT NULL DEFAULT ''"),
+            ("pricing_model", "TEXT"),
+            ("first_token_ms", "INTEGER"),
+            ("duration_ms", "INTEGER"),
+            ("is_streaming", "INTEGER NOT NULL DEFAULT 0"),
+            ("cost_multiplier", "TEXT NOT NULL DEFAULT '1.0'"),
+            ("data_source", "TEXT NOT NULL DEFAULT 'proxy'"),
+            ("share_id", "TEXT"),
+            ("share_name", "TEXT"),
+            ("user_email", "TEXT"),
+        ] {
+            Self::add_column_if_missing(conn, "proxy_request_logs", column, definition)?;
+        }
 
         Ok(())
     }

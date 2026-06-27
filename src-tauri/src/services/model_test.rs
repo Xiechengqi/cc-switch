@@ -3033,11 +3033,11 @@ mod tests {
     #[test]
     fn detects_share_tunnel_subdomain_from_configured_domain() {
         let mut settings = crate::settings::AppSettings::default();
-        settings.share_router_domain = Some("share.example.com".to_string());
+        settings.share_router_domain = Some("share.custom-router.com".to_string());
         crate::settings::update_settings(settings).unwrap();
 
         assert!(crate::tunnel::config::is_share_tunnel_url(
-            "https://alpha.share.example.com/v1"
+            "https://alpha.share.custom-router.com/v1"
         ));
         assert!(!crate::tunnel::config::is_share_tunnel_url(
             "https://api.openai.com/v1"

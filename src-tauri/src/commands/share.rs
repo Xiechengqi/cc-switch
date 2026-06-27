@@ -1249,13 +1249,7 @@ pub async fn configure_tunnel(
 }
 
 fn current_tunnel_config() -> TunnelConfig {
-    let settings = crate::settings::get_settings();
-    if let Some(domain) = settings.current_share_router_domain() {
-        let domain = domain.to_string();
-        TunnelConfig { domain }
-    } else {
-        TunnelConfig::default_public_service()
-    }
+    TunnelConfig::from_settings_or_default()
 }
 
 async fn current_proxy_local_addr(state: &AppState) -> Result<String, AppError> {

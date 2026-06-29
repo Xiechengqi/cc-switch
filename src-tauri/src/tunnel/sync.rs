@@ -1055,11 +1055,22 @@ async fn ollama_cloud_account_summary(
         .first()
         .map(|tier| tier.name.trim().to_string())
         .filter(|value| !value.is_empty());
-    let mut quota = subscription_quota_to_upstream(cached.quota);
+    (
+        account_email,
+        Some(ollama_cloud_quota_to_upstream(cached.quota)),
+    )
+}
+
+fn ollama_cloud_quota_to_upstream(
+    quota: crate::services::subscription::SubscriptionQuota,
+) -> ShareUpstreamQuota {
+    let subscription_period_end = quota.tiers.first().and_then(|tier| tier.resets_at.clone());
+    let mut upstream = subscription_quota_to_upstream(quota);
+    upstream.subscription_period_end = subscription_period_end;
     // Ollama Cloud exposes plan/account metadata but not utilization percent.
     // Do not publish the synthetic 0% tier as quota signal.
-    quota.tiers.clear();
-    (account_email, Some(quota))
+    upstream.tiers.clear();
+    upstream
 }
 
 async fn default_oauth_account_id(auth_provider: &str) -> Option<String> {
@@ -1527,6 +1538,7 @@ fn subscription_quota_to_upstream(
         status: status.to_string(),
         plan: quota.credential_message,
         queried_at: quota.queried_at,
+        subscription_period_end: None,
         availability: Some(
             block
                 .as_ref()
@@ -2185,6 +2197,40 @@ mod tests {
         assert_eq!(upstream.tiers[0].utilization, 12.0);
         assert_eq!(upstream.tiers[0].used, None);
         assert_eq!(upstream.tiers[0].limit, None);
+    }
+
+    #[test]
+    fn ollama_cloud_quota_to_upstream_keeps_period_end_without_synthetic_tier() {
+        let quota = crate::services::subscription::SubscriptionQuota {
+            tool: "ollama_cloud".to_string(),
+            credential_status: crate::services::subscription::CredentialStatus::Valid,
+            credential_message: Some("pro".to_string()),
+            success: true,
+            tiers: vec![crate::services::subscription::QuotaTier {
+                name: "xiechengqi01@gmail.com".to_string(),
+                utilization: 0.0,
+                resets_at: Some("2026-07-25T04:49:24Z".to_string()),
+                used: None,
+                limit: None,
+                unit: None,
+                used_value_usd: None,
+                max_value_usd: None,
+            }],
+            extra_usage: None,
+            error: None,
+            queried_at: Some(1_782_000_000_000),
+            failure: None,
+        };
+
+        let upstream = ollama_cloud_quota_to_upstream(quota);
+
+        assert_eq!(upstream.status, "ok");
+        assert_eq!(upstream.plan.as_deref(), Some("pro"));
+        assert_eq!(
+            upstream.subscription_period_end.as_deref(),
+            Some("2026-07-25T04:49:24Z")
+        );
+        assert!(upstream.tiers.is_empty());
     }
 
     /// P11 回归：同一台 client 上的两个 share 各绑不同 provider 时，runtime

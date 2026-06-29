@@ -25,7 +25,10 @@ use super::{
         },
         get_adapter, get_claude_api_format,
         streaming::create_anthropic_sse_stream,
-        streaming_codex_chat::create_responses_sse_stream_from_chat_with_context,
+        streaming_codex_chat::{
+            create_chat_sse_stream_from_responses,
+            create_responses_sse_stream_from_chat_with_context,
+        },
         streaming_gemini::create_anthropic_sse_stream_from_gemini,
         streaming_responses::create_anthropic_sse_stream_from_responses,
         transform, transform_codex_chat, transform_gemini, transform_responses,
@@ -1117,6 +1120,17 @@ pub async fn handle_chat_completions(
     ctx.provider = result.provider;
     let response = result.response;
 
+    if super::providers::should_convert_codex_chat_to_responses(&ctx.provider, &endpoint) {
+        return handle_codex_responses_to_chat_transform(
+            response,
+            &ctx,
+            &state,
+            is_stream,
+            connection_guard,
+        )
+        .await;
+    }
+
     process_response(
         response,
         &ctx,
@@ -1940,6 +1954,225 @@ async fn handle_codex_chat_to_responses_transform(
         })
 }
 
+async fn handle_codex_responses_to_chat_transform(
+    response: super::hyper_client::ProxyResponse,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    is_stream: bool,
+    connection_guard: Option<ActiveConnectionGuard>,
+) -> Result<axum::response::Response, ProxyError> {
+    let status = response.status();
+
+    if !status.is_success() {
+        return handle_codex_responses_error_response(response, ctx, status).await;
+    }
+
+    if is_stream {
+        let stream = response.bytes_stream();
+        let sse_stream = create_chat_sse_stream_from_responses(stream);
+
+        let usage_collector = if usage_logging_enabled(state) {
+            let state = state.clone();
+            let provider_id = ctx.provider.id.clone();
+            let request_model = ctx.request_model.clone();
+            let fallback_model = ctx
+                .outbound_model
+                .clone()
+                .unwrap_or_else(|| ctx.request_model.clone());
+            let app_type_str = ctx.app_type_str;
+            let start_time = ctx.start_time;
+            let session_id = ctx.session_id.clone();
+            let share_id = ctx.share_id.clone();
+            let share_name = ctx.share_name.clone();
+            let share_user_email = ctx.share_user_email.clone();
+
+            Some(SseUsageCollector::new(
+                start_time,
+                Some(codex_stream_usage_event_filter),
+                move |events, first_token_ms| {
+                    let usage = TokenUsage::from_openai_stream_events(&events).unwrap_or_default();
+                    if !usage.has_billable_tokens() {
+                        log::debug!("[Codex] Chat 流式桥接响应 usage 全 0 或缺失，跳过消费记录");
+                        return;
+                    }
+                    let model = usage
+                        .model
+                        .clone()
+                        .filter(|model| !model.is_empty())
+                        .unwrap_or_else(|| fallback_model.clone());
+                    let latency_ms = start_time.elapsed().as_millis() as u64;
+
+                    let state = state.clone();
+                    let provider_id = provider_id.clone();
+                    let request_model = request_model.clone();
+                    let outbound_model = fallback_model.clone();
+                    let session_id = session_id.clone();
+                    let share_id = share_id.clone();
+                    let share_name = share_name.clone();
+                    let share_user_email = share_user_email.clone();
+
+                    tokio::spawn(async move {
+                        log_usage(
+                            &state,
+                            None,
+                            &provider_id,
+                            app_type_str,
+                            &model,
+                            &request_model,
+                            &outbound_model,
+                            usage,
+                            latency_ms,
+                            first_token_ms,
+                            true,
+                            status.as_u16(),
+                            Some(session_id),
+                            share_id,
+                            share_name,
+                            share_user_email,
+                        )
+                        .await;
+                    });
+                },
+            ))
+        } else {
+            None
+        };
+
+        let logged_stream = create_logged_passthrough_stream(
+            sse_stream,
+            ctx.tag,
+            usage_collector,
+            ctx.streaming_timeout_config(),
+            connection_guard,
+            SseTerminalFallback::Disabled,
+        );
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "Content-Type",
+            axum::http::HeaderValue::from_static("text/event-stream"),
+        );
+        headers.insert(
+            "Cache-Control",
+            axum::http::HeaderValue::from_static("no-cache"),
+        );
+
+        let body = axum::body::Body::from_stream(logged_stream);
+        return Ok((headers, body).into_response());
+    }
+
+    let _connection_guard = connection_guard;
+    let body_timeout =
+        if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
+            std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
+        } else {
+            std::time::Duration::ZERO
+        };
+    let (mut response_headers, status, body_bytes) =
+        read_decoded_body(response, ctx.tag, body_timeout).await?;
+    let body_str = String::from_utf8_lossy(&body_bytes);
+    let responses_response: Value = match serde_json::from_slice(&body_bytes) {
+        Ok(value) => value,
+        Err(_) if body_looks_like_sse(&body_str) => {
+            log::warn!("[Codex] 上游对 Chat 非流桥接返回 SSE，按 Responses SSE 聚合");
+            responses_sse_to_response_value(&body_str).map_err(|e| {
+                log::error!("[Codex] Responses SSE 聚合兜底失败: {e}, body: {body_str}");
+                aggregate_fallback_error(e, &response_headers, &body_str)
+            })?
+        }
+        Err(e) => {
+            log::error!("[Codex] 解析 Responses 上游响应失败: {e}, body: {body_str}");
+            return Err(upstream_body_parse_error(
+                "Failed to parse upstream responses response",
+                &e,
+                &response_headers,
+                &body_str,
+            ));
+        }
+    };
+
+    let chat_response = transform_codex_chat::responses_response_to_chat_completion(
+        responses_response,
+    )
+    .map_err(|e| {
+        log::error!("[Codex] Responses → Chat 响应转换失败: {e}");
+        e
+    })?;
+
+    if let Some(usage) =
+        TokenUsage::from_openai_response(&chat_response).filter(TokenUsage::has_billable_tokens)
+    {
+        let model = chat_response
+            .get("model")
+            .and_then(|model| model.as_str())
+            .filter(|model| !model.is_empty())
+            .map(str::to_string)
+            .or_else(|| ctx.outbound_model.clone())
+            .unwrap_or_else(|| ctx.request_model.clone());
+        let request_model = ctx.request_model.clone();
+        let outbound_model = ctx
+            .outbound_model
+            .clone()
+            .unwrap_or_else(|| ctx.request_model.clone());
+        let app_type_str = ctx.app_type_str;
+        tokio::spawn({
+            let state = state.clone();
+            let provider_id = ctx.provider.id.clone();
+            let session_id = ctx.session_id.clone();
+            let share_id = ctx.share_id.clone();
+            let share_name = ctx.share_name.clone();
+            let share_user_email = ctx.share_user_email.clone();
+            let latency_ms = ctx.latency_ms();
+            async move {
+                log_usage(
+                    &state,
+                    None,
+                    &provider_id,
+                    app_type_str,
+                    &model,
+                    &request_model,
+                    &outbound_model,
+                    usage,
+                    latency_ms,
+                    None,
+                    false,
+                    status.as_u16(),
+                    Some(session_id),
+                    share_id,
+                    share_name,
+                    share_user_email,
+                )
+                .await;
+            }
+        });
+    }
+
+    strip_entity_headers_for_rebuilt_body(&mut response_headers);
+    strip_hop_by_hop_response_headers(&mut response_headers);
+    response_headers.remove(axum::http::header::CONTENT_TYPE);
+
+    let mut builder = axum::response::Response::builder().status(status);
+    for (key, value) in response_headers.iter() {
+        builder = builder.header(key, value);
+    }
+    builder = builder.header(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+
+    let response_body = serde_json::to_vec(&chat_response).map_err(|e| {
+        log::error!("[Codex] 序列化 Chat 响应失败: {e}");
+        ProxyError::TransformError(format!("Failed to serialize chat response: {e}"))
+    })?;
+
+    builder
+        .body(axum::body::Body::from(response_body))
+        .map_err(|e| {
+            log::error!("[Codex] 构建 Chat 响应失败: {e}");
+            ProxyError::Internal(format!("Failed to build response: {e}"))
+        })
+}
+
 /// 把上游 Chat Completions 的错误响应转换为 Responses API 错误形状。
 ///
 /// 与正常响应分支配套：正常响应已经被改写成 Responses 形式，错误响应若仍保留
@@ -2004,6 +2237,66 @@ async fn handle_codex_chat_error_response(
 
     builder.body(axum::body::Body::from(body)).map_err(|e| {
         log::error!("[Codex] 构建 Responses 错误响应失败: {e}");
+        ProxyError::Internal(format!("Failed to build response: {e}"))
+    })
+}
+
+/// 把上游 Responses API 的错误响应转换为 Chat Completions 错误形状。
+async fn handle_codex_responses_error_response(
+    response: super::hyper_client::ProxyResponse,
+    ctx: &RequestContext,
+    status: axum::http::StatusCode,
+) -> Result<axum::response::Response, ProxyError> {
+    let body_timeout =
+        if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
+            std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
+        } else {
+            std::time::Duration::ZERO
+        };
+    let (mut response_headers, _status, body_bytes) =
+        read_decoded_body(response, ctx.tag, body_timeout).await?;
+
+    let parsed_value: Value = match serde_json::from_slice::<Value>(&body_bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            const MAX_RAW_ERROR_BYTES: usize = 1024;
+            let lossy = String::from_utf8_lossy(&body_bytes);
+            let truncated = if lossy.len() > MAX_RAW_ERROR_BYTES {
+                let mut end = MAX_RAW_ERROR_BYTES;
+                while end > 0 && !lossy.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}…(truncated)", &lossy[..end])
+            } else {
+                lossy.into_owned()
+            };
+            log::warn!("[Codex] Responses 错误响应不是合法 JSON，按文本透传: {truncated}");
+            Value::String(truncated)
+        }
+    };
+
+    let chat_error = transform_codex_chat::responses_error_to_chat_error(Some(&parsed_value));
+
+    strip_entity_headers_for_rebuilt_body(&mut response_headers);
+    strip_hop_by_hop_response_headers(&mut response_headers);
+    response_headers.remove(axum::http::header::CONTENT_TYPE);
+
+    let mut builder = axum::response::Response::builder().status(status);
+    for (key, value) in response_headers.iter() {
+        builder = builder.header(key, value);
+    }
+    builder = builder.header(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+
+    let body = serde_json::to_vec(&chat_error).map_err(|e| {
+        log::error!("[Codex] 序列化 Chat 错误体失败: {e}");
+        ProxyError::TransformError(format!("Failed to serialize chat error: {e}"))
+    })?;
+
+    builder.body(axum::body::Body::from(body)).map_err(|e| {
+        log::error!("[Codex] 构建 Chat 错误响应失败: {e}");
         ProxyError::Internal(format!("Failed to build response: {e}"))
     })
 }

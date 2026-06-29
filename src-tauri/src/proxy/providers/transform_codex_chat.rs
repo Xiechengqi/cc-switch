@@ -342,6 +342,370 @@ pub fn responses_to_chat_completions_with_reasoning(
     Ok(result)
 }
 
+/// Convert an OpenAI Chat Completions request into an OpenAI Responses request.
+pub fn chat_completions_to_responses(body: Value) -> Result<Value, ProxyError> {
+    let mut result = json!({});
+
+    if let Some(model) = body.get("model") {
+        result["model"] = model.clone();
+    }
+
+    let messages = body
+        .get("messages")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| ProxyError::TransformError("No messages in chat request".to_string()))?;
+    let (instructions, input) = chat_messages_to_responses_input(messages)?;
+    if !instructions.is_empty() {
+        result["instructions"] = json!(instructions.join("\n\n"));
+    }
+    result["input"] = json!(input);
+
+    if let Some(max_tokens) = body
+        .get("max_completion_tokens")
+        .or_else(|| body.get("max_tokens"))
+    {
+        result["max_output_tokens"] = max_tokens.clone();
+    }
+
+    for key in [
+        "temperature",
+        "top_p",
+        "stream",
+        "store",
+        "metadata",
+        "parallel_tool_calls",
+        "include",
+        "service_tier",
+        "prompt_cache_key",
+        "truncation",
+        "stop",
+    ] {
+        if let Some(value) = body.get(key) {
+            result[key] = value.clone();
+        }
+    }
+
+    if let Some(reasoning) = body.get("reasoning") {
+        result["reasoning"] = reasoning.clone();
+    } else if let Some(effort) = body.get("reasoning_effort") {
+        result["reasoning"] = json!({ "effort": effort.clone() });
+    }
+
+    if let Some(tools) = body.get("tools").and_then(|value| value.as_array()) {
+        let response_tools = tools
+            .iter()
+            .filter_map(chat_tool_to_responses_tool)
+            .collect::<Vec<_>>();
+        if !response_tools.is_empty() {
+            result["tools"] = json!(response_tools);
+        }
+    }
+
+    if let Some(tool_choice) = body.get("tool_choice") {
+        result["tool_choice"] = chat_tool_choice_to_responses(tool_choice);
+    }
+
+    if let Some(response_format) = body.get("response_format") {
+        result["text"] = json!({ "format": response_format.clone() });
+    }
+
+    Ok(result)
+}
+
+fn chat_messages_to_responses_input(
+    messages: &[Value],
+) -> Result<(Vec<String>, Vec<Value>), ProxyError> {
+    let mut instructions = Vec::new();
+    let mut input = Vec::new();
+
+    for message in messages {
+        let role = message
+            .get("role")
+            .and_then(|value| value.as_str())
+            .unwrap_or("user");
+        match role {
+            "system" | "developer" => {
+                if let Some(text) = chat_content_to_plain_text(message.get("content")) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        instructions.push(text.to_string());
+                    }
+                }
+            }
+            "tool" => {
+                let call_id = message
+                    .get("tool_call_id")
+                    .or_else(|| message.get("name"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": chat_tool_output_to_string(message.get("content"))
+                }));
+            }
+            "function" => {
+                let call_id = message
+                    .get("tool_call_id")
+                    .or_else(|| message.get("name"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": chat_tool_output_to_string(message.get("content"))
+                }));
+            }
+            "assistant" => {
+                if let Some(reasoning) = chat_reasoning_text(message) {
+                    input.push(json!({
+                        "type": "reasoning",
+                        "summary": [{
+                            "type": "summary_text",
+                            "text": reasoning
+                        }]
+                    }));
+                }
+
+                let content =
+                    chat_content_to_responses_content("assistant", message.get("content"));
+                if !content.is_empty() {
+                    input.push(json!({
+                        "role": "assistant",
+                        "content": content
+                    }));
+                }
+
+                if let Some(tool_calls) =
+                    message.get("tool_calls").and_then(|value| value.as_array())
+                {
+                    for (index, tool_call) in tool_calls.iter().enumerate() {
+                        if let Some(item) = chat_tool_call_to_responses_item(tool_call, index) {
+                            input.push(item);
+                        }
+                    }
+                }
+                if let Some(function_call) = message.get("function_call") {
+                    if let Some(item) = chat_legacy_function_call_to_responses_item(function_call) {
+                        input.push(item);
+                    }
+                }
+            }
+            _ => {
+                let content = chat_content_to_responses_content("user", message.get("content"));
+                input.push(json!({
+                    "role": "user",
+                    "content": content
+                }));
+            }
+        }
+    }
+
+    Ok((instructions, input))
+}
+
+fn chat_content_to_responses_content(role: &str, content: Option<&Value>) -> Vec<Value> {
+    let output_text_type = if role == "assistant" {
+        "output_text"
+    } else {
+        "input_text"
+    };
+    let Some(content) = content else {
+        return Vec::new();
+    };
+
+    match content {
+        Value::String(text) => {
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![json!({ "type": output_text_type, "text": text })]
+            }
+        }
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| chat_content_part_to_responses_part(role, part))
+            .collect(),
+        Value::Null => Vec::new(),
+        other => vec![json!({ "type": output_text_type, "text": canonical_json_string(other) })],
+    }
+}
+
+fn chat_content_part_to_responses_part(role: &str, part: &Value) -> Option<Value> {
+    let part_type = part
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let text_type = if role == "assistant" {
+        "output_text"
+    } else {
+        "input_text"
+    };
+
+    match part_type {
+        "text" | "input_text" | "output_text" => part
+            .get("text")
+            .and_then(|value| value.as_str())
+            .filter(|text| !text.is_empty())
+            .map(|text| json!({ "type": text_type, "text": text })),
+        "refusal" if role == "assistant" => part
+            .get("refusal")
+            .and_then(|value| value.as_str())
+            .filter(|text| !text.is_empty())
+            .map(|text| json!({ "type": "refusal", "refusal": text })),
+        "image_url" if role != "assistant" => {
+            let image_url = part
+                .get("image_url")
+                .and_then(|value| {
+                    value
+                        .get("url")
+                        .and_then(|url| url.as_str())
+                        .or_else(|| value.as_str())
+                })
+                .filter(|url| !url.is_empty())?;
+            Some(json!({
+                "type": "input_image",
+                "image_url": image_url
+            }))
+        }
+        "file" if role != "assistant" => {
+            let file = part.get("file")?;
+            let mut out = serde_json::Map::new();
+            out.insert("type".to_string(), json!("input_file"));
+            for key in ["file_id", "file_data", "filename"] {
+                if let Some(value) = file.get(key) {
+                    out.insert(key.to_string(), value.clone());
+                }
+            }
+            (out.len() > 1).then(|| Value::Object(out))
+        }
+        "input_audio" if role != "assistant" => part.get("input_audio").map(|audio| {
+            json!({
+                "type": "input_audio",
+                "input_audio": audio
+            })
+        }),
+        _ => None,
+    }
+}
+
+fn chat_content_to_plain_text(content: Option<&Value>) -> Option<String> {
+    match content? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| {
+                    part.get("text")
+                        .and_then(|value| value.as_str())
+                        .or_else(|| part.as_str())
+                })
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Null => None,
+        other => Some(canonical_json_string(other)),
+    }
+}
+
+fn chat_tool_output_to_string(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(_)) => chat_content_to_plain_text(content).unwrap_or_default(),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => canonical_json_string(other),
+    }
+}
+
+fn chat_tool_to_responses_tool(tool: &Value) -> Option<Value> {
+    if tool.get("type").and_then(|value| value.as_str()) != Some("function") {
+        return None;
+    }
+
+    let function = tool.get("function").unwrap_or(tool);
+    let name = function
+        .get("name")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    let mut response_tool = json!({
+        "type": "function",
+        "name": name,
+        "description": function.get("description").cloned().unwrap_or(Value::Null),
+        "parameters": function.get("parameters").cloned().unwrap_or_else(|| json!({}))
+    });
+    if let Some(strict) = function.get("strict").or_else(|| tool.get("strict")) {
+        response_tool["strict"] = strict.clone();
+    }
+    Some(response_tool)
+}
+
+fn chat_tool_choice_to_responses(tool_choice: &Value) -> Value {
+    match tool_choice {
+        Value::Object(obj)
+            if obj.get("type").and_then(|value| value.as_str()) == Some("function") =>
+        {
+            let name = obj
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .or_else(|| obj.get("name"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            json!({
+                "type": "function",
+                "name": name
+            })
+        }
+        _ => tool_choice.clone(),
+    }
+}
+
+fn chat_tool_call_to_responses_item(tool_call: &Value, index: usize) -> Option<Value> {
+    let function = tool_call.get("function")?;
+    let name = function
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|name| !name.is_empty())?;
+    let call_id = tool_call
+        .get("id")
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("call_{index}"));
+    let arguments = canonicalize_tool_arguments(function.get("arguments"));
+    Some(response_function_call_item(
+        &format!("fc_{call_id}"),
+        "completed",
+        &call_id,
+        name,
+        &arguments,
+        None,
+    ))
+}
+
+fn chat_legacy_function_call_to_responses_item(function_call: &Value) -> Option<Value> {
+    let name = function_call
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|name| !name.is_empty())?;
+    let call_id = function_call
+        .get("id")
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.is_empty())
+        .unwrap_or(name);
+    let arguments = canonicalize_tool_arguments(function_call.get("arguments"));
+    Some(response_function_call_item(
+        &format!("fc_{call_id}"),
+        "completed",
+        call_id,
+        name,
+        &arguments,
+        None,
+    ))
+}
+
 fn apply_reasoning_options(
     result: &mut Value,
     body: &Value,
@@ -1656,6 +2020,319 @@ pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
     result
 }
 
+/// Convert a non-streaming Responses response into a Chat Completions response.
+pub fn responses_response_to_chat_completion(body: Value) -> Result<Value, ProxyError> {
+    let output = body
+        .get("output")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| ProxyError::TransformError("No output in responses response".to_string()))?;
+
+    let mut content = String::new();
+    let mut refusal: Option<String> = None;
+    let mut reasoning = String::new();
+    let mut tool_calls = Vec::new();
+
+    for item in output {
+        match item
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+        {
+            "message" => {
+                if let Some(parts) = item.get("content").and_then(|value| value.as_array()) {
+                    for part in parts {
+                        match part
+                            .get("type")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                        {
+                            "output_text" | "text" => {
+                                if let Some(text) =
+                                    part.get("text").and_then(|value| value.as_str())
+                                {
+                                    content.push_str(text);
+                                }
+                            }
+                            "refusal" => {
+                                if let Some(text) =
+                                    part.get("refusal").and_then(|value| value.as_str())
+                                {
+                                    if !text.is_empty() {
+                                        refusal = Some(text.to_string());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            "reasoning" => {
+                append_response_reasoning_text(&mut reasoning, responses_reasoning_item_text(item));
+            }
+            "function_call" => {
+                if let Some(tool_call) = responses_function_call_to_chat_completion_tool_call(item)
+                {
+                    tool_calls.push(tool_call);
+                }
+                append_response_reasoning_text(&mut reasoning, responses_item_reasoning_text(item));
+            }
+            "custom_tool_call" => {
+                if let Some(tool_call) =
+                    responses_custom_tool_call_to_chat_completion_tool_call(item)
+                {
+                    tool_calls.push(tool_call);
+                }
+                append_response_reasoning_text(&mut reasoning, responses_item_reasoning_text(item));
+            }
+            "tool_search_call" => {
+                if let Some(tool_call) =
+                    responses_tool_search_call_to_chat_completion_tool_call(item)
+                {
+                    tool_calls.push(tool_call);
+                }
+                append_response_reasoning_text(&mut reasoning, responses_item_reasoning_text(item));
+            }
+            _ => {}
+        }
+    }
+
+    let has_tool_calls = !tool_calls.is_empty();
+    let mut message = json!({
+        "role": "assistant",
+        "content": if content.is_empty() && has_tool_calls {
+            Value::Null
+        } else {
+            Value::String(content)
+        }
+    });
+    if let Some(refusal) = refusal {
+        message["refusal"] = json!(refusal);
+    }
+    if !reasoning.trim().is_empty() {
+        message["reasoning_content"] = json!(reasoning);
+    }
+    if has_tool_calls {
+        message["tool_calls"] = json!(tool_calls);
+    }
+
+    let response = json!({
+        "id": chat_id_from_response_id(body.get("id").and_then(|value| value.as_str())),
+        "object": "chat.completion",
+        "created": body.get("created_at").and_then(|value| value.as_u64()).unwrap_or(0),
+        "model": body.get("model").and_then(|value| value.as_str()).unwrap_or(""),
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": response_finish_reason_for_chat(&body, has_tool_calls)
+        }],
+        "usage": responses_usage_to_chat_usage(body.get("usage"))
+    });
+
+    Ok(response)
+}
+
+pub(crate) fn responses_usage_to_chat_usage(usage: Option<&Value>) -> Value {
+    let Some(usage) = usage.filter(|value| value.is_object() && !value.is_null()) else {
+        return json!({
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "completion_tokens_details": { "reasoning_tokens": 0 }
+        });
+    };
+
+    let prompt_tokens = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let completion_tokens = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let total_tokens = usage
+        .get("total_tokens")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(prompt_tokens + completion_tokens);
+
+    let mut result = json!({
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens
+    });
+
+    if let Some(cached) = usage
+        .pointer("/input_tokens_details/cached_tokens")
+        .or_else(|| usage.pointer("/prompt_tokens_details/cached_tokens"))
+        .and_then(|value| value.as_u64())
+        .or_else(|| {
+            usage
+                .get("cache_read_input_tokens")
+                .and_then(|value| value.as_u64())
+        })
+    {
+        result["prompt_tokens_details"] = json!({ "cached_tokens": cached });
+    }
+
+    if let Some(details) = usage
+        .get("output_tokens_details")
+        .or_else(|| usage.get("completion_tokens_details"))
+        .filter(|value| value.is_object())
+    {
+        let mut details = details.clone();
+        if details.get("reasoning_tokens").is_none() {
+            details["reasoning_tokens"] = json!(0);
+        }
+        result["completion_tokens_details"] = details;
+    } else {
+        result["completion_tokens_details"] = json!({ "reasoning_tokens": 0 });
+    }
+
+    result
+}
+
+pub fn responses_error_to_chat_error(body: Option<&Value>) -> Value {
+    let error = body
+        .and_then(|value| value.get("error"))
+        .unwrap_or(body.unwrap_or(&Value::Null));
+    let message = error
+        .as_str()
+        .map(ToString::to_string)
+        .or_else(|| {
+            error
+                .get("message")
+                .or_else(|| error.get("detail"))
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| "Upstream Responses API error".to_string());
+    let error_type = error
+        .get("type")
+        .or_else(|| error.get("code"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("upstream_error");
+
+    json!({
+        "error": {
+            "message": message,
+            "type": error_type,
+            "code": error.get("code").cloned().unwrap_or(Value::Null),
+            "param": error.get("param").cloned().unwrap_or(Value::Null)
+        }
+    })
+}
+
+fn append_response_reasoning_text(target: &mut String, reasoning: Option<String>) {
+    let Some(reasoning) = reasoning else {
+        return;
+    };
+    let reasoning = reasoning.trim();
+    if reasoning.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        target.push_str("\n\n");
+    }
+    target.push_str(reasoning);
+}
+
+fn responses_function_call_to_chat_completion_tool_call(item: &Value) -> Option<Value> {
+    let call_id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.is_empty())?;
+    let name = item
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|name| !name.is_empty())?;
+    Some(json!({
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": canonicalize_tool_arguments(item.get("arguments"))
+        }
+    }))
+}
+
+fn responses_custom_tool_call_to_chat_completion_tool_call(item: &Value) -> Option<Value> {
+    let call_id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.is_empty())?;
+    let name = item
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|name| !name.is_empty())?;
+    let input = item.get("input").cloned().unwrap_or_else(|| json!(""));
+    Some(json!({
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": canonical_json_string(&json!({ CUSTOM_TOOL_INPUT_FIELD: input }))
+        }
+    }))
+}
+
+fn responses_tool_search_call_to_chat_completion_tool_call(item: &Value) -> Option<Value> {
+    let call_id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.is_empty())?;
+    let arguments = item
+        .get("arguments")
+        .map(canonical_json_string)
+        .unwrap_or_else(|| "{}".to_string());
+    Some(json!({
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": TOOL_SEARCH_PROXY_NAME,
+            "arguments": arguments
+        }
+    }))
+}
+
+pub(crate) fn chat_id_from_response_id(id: Option<&str>) -> String {
+    let id = id.unwrap_or("ccswitch");
+    if id.starts_with("chatcmpl-") || id.starts_with("chatcmpl_") {
+        id.to_string()
+    } else if let Some(stripped) = id.strip_prefix("resp_") {
+        format!("chatcmpl-{stripped}")
+    } else {
+        format!("chatcmpl-{id}")
+    }
+}
+
+pub(crate) fn response_finish_reason_for_chat(body: &Value, has_tool_calls: bool) -> Value {
+    if has_tool_calls {
+        return json!("tool_calls");
+    }
+
+    let status = body.get("status").and_then(|value| value.as_str());
+    let incomplete_reason = body
+        .pointer("/incomplete_details/reason")
+        .and_then(|value| value.as_str());
+    match status {
+        Some("incomplete")
+            if matches!(
+                incomplete_reason,
+                Some("max_output_tokens" | "max_tokens") | None
+            ) =>
+        {
+            json!("length")
+        }
+        Some("failed" | "cancelled") => json!("stop"),
+        _ => json!("stop"),
+    }
+}
+
 pub(crate) fn response_id_from_chat_id(id: Option<&str>) -> String {
     let id = id.unwrap_or("ccswitch");
     if id.starts_with("resp_") {
@@ -1790,6 +2467,147 @@ mod tests {
         // 既补上 include_usage，又保留客户端原有的 stream_options 字段。
         assert_eq!(result["stream_options"]["include_usage"], true);
         assert_eq!(result["stream_options"]["continuous_usage_stats"], true);
+    }
+
+    #[test]
+    fn chat_request_to_responses_maps_messages_tools_and_limits() {
+        let input = json!({
+            "model": "gpt-5.5",
+            "messages": [
+                {"role": "system", "content": "Be concise."},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "who are you"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aaa"}}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": "{\"q\":\"cc-switch\"}"
+                        }
+                    }]
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "{\"ok\":true}"}
+            ],
+            "max_completion_tokens": 16,
+            "stream": false,
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Lookup data",
+                    "parameters": {"type": "object"}
+                }
+            }],
+            "tool_choice": {"type": "function", "function": {"name": "lookup"}}
+        });
+
+        let result = chat_completions_to_responses(input).unwrap();
+
+        assert_eq!(result["model"], "gpt-5.5");
+        assert_eq!(result["instructions"], "Be concise.");
+        assert_eq!(result["max_output_tokens"], 16);
+        assert_eq!(result["stream"], false);
+        assert_eq!(result["input"][0]["role"], "user");
+        assert_eq!(result["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(result["input"][0]["content"][1]["type"], "input_image");
+        assert_eq!(result["input"][1]["type"], "function_call");
+        assert_eq!(result["input"][1]["name"], "lookup");
+        assert_eq!(result["input"][2]["type"], "function_call_output");
+        assert_eq!(result["tools"][0]["name"], "lookup");
+        assert_eq!(result["tool_choice"]["type"], "function");
+        assert_eq!(result["tool_choice"]["name"], "lookup");
+    }
+
+    #[test]
+    fn responses_response_to_chat_maps_text_tools_and_usage() {
+        let input = json!({
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 42,
+            "status": "completed",
+            "model": "gpt-5.5",
+            "output": [
+                {
+                    "id": "rs_1",
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Need a lookup."}]
+                },
+                {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "I can help."}]
+                },
+                {
+                    "id": "fc_1",
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "lookup",
+                    "arguments": "{\"q\":\"cc-switch\"}"
+                }
+            ],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "total_tokens": 14,
+                "input_tokens_details": {"cached_tokens": 2},
+                "output_tokens_details": {"reasoning_tokens": 1}
+            }
+        });
+
+        let result = responses_response_to_chat_completion(input).unwrap();
+
+        assert_eq!(result["id"], "chatcmpl-1");
+        assert_eq!(result["object"], "chat.completion");
+        assert_eq!(result["created"], 42);
+        assert_eq!(result["choices"][0]["message"]["content"], "I can help.");
+        assert_eq!(
+            result["choices"][0]["message"]["reasoning_content"],
+            "Need a lookup."
+        );
+        assert_eq!(
+            result["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_1"
+        );
+        assert_eq!(
+            result["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "lookup"
+        );
+        assert_eq!(result["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(result["usage"]["prompt_tokens"], 10);
+        assert_eq!(result["usage"]["completion_tokens"], 4);
+        assert_eq!(result["usage"]["prompt_tokens_details"]["cached_tokens"], 2);
+        assert_eq!(
+            result["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            1
+        );
+    }
+
+    #[test]
+    fn responses_error_to_chat_error_preserves_message_code_and_param() {
+        let input = json!({
+            "error": {
+                "message": "bad request",
+                "type": "invalid_request_error",
+                "code": "bad_param",
+                "param": "input"
+            }
+        });
+
+        let result = responses_error_to_chat_error(Some(&input));
+
+        assert_eq!(result["error"]["message"], "bad request");
+        assert_eq!(result["error"]["type"], "invalid_request_error");
+        assert_eq!(result["error"]["code"], "bad_param");
+        assert_eq!(result["error"]["param"], "input");
     }
 
     #[test]

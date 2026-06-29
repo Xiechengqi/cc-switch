@@ -1523,8 +1523,12 @@ impl RequestForwarder {
         };
         let codex_responses_to_chat = matches!(app_type, AppType::Codex)
             && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
+        let codex_chat_to_responses = matches!(app_type, AppType::Codex)
+            && super::providers::should_convert_codex_chat_to_responses(provider, endpoint);
         let (mut effective_endpoint, passthrough_query) = if codex_responses_to_chat {
             rewrite_codex_responses_endpoint_to_chat(endpoint)
+        } else if codex_chat_to_responses {
+            rewrite_codex_chat_endpoint_to_responses(endpoint)
         } else if needs_transform && adapter.name() == "Claude" {
             let api_format = resolved_claude_api_format
                 .as_deref()
@@ -1565,6 +1569,11 @@ impl RequestForwarder {
                 .trim_end_matches('/')
                 .to_ascii_lowercase()
                 .ends_with("/chat/completions");
+        let codex_responses_base_is_full_endpoint = codex_chat_to_responses
+            && base_url
+                .trim_end_matches('/')
+                .to_ascii_lowercase()
+                .ends_with("/responses");
 
         let mut url = if matches!(resolved_claude_api_format.as_deref(), Some("gemini_native")) {
             super::gemini_url::resolve_gemini_native_url(
@@ -1572,7 +1581,10 @@ impl RequestForwarder {
                 &effective_endpoint,
                 is_full_url,
             )
-        } else if is_full_url || codex_chat_base_is_full_endpoint {
+        } else if is_full_url
+            || codex_chat_base_is_full_endpoint
+            || codex_responses_base_is_full_endpoint
+        {
             append_query_to_full_url(&base_url, passthrough_query.as_deref())
         } else {
             adapter.build_url(&base_url, &effective_endpoint)
@@ -1612,6 +1624,8 @@ impl RequestForwarder {
                 mapped_body,
                 reasoning_config.as_ref(),
             )?
+        } else if codex_chat_to_responses {
+            super::providers::transform_codex_chat::chat_completions_to_responses(mapped_body)?
         } else if needs_transform {
             if adapter.name() == "Claude" {
                 let api_format = resolved_claude_api_format
@@ -1682,8 +1696,10 @@ impl RequestForwarder {
         );
         let request_is_streaming =
             is_streaming_request(&effective_endpoint, &filtered_body, headers);
-        let force_identity_encoding =
-            needs_transform || codex_responses_to_chat || request_is_streaming;
+        let force_identity_encoding = needs_transform
+            || codex_responses_to_chat
+            || codex_chat_to_responses
+            || request_is_streaming;
 
         let gemini_code_assist_model = if is_gemini_code_assist_provider(app_type, provider) {
             let (code_assist_url, code_assist_body, model) =
@@ -2635,8 +2651,6 @@ impl RequestForwarder {
                         }
                     }
                     oauth_retried = true;
-                    // 消费响应体，释放底层连接
-                    let _ = response.bytes().await;
                     continue;
                 }
             }
@@ -2649,11 +2663,9 @@ impl RequestForwarder {
                 )
             {
                 log::warn!("[Antigravity] upstream HTTP {status_code}; retrying fallback endpoint");
-                let _ = response.bytes().await;
                 continue;
             }
 
-            let body_text = String::from_utf8(response.bytes().await?.to_vec()).ok();
             return Err(ProxyError::UpstreamError {
                 status: status_code,
                 body: body_text,
@@ -3917,6 +3929,18 @@ fn rewrite_codex_responses_endpoint_to_chat(endpoint: &str) -> (String, Option<S
     let (_path, query) = split_endpoint_and_query(endpoint);
     let passthrough_query = query.map(ToString::to_string);
     let target_path = "/chat/completions";
+    let rewritten = match passthrough_query.as_deref() {
+        Some(query) if !query.is_empty() => format!("{target_path}?{query}"),
+        _ => target_path.to_string(),
+    };
+
+    (rewritten, passthrough_query)
+}
+
+fn rewrite_codex_chat_endpoint_to_responses(endpoint: &str) -> (String, Option<String>) {
+    let (_path, query) = split_endpoint_and_query(endpoint);
+    let passthrough_query = query.map(ToString::to_string);
+    let target_path = "/responses";
     let rewritten = match passthrough_query.as_deref() {
         Some(query) if !query.is_empty() => format!("{target_path}?{query}"),
         _ => target_path.to_string(),
@@ -5429,6 +5453,15 @@ mod tests {
             rewrite_codex_responses_endpoint_to_chat("/v1/responses/compact?foo=bar");
 
         assert_eq!(endpoint, "/chat/completions?foo=bar");
+        assert_eq!(passthrough_query.as_deref(), Some("foo=bar"));
+    }
+
+    #[test]
+    fn rewrite_codex_chat_endpoint_to_responses_preserves_query() {
+        let (endpoint, passthrough_query) =
+            rewrite_codex_chat_endpoint_to_responses("/v1/chat/completions?foo=bar");
+
+        assert_eq!(endpoint, "/responses?foo=bar");
         assert_eq!(passthrough_query.as_deref(), Some("foo=bar"));
     }
 

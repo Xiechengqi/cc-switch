@@ -96,6 +96,23 @@ pub fn should_convert_codex_responses_to_chat(provider: &Provider, endpoint: &st
     ) && codex_provider_uses_chat_completions(provider)
 }
 
+pub fn should_convert_codex_chat_to_responses(provider: &Provider, endpoint: &str) -> bool {
+    // Cursor OAuth / API Key providers are local adapters over Cursor's private
+    // Composer protocol. They already emit Responses or Chat Completions based
+    // on the incoming endpoint, so the generic Codex Responses <-> Chat bridge
+    // must not wrap them a second time.
+    if provider.is_cursor_oauth_provider() || provider.is_cursor_apikey_provider() {
+        return false;
+    }
+
+    let path = endpoint
+        .split_once('?')
+        .map_or(endpoint, |(path, _query)| path);
+
+    matches!(path, "/chat/completions" | "/v1/chat/completions")
+        && !codex_provider_uses_chat_completions(provider)
+}
+
 /// Extract the real upstream model configured for a Codex provider.
 pub fn codex_provider_upstream_model(provider: &Provider) -> Option<String> {
     provider
@@ -800,6 +817,10 @@ wire_api = "chat"
             &provider,
             "/chat/completions"
         ));
+        assert!(!should_convert_codex_chat_to_responses(
+            &provider,
+            "/chat/completions"
+        ));
     }
 
     #[test]
@@ -812,6 +833,27 @@ wire_api = "chat"
         assert!(should_convert_codex_responses_to_chat(
             &provider,
             "/v1/responses/compact"
+        ));
+        assert!(!should_convert_codex_chat_to_responses(
+            &provider,
+            "/v1/chat/completions"
+        ));
+    }
+
+    #[test]
+    fn test_codex_responses_native_provider_converts_chat_to_responses() {
+        let provider = create_provider(json!({
+            "base_url": "https://chatgpt.com/backend-api/codex"
+        }));
+
+        assert!(!codex_provider_uses_chat_completions(&provider));
+        assert!(should_convert_codex_chat_to_responses(
+            &provider,
+            "/v1/chat/completions?stream=true"
+        ));
+        assert!(!should_convert_codex_chat_to_responses(
+            &provider,
+            "/v1/responses"
         ));
     }
 
@@ -871,6 +913,10 @@ wire_api = "chat"
             assert!(!should_convert_codex_responses_to_chat(
                 &provider,
                 "/responses?stream=true"
+            ));
+            assert!(!should_convert_codex_chat_to_responses(
+                &provider,
+                "/v1/chat/completions"
             ));
         }
     }

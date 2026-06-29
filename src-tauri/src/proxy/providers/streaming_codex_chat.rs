@@ -5,10 +5,11 @@ use super::{
         extract_reasoning_field_text, split_leading_think_block, strip_leading_think_open_tag,
     },
     transform_codex_chat::{
-        chat_usage_to_responses_usage, custom_tool_input_from_chat_arguments,
+        chat_id_from_response_id, chat_usage_to_responses_usage,
+        custom_tool_input_from_chat_arguments, response_finish_reason_for_chat,
         response_id_from_chat_id, response_status_from_finish_reason,
         response_tool_call_item_from_chat_name, response_tool_call_item_id_from_chat_name,
-        CodexToolContext,
+        responses_error_to_chat_error, responses_usage_to_chat_usage, CodexToolContext,
     },
 };
 use crate::proxy::json_canonical::canonicalize_tool_arguments_str;
@@ -16,7 +17,7 @@ use crate::proxy::sse::{strip_sse_field, take_sse_block};
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Default)]
 struct TextItemState {
@@ -1030,6 +1031,573 @@ fn extract_chat_sse_error(value: &Value) -> (String, Option<String>) {
     (message, error_type)
 }
 
+#[derive(Debug, Default)]
+struct ResponsesToolState {
+    call_id: String,
+    name: String,
+    arguments: String,
+    started: bool,
+}
+
+#[derive(Debug)]
+struct ResponsesToChatState {
+    response_id: String,
+    model: String,
+    created: u64,
+    role_sent: bool,
+    completed: bool,
+    emitted_any_output: bool,
+    latest_usage: Option<Value>,
+    next_tool_index: u32,
+    tool_key_to_index: HashMap<String, u32>,
+    tools: BTreeMap<u32, ResponsesToolState>,
+}
+
+impl Default for ResponsesToChatState {
+    fn default() -> Self {
+        Self {
+            response_id: "resp_ccswitch".to_string(),
+            model: String::new(),
+            created: current_unix_timestamp(),
+            role_sent: false,
+            completed: false,
+            emitted_any_output: false,
+            latest_usage: None,
+            next_tool_index: 0,
+            tool_key_to_index: HashMap::new(),
+            tools: BTreeMap::new(),
+        }
+    }
+}
+
+impl ResponsesToChatState {
+    fn handle_responses_event(&mut self, event_name: &str, data: &Value) -> Vec<Bytes> {
+        if let Some(response) = data.get("response").filter(|value| value.is_object()) {
+            self.update_response_metadata(response);
+        } else if data.get("object").and_then(|value| value.as_str()) == Some("response") {
+            self.update_response_metadata(data);
+        }
+
+        let event_type = data
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or(event_name);
+
+        match event_type {
+            "response.created" | "response.in_progress" => Vec::new(),
+            "response.output_text.delta" => {
+                let delta = data
+                    .get("delta")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                self.text_delta(delta)
+            }
+            "response.refusal.delta" => {
+                let delta = data
+                    .get("delta")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                self.text_delta(delta)
+            }
+            "response.reasoning.delta" | "response.reasoning_summary_text.delta" => {
+                let delta = data
+                    .get("delta")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                self.reasoning_delta(delta)
+            }
+            "response.output_item.added" => self.output_item_added(data),
+            "response.function_call_arguments.delta" => self.tool_arguments_delta(data),
+            "response.function_call_arguments.done" => self.tool_arguments_done(data),
+            "response.custom_tool_call_input.delta" => self.custom_tool_input_delta(data),
+            "response.custom_tool_call_input.done" => self.custom_tool_input_done(data),
+            "response.output_item.done" => self.output_item_done(data),
+            "response.completed" => self.completed_event(data),
+            "response.failed" => self.failed_event(data),
+            _ => Vec::new(),
+        }
+    }
+
+    fn update_response_metadata(&mut self, response: &Value) {
+        if let Some(id) = response.get("id").and_then(|value| value.as_str()) {
+            self.response_id = id.to_string();
+        }
+        if let Some(model) = response.get("model").and_then(|value| value.as_str()) {
+            if !model.is_empty() {
+                self.model = model.to_string();
+            }
+        }
+        if let Some(created) = response
+            .get("created_at")
+            .or_else(|| response.get("created"))
+            .and_then(|value| value.as_u64())
+        {
+            self.created = created;
+        }
+        if let Some(usage) = response.get("usage").filter(|value| !value.is_null()) {
+            self.latest_usage = Some(responses_usage_to_chat_usage(Some(usage)));
+        }
+    }
+
+    fn ensure_role_chunk(&mut self) -> Vec<Bytes> {
+        if self.role_sent {
+            return Vec::new();
+        }
+        self.role_sent = true;
+        vec![self.chat_chunk(json!({ "role": "assistant" }), Value::Null, None)]
+    }
+
+    fn text_delta(&mut self, delta: &str) -> Vec<Bytes> {
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        let mut events = self.ensure_role_chunk();
+        events.push(self.chat_chunk(json!({ "content": delta }), Value::Null, None));
+        self.emitted_any_output = true;
+        events
+    }
+
+    fn reasoning_delta(&mut self, delta: &str) -> Vec<Bytes> {
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        let mut events = self.ensure_role_chunk();
+        events.push(self.chat_chunk(json!({ "reasoning_content": delta }), Value::Null, None));
+        self.emitted_any_output = true;
+        events
+    }
+
+    fn output_item_added(&mut self, data: &Value) -> Vec<Bytes> {
+        let Some(item) = data.get("item") else {
+            return Vec::new();
+        };
+        match item
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+        {
+            "function_call" => self.start_tool_from_item(data, item, ToolStartKind::Function),
+            "custom_tool_call" => self.start_tool_from_item(data, item, ToolStartKind::Custom),
+            "tool_search_call" => self.start_tool_from_item(data, item, ToolStartKind::ToolSearch),
+            _ => Vec::new(),
+        }
+    }
+
+    fn output_item_done(&mut self, data: &Value) -> Vec<Bytes> {
+        let Some(item) = data.get("item") else {
+            return Vec::new();
+        };
+        match item
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+        {
+            "function_call" => {
+                let mut events = self.start_tool_from_item(data, item, ToolStartKind::Function);
+                let key = tool_key_from_event(data, item);
+                let arguments = item
+                    .get("arguments")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                events.extend(self.emit_missing_tool_arguments(key.as_deref(), arguments));
+                events
+            }
+            "custom_tool_call" => {
+                let mut events = self.start_tool_from_item(data, item, ToolStartKind::Custom);
+                let key = tool_key_from_event(data, item);
+                let input = item.get("input").cloned().unwrap_or_else(|| json!(""));
+                let arguments = serde_json::to_string(&json!({ "input": input }))
+                    .unwrap_or_else(|_| "{}".to_string());
+                events.extend(self.emit_missing_tool_arguments(key.as_deref(), &arguments));
+                events
+            }
+            "tool_search_call" => {
+                let mut events = self.start_tool_from_item(data, item, ToolStartKind::ToolSearch);
+                let key = tool_key_from_event(data, item);
+                let arguments = item
+                    .get("arguments")
+                    .map(|value| serde_json::to_string(value).unwrap_or_default())
+                    .unwrap_or_else(|| "{}".to_string());
+                events.extend(self.emit_missing_tool_arguments(key.as_deref(), &arguments));
+                events
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn start_tool_from_item(
+        &mut self,
+        data: &Value,
+        item: &Value,
+        kind: ToolStartKind,
+    ) -> Vec<Bytes> {
+        let key = tool_key_from_event(data, item)
+            .unwrap_or_else(|| format!("tool:anon:{}", self.next_tool_index));
+        let index = if let Some(index) = self.tool_key_to_index.get(&key).copied() {
+            index
+        } else {
+            let index = self.next_tool_index;
+            self.next_tool_index += 1;
+            self.tool_key_to_index.insert(key.clone(), index);
+            index
+        };
+
+        let call_id = item
+            .get("call_id")
+            .or_else(|| item.get("id"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("call_{index}"));
+        let name = match kind {
+            ToolStartKind::Function | ToolStartKind::Custom => item
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string(),
+            ToolStartKind::ToolSearch => "tool_search".to_string(),
+        };
+        if name.is_empty() {
+            return Vec::new();
+        }
+
+        let state = self
+            .tools
+            .entry(index)
+            .or_insert_with(|| ResponsesToolState {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                arguments: String::new(),
+                started: false,
+            });
+        if state.started {
+            return Vec::new();
+        }
+        state.call_id = call_id.clone();
+        state.name = name.clone();
+        state.started = true;
+
+        let mut events = self.ensure_role_chunk();
+        events.push(self.chat_chunk(
+            json!({
+                "tool_calls": [{
+                    "index": index,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": ""
+                    }
+                }]
+            }),
+            Value::Null,
+            None,
+        ));
+        self.emitted_any_output = true;
+        events
+    }
+
+    fn tool_arguments_delta(&mut self, data: &Value) -> Vec<Bytes> {
+        let delta = data
+            .get("delta")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        let Some(index) = self.tool_index_from_data(data) else {
+            return Vec::new();
+        };
+        if let Some(state) = self.tools.get_mut(&index) {
+            state.arguments.push_str(delta);
+        }
+        self.emit_tool_arguments_delta(index, delta)
+    }
+
+    fn tool_arguments_done(&mut self, data: &Value) -> Vec<Bytes> {
+        let Some(arguments) = data.get("arguments").and_then(|value| value.as_str()) else {
+            return Vec::new();
+        };
+        let key = tool_key_from_data(data);
+        self.emit_missing_tool_arguments(key.as_deref(), arguments)
+    }
+
+    fn custom_tool_input_delta(&mut self, data: &Value) -> Vec<Bytes> {
+        let _ = data;
+        Vec::new()
+    }
+
+    fn custom_tool_input_done(&mut self, data: &Value) -> Vec<Bytes> {
+        let input = data.get("input").cloned().unwrap_or_else(|| json!(""));
+        let arguments =
+            serde_json::to_string(&json!({ "input": input })).unwrap_or_else(|_| "{}".to_string());
+        let key = tool_key_from_data(data);
+        self.emit_missing_tool_arguments(key.as_deref(), &arguments)
+    }
+
+    fn emit_missing_tool_arguments(&mut self, key: Option<&str>, arguments: &str) -> Vec<Bytes> {
+        if arguments.is_empty() {
+            return Vec::new();
+        }
+        let Some(index) = key
+            .and_then(|key| self.tool_key_to_index.get(key).copied())
+            .or_else(|| self.tools.keys().next_back().copied())
+        else {
+            return Vec::new();
+        };
+        let already = self
+            .tools
+            .get(&index)
+            .map(|state| state.arguments.clone())
+            .unwrap_or_default();
+        if already == arguments {
+            return Vec::new();
+        }
+        let delta = arguments
+            .strip_prefix(&already)
+            .unwrap_or(arguments)
+            .to_string();
+        if let Some(state) = self.tools.get_mut(&index) {
+            state.arguments.push_str(&delta);
+        }
+        self.emit_tool_arguments_delta(index, &delta)
+    }
+
+    fn emit_tool_arguments_delta(&self, index: u32, delta: &str) -> Vec<Bytes> {
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        vec![self.chat_chunk(
+            json!({
+                "tool_calls": [{
+                    "index": index,
+                    "function": {
+                        "arguments": delta
+                    }
+                }]
+            }),
+            Value::Null,
+            None,
+        )]
+    }
+
+    fn completed_event(&mut self, data: &Value) -> Vec<Bytes> {
+        let response = data.get("response").unwrap_or(data);
+        self.update_response_metadata(response);
+        let finish_reason =
+            response_finish_reason_for_chat(response, self.tools.values().any(|tool| tool.started));
+        let usage = response
+            .get("usage")
+            .map(|usage| responses_usage_to_chat_usage(Some(usage)))
+            .or_else(|| self.latest_usage.clone());
+
+        self.completed = true;
+        let mut events = self.ensure_role_chunk();
+        events.push(self.chat_chunk(json!({}), finish_reason, usage));
+        events.push(Bytes::from_static(b"data: [DONE]\n\n"));
+        events
+    }
+
+    fn failed_event(&mut self, data: &Value) -> Vec<Bytes> {
+        self.completed = true;
+        vec![chat_sse_event(
+            "error",
+            responses_error_to_chat_error(Some(data)),
+        )]
+    }
+
+    fn finish_after_eof(&mut self) -> Vec<Bytes> {
+        if self.completed {
+            return Vec::new();
+        }
+        self.completed = true;
+        if self.emitted_any_output || self.role_sent {
+            vec![
+                self.chat_chunk(json!({}), json!("stop"), self.latest_usage.clone()),
+                Bytes::from_static(b"data: [DONE]\n\n"),
+            ]
+        } else {
+            vec![chat_sse_event(
+                "error",
+                json!({
+                    "error": {
+                        "message": "Upstream Responses stream ended before response.completed",
+                        "type": "stream_truncated"
+                    }
+                }),
+            )]
+        }
+    }
+
+    fn stream_error(&mut self, message: String) -> Vec<Bytes> {
+        self.completed = true;
+        vec![chat_sse_event(
+            "error",
+            json!({
+                "error": {
+                    "message": message,
+                    "type": "stream_error"
+                }
+            }),
+        )]
+    }
+
+    fn tool_index_from_data(&self, data: &Value) -> Option<u32> {
+        tool_key_from_data(data).and_then(|key| self.tool_key_to_index.get(&key).copied())
+    }
+
+    fn chat_chunk(&self, delta: Value, finish_reason: Value, usage: Option<Value>) -> Bytes {
+        let mut chunk = json!({
+            "id": chat_id_from_response_id(Some(&self.response_id)),
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "choices": [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": finish_reason
+            }]
+        });
+        if let Some(usage) = usage {
+            chunk["usage"] = usage;
+        }
+        chat_sse_data(chunk)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ToolStartKind {
+    Function,
+    Custom,
+    ToolSearch,
+}
+
+fn tool_key_from_event(data: &Value, item: &Value) -> Option<String> {
+    item.get("id")
+        .and_then(|value| value.as_str())
+        .map(|id| format!("item:{id}"))
+        .or_else(|| tool_key_from_data(data))
+}
+
+fn tool_key_from_data(data: &Value) -> Option<String> {
+    data.get("item_id")
+        .and_then(|value| value.as_str())
+        .map(|id| format!("item:{id}"))
+        .or_else(|| {
+            data.get("output_index")
+                .and_then(|value| value.as_u64())
+                .map(|index| format!("output:{index}"))
+        })
+}
+
+fn current_unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+/// Create a stream that converts Responses SSE events into Chat Completions SSE chunks.
+pub fn create_chat_sse_stream_from_responses<E: std::error::Error + Send + 'static>(
+    stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    async_stream::stream! {
+        let mut buffer = String::new();
+        let mut utf8_remainder: Vec<u8> = Vec::new();
+        let mut state = ResponsesToChatState::default();
+
+        tokio::pin!(stream);
+
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
+
+                    while let Some(block) = take_sse_block(&mut buffer) {
+                        if block.trim().is_empty() {
+                            continue;
+                        }
+
+                        let mut event_name: Option<String> = None;
+                        let mut data_parts: Vec<String> = Vec::new();
+                        for line in block.lines() {
+                            if let Some(event) = strip_sse_field(line, "event") {
+                                event_name = Some(event.trim().to_string());
+                            }
+                            if let Some(data) = strip_sse_field(line, "data") {
+                                data_parts.push(data.to_string());
+                            }
+                        }
+
+                        if data_parts.is_empty() {
+                            continue;
+                        }
+
+                        let data = data_parts.join("\n");
+                        if data.trim() == "[DONE]" {
+                            continue;
+                        }
+
+                        let value: Value = match serde_json::from_str(&data) {
+                            Ok(value) => value,
+                            Err(_) => continue,
+                        };
+
+                        let event_name = event_name
+                            .as_deref()
+                            .or_else(|| value.get("type").and_then(|value| value.as_str()))
+                            .unwrap_or("");
+                        if event_name == "error" || value.get("error").is_some() {
+                            for event in state.failed_event(&value) {
+                                yield Ok(event);
+                            }
+                            break;
+                        }
+
+                        for event in state.handle_responses_event(event_name, &value) {
+                            yield Ok(event);
+                        }
+
+                        if state.completed {
+                            break;
+                        }
+                    }
+
+                    if state.completed {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    for event in state.stream_error(format!("Stream error: {e}")) {
+                        yield Ok(event);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if !state.completed {
+            for event in state.finish_after_eof() {
+                yield Ok(event);
+            }
+        }
+    }
+}
+
+fn chat_sse_data(data: Value) -> Bytes {
+    Bytes::from(format!(
+        "data: {}\n\n",
+        serde_json::to_string(&data).unwrap_or_default()
+    ))
+}
+
+fn chat_sse_event(event: &str, data: Value) -> Bytes {
+    Bytes::from(format!(
+        "event: {event}\ndata: {}\n\n",
+        serde_json::to_string(&data).unwrap_or_default()
+    ))
+}
+
 fn sse_event(event: &str, data: Value) -> Bytes {
     Bytes::from(format!(
         "event: {event}\ndata: {}\n\n",
@@ -1055,6 +1623,66 @@ mod tests {
         let converted = create_responses_sse_stream_from_chat_with_context(upstream, tool_context);
         let bytes: Vec<Bytes> = converted.map(|item| item.unwrap()).collect().await;
         String::from_utf8(bytes.concat()).unwrap()
+    }
+
+    async fn collect_responses_to_chat(chunks: Vec<&str>) -> String {
+        let chunks: Vec<Result<Bytes, std::io::Error>> = chunks
+            .into_iter()
+            .map(|chunk| Ok(Bytes::copy_from_slice(chunk.as_bytes())))
+            .collect();
+        let upstream = stream::iter(chunks);
+        let converted = create_chat_sse_stream_from_responses(upstream);
+        let bytes: Vec<Bytes> = converted.map(|item| item.unwrap()).collect().await;
+        String::from_utf8(bytes.concat()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn converts_text_responses_sse_to_chat_sse() {
+        let output = collect_responses_to_chat(vec![
+            "event: response.created\n\
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"created_at\":123,\"model\":\"gpt-5.5\"}}\n\n",
+            "event: response.output_text.delta\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\",\"output_index\":0,\"content_index\":0}\n\n",
+            "event: response.output_text.delta\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\",\"output_index\":0,\"content_index\":0}\n\n",
+            "event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"created_at\":123,\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[],\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6}}}\n\n",
+        ])
+        .await;
+
+        assert!(output.contains("\"object\":\"chat.completion.chunk\""));
+        assert!(output.contains("\"id\":\"chatcmpl-1\""));
+        assert!(output.contains("\"role\":\"assistant\""));
+        assert!(output.contains("\"content\":\"Hel\""));
+        assert!(output.contains("\"content\":\"lo\""));
+        assert!(output.contains("\"prompt_tokens\":4"));
+        assert!(output.contains("\"completion_tokens\":2"));
+        assert!(output.contains("data: [DONE]"));
+    }
+
+    #[tokio::test]
+    async fn converts_tool_call_responses_sse_to_chat_sse() {
+        let output = collect_responses_to_chat(vec![
+            "event: response.created\n\
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tool\",\"created_at\":123,\"model\":\"gpt-5.5\"}}\n\n",
+            "event: response.output_item.added\n\
+data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"lookup\"}}\n\n",
+            "event: response.function_call_arguments.delta\n\
+data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"q\\\":\"}\n\n",
+            "event: response.function_call_arguments.delta\n\
+data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"\\\"cc\\\"}\"}\n\n",
+            "event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tool\",\"created_at\":123,\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[{\"type\":\"function_call\"}],\"usage\":{\"input_tokens\":8,\"output_tokens\":3,\"total_tokens\":11}}}\n\n",
+        ])
+        .await;
+
+        assert!(output.contains("\"tool_calls\""));
+        assert!(output.contains("\"id\":\"call_1\""));
+        assert!(output.contains("\"name\":\"lookup\""));
+        assert!(output.contains("{\\\"q\\\":"));
+        assert!(output.contains("\\\"cc\\\"}"));
+        assert!(output.contains("\"finish_reason\":\"tool_calls\""));
+        assert!(output.contains("data: [DONE]"));
     }
 
     #[tokio::test]

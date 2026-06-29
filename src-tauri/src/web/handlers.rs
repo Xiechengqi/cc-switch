@@ -14,6 +14,7 @@ use rand::Rng;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
+use tokio::sync::RwLock;
 
 use crate::{
     app_config::AppType,
@@ -33,6 +34,13 @@ use crate::{
     error::AppError,
     provider::{Provider, UniversalProvider},
     proxy::{
+        providers::{
+            antigravity_oauth_auth::AntigravityOAuthManager,
+            claude_oauth_auth::{ClaudeOAuthManager, OAuthFlowMode},
+            codex_oauth_auth::{CodexOAuthError, CodexOAuthManager},
+            copilot_auth::GitHubAccount,
+            gemini_oauth_auth::GeminiOAuthManager,
+        },
         server::ProxyState,
         types::{AppProxyConfig, GlobalProxyConfig, ProxyConfig, ProxyStatus},
         CircuitBreakerConfig,
@@ -437,7 +445,7 @@ pub async fn openai_cli_oauth_callback(
         );
     }
 
-    let codex = match required_state::<CodexOAuthState>(&state, "codex oauth") {
+    let codex = match web_codex_oauth_manager(&state) {
         Ok(value) => value,
         Err(err) => {
             return oauth_callback_html_response(
@@ -454,7 +462,7 @@ pub async fn openai_cli_oauth_callback(
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(error);
-        let auth_manager = codex.0.read().await;
+        let auth_manager = codex.read().await;
         auth_manager
             .fail_cli_browser_callback(state_value, message)
             .await;
@@ -472,7 +480,7 @@ pub async fn openai_cli_oauth_callback(
         .filter(|value| !value.is_empty())
     else {
         let message = "Missing authorization code. Please return to cc-switch and try again.";
-        let auth_manager = codex.0.read().await;
+        let auth_manager = codex.read().await;
         auth_manager
             .fail_cli_browser_callback(state_value, message)
             .await;
@@ -483,7 +491,7 @@ pub async fn openai_cli_oauth_callback(
         );
     };
 
-    let auth_manager = codex.0.read().await;
+    let auth_manager = codex.read().await;
     match auth_manager
         .complete_cli_browser_callback(code, state_value)
         .await
@@ -2192,6 +2200,56 @@ fn required_tauri_app_state(state: &ProxyState) -> Result<tauri::State<'_, AppSt
     tauri_app_state(state).ok_or_else(|| WebError::internal("app state is unavailable"))
 }
 
+fn web_internal_error(error: impl ToString) -> WebError {
+    WebError::internal(error.to_string())
+}
+
+fn web_codex_oauth_manager(state: &ProxyState) -> Result<Arc<RwLock<CodexOAuthManager>>, WebError> {
+    if let Some(handle) = state.app_handle.as_ref() {
+        if let Some(value) = handle.try_state::<CodexOAuthState>() {
+            return Ok(Arc::clone(&value.0));
+        }
+    }
+    crate::proxy::providers::codex_oauth_auth::global_codex_oauth_manager()
+        .ok_or_else(|| WebError::internal("codex oauth state is unavailable"))
+}
+
+fn web_claude_oauth_manager(
+    state: &ProxyState,
+) -> Result<Arc<RwLock<ClaudeOAuthManager>>, WebError> {
+    if let Some(handle) = state.app_handle.as_ref() {
+        if let Some(value) = handle.try_state::<ClaudeOAuthState>() {
+            return Ok(Arc::clone(&value.0));
+        }
+    }
+    crate::proxy::providers::claude_oauth_auth::global_claude_oauth_manager()
+        .ok_or_else(|| WebError::internal("claude oauth state is unavailable"))
+}
+
+fn web_gemini_oauth_manager(
+    state: &ProxyState,
+) -> Result<Arc<RwLock<GeminiOAuthManager>>, WebError> {
+    if let Some(handle) = state.app_handle.as_ref() {
+        if let Some(value) = handle.try_state::<GeminiOAuthState>() {
+            return Ok(Arc::clone(&value.0));
+        }
+    }
+    crate::proxy::providers::gemini_oauth_auth::global_gemini_oauth_manager()
+        .ok_or_else(|| WebError::internal("gemini oauth state is unavailable"))
+}
+
+fn web_antigravity_oauth_manager(
+    state: &ProxyState,
+) -> Result<Arc<RwLock<AntigravityOAuthManager>>, WebError> {
+    if let Some(handle) = state.app_handle.as_ref() {
+        if let Some(value) = handle.try_state::<AntigravityOAuthState>() {
+            return Ok(Arc::clone(&value.0));
+        }
+    }
+    crate::proxy::providers::antigravity_oauth_auth::global_antigravity_oauth_manager()
+        .ok_or_else(|| WebError::internal("antigravity oauth state is unavailable"))
+}
+
 fn required_state<'a, T: Send + Sync + 'static>(
     state: &'a ProxyState,
     label: &str,
@@ -2357,6 +2415,10 @@ async fn managed_auth_command(
     command: &str,
     args: Value,
 ) -> Result<Value, WebError> {
+    if state.app_handle.is_none() {
+        return managed_auth_command_headless(state, command, args).await;
+    }
+
     let copilot = required_state::<CopilotAuthState>(state, "copilot auth")?;
     let codex = required_state::<CodexOAuthState>(state, "codex oauth")?;
     let claude = required_state::<ClaudeOAuthState>(state, "claude oauth")?;
@@ -2484,6 +2546,449 @@ async fn managed_auth_command(
         }
         _ => Err(WebError::not_found(format!(
             "managed auth web command is not exposed: {command}"
+        ))),
+    }
+}
+
+async fn managed_auth_command_headless(
+    state: &ProxyState,
+    command: &str,
+    args: Value,
+) -> Result<Value, WebError> {
+    let auth_provider = string_arg(&args, "authProvider")?;
+    if command == "auth_start_login" && is_local_callback_auth_provider(&auth_provider) {
+        let flow_mode = optional_string_arg(&args, "oauthFlowMode");
+        let web_paste = flow_mode.as_deref() == Some("web_paste");
+        if !(web_paste && supports_web_paste_flow(&auth_provider)) {
+            return Err(WebError::bad_request(local_callback_auth_blocked_message()));
+        }
+    }
+
+    match command {
+        "auth_list_accounts" => headless_auth_list_accounts(state, &auth_provider).await,
+        "auth_get_status" => headless_auth_get_status(state, &auth_provider).await,
+        "auth_start_login" => headless_auth_start_login(state, &auth_provider, &args).await,
+        "auth_poll_for_account" => {
+            headless_auth_poll_for_account(state, &auth_provider, &args).await
+        }
+        "auth_submit_oauth_code" => {
+            if auth_provider != "claude_oauth" {
+                return Err(WebError::bad_request(format!(
+                    "auth_submit_oauth_code only supports claude_oauth, got {auth_provider}"
+                )));
+            }
+            let claude = web_claude_oauth_manager(state)?;
+            let auth_manager = claude.read().await;
+            let account = auth_manager
+                .submit_pasted_code(
+                    string_arg(&args, "code")?.trim(),
+                    string_arg(&args, "deviceCode")?.trim(),
+                )
+                .await
+                .map_err(web_internal_error)?;
+            let default_account_id = auth_manager.get_status().await.default_account_id;
+            Ok(headless_auth_account_json(
+                &auth_provider,
+                account,
+                default_account_id.as_deref(),
+            ))
+        }
+        "auth_remove_account" => {
+            headless_auth_remove_account(state, &auth_provider, &string_arg(&args, "accountId")?)
+                .await?;
+            Ok(json!(null))
+        }
+        "auth_set_default_account" => {
+            headless_auth_set_default_account(
+                state,
+                &auth_provider,
+                &string_arg(&args, "accountId")?,
+            )
+            .await?;
+            Ok(json!(null))
+        }
+        "auth_logout" => {
+            headless_auth_logout(state, &auth_provider).await?;
+            Ok(json!(null))
+        }
+        _ => Err(WebError::not_found(format!(
+            "managed auth web command is not exposed: {command}"
+        ))),
+    }
+}
+
+async fn headless_auth_list_accounts(
+    state: &ProxyState,
+    auth_provider: &str,
+) -> Result<Value, WebError> {
+    let status = headless_auth_status_json(state, auth_provider).await?;
+    Ok(status.get("accounts").cloned().unwrap_or_else(|| json!([])))
+}
+
+async fn headless_auth_get_status(
+    state: &ProxyState,
+    auth_provider: &str,
+) -> Result<Value, WebError> {
+    headless_auth_status_json(state, auth_provider).await
+}
+
+async fn headless_auth_status_json(
+    state: &ProxyState,
+    auth_provider: &str,
+) -> Result<Value, WebError> {
+    match auth_provider {
+        "codex_oauth" => {
+            let manager = web_codex_oauth_manager(state)?;
+            let status = manager.read().await.get_status().await;
+            Ok(headless_managed_status_json(
+                auth_provider,
+                status.authenticated,
+                status.default_account_id,
+                None,
+                status.accounts,
+            ))
+        }
+        "claude_oauth" => {
+            let manager = web_claude_oauth_manager(state)?;
+            let status = manager.read().await.get_status().await;
+            Ok(headless_managed_status_json(
+                auth_provider,
+                status.authenticated,
+                status.default_account_id,
+                None,
+                status.accounts,
+            ))
+        }
+        "google_gemini_oauth" => {
+            let manager = web_gemini_oauth_manager(state)?;
+            let status = manager.read().await.get_status().await;
+            Ok(headless_managed_status_json(
+                auth_provider,
+                status.authenticated,
+                status.default_account_id,
+                None,
+                status.accounts,
+            ))
+        }
+        "antigravity_oauth" => {
+            let manager = web_antigravity_oauth_manager(state)?;
+            let status = manager.read().await.get_status().await;
+            Ok(headless_managed_status_json(
+                auth_provider,
+                status.authenticated,
+                status.default_account_id,
+                None,
+                status.accounts,
+            ))
+        }
+        "github_copilot" | "kiro_oauth" | "cursor_oauth" => Ok(json!({
+            "provider": auth_provider,
+            "authenticated": false,
+            "default_account_id": null,
+            "migration_error": null,
+            "accounts": [],
+        })),
+        _ => Err(WebError::bad_request(format!(
+            "Unsupported auth provider: {auth_provider}"
+        ))),
+    }
+}
+
+fn headless_managed_status_json(
+    auth_provider: &str,
+    authenticated: bool,
+    default_account_id: Option<String>,
+    migration_error: Option<String>,
+    accounts: Vec<GitHubAccount>,
+) -> Value {
+    let default = default_account_id.as_deref();
+    json!({
+        "provider": auth_provider,
+        "authenticated": authenticated,
+        "default_account_id": default_account_id,
+        "migration_error": migration_error,
+        "accounts": accounts
+            .into_iter()
+            .map(|account| headless_auth_account_json(auth_provider, account, default))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn headless_auth_account_json(
+    auth_provider: &str,
+    account: GitHubAccount,
+    default_account_id: Option<&str>,
+) -> Value {
+    json!({
+        "id": account.id,
+        "provider": auth_provider,
+        "login": account.login,
+        "email": account.email,
+        "avatar_url": account.avatar_url,
+        "authenticated_at": account.authenticated_at,
+        "is_default": default_account_id == Some(account.id.as_str()),
+        "github_domain": account.github_domain,
+    })
+}
+
+async fn headless_auth_start_login(
+    state: &ProxyState,
+    auth_provider: &str,
+    args: &Value,
+) -> Result<Value, WebError> {
+    match auth_provider {
+        "codex_oauth" => {
+            let manager = web_codex_oauth_manager(state)?;
+            let auth_manager = manager.read().await;
+            match optional_string_arg(args, "oauthFlowMode").as_deref() {
+                Some("cli") | Some("browser") | Some("cli_oauth") | Some("cliOauth") => {
+                    let response = auth_manager
+                        .start_cli_browser_flow(optional_string_arg(args, "codexCallbackUrl"))
+                        .await
+                        .map_err(web_internal_error)?;
+                    Ok(json!({
+                        "provider": auth_provider,
+                        "device_code": format!("cli:{}", response.state),
+                        "user_code": "",
+                        "verification_uri": response.auth_url,
+                        "expires_in": 300,
+                        "interval": 2,
+                    }))
+                }
+                _ => {
+                    let response = auth_manager
+                        .start_device_flow()
+                        .await
+                        .map_err(web_internal_error)?;
+                    Ok(headless_device_code_json(auth_provider, response))
+                }
+            }
+        }
+        "claude_oauth" => {
+            let manager = web_claude_oauth_manager(state)?;
+            let response = manager
+                .read()
+                .await
+                .start_browser_flow(OAuthFlowMode::WebPaste)
+                .await
+                .map_err(web_internal_error)?;
+            Ok(json!({
+                "provider": auth_provider,
+                "device_code": response.state,
+                "user_code": "",
+                "verification_uri": response.auth_url,
+                "expires_in": 300,
+                "interval": 5,
+            }))
+        }
+        "google_gemini_oauth" | "antigravity_oauth" => {
+            Err(WebError::bad_request(local_callback_auth_blocked_message()))
+        }
+        "github_copilot" | "kiro_oauth" | "cursor_oauth" => Err(WebError::bad_request(format!(
+            "{auth_provider} is not available in no-desktop web mode"
+        ))),
+        _ => Err(WebError::bad_request(format!(
+            "Unsupported auth provider: {auth_provider}"
+        ))),
+    }
+}
+
+fn headless_device_code_json(
+    auth_provider: &str,
+    response: crate::proxy::providers::copilot_auth::GitHubDeviceCodeResponse,
+) -> Value {
+    json!({
+        "provider": auth_provider,
+        "device_code": response.device_code,
+        "user_code": response.user_code,
+        "verification_uri": response.verification_uri,
+        "expires_in": response.expires_in,
+        "interval": response.interval,
+    })
+}
+
+async fn headless_auth_poll_for_account(
+    state: &ProxyState,
+    auth_provider: &str,
+    args: &Value,
+) -> Result<Value, WebError> {
+    let device_code = string_arg(args, "deviceCode")?;
+    match auth_provider {
+        "codex_oauth" => {
+            let manager = web_codex_oauth_manager(state)?;
+            let auth_manager = manager.write().await;
+            let poll_result = if let Some(callback_state) = device_code.strip_prefix("cli:") {
+                auth_manager.poll_cli_callback_result(callback_state).await
+            } else {
+                auth_manager.poll_for_token(&device_code).await
+            };
+            match poll_result {
+                Ok(Some(account)) => {
+                    let default_account_id = auth_manager.get_status().await.default_account_id;
+                    Ok(headless_auth_account_json(
+                        auth_provider,
+                        account,
+                        default_account_id.as_deref(),
+                    ))
+                }
+                Ok(None) | Err(CodexOAuthError::AuthorizationPending) => Ok(json!(null)),
+                Err(err) => Err(web_internal_error(err)),
+            }
+        }
+        "claude_oauth" => {
+            let manager = web_claude_oauth_manager(state)?;
+            let auth_manager = manager.read().await;
+            match auth_manager.poll_callback_result(&device_code).await {
+                Ok(Some(account)) => {
+                    let default_account_id = auth_manager.get_status().await.default_account_id;
+                    Ok(headless_auth_account_json(
+                        auth_provider,
+                        account,
+                        default_account_id.as_deref(),
+                    ))
+                }
+                Ok(None) => Ok(json!(null)),
+                Err(err) => Err(web_internal_error(err)),
+            }
+        }
+        "google_gemini_oauth" => {
+            let manager = web_gemini_oauth_manager(state)?;
+            let auth_manager = manager.read().await;
+            match auth_manager.poll_callback_result(&device_code).await {
+                Ok(Some(account)) => {
+                    let default_account_id = auth_manager.get_status().await.default_account_id;
+                    Ok(headless_auth_account_json(
+                        auth_provider,
+                        account,
+                        default_account_id.as_deref(),
+                    ))
+                }
+                Ok(None) => Ok(json!(null)),
+                Err(err) => Err(web_internal_error(err)),
+            }
+        }
+        "antigravity_oauth" => {
+            let manager = web_antigravity_oauth_manager(state)?;
+            let auth_manager = manager.read().await;
+            match auth_manager.poll_callback_result(&device_code).await {
+                Ok(Some(account)) => {
+                    let default_account_id = auth_manager.get_status().await.default_account_id;
+                    Ok(headless_auth_account_json(
+                        auth_provider,
+                        account,
+                        default_account_id.as_deref(),
+                    ))
+                }
+                Ok(None) => Ok(json!(null)),
+                Err(err) => Err(web_internal_error(err)),
+            }
+        }
+        _ => Err(WebError::bad_request(format!(
+            "{auth_provider} is not available in no-desktop web mode"
+        ))),
+    }
+}
+
+async fn headless_auth_remove_account(
+    state: &ProxyState,
+    auth_provider: &str,
+    account_id: &str,
+) -> Result<(), WebError> {
+    match auth_provider {
+        "codex_oauth" => web_codex_oauth_manager(state)?
+            .write()
+            .await
+            .remove_account(account_id)
+            .await
+            .map_err(web_internal_error),
+        "claude_oauth" => web_claude_oauth_manager(state)?
+            .write()
+            .await
+            .remove_account(account_id)
+            .await
+            .map_err(web_internal_error),
+        "google_gemini_oauth" => web_gemini_oauth_manager(state)?
+            .write()
+            .await
+            .remove_account(account_id)
+            .await
+            .map_err(web_internal_error),
+        "antigravity_oauth" => web_antigravity_oauth_manager(state)?
+            .write()
+            .await
+            .remove_account(account_id)
+            .await
+            .map_err(web_internal_error),
+        _ => Err(WebError::bad_request(format!(
+            "{auth_provider} is not available in no-desktop web mode"
+        ))),
+    }
+}
+
+async fn headless_auth_set_default_account(
+    state: &ProxyState,
+    auth_provider: &str,
+    account_id: &str,
+) -> Result<(), WebError> {
+    match auth_provider {
+        "codex_oauth" => web_codex_oauth_manager(state)?
+            .write()
+            .await
+            .set_default_account(account_id)
+            .await
+            .map_err(web_internal_error),
+        "claude_oauth" => web_claude_oauth_manager(state)?
+            .write()
+            .await
+            .set_default_account(account_id)
+            .await
+            .map_err(web_internal_error),
+        "google_gemini_oauth" => web_gemini_oauth_manager(state)?
+            .write()
+            .await
+            .set_default_account(account_id)
+            .await
+            .map_err(web_internal_error),
+        "antigravity_oauth" => web_antigravity_oauth_manager(state)?
+            .write()
+            .await
+            .set_default_account(account_id)
+            .await
+            .map_err(web_internal_error),
+        _ => Err(WebError::bad_request(format!(
+            "{auth_provider} is not available in no-desktop web mode"
+        ))),
+    }
+}
+
+async fn headless_auth_logout(state: &ProxyState, auth_provider: &str) -> Result<(), WebError> {
+    match auth_provider {
+        "codex_oauth" => web_codex_oauth_manager(state)?
+            .write()
+            .await
+            .clear_auth()
+            .await
+            .map_err(web_internal_error),
+        "claude_oauth" => web_claude_oauth_manager(state)?
+            .write()
+            .await
+            .clear_auth()
+            .await
+            .map_err(web_internal_error),
+        "google_gemini_oauth" => web_gemini_oauth_manager(state)?
+            .write()
+            .await
+            .clear_auth()
+            .await
+            .map_err(web_internal_error),
+        "antigravity_oauth" => web_antigravity_oauth_manager(state)?
+            .write()
+            .await
+            .clear_auth()
+            .await
+            .map_err(web_internal_error),
+        _ => Err(WebError::bad_request(format!(
+            "{auth_provider} is not available in no-desktop web mode"
         ))),
     }
 }
@@ -2634,6 +3139,10 @@ async fn oauth_quota_command(
     command: &str,
     args: Value,
 ) -> Result<Value, WebError> {
+    if state.app_handle.is_none() {
+        return oauth_quota_command_headless(state, command, args).await;
+    }
+
     let quota = required_state::<OauthQuotaState>(state, "oauth quota")?;
     let codex = required_state::<CodexOAuthState>(state, "codex oauth")?;
     let claude = required_state::<ClaudeOAuthState>(state, "claude oauth")?;
@@ -2698,6 +3207,173 @@ async fn oauth_quota_command(
     }
 }
 
+async fn oauth_quota_command_headless(
+    state: &ProxyState,
+    command: &str,
+    args: Value,
+) -> Result<Value, WebError> {
+    match command {
+        "get_cached_oauth_quota" | "refresh_oauth_quota" => {
+            let auth_provider = string_arg(&args, "authProvider")?;
+            let account_id = headless_resolve_oauth_account_id(
+                state,
+                &auth_provider,
+                optional_string_arg(&args, "accountId"),
+                optional_string_arg(&args, "appType").as_deref(),
+                optional_string_arg(&args, "providerId").as_deref(),
+            )
+            .await?;
+            let Some(account_id) = account_id else {
+                return Ok(json!(null));
+            };
+            let Some(quota) = crate::services::oauth_quota::global_oauth_quota_service() else {
+                return Ok(json!(null));
+            };
+            Ok(json!(quota.get(&auth_provider, &account_id).await))
+        }
+        "get_claude_oauth_quota" => Ok(json!(
+            headless_get_claude_oauth_quota(state, optional_string_arg(&args, "accountId")).await?
+        )),
+        "get_codex_oauth_quota" => Ok(json!(
+            headless_get_codex_oauth_quota(state, optional_string_arg(&args, "accountId")).await?
+        )),
+        _ => Err(WebError::not_found(format!(
+            "oauth quota web command is not exposed: {command}"
+        ))),
+    }
+}
+
+async fn headless_resolve_oauth_account_id(
+    state: &ProxyState,
+    auth_provider: &str,
+    account_id: Option<String>,
+    app_type: Option<&str>,
+    provider_id: Option<&str>,
+) -> Result<Option<String>, WebError> {
+    if let Some(id) = account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return Ok(Some(id.to_string()));
+    }
+
+    match auth_provider {
+        "codex_oauth" => Ok(web_codex_oauth_manager(state)?
+            .read()
+            .await
+            .default_account_id()
+            .await),
+        "claude_oauth" => Ok(web_claude_oauth_manager(state)?
+            .read()
+            .await
+            .default_account_id()
+            .await),
+        "google_gemini_oauth" => Ok(web_gemini_oauth_manager(state)?
+            .read()
+            .await
+            .default_account_id()
+            .await),
+        "antigravity_oauth" => Ok(web_antigravity_oauth_manager(state)?
+            .read()
+            .await
+            .default_account_id()
+            .await),
+        "ollama_cloud" => Ok(provider_id.map(ToString::to_string)),
+        "cursor_apikey" => {
+            let (Some(app_type), Some(provider_id)) = (app_type, provider_id) else {
+                return Ok(None);
+            };
+            let app_state = required_app_state(state)?;
+            let provider = app_state
+                .db
+                .get_provider_by_id(provider_id, app_type)
+                .map_err(WebError::internal)?
+                .ok_or_else(|| {
+                    WebError::bad_request(format!("Provider not found: {provider_id}"))
+                })?;
+            let api_key =
+                crate::proxy::providers::cursor_apikey::cursor_api_key_from_provider(&provider)
+                    .map_err(web_internal_error)?;
+            Ok(Some(
+                crate::proxy::providers::cursor_apikey::account_id_for_api_key(&api_key),
+            ))
+        }
+        _ => Ok(None),
+    }
+}
+
+async fn headless_get_claude_oauth_quota(
+    state: &ProxyState,
+    account_id: Option<String>,
+) -> Result<crate::services::subscription::SubscriptionQuota, WebError> {
+    let manager = web_claude_oauth_manager(state)?;
+    let manager = manager.read().await;
+    let resolved = match account_id {
+        Some(id) => Some(id),
+        None => manager.default_account_id().await,
+    };
+    let Some(id) = resolved else {
+        return Ok(crate::services::subscription::SubscriptionQuota::not_found(
+            "claude_oauth",
+        ));
+    };
+    let token = match manager.get_valid_token_for_account(&id).await {
+        Ok(token) => token,
+        Err(err) => {
+            return Ok(crate::services::subscription::SubscriptionQuota::error(
+                "claude_oauth",
+                crate::services::subscription::CredentialStatus::Expired,
+                format!("Claude OAuth token unavailable: {err}"),
+            ));
+        }
+    };
+    Ok(crate::services::subscription::query_claude_quota_with_token(&token, "claude_oauth").await)
+}
+
+async fn headless_get_codex_oauth_quota(
+    state: &ProxyState,
+    account_id: Option<String>,
+) -> Result<crate::services::subscription::SubscriptionQuota, WebError> {
+    let manager = web_codex_oauth_manager(state)?;
+    let manager = manager.read().await;
+    let resolved = match account_id {
+        Some(id) => Some(id),
+        None => manager.default_account_id().await,
+    };
+    let Some(id) = resolved else {
+        return Ok(crate::services::subscription::SubscriptionQuota::not_found(
+            "codex_oauth",
+        ));
+    };
+    let token = match manager.get_valid_token_for_account(&id).await {
+        Ok(token) => token,
+        Err(err) => {
+            return Ok(crate::services::subscription::SubscriptionQuota::error(
+                "codex_oauth",
+                crate::services::subscription::CredentialStatus::Expired,
+                format!("Codex OAuth token unavailable: {err}"),
+            ));
+        }
+    };
+    let (quota, plan_type) = crate::services::subscription::query_codex_quota_with_plan(
+        &token,
+        Some(&id),
+        "codex_oauth",
+        "Codex OAuth access token expired or rejected. Please re-login via cc-switch.",
+    )
+    .await;
+    if let Some(plan_type) = plan_type.as_deref() {
+        if let Err(err) = manager
+            .record_account_plan(&id, Some(plan_type), "wham_usage")
+            .await
+        {
+            log::warn!("[CodexOAuth] failed to persist wham/usage plan for account={id}: {err}");
+        }
+    }
+    Ok(quota)
+}
+
 async fn subscription_command(
     state: &ProxyState,
     command: &str,
@@ -2705,6 +3381,23 @@ async fn subscription_command(
 ) -> Result<Value, WebError> {
     match command {
         "get_subscription_quota" => {
+            if state.app_handle.is_none() {
+                let app_state = required_app_state(state)?;
+                let tool = string_arg(&args, "tool")?;
+                let inner = crate::services::subscription::get_subscription_quota(&tool).await;
+                let snapshot = match &inner {
+                    Ok(quota) => quota.clone(),
+                    Err(err) => crate::services::subscription::SubscriptionQuota::error(
+                        &tool,
+                        crate::services::subscription::CredentialStatus::Valid,
+                        err.clone(),
+                    ),
+                };
+                if let Ok(app_type) = AppType::from_str(&tool) {
+                    app_state.usage_cache.put_subscription(app_type, snapshot);
+                }
+                return Ok(json!(inner.map_err(WebError::internal)?));
+            }
             let app = required_app_handle(state)?.clone();
             let app_state = required_tauri_app_state(state)?;
             Ok(json!(crate::commands::get_subscription_quota(

@@ -53,4 +53,26 @@ describe("Codex Chat provider presets", () => {
       ).toEqual(expected.contextWindows);
     }
   });
+
+  it("uses native Responses API for migrated CN providers without local route mapping", () => {
+    const nativeResponsesPresets = [
+      "DouBaoSeed",
+      "Bailian",
+      "Longcat",
+      "MiniMax",
+      "MiniMax en",
+      "Xiaomi MiMo",
+      "Xiaomi MiMo Token Plan (China)",
+    ];
+
+    for (const name of nativeResponsesPresets) {
+      const preset = codexProviderPresets.find((item) => item.name === name);
+
+      expect(preset, `${name} preset`).toBeDefined();
+      expect(preset?.apiFormat).toBe("openai_responses");
+      // 原生 Responses 预设必须不带 modelCatalog，否则“本地路由映射”开关会默认勾选
+      expect(preset?.modelCatalog ?? []).toHaveLength(0);
+      expect(preset?.codexChatReasoning).toBeUndefined();
+    }
+  });
 });

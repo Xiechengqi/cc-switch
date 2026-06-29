@@ -390,8 +390,8 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "doubao-seed-2-0-code-preview-latest": {
-          name: "Doubao Seed Code Preview",
+        "doubao-seed-2-1-pro": {
+          name: "Doubao Seed 2.1 Pro",
         },
       },
     },
@@ -962,6 +962,38 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
     },
   },
 
+  {
+    name: "OpenCode Go",
+    websiteUrl: "https://opencode.ai/go",
+    apiKeyUrl: "https://opencode.ai/go?ref=2YTRG2NGTX",
+    partnerPromotionKey: "opencode_go",
+    settingsConfig: {
+      npm: "@ai-sdk/openai-compatible",
+      name: "OpenCode Go",
+      options: {
+        baseURL: "https://opencode.ai/zen/go/v1",
+        apiKey: "",
+        setCacheKey: true,
+      },
+      models: {
+        "glm-5.2": { name: "GLM 5.2" },
+        "kimi-k2.7-code": { name: "Kimi K2.7 Code" },
+        "deepseek-v4-pro": { name: "DeepSeek V4 Pro" },
+        "deepseek-v4-flash": { name: "DeepSeek V4 Flash" },
+        "mimo-v2.5-pro": { name: "MiMo V2.5 Pro" },
+      },
+    },
+    category: "third_party",
+    icon: "opencode",
+    iconColor: "#211E1E",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+  },
   {
     name: "AiHubMix",
     websiteUrl: "https://aihubmix.com",

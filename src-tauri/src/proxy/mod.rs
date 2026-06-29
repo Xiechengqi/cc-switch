@@ -8,6 +8,7 @@ pub mod circuit_breaker;
 pub(crate) mod codex_identity;
 #[allow(dead_code)]
 pub(crate) mod codex_responses_ws;
+pub(crate) mod content_encoding;
 pub(crate) mod control;
 pub mod copilot_optimizer;
 pub mod error;

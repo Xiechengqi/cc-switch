@@ -10,6 +10,7 @@
 [![Downloads](https://img.shields.io/github/downloads/farion1231/cc-switch/total)](https://github.com/farion1231/cc-switch/releases/latest)
 
 <a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fcc-switch | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://www.star-history.com/#farion1231/cc-switch&Date"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=farion1231/cc-switch&theme=dark" /><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=farion1231/cc-switch" width="196" height="55" /></picture></a>
 
 ### 🌐 Die einzige offizielle Website: **[ccswitch.io](https://ccswitch.io)**
 
@@ -24,9 +25,9 @@
 <details open>
 <summary>Zum Einklappen klicken</summary>
 
-[![Kimi K2.6](https://kimi-file.moonshot.cn/prod-chat-kimi/kfs/4/2/2026-06-08/1d8j61pt3v89kkekm5mbg)](https://platform.moonshot.cn/console?aff=cc-switch)
+[![Kimi K2.7 Code](assets/partners/banners/kimi-banner-en.png)](https://platform.moonshot.cn/console?aff=cc-switch)
 
-Kimi K2.6 ist ein quelloffenes, nativ multimodales Agenten-Modell von Moonshot AI, das für langfristige Programmierung, code-getriebenes Design und schwarmbasierte Aufgabenorchestrierung entwickelt wurde. Es ist darauf ausgelegt, komplexe End-to-End-Engineering-Arbeiten über Frontend, DevOps, Performance-Optimierung und Full-Stack-Workflows hinweg zu bewältigen und dabei große Gruppen spezialisierter Agenten zu koordinieren, um echte Programmieraufgaben zu planen, umzusetzen, zu testen und zu iterieren. **[Hier klicken, um Kimi auszuprobieren](https://platform.moonshot.cn/console?aff=cc-switch)**
+Kimi K2.7 Code ist ein quelloffenes, auf Programmierung spezialisiertes Agenten-Modell von Moonshot AI. Es bietet eine stärkere Programmier- und Agentenleistung mit erheblichen Verbesserungen bei realen, langfristigen Programmieraufgaben. Diese Fortschritte führen zu höheren End-to-End-Erfolgsraten in komplexen Software-Engineering-Workflows. Zudem verbessert K2.7 Code die Reasoning-Effizienz und reduziert den Verbrauch an Thinking-Tokens um rund 30 % gegenüber K2.6. **[Hier klicken, um Kimi auszuprobieren](https://platform.moonshot.cn/console?aff=cc-switch)**
 
 ---
 

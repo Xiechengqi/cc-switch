@@ -235,9 +235,9 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
     mode: "proxy",
     apiFormat: "anthropic",
     modelRoutes: brandedRoutes(
-      "doubao-seed-2-0-code-preview-latest",
-      "doubao-seed-2-0-code-preview-latest",
-      "doubao-seed-2-0-code-preview-latest",
+      "doubao-seed-2-1-pro",
+      "doubao-seed-2-1-pro",
+      "doubao-seed-2-1-pro",
     ),
     isPartner: true,
     partnerPromotionKey: "doubaoseed",
@@ -309,7 +309,9 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
   },
   {
     name: "OpenCode Go",
-    websiteUrl: "https://opencode.ai",
+    websiteUrl: "https://opencode.ai/go",
+    apiKeyUrl: "https://opencode.ai/go?ref=2YTRG2NGTX",
+    partnerPromotionKey: "opencode_go",
     category: "third_party",
     baseUrl: "https://opencode.ai/zen/go",
     mode: "proxy",

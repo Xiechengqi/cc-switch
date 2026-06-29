@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-26
+
+- **上游分支：** `main`
+- **上游 HEAD：** `61d7ac01`
+- **共同祖先：** `524b9d98`
+- **合并提交数：** 25
+- **主要变更：**
+  - fix(proxy): 转发前对响应体（含 zstd）解压，确保上游限流/鉴权错误能透出
+  - fix(usage): usage_script 凭据视为显式覆盖；fix(hermes): Windows 配置生效
+  - feat(codex): 上游格式选择器与模型映射开关解耦（takeoverEnabled），CN providers 走原生 Responses API；preset 新增 modelCatalog 编辑能力
+  - feat(skills): 未管理 skill 的导入按钮加绿点
+  - feat(providers): DouBaoSeed → Doubao Seed 2.1 Pro；新增 SubRouter / OpenCode Go 等推广 preset（按规则丢弃）
+  - chore(about): 移除 Fable 5 verified banner（v3.16.4 commemorative）
+- **冲突解决：**
+  - `src-tauri/src/proxy/mod.rs`：保留本仓 codex_identity / codex_responses_ws / control 子模块，并入上游 `content_encoding` 子模块
+  - `src-tauri/src/proxy/forwarder.rs`：采纳上游 4xx/5xx 错误响应解压逻辑（`get_content_encoding` + `decompress_body`，支持 zstd）；本仓既有解压在 `response_processor::read_decoded_body` 仍保留
+  - `src/lib/query/mutations.ts`：并存本仓 `PROVIDER_TYPES`/`refreshCursorApiKeyQuotaAfterProviderSave` 与上游 `usageKeys.script` invalidation；onSuccess 回调同时调用两条路径
+  - `src/components/providers/forms/CodexFormFields.tsx`：上游引入 `takeoverEnabled` 解耦了"格式选择器"与"模型映射开关"，并加 catalogRows state 管理。本仓未提供 `catalogModels`/`onCatalogModelsChange` prop，采纳 HEAD 入口逻辑，仅引入 upstream 的 `isChatFormat`/`needsLocalRouting` 同义量；移除未使用的 `handleLocalRoutingChange`（由 takeoverEnabled 路径替代）
+  - `src/components/providers/forms/ProviderForm.tsx`：保留 HEAD 的 Claude env / Codex 抽象函数 `buildCodexSettingsConfigString` 入口；上游内联 `codexCatalogModels` 保存路径未引入（需要相应 props 联动，体量大）
+  - `src/icons/extracted/{index,metadata}.ts`：删除上游引入的 CCSub / SubRouter 图标条目；按"禁止新添加 API Key 类供应商"清理
+  - `src/config/{claude,codex,gemini,claudeDesktop,hermes,opencode,openclaw}ProviderPresets.ts` + `tests/config/codexChatProviderPresets.test.ts`：全部按 "禁止新添加 API Key 类供应商" 采纳 HEAD（含丢弃 SubRouter / OpenCode Go / Doubao Seed 2.1 Pro preset 更新）
+- **验证：** `cargo check` exit 0；`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-23
 
 - **上游分支：** `main`

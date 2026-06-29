@@ -1001,6 +1001,7 @@
       "runapi": "RunAPI offers special benefits for CC Switch users. Register via this link and contact customer support to claim ¥14 free credit.",
       "minimax_cn": "MiniMax Coding Plan Special Offer, Starter from ¥9.9",
       "minimax_en": "MiniMax Coding Plan Black Friday, Starter is now $2/mo (80% OFF!)",
+      "opencode_go": "Subscribe to OpenCode Go via this link — only $5 for your first month, plus an extra $5 in credit!",
       "dmxapi": "Claude Code exclusive model 66% OFF now!",
       "cubence": "Cubence is an official partner of CC Switch. Register using this link and enter \"CCSWITCH\" promo code during recharge to get 10% off every top-up",
       "aigocode": "AIGoCode is an official partner of CC Switch. Register using this link and get 10% bonus credit on your first top-up!",
@@ -1017,6 +1018,7 @@
       "volcengine_agentplan": "Volcengine Ark Coding Plan offers exclusive benefits for CC Switch users: subscribe via this link and new customers get 75% off for the first two months, plus an extra 5% off with the exclusive invite code 6J6FV5N2 — as low as ¥9.4/month!",
       "byteplus": "Register via this link to get 500,000 tokens of free inference quota per model.",
       "ccsub": "CCSub is a stable, affordable AI API relay — a drop-in replacement for Claude.ai & OpenAI subscriptions, with one key for all models at ~30% of direct API cost.",
+      "subrouter": "SubRouter is an AI relay aggregator that lets one key access multiple models and providers.",
       "unity2": "Unity2.ai offers exclusive benefits for CC Switch users: register via this link to get $2 in credits, plus another $10 for joining the official group — up to $12 in free credits!"
     },
     "presets": {
@@ -1291,8 +1293,12 @@
     "modelNameHint": "Specify the model to use, will be auto-updated in config.toml",
     "modelName": "Model Name",
     "localRoutingToggle": "Needs Local Routing",
-    "localRoutingOffHint": "If your provider is not native OpenAI Responses API, or the model name is not Codex's default GPT series, please enable this switch.",
-    "localRoutingOnHint": "Codex currently only natively supports OpenAI Responses API and GPT series models. If your provider uses the Chat Completions protocol or non-GPT models (such as DeepSeek or Kimi), enable this switch and keep local routing running while in use.",
+    "localRoutingOffHint": "Keep off when the provider's model names need no rewriting and you don't need custom names shown in the /model menu; enable it when you need model mapping.",
+    "localRoutingOnHint": "When on, configure model mapping below: show custom model names in Codex's /model menu and map requests to the real upstream model.",
+    "upstreamFormatLabel": "Upstream Format",
+    "upstreamFormatHint": "Pick Responses when your provider is natively a Responses API (direct, no format conversion); pick Chat when it uses the Chat Completions protocol (converts to Chat Completions).",
+    "upstreamFormatChat": "Chat Completions (convert)",
+    "upstreamFormatResponses": "Responses (native)",
     "upstreamModelName": "Upstream Model Name",
     "upstreamModelNameHint": "For Chat format, enter the real upstream model here; routing converts Codex Responses requests to Chat Completions while keeping this model.",
     "modelNamePlaceholder": "e.g., gpt-5-codex",
@@ -1320,7 +1326,7 @@
     "reasoningEffortHint": "Enable when the upstream supports thinking-depth control such as low/high/max. Enabling this also turns on thinking mode and converts Codex's reasoning.effort into the upstream Chat parameter.",
     "reasoningGroupTitle": "Reasoning Capability",
     "reasoningSectionHint": "Preset providers are configured automatically; custom providers are inferred from name/URL. Override manually only when auto-detection is wrong.",
-    "advancedSectionHint": "Includes local routing, model mapping, reasoning overrides and custom User-Agent. Enable local routing here when your provider uses the Chat Completions protocol or non-GPT models."
+    "advancedSectionHint": "Includes local routing, upstream format, model mapping, reasoning overrides and custom User-Agent. Enable local routing here when your provider uses the Chat Completions protocol or non-GPT models."
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",
@@ -1598,6 +1604,7 @@
     "accessKeyId": "AccessKey ID",
     "secretAccessKey": "SecretAccessKey",
     "volcengineAkSkHint": "Volcengine usage query needs an account-level AccessKey ID / Secret (different from the inference API key). Create them in the Volcengine console via the top-right account menu → 'API Access Keys'.",
+    "volcengineKeyConsoleLink": "Create keys at:",
     "defaultPlan": "Default Plan",
     "queryFailedMessage": "Query failed",
     "queryScript": "Query script (JavaScript)",
@@ -2240,6 +2247,7 @@
     "importSuccess": "Successfully imported {{count}} skills",
     "importSelected": "Import Selected ({{count}})",
     "noUnmanagedFound": "No skills to import found. All skills are already managed by CC Switch.",
+    "unmanagedAvailable": "Skills available to import",
     "foundIn": "Found in",
     "local": "Local",
     "uninstallConfirm": "Are you sure you want to uninstall \"{{name}}\"? This will remove the skill from all apps and create a local backup first.",

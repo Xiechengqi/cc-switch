@@ -3,6 +3,8 @@ import { invokeCommand } from "@/lib/runtime";
 export interface CodexBankedResetCredit {
   id: string;
   status?: string | null;
+  grantedAt?: string | null;
+  expiresAt?: string | null;
   title?: string | null;
   description?: string | null;
   profileUserId?: string | null;

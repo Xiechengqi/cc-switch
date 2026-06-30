@@ -1194,6 +1194,8 @@
     "availableUnit": "次",
     "selectedCredit": "选择 credit",
     "selectCredit": "选择一个可用重置",
+    "creditGrantedAt": "授予",
+    "creditExpiresAt": "到期",
     "creditFallbackTitle": "Banked Reset",
     "creditFallbackDescription": "使用后会立即触发当前 Codex 额度窗口重置。",
     "noCredits": "当前没有可用的 Banked Reset。",

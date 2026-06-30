@@ -38,6 +38,10 @@ pub struct CodexBankedResetCredit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub granted_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -222,6 +226,7 @@ fn apply_headers(
         .header(header::ACCEPT, "application/json")
         .header(header::USER_AGENT, DEFAULT_USER_AGENT)
         .header("OAI-Language", "zh-CN")
+        .header("OAI-Product-Sku", "CODEX")
         .header("originator", "Codex Desktop")
         .header("X-OpenAI-Attach-Auth", "1")
         .header("X-OpenAI-Attach-Integrity-State", "1")
@@ -325,6 +330,11 @@ fn normalize_credits(raw: &Value) -> Vec<CodexBankedResetCredit> {
             Some(CodexBankedResetCredit {
                 id,
                 status: string_field(item, "status"),
+                granted_at: string_field_any(
+                    item,
+                    &["granted_at", "grantedAt", "grant_at", "grantAt"],
+                ),
+                expires_at: string_field_any(item, &["expires_at", "expiresAt"]),
                 title: string_field(item, "title"),
                 description: string_field(item, "description"),
                 profile_user_id: string_field(item, "profile_user_id"),
@@ -356,6 +366,19 @@ fn string_field(raw: &Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn string_field_any(raw: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        raw.get(*key).and_then(|value| match value {
+            Value::String(text) => {
+                let text = text.trim();
+                (!text.is_empty()).then(|| text.to_string())
+            }
+            Value::Number(number) => Some(number.to_string()),
+            _ => None,
+        })
+    })
 }
 
 fn bool_field(raw: &Value, key: &str) -> Option<bool> {
@@ -432,7 +455,13 @@ mod tests {
     fn normalizes_credits_and_rules() {
         let credits = normalize_credits(&json!({
             "credits": [
-                { "id": "credit-1", "status": "available", "title": "Reset" },
+                {
+                    "id": "credit-1",
+                    "status": "available",
+                    "title": "Reset",
+                    "granted_at": "2026-06-15T03:32:00Z",
+                    "expiresAt": "2026-07-15T03:32:00Z"
+                },
                 { "status": "missing-id" }
             ]
         }));
@@ -440,6 +469,14 @@ mod tests {
         assert_eq!(credits.len(), 1);
         assert_eq!(credits[0].id, "credit-1");
         assert_eq!(credits[0].title.as_deref(), Some("Reset"));
+        assert_eq!(
+            credits[0].granted_at.as_deref(),
+            Some("2026-06-15T03:32:00Z")
+        );
+        assert_eq!(
+            credits[0].expires_at.as_deref(),
+            Some("2026-07-15T03:32:00Z")
+        );
 
         let rules = normalize_rules(&json!({
             "rules": [
@@ -479,5 +516,23 @@ mod tests {
             .count();
 
         assert_eq!(available_count, 1);
+    }
+
+    #[test]
+    fn normalizes_credit_time_aliases() {
+        let credits = normalize_credits(&json!({
+            "credits": [
+                {
+                    "id": "credit-1",
+                    "status": "available",
+                    "grantAt": 1781494124,
+                    "expires_at": 1784086124
+                }
+            ]
+        }));
+
+        assert_eq!(credits.len(), 1);
+        assert_eq!(credits[0].granted_at.as_deref(), Some("1781494124"));
+        assert_eq!(credits[0].expires_at.as_deref(), Some("1784086124"));
     }
 }

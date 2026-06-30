@@ -1194,6 +1194,8 @@
     "availableUnit": "件",
     "selectedCredit": "credit を選択",
     "selectCredit": "利用可能なリセットを選択",
+    "creditGrantedAt": "付与",
+    "creditExpiresAt": "期限",
     "creditFallbackTitle": "Banked Reset",
     "creditFallbackDescription": "使用すると現在の Codex クォータウィンドウが直ちにリセットされます。",
     "noCredits": "現在利用可能な Banked Reset credit はありません。",

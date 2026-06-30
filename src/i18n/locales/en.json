@@ -1194,6 +1194,8 @@
     "availableUnit": "credit(s)",
     "selectedCredit": "Selected credit",
     "selectCredit": "Choose an available reset",
+    "creditGrantedAt": "Granted",
+    "creditExpiresAt": "Expires",
     "creditFallbackTitle": "Banked Reset",
     "creditFallbackDescription": "Using this credit immediately resets the current Codex quota window.",
     "noCredits": "No Banked Reset credits are currently available.",

@@ -34,7 +34,7 @@ interface CodexBankedResetPanelProps {
 export const CodexBankedResetPanel: React.FC<CodexBankedResetPanelProps> = ({
   accountId,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [selectedCreditId, setSelectedCreditId] = React.useState<string>("");
   const [emailsInput, setEmailsInput] = React.useState("");
@@ -163,6 +163,12 @@ export const CodexBankedResetPanel: React.FC<CodexBankedResetPanelProps> = ({
   const selectedCredit = availableCredits.find(
     (credit) => credit.id === selectedCreditId,
   );
+  const selectedCreditIndex = availableCredits.findIndex(
+    (credit) => credit.id === selectedCreditId,
+  );
+  const selectedCreditTimeSummary = selectedCredit
+    ? creditTimeSummary(selectedCredit, t, i18n.language)
+    : null;
   const availableCount =
     statusQuery.data?.availableCount ?? availableCredits.length;
 
@@ -256,21 +262,55 @@ export const CodexBankedResetPanel: React.FC<CodexBankedResetPanelProps> = ({
                     <SelectTrigger>
                       <SelectValue
                         placeholder={t("codexBankedReset.selectCredit")}
-                      />
+                      >
+                        {selectedCredit
+                          ? creditLabel(selectedCredit, selectedCreditIndex, t)
+                          : undefined}
+                      </SelectValue>
                     </SelectTrigger>
-                    <SelectContent>
-                      {availableCredits.map((credit, index) => (
-                        <SelectItem key={credit.id} value={credit.id}>
-                          {creditLabel(credit, index, t)}
-                        </SelectItem>
-                      ))}
+                    <SelectContent
+                      position="item-aligned"
+                      className="w-[22rem] max-w-[calc(100vw-2rem)]"
+                    >
+                      {availableCredits.map((credit, index) => {
+                        const summary = creditTimeSummary(
+                          credit,
+                          t,
+                          i18n.language,
+                        );
+                        return (
+                          <SelectItem
+                            key={credit.id}
+                            value={credit.id}
+                            className="py-2"
+                          >
+                            <div className="flex min-w-0 flex-col gap-0.5">
+                              <span className="truncate">
+                                {creditLabel(credit, index, t)}
+                              </span>
+                              {summary && (
+                                <span className="truncate text-xs text-muted-foreground">
+                                  {summary}
+                                </span>
+                              )}
+                            </div>
+                          </SelectItem>
+                        );
+                      })}
                     </SelectContent>
                   </Select>
                   {selectedCredit && (
-                    <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-                      {selectedCredit.description ||
-                        t("codexBankedReset.creditFallbackDescription")}
-                    </p>
+                    <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                      <p>
+                        {selectedCredit.description ||
+                          t("codexBankedReset.creditFallbackDescription")}
+                      </p>
+                      {selectedCreditTimeSummary && (
+                        <p className="mt-1 font-mono">
+                          {selectedCreditTimeSummary}
+                        </p>
+                      )}
+                    </div>
                   )}
                 </div>
               ) : (
@@ -374,9 +414,45 @@ function creditLabel(
   index: number,
   t: ReturnType<typeof useTranslation>["t"],
 ) {
+  const safeIndex = index >= 0 ? index : 0;
   return `${credit.title || t("codexBankedReset.creditFallbackTitle")} #${
-    index + 1
+    safeIndex + 1
   }`;
+}
+
+function creditTimeSummary(
+  credit: CodexBankedResetCredit,
+  t: ReturnType<typeof useTranslation>["t"],
+  locale: string,
+) {
+  const grantedAt = formatCreditDate(credit.grantedAt, locale);
+  const expiresAt = formatCreditDate(credit.expiresAt, locale);
+  const parts: string[] = [];
+  if (grantedAt) {
+    parts.push(`${t("codexBankedReset.creditGrantedAt")} ${grantedAt}`);
+  }
+  if (expiresAt) {
+    parts.push(`${t("codexBankedReset.creditExpiresAt")} ${expiresAt}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+function formatCreditDate(value: string | null | undefined, locale: string) {
+  if (!value) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const numeric = Number(text);
+  const date = Number.isFinite(numeric)
+    ? new Date(numeric > 10_000_000_000 ? numeric : numeric * 1000)
+    : new Date(text);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat(locale, {
+    year: "2-digit",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 export default CodexBankedResetPanel;

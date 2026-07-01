@@ -6,7 +6,9 @@
 
 use std::time::Duration;
 
-use crate::services::subscription::{CredentialStatus, QuotaTier, SubscriptionQuota};
+use crate::services::subscription::{
+    CredentialStatus, QuotaTier, SubscriptionExpiresKind, SubscriptionInfo, SubscriptionQuota,
+};
 
 /// 调用 `/api/me` 获取 Ollama 账户信息，返回 `SubscriptionQuota`。
 ///
@@ -88,11 +90,13 @@ pub async fn get_ollama_cloud_account_info(api_key: &str) -> SubscriptionQuota {
         .and_then(|v| v.get("Time"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let subscription = build_ollama_subscription_info(&plan, period_end.clone());
 
     SubscriptionQuota {
         tool: "ollama_cloud".to_string(),
         credential_status: CredentialStatus::Valid,
-        credential_message: Some(plan),
+        credential_message: Some(plan.clone()),
+        subscription: Some(subscription),
         success: true,
         tiers: vec![QuotaTier {
             name: email,
@@ -111,10 +115,71 @@ pub async fn get_ollama_cloud_account_info(api_key: &str) -> SubscriptionQuota {
     }
 }
 
+fn build_ollama_subscription_info(plan: &str, period_end: Option<String>) -> SubscriptionInfo {
+    let plan_type = plan.trim().to_string();
+    let plan_label = if plan_type.is_empty() {
+        "Ollama".to_string()
+    } else if plan_type.to_lowercase().contains("ollama") {
+        plan_type.clone()
+    } else {
+        format!("Ollama {}", capitalize_first(&plan_type))
+    };
+    let expires_source = period_end
+        .as_ref()
+        .map(|_| "ollama_api.me.SubscriptionPeriodEnd.Time".to_string());
+    let expires_kind = if period_end.is_some() {
+        Some(SubscriptionExpiresKind::BillingPeriod)
+    } else {
+        Some(SubscriptionExpiresKind::Unknown)
+    };
+
+    SubscriptionInfo {
+        plan_type: Some(plan_type),
+        plan_label: Some(plan_label),
+        expires_at: period_end,
+        expires_source,
+        expires_kind,
+    }
+}
+
+fn capitalize_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
 fn now_millis() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ollama_subscription_info_uses_period_end() {
+        let subscription =
+            build_ollama_subscription_info("pro", Some("2026-07-25T04:49:24Z".to_string()));
+
+        assert_eq!(subscription.plan_type.as_deref(), Some("pro"));
+        assert_eq!(subscription.plan_label.as_deref(), Some("Ollama Pro"));
+        assert_eq!(
+            subscription.expires_at.as_deref(),
+            Some("2026-07-25T04:49:24Z")
+        );
+        assert_eq!(
+            subscription.expires_source.as_deref(),
+            Some("ollama_api.me.SubscriptionPeriodEnd.Time")
+        );
+        assert_eq!(
+            subscription.expires_kind.as_ref(),
+            Some(&SubscriptionExpiresKind::BillingPeriod)
+        );
+    }
 }

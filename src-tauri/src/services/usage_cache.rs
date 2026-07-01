@@ -94,6 +94,7 @@ mod tests {
             tool: "claude".to_string(),
             credential_status: CredentialStatus::Valid,
             credential_message: None,
+            subscription: None,
             success: true,
             tiers: vec![],
             extra_usage: None,

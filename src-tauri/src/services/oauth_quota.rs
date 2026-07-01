@@ -682,6 +682,22 @@ async fn refresh_codex_quota(managers: &OauthQuotaManagers, account_id: &str) ->
                     );
                 }
             }
+            if let Some(subscription) = quota.subscription.as_ref() {
+                if let Some(expires_at) = subscription.expires_at.as_deref() {
+                    let source = subscription
+                        .expires_source
+                        .as_deref()
+                        .unwrap_or("chatgpt_subscription");
+                    if let Err(err) = manager
+                        .record_account_subscription(account_id, Some(expires_at), source)
+                        .await
+                    {
+                        log::warn!(
+                            "[OauthQuota] failed to persist Codex OAuth subscription expiry for account={account_id}: {err}"
+                        );
+                    }
+                }
+            }
             quota
         }
         Err(err) => SubscriptionQuota::error(
@@ -874,6 +890,7 @@ fn kiro_usage_to_subscription_quota(usage: KiroUsageLimitsResponse) -> Subscript
         tool: "kiro_oauth".to_string(),
         credential_status: CredentialStatus::Valid,
         credential_message,
+        subscription: None,
         success: true,
         tiers: vec![QuotaTier {
             name: "kiro_agentic_requests".to_string(),
@@ -925,6 +942,7 @@ fn copilot_usage_to_subscription_quota(usage: CopilotUsageResponse) -> Subscript
         tool: "github_copilot".to_string(),
         credential_status: CredentialStatus::Valid,
         credential_message: Some(format_copilot_plan_label(&usage.copilot_plan)),
+        subscription: None,
         success: true,
         tiers: vec![QuotaTier {
             name: "premium".to_string(),
@@ -1221,6 +1239,7 @@ mod tests {
             tool: tool.to_string(),
             credential_status: CredentialStatus::Valid,
             credential_message: None,
+            subscription: None,
             success: true,
             tiers: vec![QuotaTier {
                 name: tier_name.to_string(),
@@ -1260,6 +1279,7 @@ mod tests {
             tool: "codex_oauth".to_string(),
             credential_status: CredentialStatus::Valid,
             credential_message: None,
+            subscription: None,
             success: true,
             tiers: vec![QuotaTier {
                 name: "five_hour".to_string(),
@@ -1290,6 +1310,7 @@ mod tests {
             tool: "cursor_oauth".to_string(),
             credential_status: CredentialStatus::Valid,
             credential_message: None,
+            subscription: None,
             success: true,
             tiers: vec![QuotaTier {
                 name: "five_hour".to_string(),

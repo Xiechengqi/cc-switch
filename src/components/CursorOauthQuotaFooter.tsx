@@ -8,7 +8,7 @@ import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
 import type { AppId } from "@/lib/api";
 import {
-  countdownStr,
+  formatQuotaSummary,
   formatRelativeTime,
   SubscriptionQuotaView,
   utilizationColor,
@@ -54,23 +54,32 @@ const CursorOauthQuotaFooter: React.FC<CursorOauthQuotaFooterProps> = ({
 
   const [now, setNow] = React.useState(Date.now());
   React.useEffect(() => {
-    if (!quota?.queriedAt) return;
+    if (
+      !quota?.queriedAt &&
+      !quota?.subscription?.expiresAt &&
+      !quota?.tiers?.some((item) => item.resetsAt)
+    ) {
+      return;
+    }
     const interval = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(interval);
-  }, [quota?.queriedAt]);
+  }, [quota?.queriedAt, quota?.subscription?.expiresAt, quota?.tiers]);
 
   const membership = quota?.credentialMessage ?? undefined;
-  const tier = quota?.tiers?.find((item) => item.name === "cursor_credits");
+  const tier = quota?.tiers?.find(
+    (item) =>
+      item.name === "cursor_credits" || item.name === "cursor_included_usage",
+  );
   const creditUsed = tier?.used;
   const creditLimit = tier?.limit;
+  const hasCreditRange =
+    typeof creditUsed === "number" &&
+    Number.isFinite(creditUsed) &&
+    typeof creditLimit === "number" &&
+    Number.isFinite(creditLimit);
 
   // 无 usage tier 时（如 Stripe 成功但 Usage 接口失败），仍展示会员等级标签
-  if (
-    !quota?.success ||
-    !tier ||
-    typeof creditUsed !== "number" ||
-    typeof creditLimit !== "number"
-  ) {
+  if (!quota?.success || !tier) {
     return (
       <SubscriptionQuotaView
         quota={quota && membership ? { ...quota, tiers: [] } : quota}
@@ -82,10 +91,16 @@ const CursorOauthQuotaFooter: React.FC<CursorOauthQuotaFooterProps> = ({
     );
   }
 
-  const used = formatUsd(creditUsed, i18n.language);
-  const limit = formatUsd(creditLimit, i18n.language);
+  const summaryText = formatQuotaSummary(quota, [tier], t, now);
+  const used =
+    typeof creditUsed === "number" && Number.isFinite(creditUsed)
+      ? formatUsd(creditUsed, i18n.language)
+      : null;
+  const limit =
+    typeof creditLimit === "number" && Number.isFinite(creditLimit)
+      ? formatUsd(creditLimit, i18n.language)
+      : null;
   const utilization = Math.round(tier.utilization);
-  const resetCountdown = countdownStr(tier.resetsAt);
   const resetDate = formatResetDate(tier.resetsAt, i18n.language);
 
   if (inline) {
@@ -115,24 +130,8 @@ const CursorOauthQuotaFooter: React.FC<CursorOauthQuotaFooterProps> = ({
             <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
           </button>
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-muted-foreground/80 hidden sm:inline">
-            Agent · Tools · Images
-          </span>
-          <span className="font-medium tabular-nums text-foreground">
-            {used} / {limit}
-          </span>
-          <span
-            className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}
-          >
-            {t("subscription.utilization", { value: utilization })}
-          </span>
-          {resetCountdown && (
-            <span className="text-muted-foreground/60 flex items-center gap-px">
-              <Clock size={10} />
-              {resetCountdown}
-            </span>
-          )}
+        <div className="min-w-0 max-w-full text-right text-[10px] font-medium text-foreground break-words">
+          {summaryText}
         </div>
       </div>
     );
@@ -176,33 +175,39 @@ const CursorOauthQuotaFooter: React.FC<CursorOauthQuotaFooterProps> = ({
         </div>
       </div>
 
-      <div className="flex items-center gap-3 text-xs">
-        <span className="text-gray-500 dark:text-gray-400 font-medium w-20 flex-shrink-0">
-          {t("subscription.cursorCredits", { defaultValue: "Usage" })}
-        </span>
-        <div className="flex-1 min-w-0">
-          <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all ${
-                tier.utilization >= 90
-                  ? "bg-red-500"
-                  : tier.utilization >= 70
-                    ? "bg-orange-500"
-                    : "bg-green-500"
-              }`}
-              style={{ width: `${Math.min(tier.utilization, 100)}%` }}
-            />
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground tabular-nums truncate">
-            {used} / {limit}
-          </div>
-        </div>
-        <span
-          className={`font-semibold tabular-nums flex-shrink-0 ${utilizationColor(tier.utilization)}`}
-        >
-          {t("subscription.utilization", { value: utilization })}
-        </span>
+      <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-200 break-words">
+        {summaryText}
       </div>
+
+      {hasCreditRange && (
+        <div className="flex items-center gap-3 text-xs">
+          <span className="text-gray-500 dark:text-gray-400 font-medium w-20 flex-shrink-0">
+            {t("subscription.cursorCredits", { defaultValue: "Usage" })}
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  tier.utilization >= 90
+                    ? "bg-red-500"
+                    : tier.utilization >= 70
+                      ? "bg-orange-500"
+                      : "bg-green-500"
+                }`}
+                style={{ width: `${Math.min(tier.utilization, 100)}%` }}
+              />
+            </div>
+            <div className="mt-1 text-[10px] text-muted-foreground tabular-nums truncate">
+              {used} / {limit}
+            </div>
+          </div>
+          <span
+            className={`font-semibold tabular-nums flex-shrink-0 ${utilizationColor(tier.utilization)}`}
+          >
+            {t("subscription.utilization", { value: utilization })}
+          </span>
+        </div>
+      )}
     </div>
   );
 };

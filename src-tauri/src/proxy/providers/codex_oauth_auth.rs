@@ -238,6 +238,13 @@ struct CodexAccountData {
     pub plan_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_updated_at: Option<i64>,
+    /// ChatGPT subscription expiration from backend-api account/subscription metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_expires_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_expires_updated_at: Option<i64>,
 }
 
 /// 公开的账号信息（返回给前端，复用 GitHubAccount 结构）
@@ -1043,6 +1050,53 @@ impl CodexOAuthManager {
         Ok(())
     }
 
+    pub async fn record_account_subscription(
+        &self,
+        account_id: &str,
+        expires_at: Option<&str>,
+        source: &str,
+    ) -> Result<(), CodexOAuthError> {
+        let Some(expires_at) = expires_at
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| {
+                chrono::DateTime::parse_from_rfc3339(value)
+                    .ok()
+                    .map(|dt| dt.to_rfc3339())
+            })
+        else {
+            return Ok(());
+        };
+        let source = source.trim();
+        let source = if source.is_empty() {
+            "chatgpt_subscription"
+        } else {
+            source
+        };
+
+        let mut changed = false;
+        {
+            let mut accounts = self.accounts.write().await;
+            let Some(account) = accounts.get_mut(account_id) else {
+                return Err(CodexOAuthError::AccountNotFound(account_id.to_string()));
+            };
+
+            if account.subscription_expires_at.as_deref() != Some(expires_at.as_str())
+                || account.subscription_expires_source.as_deref() != Some(source)
+            {
+                account.subscription_expires_at = Some(expires_at);
+                account.subscription_expires_source = Some(source.to_string());
+                account.subscription_expires_updated_at = Some(chrono::Utc::now().timestamp());
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.save_to_disk().await?;
+        }
+        Ok(())
+    }
+
     pub async fn clear_auth(&self) -> Result<(), CodexOAuthError> {
         log::info!("[CodexOAuth] 清除所有认证");
 
@@ -1125,7 +1179,15 @@ impl CodexOAuthManager {
         plan_source: &str,
     ) -> Result<GitHubAccount, CodexOAuthError> {
         let now = chrono::Utc::now().timestamp();
-        let (existing_plan_type, existing_plan_label, existing_plan_source, existing_updated_at) = {
+        let (
+            existing_plan_type,
+            existing_plan_label,
+            existing_plan_source,
+            existing_updated_at,
+            existing_subscription_expires_at,
+            existing_subscription_expires_source,
+            existing_subscription_expires_updated_at,
+        ) = {
             let accounts = self.accounts.read().await;
             accounts
                 .get(&account_id)
@@ -1135,9 +1197,12 @@ impl CodexOAuthManager {
                         account.plan_label.clone(),
                         account.plan_source.clone(),
                         account.plan_updated_at,
+                        account.subscription_expires_at.clone(),
+                        account.subscription_expires_source.clone(),
+                        account.subscription_expires_updated_at,
                     )
                 })
-                .unwrap_or((None, None, None, None))
+                .unwrap_or((None, None, None, None, None, None, None))
         };
         let next_plan_type = plan_type
             .as_deref()
@@ -1182,6 +1247,9 @@ impl CodexOAuthManager {
             plan_label: stored_plan_label,
             plan_source: stored_plan_source,
             plan_updated_at: stored_plan_updated_at,
+            subscription_expires_at: existing_subscription_expires_at,
+            subscription_expires_source: existing_subscription_expires_source,
+            subscription_expires_updated_at: existing_subscription_expires_updated_at,
         };
 
         let account = GitHubAccount::from(&data);

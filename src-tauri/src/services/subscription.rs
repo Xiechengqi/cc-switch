@@ -60,6 +60,36 @@ pub struct ExtraUsage {
     pub currency: Option<String>,
 }
 
+/// 订阅到期时间的语义来源。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionExpiresKind {
+    /// 真实订阅到期时间。
+    Subscription,
+    /// 账期结束时间，不一定代表订阅终止。
+    BillingPeriod,
+    /// 用量窗口重置时间，不应标记为订阅到期。
+    QuotaPeriod,
+    /// 当前供应商暂未暴露明确语义。
+    Unknown,
+}
+
+/// 账号级订阅摘要。不同于 `QuotaTier::resets_at`，这里描述订阅本身。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_kind: Option<SubscriptionExpiresKind>,
+}
+
 /// 额度查询失败的结构化分类
 ///
 /// 用于前端区分"真正过期 vs 临时限流 vs 网络错误"，从而决定是重试 / 退避 / 登录引导。
@@ -144,6 +174,8 @@ pub struct SubscriptionQuota {
     pub tool: String,
     pub credential_status: CredentialStatus,
     pub credential_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription: Option<SubscriptionInfo>,
     pub success: bool,
     pub tiers: Vec<QuotaTier>,
     pub extra_usage: Option<ExtraUsage>,
@@ -160,6 +192,7 @@ impl SubscriptionQuota {
             tool: tool.to_string(),
             credential_status: CredentialStatus::NotFound,
             credential_message: None,
+            subscription: None,
             success: false,
             tiers: vec![],
             extra_usage: None,
@@ -174,6 +207,7 @@ impl SubscriptionQuota {
             tool: tool.to_string(),
             credential_status: status,
             credential_message: Some(message.clone()),
+            subscription: None,
             success: false,
             tiers: vec![],
             extra_usage: None,
@@ -189,6 +223,7 @@ impl SubscriptionQuota {
             tool: tool.to_string(),
             credential_status: status,
             credential_message: Some(message.clone()),
+            subscription: None,
             success: false,
             tiers: vec![],
             extra_usage: None,
@@ -485,6 +520,7 @@ pub async fn query_antigravity_quota_with_token(
                     tool: tool_name.to_string(),
                     credential_status: CredentialStatus::Valid,
                     credential_message: plan_label,
+                    subscription: None,
                     success: true,
                     tiers,
                     extra_usage: None,
@@ -582,15 +618,21 @@ pub async fn query_cursor_quota_with_tool(
         .map(format_cursor_membership_label)
         .or(Some("Cursor".to_string()));
 
-    let tiers = match usage_result {
-        Ok(usage) => parse_cursor_usage_tiers(&usage),
-        Err(_) => vec![],
+    let (tiers, billing_cycle_end) = match usage_result {
+        Ok(usage) => (
+            parse_cursor_usage_tiers(&usage),
+            cursor_billing_cycle_end(&usage),
+        ),
+        Err(_) => (vec![], None),
     };
+    let subscription =
+        build_cursor_subscription_info(credential_message.as_deref(), billing_cycle_end);
 
     SubscriptionQuota {
         tool: tool.to_string(),
         credential_status: CredentialStatus::Valid,
         credential_message,
+        subscription,
         success: true,
         tiers,
         extra_usage: None,
@@ -661,13 +703,8 @@ fn format_cursor_membership_label(membership_type: &str) -> String {
     }
 }
 
-fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
-    let plan_usage = match usage.get("planUsage") {
-        Some(pu) => pu,
-        None => return vec![],
-    };
-
-    let resets_at = usage
+fn cursor_billing_cycle_end(usage: &serde_json::Value) -> Option<String> {
+    usage
         .get("billingCycleEnd")
         .and_then(|v| {
             v.as_i64()
@@ -675,7 +712,44 @@ fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
                 .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
         })
         .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
-        .map(|dt| dt.to_rfc3339());
+        .map(|dt| dt.to_rfc3339())
+}
+
+fn build_cursor_subscription_info(
+    plan_label: Option<&str>,
+    billing_cycle_end: Option<String>,
+) -> Option<SubscriptionInfo> {
+    let plan_label = plan_label
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string);
+    if plan_label.is_none() && billing_cycle_end.is_none() {
+        return None;
+    }
+    let expires_source = billing_cycle_end
+        .as_ref()
+        .map(|_| "cursor_dashboard.billingCycleEnd".to_string());
+    let expires_kind = if billing_cycle_end.is_some() {
+        Some(SubscriptionExpiresKind::BillingPeriod)
+    } else {
+        Some(SubscriptionExpiresKind::Unknown)
+    };
+    Some(SubscriptionInfo {
+        plan_type: None,
+        plan_label,
+        expires_at: billing_cycle_end,
+        expires_source,
+        expires_kind,
+    })
+}
+
+fn parse_cursor_usage_tiers(usage: &serde_json::Value) -> Vec<QuotaTier> {
+    let plan_usage = match usage.get("planUsage") {
+        Some(pu) => pu,
+        None => return vec![],
+    };
+
+    let resets_at = cursor_billing_cycle_end(usage);
 
     let limit = plan_usage
         .get("limit")
@@ -892,6 +966,7 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
         tool: "claude".to_string(),
         credential_status: CredentialStatus::Valid,
         credential_message: plan_label,
+        subscription: None,
         success: true,
         tiers,
         extra_usage,
@@ -1108,6 +1183,18 @@ struct CodexUsageResponse {
     rate_limit: Option<CodexRateLimit>,
 }
 
+const CHATGPT_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const CHATGPT_ACCOUNTS_CHECK_URL: &str =
+    "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27";
+const CHATGPT_SUBSCRIPTIONS_URL: &str = "https://chatgpt.com/backend-api/subscriptions";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ChatGptSubscriptionLookup {
+    plan_type: Option<String>,
+    expires_at: Option<String>,
+    expires_source: Option<String>,
+}
+
 /// 根据窗口秒数映射到 tier 名称（与 Claude 的命名兼容以复用前端 i18n）
 fn window_seconds_to_tier_name(secs: i64) -> String {
     match secs {
@@ -1128,6 +1215,295 @@ fn window_seconds_to_tier_name(secs: i64) -> String {
 /// Unix 时间戳（秒）转 ISO 8601 字符串
 fn unix_ts_to_iso(ts: i64) -> Option<String> {
     chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339())
+}
+
+fn normalize_rfc3339_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .map(|dt| dt.to_rfc3339())
+}
+
+fn extract_chatgpt_account_plan_type(account: &serde_json::Value) -> Option<String> {
+    account
+        .pointer("/account/plan_type")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            account
+                .pointer("/entitlement/subscription_plan")
+                .and_then(|v| v.as_str())
+        })
+        .map(normalize_chatgpt_plan_type)
+        .filter(|value| !value.is_empty())
+}
+
+fn extract_chatgpt_entitlement_expires_at(account: &serde_json::Value) -> Option<String> {
+    account
+        .pointer("/entitlement/expires_at")
+        .and_then(|v| v.as_str())
+        .and_then(normalize_rfc3339_string)
+}
+
+fn chatgpt_account_lookup_from_value(
+    account: &serde_json::Value,
+) -> Option<ChatGptSubscriptionLookup> {
+    let plan_type = extract_chatgpt_account_plan_type(account);
+    let expires_at = extract_chatgpt_entitlement_expires_at(account);
+    if plan_type.is_none() && expires_at.is_none() {
+        return None;
+    }
+    let expires_source = expires_at
+        .as_ref()
+        .map(|_| "accounts_check_entitlement".to_string());
+    Some(ChatGptSubscriptionLookup {
+        plan_type,
+        expires_at,
+        expires_source,
+    })
+}
+
+fn chatgpt_account_matches_id(account: &serde_json::Value, account_id: &str) -> bool {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return false;
+    }
+    [
+        "/account/id",
+        "/account/account_id",
+        "/account/chatgpt_account_id",
+        "/account/organization_id",
+        "/id",
+        "/account_id",
+        "/chatgpt_account_id",
+        "/organization_id",
+    ]
+    .iter()
+    .any(|path| account.pointer(path).and_then(|v| v.as_str()) == Some(account_id))
+}
+
+fn parse_chatgpt_accounts_check_lookup(
+    body: &serde_json::Value,
+    account_id: Option<&str>,
+) -> Option<ChatGptSubscriptionLookup> {
+    let accounts = body.get("accounts")?.as_object()?;
+    let account_id = account_id.map(str::trim).filter(|id| !id.is_empty());
+
+    if let Some(id) = account_id {
+        if let Some(account) = accounts.get(id) {
+            if let Some(lookup) = chatgpt_account_lookup_from_value(account) {
+                return Some(lookup);
+            }
+        }
+        for account in accounts.values() {
+            if chatgpt_account_matches_id(account, id) {
+                if let Some(lookup) = chatgpt_account_lookup_from_value(account) {
+                    return Some(lookup);
+                }
+            }
+        }
+    }
+
+    let mut default_candidate = None;
+    let mut paid_candidate = None;
+    let mut any_candidate = None;
+
+    for account in accounts.values() {
+        let Some(lookup) = chatgpt_account_lookup_from_value(account) else {
+            continue;
+        };
+        if any_candidate.is_none() {
+            any_candidate = Some(lookup.clone());
+        }
+        if default_candidate.is_none()
+            && account
+                .pointer("/account/is_default")
+                .and_then(|v| v.as_bool())
+                == Some(true)
+        {
+            default_candidate = Some(lookup.clone());
+        }
+        if paid_candidate.is_none()
+            && lookup
+                .plan_type
+                .as_deref()
+                .is_some_and(|plan| plan != "free")
+        {
+            paid_candidate = Some(lookup);
+        }
+    }
+
+    default_candidate.or(paid_candidate).or(any_candidate)
+}
+
+fn parse_chatgpt_subscription_lookup(
+    body: &serde_json::Value,
+) -> Option<ChatGptSubscriptionLookup> {
+    let plan_type = body
+        .get("plan_type")
+        .and_then(|v| v.as_str())
+        .map(normalize_chatgpt_plan_type)
+        .filter(|value| !value.is_empty());
+    let expires_at = body
+        .get("active_until")
+        .and_then(|v| v.as_str())
+        .and_then(normalize_rfc3339_string);
+    if plan_type.is_none() && expires_at.is_none() {
+        return None;
+    }
+    let expires_source = expires_at
+        .as_ref()
+        .map(|_| "subscriptions_active_until".to_string());
+    Some(ChatGptSubscriptionLookup {
+        plan_type,
+        expires_at,
+        expires_source,
+    })
+}
+
+async fn fetch_chatgpt_account_lookup(
+    client: &reqwest::Client,
+    access_token: &str,
+    account_id: Option<&str>,
+) -> Option<ChatGptSubscriptionLookup> {
+    let resp = match client
+        .get(CHATGPT_ACCOUNTS_CHECK_URL)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Origin", "https://chatgpt.com")
+        .header("Referer", "https://chatgpt.com/")
+        .header("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            log::debug!("[CodexQuota] accounts/check request failed: {err}");
+            return None;
+        }
+    };
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        log::debug!(
+            "[CodexQuota] accounts/check returned HTTP {status}: {}",
+            truncate_for_log(&body, 200)
+        );
+        return None;
+    }
+
+    match resp.json::<serde_json::Value>().await {
+        Ok(body) => parse_chatgpt_accounts_check_lookup(&body, account_id),
+        Err(err) => {
+            log::debug!("[CodexQuota] accounts/check parse failed: {err}");
+            None
+        }
+    }
+}
+
+async fn fetch_chatgpt_subscription_lookup(
+    client: &reqwest::Client,
+    access_token: &str,
+    account_id: Option<&str>,
+) -> Option<ChatGptSubscriptionLookup> {
+    let account_id = account_id.map(str::trim).filter(|id| !id.is_empty())?;
+    let resp = match client
+        .get(CHATGPT_SUBSCRIPTIONS_URL)
+        .query(&[("account_id", account_id)])
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Origin", "https://chatgpt.com")
+        .header("Referer", "https://chatgpt.com/")
+        .header("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            log::debug!("[CodexQuota] subscriptions request failed: {err}");
+            return None;
+        }
+    };
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        log::debug!(
+            "[CodexQuota] subscriptions returned HTTP {status}: {}",
+            truncate_for_log(&body, 200)
+        );
+        return None;
+    }
+
+    match resp.json::<serde_json::Value>().await {
+        Ok(body) => parse_chatgpt_subscription_lookup(&body),
+        Err(err) => {
+            log::debug!("[CodexQuota] subscriptions parse failed: {err}");
+            None
+        }
+    }
+}
+
+fn merge_chatgpt_subscription_lookup(
+    mut primary: Option<ChatGptSubscriptionLookup>,
+    fallback: Option<ChatGptSubscriptionLookup>,
+) -> Option<ChatGptSubscriptionLookup> {
+    match (&mut primary, fallback) {
+        (Some(primary), Some(fallback)) => {
+            if primary.plan_type.is_none() {
+                primary.plan_type = fallback.plan_type;
+            }
+            if primary.expires_at.is_none() {
+                primary.expires_at = fallback.expires_at;
+                primary.expires_source = fallback.expires_source;
+            }
+            Some(primary.clone())
+        }
+        (Some(primary), None) => Some(primary.clone()),
+        (None, fallback) => fallback,
+    }
+}
+
+fn build_chatgpt_subscription_info(
+    usage_plan_type: Option<&str>,
+    usage_plan_label: Option<&str>,
+    lookup: Option<ChatGptSubscriptionLookup>,
+) -> Option<SubscriptionInfo> {
+    let lookup = lookup.unwrap_or_default();
+    let plan_type = usage_plan_type
+        .map(normalize_chatgpt_plan_type)
+        .filter(|value| !value.is_empty())
+        .or(lookup.plan_type);
+    let plan_label = plan_type
+        .as_deref()
+        .map(format_chatgpt_plan_label)
+        .or_else(|| {
+            usage_plan_label
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+                .map(str::to_string)
+        });
+
+    if plan_type.is_none() && plan_label.is_none() && lookup.expires_at.is_none() {
+        return None;
+    }
+
+    let expires_kind = if lookup.expires_at.is_some() {
+        Some(SubscriptionExpiresKind::Subscription)
+    } else {
+        Some(SubscriptionExpiresKind::Unknown)
+    };
+
+    Some(SubscriptionInfo {
+        plan_type,
+        plan_label,
+        expires_at: lookup.expires_at,
+        expires_source: lookup.expires_source,
+        expires_kind,
+    })
 }
 
 /// 查询 Codex / ChatGPT 反代订阅额度
@@ -1155,7 +1531,7 @@ pub(crate) async fn query_codex_quota_with_plan(
     let client = crate::proxy::http_client::get();
 
     let mut req = client
-        .get("https://chatgpt.com/backend-api/wham/usage")
+        .get(CHATGPT_USAGE_URL)
         .header("Authorization", format!("Bearer {access_token}"))
         .header("User-Agent", "codex-cli")
         .header("Accept", "application/json");
@@ -1226,6 +1602,29 @@ pub(crate) async fn query_codex_quota_with_plan(
         .filter(|value| !value.is_empty());
     let plan_label = plan_type.as_deref().map(format_chatgpt_plan_label);
 
+    let (account_lookup, fallback_lookup) = tokio::join!(
+        fetch_chatgpt_account_lookup(&client, access_token, account_id),
+        fetch_chatgpt_subscription_lookup(&client, access_token, account_id)
+    );
+    let subscription_lookup = if account_lookup
+        .as_ref()
+        .and_then(|lookup| lookup.expires_at.as_ref())
+        .is_some()
+    {
+        account_lookup
+    } else {
+        merge_chatgpt_subscription_lookup(account_lookup, fallback_lookup)
+    };
+    let subscription = build_chatgpt_subscription_info(
+        plan_type.as_deref(),
+        plan_label.as_deref(),
+        subscription_lookup,
+    );
+    let credential_message = subscription
+        .as_ref()
+        .and_then(|info| info.plan_label.clone())
+        .or_else(|| plan_label.clone());
+
     let mut tiers = Vec::new();
 
     if let Some(rate_limit) = body.rate_limit {
@@ -1255,7 +1654,8 @@ pub(crate) async fn query_codex_quota_with_plan(
         SubscriptionQuota {
             tool: tool_label.to_string(),
             credential_status: CredentialStatus::Valid,
-            credential_message: plan_label,
+            credential_message,
+            subscription,
             success: true,
             tiers,
             extra_usage: None,
@@ -1757,6 +2157,7 @@ async fn retrieve_user_quota(
         tool: "gemini".to_string(),
         credential_status: CredentialStatus::Valid,
         credential_message: plan_label,
+        subscription: None,
         success: true,
         tiers,
         extra_usage: None,
@@ -1930,6 +2331,119 @@ mod cursor_tests {
     }
 
     #[test]
+    fn chatgpt_accounts_check_prefers_exact_account() {
+        let body = serde_json::json!({
+            "accounts": {
+                "org-default": {
+                    "account": {
+                        "id": "org-default",
+                        "plan_type": "free",
+                        "is_default": true
+                    },
+                    "entitlement": {
+                        "subscription_plan": "free"
+                    }
+                },
+                "acct-target": {
+                    "account": {
+                        "id": "acct-target",
+                        "plan_type": "plus",
+                        "is_default": false
+                    },
+                    "entitlement": {
+                        "subscription_plan": "plus",
+                        "expires_at": "2026-07-12T00:00:00+00:00"
+                    }
+                }
+            }
+        });
+
+        let lookup = parse_chatgpt_accounts_check_lookup(&body, Some("acct-target")).unwrap();
+        assert_eq!(lookup.plan_type.as_deref(), Some("plus"));
+        assert_eq!(
+            lookup.expires_at.as_deref(),
+            Some("2026-07-12T00:00:00+00:00")
+        );
+        assert_eq!(
+            lookup.expires_source.as_deref(),
+            Some("accounts_check_entitlement")
+        );
+    }
+
+    #[test]
+    fn chatgpt_accounts_check_prefers_default_then_paid() {
+        let body = serde_json::json!({
+            "accounts": {
+                "paid": {
+                    "account": {
+                        "plan_type": "pro",
+                        "is_default": false
+                    },
+                    "entitlement": {
+                        "expires_at": "2026-08-01T00:00:00Z"
+                    }
+                },
+                "default": {
+                    "account": {
+                        "plan_type": "plus",
+                        "is_default": true
+                    },
+                    "entitlement": {
+                        "expires_at": "2026-07-12T00:00:00Z"
+                    }
+                }
+            }
+        });
+
+        let lookup = parse_chatgpt_accounts_check_lookup(&body, None).unwrap();
+        assert_eq!(lookup.plan_type.as_deref(), Some("plus"));
+        assert_eq!(
+            lookup.expires_at.as_deref(),
+            Some("2026-07-12T00:00:00+00:00")
+        );
+
+        let body_without_default = serde_json::json!({
+            "accounts": {
+                "free": {
+                    "account": {
+                        "plan_type": "free"
+                    }
+                },
+                "paid": {
+                    "account": {
+                        "plan_type": "pro"
+                    },
+                    "entitlement": {
+                        "expires_at": "2026-08-01T00:00:00Z"
+                    }
+                }
+            }
+        });
+        let lookup = parse_chatgpt_accounts_check_lookup(&body_without_default, None).unwrap();
+        assert_eq!(lookup.plan_type.as_deref(), Some("pro"));
+    }
+
+    #[test]
+    fn chatgpt_subscriptions_lookup_reads_active_until() {
+        let body = serde_json::json!({
+            "plan_type": "plus",
+            "active_until": "2026-07-12T00:00:00Z",
+            "will_renew": true
+        });
+
+        let lookup = parse_chatgpt_subscription_lookup(&body).unwrap();
+        assert_eq!(lookup.plan_type.as_deref(), Some("plus"));
+        assert_eq!(
+            lookup.expires_at.as_deref(),
+            Some("2026-07-12T00:00:00+00:00")
+        );
+        assert_eq!(
+            lookup.expires_source.as_deref(),
+            Some("subscriptions_active_until")
+        );
+    }
+
+    #[test]
     fn parse_usage_tiers_reads_plan_usage() {
         let usage = serde_json::json!({
             "planUsage": {
@@ -1948,6 +2462,36 @@ mod cursor_tests {
         assert_eq!(tier.limit, Some(400.0));
         assert!((tier.utilization - 10.575).abs() < 1e-6);
         assert!(tier.resets_at.is_some());
+    }
+
+    #[test]
+    fn cursor_subscription_info_uses_billing_cycle_end() {
+        let usage = serde_json::json!({
+            "billingCycleEnd": "1780376587000",
+            "planUsage": {
+                "limit": 40000.0,
+                "used": 4230.0,
+                "totalPercentUsed": 10.575
+            }
+        });
+
+        let subscription =
+            build_cursor_subscription_info(Some("Cursor Pro"), cursor_billing_cycle_end(&usage))
+                .unwrap();
+
+        assert_eq!(subscription.plan_label.as_deref(), Some("Cursor Pro"));
+        assert_eq!(
+            subscription.expires_at.as_deref(),
+            Some("2026-06-02T05:03:07+00:00")
+        );
+        assert_eq!(
+            subscription.expires_source.as_deref(),
+            Some("cursor_dashboard.billingCycleEnd")
+        );
+        assert_eq!(
+            subscription.expires_kind.as_ref(),
+            Some(&SubscriptionExpiresKind::BillingPeriod)
+        );
     }
 
     #[test]

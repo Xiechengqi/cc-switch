@@ -1064,7 +1064,11 @@ async fn ollama_cloud_account_summary(
 fn ollama_cloud_quota_to_upstream(
     quota: crate::services::subscription::SubscriptionQuota,
 ) -> ShareUpstreamQuota {
-    let subscription_period_end = quota.tiers.first().and_then(|tier| tier.resets_at.clone());
+    let subscription_period_end = quota
+        .subscription
+        .as_ref()
+        .and_then(|subscription| subscription.expires_at.clone())
+        .or_else(|| quota.tiers.first().and_then(|tier| tier.resets_at.clone()));
     let mut upstream = subscription_quota_to_upstream(quota);
     upstream.subscription_period_end = subscription_period_end;
     // Ollama Cloud exposes plan/account metadata but not utilization percent.
@@ -1524,6 +1528,15 @@ fn subscription_quota_to_upstream(
     quota: crate::services::subscription::SubscriptionQuota,
 ) -> ShareUpstreamQuota {
     let block = crate::services::oauth_quota::quota_block_status(&quota);
+    let plan = quota
+        .subscription
+        .as_ref()
+        .and_then(|subscription| subscription.plan_label.clone())
+        .or_else(|| quota.credential_message.clone());
+    let subscription_period_end = quota
+        .subscription
+        .as_ref()
+        .and_then(|subscription| subscription.expires_at.clone());
     let status = if quota.success {
         "ok"
     } else if matches!(
@@ -1536,9 +1549,9 @@ fn subscription_quota_to_upstream(
     };
     ShareUpstreamQuota {
         status: status.to_string(),
-        plan: quota.credential_message,
+        plan,
         queried_at: quota.queried_at,
-        subscription_period_end: None,
+        subscription_period_end,
         availability: Some(
             block
                 .as_ref()
@@ -2172,6 +2185,7 @@ mod tests {
             tool: "github_copilot".to_string(),
             credential_status: crate::services::subscription::CredentialStatus::Valid,
             credential_message: Some("individual".to_string()),
+            subscription: None,
             success: true,
             tiers: vec![crate::services::subscription::QuotaTier {
                 name: "premium".to_string(),
@@ -2205,6 +2219,7 @@ mod tests {
             tool: "ollama_cloud".to_string(),
             credential_status: crate::services::subscription::CredentialStatus::Valid,
             credential_message: Some("pro".to_string()),
+            subscription: None,
             success: true,
             tiers: vec![crate::services::subscription::QuotaTier {
                 name: "xiechengqi01@gmail.com".to_string(),

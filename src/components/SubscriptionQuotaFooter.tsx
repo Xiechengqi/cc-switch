@@ -53,9 +53,14 @@ export function utilizationColor(utilization: number): string {
 }
 
 /** 计算倒计时的纯时间字符串，如 "2h30m"、"3d12h" */
-export function countdownStr(resetsAt: string | null): string | null {
+export function countdownStr(
+  resetsAt: string | null,
+  nowMs = Date.now(),
+): string | null {
   if (!resetsAt) return null;
-  const diffMs = new Date(resetsAt).getTime() - Date.now();
+  const resetMs = new Date(resetsAt).getTime();
+  if (!Number.isFinite(resetMs)) return null;
+  const diffMs = resetMs - nowMs;
   if (diffMs <= 0) return null;
 
   const hours = Math.floor(diffMs / (1000 * 60 * 60));
@@ -67,6 +72,26 @@ export function countdownStr(resetsAt: string | null): string | null {
   }
   if (hours > 0) return `${hours}h${minutes}m`;
   return `${minutes}m`;
+}
+
+/** 格式化订阅到期倒计时，如 "expire in 12d"。 */
+export function formatExpireDistance(
+  expiresAt: string | null | undefined,
+  nowMs = Date.now(),
+): string {
+  if (!expiresAt) return "expire unknown";
+  const expiresMs = new Date(expiresAt).getTime();
+  if (!Number.isFinite(expiresMs)) return "expire unknown";
+  const diffMs = expiresMs - nowMs;
+  if (diffMs <= 0) return "expired";
+
+  const minutes = Math.max(1, Math.floor(diffMs / (1000 * 60)));
+  if (minutes < 60) return `expire in ${minutes}m`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `expire in ${hours}h`;
+
+  return `expire in ${Math.floor(hours / 24)}d`;
 }
 
 /** 格式化重置时间为倒计时文本（带 i18n 模板） */
@@ -82,6 +107,92 @@ function formatResetTime(
 /** 不需要在 inline 模式显示的 tier */
 const HIDDEN_INLINE_TIERS = new Set(["seven_day_sonnet", "seven_day_omelette"]);
 const SUPPRESSED_TIERS = new Set(["seven_day_omelette"]);
+
+const COMPACT_TIER_LABELS: Record<string, string> = {
+  five_hour: "5h",
+  seven_day: "7d",
+  weekly_limit: "7d",
+  "30_day": "30d",
+  monthly: "30d",
+  seven_day_opus: "7d Opus",
+  seven_day_omelette: "7d Opus",
+  seven_day_sonnet: "7d Sonnet",
+  premium: "Premium",
+  kiro_agentic_requests: "Kiro",
+  cursor_credits: "Usage",
+  cursor_included_usage: "Usage",
+};
+
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: value % 1 === 0 ? 0 : 2,
+    useGrouping: false,
+  }).format(value);
+}
+
+function formatCompactTierAmount(tier: QuotaTier): string | null {
+  const used = tier.used;
+  const limit = tier.limit;
+  if (
+    typeof used === "number" &&
+    Number.isFinite(used) &&
+    typeof limit === "number" &&
+    Number.isFinite(limit)
+  ) {
+    const unit = tier.unit?.trim().toUpperCase();
+    if (unit === "USD") {
+      return `$${formatCompactNumber(used)}/$${formatCompactNumber(limit)}`;
+    }
+    const suffix = tier.unit?.trim() ? ` ${tier.unit.trim()}` : "";
+    return `${formatCompactNumber(used)}/${formatCompactNumber(limit)}${suffix}`;
+  }
+
+  if (
+    typeof tier.usedValueUsd === "number" &&
+    Number.isFinite(tier.usedValueUsd) &&
+    typeof tier.maxValueUsd === "number" &&
+    Number.isFinite(tier.maxValueUsd)
+  ) {
+    return `$${formatCompactNumber(tier.usedValueUsd)}/$${formatCompactNumber(
+      tier.maxValueUsd,
+    )}`;
+  }
+
+  return null;
+}
+
+export function formatCompactTier(
+  tier: QuotaTier,
+  t?: (key: string, options?: Record<string, unknown>) => string,
+  nowMs = Date.now(),
+): string {
+  const label =
+    COMPACT_TIER_LABELS[tier.name] ||
+    (t && TIER_I18N_KEYS[tier.name] ? t(TIER_I18N_KEYS[tier.name]) : tier.name);
+  const utilization = `${Math.round(tier.utilization)}%`;
+  const countdown = countdownStr(tier.resetsAt, nowMs);
+  const amount = formatCompactTierAmount(tier);
+  return [label, amount, utilization, countdown].filter(Boolean).join(" ");
+}
+
+export function formatQuotaSummary(
+  quota: SubscriptionQuota,
+  tiers: QuotaTier[],
+  t?: (key: string, options?: Record<string, unknown>) => string,
+  nowMs = Date.now(),
+): string {
+  const planLabel =
+    quota.subscription?.planLabel?.trim() || quota.credentialMessage?.trim();
+  const segments = [
+    planLabel,
+    quota.subscription
+      ? formatExpireDistance(quota.subscription.expiresAt, nowMs)
+      : null,
+    ...tiers.map((tier) => formatCompactTier(tier, t, nowMs)),
+  ].filter((segment): segment is string => Boolean(segment));
+
+  return segments.join(" · ");
+}
 
 /** 格式化相对时间（与 UsageFooter 一致） */
 export function formatRelativeTime(
@@ -119,10 +230,16 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   // 定期更新相对时间显示
   const [now, setNow] = React.useState(Date.now());
   React.useEffect(() => {
-    if (!quota?.queriedAt) return;
+    if (
+      !quota?.queriedAt &&
+      !quota?.subscription?.expiresAt &&
+      !quota?.tiers?.some((tier) => tier.resetsAt)
+    ) {
+      return;
+    }
     const interval = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(interval);
-  }, [quota?.queriedAt]);
+  }, [quota?.queriedAt, quota?.subscription?.expiresAt, quota?.tiers]);
 
   // 无凭据 → 不显示
   if (!quota || quota.credentialStatus === "not_found") return null;
@@ -222,7 +339,15 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
     if (visibleTierNames && !visibleTierNames.includes(tier.name)) return false;
     return true;
   });
-  if (tiers.length === 0) return null;
+  const inlineTiers = tiers.filter(
+    (tier) =>
+      !HIDDEN_INLINE_TIERS.has(tier.name) && !SUPPRESSED_TIERS.has(tier.name),
+  );
+  const summaryTiers = inline
+    ? inlineTiers
+    : tiers.filter((tier) => !SUPPRESSED_TIERS.has(tier.name));
+  const summaryText = formatQuotaSummary(quota, summaryTiers, t, now);
+  if (tiers.length === 0 && !summaryText) return null;
 
   // ── inline 模式：紧凑两行显示 ──
   if (inline) {
@@ -249,22 +374,9 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
           </button>
         </div>
 
-        {/* 第二行：plan badge + 各 tier 使用百分比 */}
-        <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
-          {quota.credentialMessage && (
-            <span className="inline-flex max-w-full items-center rounded-md bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-700 break-words">
-              {quota.credentialMessage}
-            </span>
-          )}
-          {tiers
-            .filter(
-              (tier) =>
-                !HIDDEN_INLINE_TIERS.has(tier.name) &&
-                !SUPPRESSED_TIERS.has(tier.name),
-            )
-            .map((tier) => (
-              <TierBadge key={tier.name} tier={tier} t={t} />
-            ))}
+        {/* 第二行：plan · expire · tiers */}
+        <div className="min-w-0 max-w-full text-right text-[10px] font-medium text-gray-700 dark:text-gray-200 break-words">
+          {summaryText}
         </div>
       </div>
     );
@@ -295,13 +407,21 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
         </div>
       </div>
 
-      <div className="flex flex-col gap-2">
-        {tiers
-          .filter((tier) => !SUPPRESSED_TIERS.has(tier.name))
-          .map((tier) => (
-            <TierBar key={tier.name} tier={tier} t={t} />
-          ))}
-      </div>
+      {summaryText && (
+        <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-200 break-words">
+          {summaryText}
+        </div>
+      )}
+
+      {tiers.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {tiers
+            .filter((tier) => !SUPPRESSED_TIERS.has(tier.name))
+            .map((tier) => (
+              <TierBar key={tier.name} tier={tier} t={t} />
+            ))}
+        </div>
+      )}
 
       {/* 超额使用 */}
       {quota.extraUsage?.isEnabled && (

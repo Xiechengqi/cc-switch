@@ -24,10 +24,25 @@ export interface ExtraUsage {
   currency: string | null;
 }
 
+export type SubscriptionExpiresKind =
+  | "subscription"
+  | "billing_period"
+  | "quota_period"
+  | "unknown";
+
+export interface SubscriptionInfo {
+  planType?: string | null;
+  planLabel?: string | null;
+  expiresAt?: string | null;
+  expiresSource?: string | null;
+  expiresKind?: SubscriptionExpiresKind | null;
+}
+
 export interface SubscriptionQuota {
   tool: string;
   credentialStatus: CredentialStatus;
   credentialMessage: string | null;
+  subscription?: SubscriptionInfo | null;
   success: boolean;
   tiers: QuotaTier[];
   extraUsage: ExtraUsage | null;

@@ -933,6 +933,7 @@ mod tests {
             tool: tool.to_string(),
             credential_status: CredentialStatus::Valid,
             credential_message: None,
+            subscription: None,
             success,
             tiers,
             extra_usage: None,

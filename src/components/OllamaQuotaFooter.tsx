@@ -6,6 +6,7 @@ import type { AppId } from "@/lib/api";
 import { useOllamaQuota } from "@/lib/query/ollama";
 import { subscriptionApi } from "@/lib/api/subscription";
 import { useQueryClient } from "@tanstack/react-query";
+import { formatExpireDistance } from "@/components/SubscriptionQuotaFooter";
 
 interface OllamaQuotaFooterProps {
   meta?: ProviderMeta;
@@ -59,10 +60,20 @@ const OllamaQuotaFooter: React.FC<OllamaQuotaFooterProps> = ({
 
   const [now, setNow] = React.useState(Date.now());
   React.useEffect(() => {
-    if (!cached?.refreshedAt) return;
+    if (
+      !cached?.refreshedAt &&
+      !cached?.quota?.subscription?.expiresAt &&
+      !cached?.quota?.tiers?.some((tier) => tier.resetsAt)
+    ) {
+      return;
+    }
     const interval = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(interval);
-  }, [cached?.refreshedAt]);
+  }, [
+    cached?.refreshedAt,
+    cached?.quota?.subscription?.expiresAt,
+    cached?.quota?.tiers,
+  ]);
 
   if (!cached) return null;
 
@@ -90,9 +101,13 @@ const OllamaQuotaFooter: React.FC<OllamaQuotaFooterProps> = ({
     return null;
   }
 
-  const plan = quota.credentialMessage || "unknown";
+  const plan =
+    quota.subscription?.planLabel || quota.credentialMessage || "unknown";
   const email = quota.tiers[0]?.name || "";
-  const periodEnd = quota.tiers[0]?.resetsAt;
+  const periodEnd = quota.subscription?.expiresAt || quota.tiers[0]?.resetsAt;
+  const summaryText = [plan, formatExpireDistance(periodEnd)]
+    .filter(Boolean)
+    .join(" · ");
 
   if (inline) {
     return (
@@ -116,16 +131,8 @@ const OllamaQuotaFooter: React.FC<OllamaQuotaFooterProps> = ({
             <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
           </button>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="font-semibold capitalize">{plan}</span>
-          {email && (
-            <span
-              className="text-muted-foreground truncate max-w-[180px]"
-              title={email}
-            >
-              {email}
-            </span>
-          )}
+        <div className="min-w-0 max-w-full text-right text-[10px] font-medium text-foreground break-words">
+          {summaryText}
         </div>
       </div>
     );
@@ -154,17 +161,11 @@ const OllamaQuotaFooter: React.FC<OllamaQuotaFooterProps> = ({
           </button>
         </div>
       </div>
-      <div className="flex items-center gap-2 text-xs">
-        <span className="font-semibold capitalize">{plan}</span>
+      <div className="flex flex-col gap-1 text-xs">
+        <span className="font-semibold">{summaryText}</span>
         {email && (
           <span className="text-muted-foreground truncate" title={email}>
             {email}
-          </span>
-        )}
-        {periodEnd && (
-          <span className="text-muted-foreground/70">
-            · {t("subscription.resetsAt", { defaultValue: "Renews" })}{" "}
-            {new Date(periodEnd).toLocaleDateString()}
           </span>
         )}
       </div>

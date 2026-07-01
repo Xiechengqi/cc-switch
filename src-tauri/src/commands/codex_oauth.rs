@@ -69,6 +69,22 @@ pub async fn get_codex_oauth_quota(
             log::warn!("[CodexOAuth] failed to persist wham/usage plan for account={id}: {err}");
         }
     }
+    if let Some(subscription) = quota.subscription.as_ref() {
+        if let Some(expires_at) = subscription.expires_at.as_deref() {
+            let source = subscription
+                .expires_source
+                .as_deref()
+                .unwrap_or("chatgpt_subscription");
+            if let Err(err) = manager
+                .record_account_subscription(&id, Some(expires_at), source)
+                .await
+            {
+                log::warn!(
+                    "[CodexOAuth] failed to persist subscription expiry for account={id}: {err}"
+                );
+            }
+        }
+    }
     Ok(quota)
 }
 

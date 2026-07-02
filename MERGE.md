@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-06-29
+
+- **上游分支：** `main`
+- **上游 HEAD：** `8d1b3306`
+- **共同祖先：** `61d7ac01`
+- **合并提交数：** 36
+- **主要变更：**
+  - feat(codex): 原生 Responses 直连支持（生成 model-catalogs.json、supportsParallelToolCalls / inputModalities / baseInstructions 传递）
+  - refactor(codex): 模型映射从"路由接管"开关解耦（分支未采纳，需 props 联动）
+  - fix(codex): Qwen3-Coder 拒绝 web_search、native gateways 关闭 web_search、LongCat context window 修正
+  - feat(providers): claude common config 切换时从 live 自动同步；Claude Desktop/OpenClaw/Hermes 表单加 API key link
+  - feat(sessions): 会话分类视图与分组管理
+  - fix(linux): CC_SWITCH_GDK_BACKEND 覆盖 AppImage 强制 x11
+  - fix(usage): date-range picker 窄 popover 内不溢出
+  - fix(codex): Windows npm shim 去重
+  - fix(i18n): "Write Common Config" → "Apply Common Config"
+  - feat(pricing): Claude Sonnet 5 定价 + Sonnet 默认切换到 Sonnet 5
+  - chore(presets): 新增 NekoCode / Code0 / Amux / TeamoRouter / ZetaAPI / FennoAI / Qiniu 合作伙伴 preset（按规则丢弃）
+  - chore(release): v3.16.5
+- **冲突解决：**
+  - `src/components/providers/forms/CodexFormFields.tsx`：上游把"模型目录管理 UI"分成 `catalogRows` state + `catalogModels`/`onCatalogModelsChange` props + `takeoverEnabled`/`canEditCatalog` 派生，重构面很大。本仓未提供这些 props，采纳 HEAD 保留现有 `apiFormat`/`singleUpstreamModel` 模型，并把遗留 `takeoverEnabled` 引用替换为 `needsLocalRouting`、移除 `canEditCatalog` 分支
+  - `src/components/providers/forms/hooks/useCodexConfigState.ts`：保留 HEAD 的 `upstreamModel` 字段解析 + `setCodexSingleUpstreamModel` 兜底；不引入上游原生 Responses profile 隐藏字段（`supportsParallelToolCalls`/`inputModalities`/`baseInstructions`）
+  - `src/config/codexProviderPresets.ts`：`normalizeCodexCatalogModelsForSave` 剥离 3 个原生 profile 字段（本仓 `CodexCatalogModel` 类型未含）
+  - `src/components/providers/forms/ProviderForm.tsx`：保留 HEAD 的 Claude env 完整写入（含 fable / sonnet / opus / haiku 默认名），不引入上游内联 Codex catalog 保存路径
+  - `src/icons/extracted/{index,metadata}.ts`：删除上游 auto-merged 进来的 CCSub/SubRouter/Unity2/Amux/Code0/Fenno/NekoCode/TeamoRouter/ZetaAPI/Qiniu 图标条目 + import
+  - `src/config/{claudeDesktop,hermes,opencode}ProviderPresets.ts`：脚本清理 auto-merged 进来的 Amux/Code0/Fenno/ZetaAPI/TeamoRouter/Qiniu/NekoCode 预设条目（openclaw 主 preset 有 HEAD 冲突已在 preset 步骤单独 take HEAD）
+  - modify/delete 冲突：`src/icons/extracted/ccsub.svg` 与 `tests/config/therouterProviderPresets.test.ts` 保留本仓删除
+  - `src/config/{claude,codex,gemini,openclaw}ProviderPresets.ts` + `tests/config/codexChatProviderPresets.test.ts`：按"禁止新添加 API Key 类供应商"全部 take HEAD
+- **验证：** `cargo check` exit 0；`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-26
 
 - **上游分支：** `main`

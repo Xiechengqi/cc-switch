@@ -73,13 +73,6 @@ interface CodexFormFieldsProps {
   autoSelect: boolean;
   onAutoSelectChange: (checked: boolean) => void;
 
-  // Local routing / takeover
-  // takeoverEnabled gates model mapping + reasoning visibility; it is decoupled
-  // from the wire format so a native Responses provider can use model mapping
-  // without Chat Completions conversion.
-  takeoverEnabled: boolean;
-  onTakeoverEnabledChange: (enabled: boolean) => void;
-
   // API Format
   // Note: wire_api is always "responses" for Codex; apiFormat controls proxy-layer conversion
   apiFormat: CodexApiFormat;
@@ -132,8 +125,6 @@ export function CodexFormFields({
   onCustomEndpointsChange,
   autoSelect,
   onAutoSelectChange,
-  takeoverEnabled,
-  onTakeoverEnabledChange,
   apiFormat,
   onApiFormatChange,
   codexChatReasoning = {},
@@ -152,8 +143,8 @@ export function CodexFormFields({
 
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
-  // takeoverEnabled 控制模型映射/思考能力的显示；isChatFormat 仅在选了
-  // Chat Completions 上游格式时为真（思考能力是 Chat 专属）。
+  // 思考能力随 Chat 格式显示（仅 Chat Completions 转换路径用得上）；模型映射常驻
+  //（填了才生成 catalog）。两者都已与「路由接管」概念解耦。
   const isChatFormat = apiFormat === "openai_chat";
   const needsLocalRouting = isChatFormat;
   const canEditReasoning = Boolean(onCodexChatReasoningChange);
@@ -163,13 +154,17 @@ export function CodexFormFields({
   const supportsEffort = codexChatReasoning.supportsEffort === true;
   const shouldShowModelMapping = needsLocalRouting && !isCodexOfficialPreset;
 
-  // takeoverEnabled 取代了旧的 needsLocalRouting：上游格式已与路由解耦。
-  // takeoverEnabled 为真说明预设/用户启用了本地路由；请求头/请求体覆盖也算高级值。
+  // 高级区在有任何可见配置时自动展开（仅折叠→展开，不会自动折叠）：自定义 UA /
+  // 请求覆盖 / 已填模型映射 / 原生 Responses（需维护 catalog）/ 已配置思考能力。
   const hasRequestOverrides = Boolean(
     localProxyHeadersOverride.trim() || localProxyBodyOverride.trim(),
   );
   const hasAnyAdvancedValue =
-    !!customUserAgent || hasRequestOverrides || takeoverEnabled;
+    !!customUserAgent ||
+    hasRequestOverrides ||
+    apiFormat === "openai_responses" ||
+    supportsThinking ||
+    supportsEffort;
   const [advancedExpanded, setAdvancedExpanded] = useState(hasAnyAdvancedValue);
 
   // 预设/编辑加载填充高级值后自动展开（仅从折叠→展开，不会自动折叠）
@@ -338,7 +333,7 @@ export function CodexFormFields({
             <p className="mt-1 ml-1 text-xs text-muted-foreground">
               {t("codexConfig.advancedSectionHint", {
                 defaultValue:
-                  "包含本地路由映射、模型映射、思考能力与自定义 User-Agent。供应商使用 Chat Completions 协议或非 GPT 模型时，需在此开启本地路由映射。",
+                  "包含上游格式、模型映射、思考能力与自定义 User-Agent。使用 Chat Completions 协议的供应商需开启路由接管才能使用。",
               })}
             </p>
           )}
@@ -369,7 +364,7 @@ export function CodexFormFields({
                     <SelectContent>
                       <SelectItem value="openai_chat">
                         {t("codexConfig.upstreamFormatChat", {
-                          defaultValue: "Chat Completions（转换）",
+                          defaultValue: "Chat Completions（需开启路由）",
                         })}
                       </SelectItem>
                       <SelectItem value="openai_responses">
@@ -382,43 +377,14 @@ export function CodexFormFields({
                   <p className="text-xs leading-relaxed text-muted-foreground">
                     {t("codexConfig.upstreamFormatHint", {
                       defaultValue:
-                        "供应商原生是 Responses API 就选 Responses（直连，不转换格式）；使用 Chat Completions 协议就选 Chat（转换为 Chat Completions）。",
+                        "供应商原生是 Responses API 就选 Responses（直连，不转换格式）；使用 Chat Completions 协议就选 Chat（需开启路由接管才能转换为 Chat Completions）。",
                     })}
                   </p>
-                </div>
-
-                {/* 需要本地路由映射 —— 纯模型映射门控，与上游格式无关 */}
-                <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
-                  <div className="space-y-1">
-                    <FormLabel>
-                      {t("codexConfig.localRoutingToggle", {
-                        defaultValue: "需要本地路由映射",
-                      })}
-                    </FormLabel>
-                    <p className="text-xs leading-relaxed text-muted-foreground">
-                      {takeoverEnabled
-                        ? t("codexConfig.localRoutingOnHint", {
-                            defaultValue:
-                              "打开后可在下方配置模型映射：让 Codex 的 /model 菜单显示自定义模型名，并把请求映射到真实上游模型。",
-                          })
-                        : t("codexConfig.localRoutingOffHint", {
-                            defaultValue:
-                              "供应商模型名无需改写、也无需在 /model 菜单展示自定义名称时，可保持关闭；需要模型映射时打开。",
-                          })}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={takeoverEnabled}
-                    onCheckedChange={onTakeoverEnabledChange}
-                    aria-label={t("codexConfig.localRoutingToggle", {
-                      defaultValue: "需要本地路由映射",
-                    })}
-                  />
                 </div>
               </div>
             )}
 
-            {takeoverEnabled && isChatFormat && canEditReasoning && (
+            {isChatFormat && canEditReasoning && (
               <div
                 className={cn(
                   "space-y-3",
@@ -491,7 +457,7 @@ export function CodexFormFields({
               className={cn(
                 "space-y-3",
                 (shouldShowSpeedTest ||
-                  (takeoverEnabled && isChatFormat && canEditReasoning)) &&
+                  (needsLocalRouting && isChatFormat && canEditReasoning)) &&
                   "border-t border-border-default pt-3",
               )}
             >
@@ -523,6 +489,29 @@ export function CodexFormFields({
                 />
               </div>
             )}
+
+            <div
+              className={cn(
+                "space-y-3",
+                (shouldShowSpeedTest ||
+                  (isChatFormat && canEditReasoning)) &&
+                  "border-t border-border-default pt-3",
+              )}
+            >
+              <CustomUserAgentField
+                id="codex-custom-user-agent"
+                value={customUserAgent}
+                onChange={onCustomUserAgentChange}
+              />
+              <div className="border-t border-border-default pt-3">
+                <LocalProxyRequestOverridesField
+                  headersJson={localProxyHeadersOverride}
+                  bodyJson={localProxyBodyOverride}
+                  onHeadersJsonChange={onLocalProxyHeadersOverrideChange}
+                  onBodyJsonChange={onLocalProxyBodyOverrideChange}
+                />
+              </div>
+            </div>
           </CollapsibleContent>
         </Collapsible>
       )}

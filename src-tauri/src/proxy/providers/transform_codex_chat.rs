@@ -764,11 +764,16 @@ fn apply_reasoning_options(
         // 上游显式发 effort=none/off/disabled（或 reasoning=null）时 reasoning_enabled 为 false，
         // 直接 return 会丢失关闭意图——OpenRouter 部分模型默认开思考，不带字段无法关闭，
         // 造成行为与成本偏差；故对该形态忠实转发 {"reasoning":{"effort":"none"}}。
-        // 顶层 reasoning_effort 平台的枚举不含 none，仍走上方 thinking 关闭路径、不发 effort。
+        // 顶层 reasoning_effort 平台一般枚举不含 none，仍走上方 thinking 关闭路径、不发
+        // effort。Ollama 例外：它明确接受 reasoning_effort=none，用于关闭推理。
         // 注意：完全不带 reasoning 字段时 reasoning_requested 返回 None 已提前 return，
         // 不会走到这里，故只有上游「显式」表达关闭才透传 none。
         if effort_param == "reasoning.effort" {
             result["reasoning"] = json!({ "effort": "none" });
+        } else if effort_param == "reasoning_effort"
+            && config.effort_value_mode.as_deref() == Some("ollama")
+        {
+            result["reasoning_effort"] = json!("none");
         }
         return;
     }
@@ -825,6 +830,16 @@ fn map_reasoning_effort(effort: &str, mode: Option<&str>) -> Option<&'static str
         "low_high" => match effort.as_str() {
             "minimal" | "low" => Some("low"),
             _ => Some("high"),
+        },
+        // Ollama's OpenAI-compatible endpoint accepts high|medium|low|max|none
+        // and rejects xhigh. Codex/GPT model metadata can emit xhigh, so clamp
+        // it to Ollama's highest accepted tier.
+        "ollama" => match effort.as_str() {
+            "max" | "xhigh" => Some("max"),
+            "high" => Some("high"),
+            "medium" => Some("medium"),
+            "low" | "minimal" => Some("low"),
+            _ => None,
         },
         // OpenRouter effort 枚举为 xhigh|high|medium|low|minimal（无 max）。max 是
         // Codex / 部分模型的扩展档位，对 OpenRouter 非法，会触发
@@ -2931,6 +2946,52 @@ mod tests {
 
         assert_eq!(result["thinking"]["type"], "enabled");
         assert_eq!(result["reasoning_effort"], "max");
+    }
+
+    #[test]
+    fn responses_request_to_chat_maps_ollama_xhigh_to_max() {
+        let input = json!({
+            "model": "gpt-5.5",
+            "input": "hello",
+            "reasoning": {"effort": "xhigh"}
+        });
+        let config = CodexChatReasoningConfig {
+            supports_thinking: Some(false),
+            supports_effort: Some(true),
+            thinking_param: Some("none".to_string()),
+            effort_param: Some("reasoning_effort".to_string()),
+            effort_value_mode: Some("ollama".to_string()),
+            output_format: Some("auto".to_string()),
+        };
+
+        let result = responses_to_chat_completions_with_reasoning(input, Some(&config)).unwrap();
+
+        assert_eq!(result["reasoning_effort"], "max");
+        assert!(result.get("reasoning").is_none());
+        assert!(result.get("thinking").is_none());
+    }
+
+    #[test]
+    fn responses_request_to_chat_passes_explicit_none_for_ollama() {
+        let input = json!({
+            "model": "gpt-5.5",
+            "input": "hello",
+            "reasoning": {"effort": "none"}
+        });
+        let config = CodexChatReasoningConfig {
+            supports_thinking: Some(false),
+            supports_effort: Some(true),
+            thinking_param: Some("none".to_string()),
+            effort_param: Some("reasoning_effort".to_string()),
+            effort_value_mode: Some("ollama".to_string()),
+            output_format: Some("auto".to_string()),
+        };
+
+        let result = responses_to_chat_completions_with_reasoning(input, Some(&config)).unwrap();
+
+        assert_eq!(result["reasoning_effort"], "none");
+        assert!(result.get("reasoning").is_none());
+        assert!(result.get("thinking").is_none());
     }
 
     #[test]

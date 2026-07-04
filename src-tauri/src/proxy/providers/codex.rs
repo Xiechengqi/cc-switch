@@ -362,6 +362,21 @@ fn infer_aggregator_platform_config(
         });
     }
 
+    // Ollama Cloud exposes an OpenAI-compatible Chat API, but its reasoning
+    // effort enum is not OpenAI's GPT-5 enum: it rejects xhigh and accepts max.
+    // Treat it as a platform rule so model aliases such as gpt-5.5 do not make
+    // us forward xhigh before provider model mapping has taken effect.
+    if platform.contains("ollama") {
+        return Some(CodexChatReasoningConfig {
+            supports_thinking: Some(false),
+            supports_effort: Some(true),
+            thinking_param: Some("none".to_string()),
+            effort_param: Some("reasoning_effort".to_string()),
+            effort_value_mode: Some("ollama".to_string()),
+            output_format: Some("auto".to_string()),
+        });
+    }
+
     // SiliconFlow：平台级统一 `enable_thinking`，思维回传 reasoning_content。
     // 安全降级：不按 reasoning_effort 发 effort（平台用 thinking_budget 控制深度，
     // 发 reasoning_effort 反而可能不被接受）。
@@ -1147,6 +1162,33 @@ wire_api = "chat"
         assert_eq!(config.thinking_param.as_deref(), Some("none"));
         assert_eq!(config.effort_param.as_deref(), Some("reasoning.effort"));
         assert_eq!(config.effort_value_mode.as_deref(), Some("openrouter"));
+        assert_eq!(config.supports_effort, Some(true));
+    }
+
+    #[test]
+    fn test_resolve_codex_chat_reasoning_ollama_platform_clamps_xhigh() {
+        let mut provider = create_provider(json!({
+            "config": r#"
+model_provider = "ollama"
+model = "gpt-5.5"
+
+[model_providers.ollama]
+name = "Ollama API Key"
+base_url = "https://ollama.com/v1"
+wire_api = "chat"
+"#
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("ollama_cloud".to_string()),
+            ..Default::default()
+        });
+
+        let config =
+            resolve_codex_chat_reasoning_config(&provider, &json!({ "model": "gpt-5.5" })).unwrap();
+
+        assert_eq!(config.thinking_param.as_deref(), Some("none"));
+        assert_eq!(config.effort_param.as_deref(), Some("reasoning_effort"));
+        assert_eq!(config.effort_value_mode.as_deref(), Some("ollama"));
         assert_eq!(config.supports_effort, Some(true));
     }
 

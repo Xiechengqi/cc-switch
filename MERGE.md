@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-07-08
+
+- **上游分支：** `main`
+- **上游 HEAD：** `e191af4a`
+- **共同祖先：** `8d1b3306`
+- **合并提交数：** 25
+- **主要变更：**
+  - feat(profiles): 项目 Profiles 快照切换（新增 profiles 表、DAO、命令、UI 切换器 + 管理对话框）；含 Claude Desktop 独立 scope、切换前自动 disable proxy takeover、切换后 autosave 前一份配置
+  - feat(claude): Claude 子代理模型配置（`CLAUDE_CODE_SUBAGENT_MODEL` env + Claude 表单模型角色行拆出 subagent）
+  - feat(codex): 显示重命名后的会话标题；免费 30 天窗口 tier 归入托盘"m"分组
+  - fix(usage): 瞬时传输失败以 Err 传播、前端保留 last-good（`useQuotaKeepLastGood` + `QUERY_REJECTED_PLACEHOLDER`）
+  - fix(proxy): Volcano GLM 5.2 图片 400 的媒体 fallback；OpenCode live provider 导入
+  - ci(release): supply-chain 加固；pnpm build-script 审批
+  - chore(presets): LongCat → LongCat-2.0；Code0 apiKeyUrl 更新
+- **冲突解决：**
+  - `src-tauri/src/database/{mod.rs,schema.rs,tests.rs}`：上游 v11→v12 迁移（新增 profiles 表）与本仓 v11→v29 迁移链冲突。保留本仓 v27→v30 全部迁移，新增 v30→v31 迁移复用上游 CREATE TABLE profiles 定义；SCHEMA_VERSION 升到 31。tests 同时保留本仓 cursor OAuth 模型映射测试与上游 profile marker repair 测试
+  - `src-tauri/src/services/subscription.rs`：并存本仓 `QuotaFailure` 分类 + `failure: None` 字段与上游"transient reject"策略。保持 `query_claude_quota`/`query_gemini_quota` 返回 `Result<SubscriptionQuota, String>`（上游签名），HEAD 的 `SubscriptionQuota::failure(...)` 全部 `Ok(...)` 包裹；`retrieve_user_quota` 同步升为 Result；`query_claude_quota_with_token`/`query_gemini_quota_with_token`/`query_antigravity_quota_with_token` 用 `unwrap_or_else` 把传输失败映射成 `QuotaFailure::Network { detail: "transport" }`。移除文件顶部 `TIER_THIRTY_DAY` 常量的上游重复定义
+  - `src-tauri/src/services/coding_plan.rs`：8 个 `SubscriptionQuota` 返回块统一保留本仓 `failure: None` 字段 + 上游 `Ok(...)` 包裹（结构体字面量按 `});`/`})` 收尾）
+  - `src-tauri/src/tray.rs`：保留本仓 `LONG_TIER_NAMES`（`TIER_THIRTY_DAY` 独立"30d"分组）不并入上游"m"；`TrayTexts` 同时容纳 HEAD 的 `direct_traffic_suffix` 与 upstream 的 `projects_label`/`no_project_label`（后者已被上游 auto-merged 的 profile 子菜单代码引用）
+  - `src-tauri/src/commands/codex_oauth.rs`：保留 HEAD 的 `query_codex_quota_with_plan` 分支（plan/subscription 持久化），舍弃上游简化
+  - `src/components/providers/forms/ClaudeFormFields.tsx`：并存本仓 SingleModelMappingField 相关 props（`singleUpstreamModel`） + 上游 `ModelRoleRow`/`subagentModel`/`default*ModelName` 模型角色表 UI；补齐 `defaultHaikuModelName`/`defaultSonnetModelName`/`defaultOpusModelName` props；导入 `Checkbox`/`Wand2`/`Download` + `hasClaudeOneMMarker`/`setClaudeOneMMarker`/`stripClaudeOneMMarker` helpers；移除未用的 `SingleModelMappingField` import
+  - `src/components/providers/forms/ProviderForm.tsx`：`useModelState` 解构增加 haiku/sonnet/opus/fable Name + subagentModel；`<ClaudeFormFields>` 传递全部新 props
+  - `src/components/providers/forms/hooks/useModelState.ts`：`ClaudeModelEnvField` 并存 `MODEL_MAPPING_SINGLE_UPSTREAM` 与 `CLAUDE_CODE_SUBAGENT_MODEL`
+  - `src/lib/query/subscription.ts`：并存本仓 `fetchOauthQuotaWithFallback` 与上游 `QUERY_REJECTED_PLACEHOLDER`/`useQuotaKeepLastGood`（fork 的 OAuth quota 拉取仍用 fallback；useCursorOauthQuota 里删除上游遗留的 `useQuotaKeepLastGood(query, ...)` 引用，保持原 return useQuery 形态）
+  - `src/components/SubscriptionQuotaFooter.tsx`：删除上游追加的重复 `"30_day": "subscription.thirtyDay"` 键
+  - `src/i18n/locales/{en,ja,zh}.json`：全部 take HEAD（保留本仓更长的 tier 名，如 "7-Day Opus Limit"）
+  - `src/config/*ProviderPresets.ts`：全部按"禁止新添加 API Key 类供应商"规则 take HEAD；LongCat/Code0 相关 apiKeyUrl 更新在 auto-merged 里已剥离（Code0 早已被本仓移除）
+  - `tests/components/ClaudeFormFields.test.tsx`：为 mock props 补齐所有新 Name 字段与 `subagentModel`
+- **验证：** `cargo check` exit 0；`cargo check --tests` exit 0；`tsc --noEmit` 通过
+
+---
+
 ## 2026-06-29
 
 - **上游分支：** `main`

@@ -480,7 +480,17 @@ pub async fn query_claude_quota_with_token(
     access_token: &str,
     tool_name: &str,
 ) -> SubscriptionQuota {
-    let mut result = query_claude_quota(access_token).await;
+    let mut result = query_claude_quota(access_token)
+        .await
+        .unwrap_or_else(|e| {
+            SubscriptionQuota::failure(
+                "claude",
+                QuotaFailure::Network {
+                    detail: "transport".to_string(),
+                },
+                e,
+            )
+        });
     result.tool = tool_name.to_string();
     result
 }
@@ -490,7 +500,17 @@ pub async fn query_gemini_quota_with_token(
     access_token: &str,
     tool_name: &str,
 ) -> SubscriptionQuota {
-    let mut result = query_gemini_quota(access_token).await;
+    let mut result = query_gemini_quota(access_token)
+        .await
+        .unwrap_or_else(|e| {
+            SubscriptionQuota::failure(
+                "gemini",
+                QuotaFailure::Network {
+                    detail: "transport".to_string(),
+                },
+                e,
+            )
+        });
     result.tool = tool_name.to_string();
     result
 }
@@ -535,7 +555,17 @@ pub async fn query_antigravity_quota_with_token(
         }
     }
 
-    let mut result = retrieve_user_quota(access_token, project_id, plan_label).await;
+    let mut result = retrieve_user_quota(access_token, project_id, plan_label)
+        .await
+        .unwrap_or_else(|e| {
+            SubscriptionQuota::failure(
+                tool_name,
+                QuotaFailure::Network {
+                    detail: "transport".to_string(),
+                },
+                e,
+            )
+        });
     result.tool = tool_name.to_string();
     result
 }
@@ -839,7 +869,11 @@ async fn fetch_claude_plan_label(client: &reqwest::Client, access_token: &str) -
 }
 
 /// 查询 Claude 官方订阅额度
-async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
+///
+/// 瞬时传输失败（网络/超时/读体中断）返回 `Err`（前端 reject → retry + 保留上次
+/// 成功值）；确定性失败（鉴权/非 2xx/响应体非法 JSON）返回 `Ok(success:false)`。
+/// codex/gemini 两个查询函数遵守同一约定。
+async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get();
 
     let (resp, plan_label) = tokio::join!(
@@ -860,11 +894,11 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
     let resp = match resp {
         Ok(r) => r,
         Err(e) => {
-            return SubscriptionQuota::failure(
+            return Ok(SubscriptionQuota::failure(
                 "claude",
                 QuotaFailure::from_reqwest(&e),
                 format!("Network error: {e}"),
-            );
+            ));
         }
     };
 
@@ -891,17 +925,29 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
                 truncate_for_log(&body, 200)
             ),
         };
-        return SubscriptionQuota::failure("claude", failure, message);
+        return Ok(SubscriptionQuota::failure("claude", failure, message));
     }
 
-    let body: serde_json::Value = match resp.json().await {
+    // 先 bytes() 再解析：读体失败（超时/连接中断）是瞬时 → Err；拿到完整响应体
+    // 后解析失败才是确定性。reqwest 的 json() 把读体错误也包成 decode，无法区分。
+    let raw = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(SubscriptionQuota::failure(
+                "claude",
+                QuotaFailure::from_reqwest(&e),
+                format!("Failed to read API response: {e}"),
+            ));
+        }
+    };
+    let body: serde_json::Value = match serde_json::from_slice(&raw) {
         Ok(v) => v,
         Err(e) => {
-            return SubscriptionQuota::failure(
+            return Ok(SubscriptionQuota::failure(
                 "claude",
                 QuotaFailure::Parse,
                 format!("Failed to parse API response: {e}"),
-            );
+            ));
         }
     };
 
@@ -962,7 +1008,7 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
             })
     });
 
-    SubscriptionQuota {
+    Ok(SubscriptionQuota {
         tool: "claude".to_string(),
         credential_status: CredentialStatus::Valid,
         credential_message: plan_label,
@@ -973,7 +1019,7 @@ async fn query_claude_quota(access_token: &str) -> SubscriptionQuota {
         error: None,
         queried_at: Some(now_millis()),
         failure: None,
-    }
+    })
 }
 
 // ── Codex 凭据读取 ──────────────────────────────────────
@@ -1581,7 +1627,20 @@ pub(crate) async fn query_codex_quota_with_plan(
         );
     }
 
-    let body: CodexUsageResponse = match resp.json().await {
+    let raw = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                SubscriptionQuota::failure(
+                    tool_label,
+                    QuotaFailure::from_reqwest(&e),
+                    format!("Failed to read API response: {e}"),
+                ),
+                None,
+            );
+        }
+    };
+    let body: CodexUsageResponse = match serde_json::from_slice(&raw) {
         Ok(v) => v,
         Err(e) => {
             return (
@@ -1965,7 +2024,7 @@ fn classify_gemini_model(model_id: &str) -> &str {
 /// 两步 API 调用：
 /// 1. loadCodeAssist → 获取 cloudaicompanionProject
 /// 2. retrieveUserQuota → 获取按模型分桶的配额数据
-async fn query_gemini_quota(access_token: &str) -> SubscriptionQuota {
+async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get();
 
     // ── Step 1: loadCodeAssist 获取项目 ID ──
@@ -1985,42 +2044,40 @@ async fn query_gemini_quota(access_token: &str) -> SubscriptionQuota {
 
     let load_resp = match load_resp {
         Ok(r) => r,
-        Err(e) => {
-            return SubscriptionQuota::error(
-                "gemini",
-                CredentialStatus::Valid,
-                format!("Network error (loadCodeAssist): {e}"),
-            );
-        }
+        Err(e) => return Err(format!("Network error (loadCodeAssist): {e}")),
     };
 
     let load_status = load_resp.status();
     if load_status == reqwest::StatusCode::UNAUTHORIZED
         || load_status == reqwest::StatusCode::FORBIDDEN
     {
-        return SubscriptionQuota::error(
+        return Ok(SubscriptionQuota::error(
             "gemini",
             CredentialStatus::Expired,
             format!("Authentication failed (HTTP {load_status}). Please re-login with Gemini CLI."),
-        );
+        ));
     }
     if !load_status.is_success() {
         let body = load_resp.text().await.unwrap_or_default();
-        return SubscriptionQuota::error(
+        return Ok(SubscriptionQuota::error(
             "gemini",
             CredentialStatus::Valid,
             format!("loadCodeAssist failed (HTTP {load_status}): {body}"),
-        );
+        ));
     }
 
-    let load_body: GeminiLoadCodeAssistResponse = match load_resp.json().await {
+    let load_raw = match load_resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => return Err(format!("Failed to read loadCodeAssist response: {e}")),
+    };
+    let load_body: GeminiLoadCodeAssistResponse = match serde_json::from_slice(&load_raw) {
         Ok(v) => v,
         Err(e) => {
-            return SubscriptionQuota::error(
+            return Ok(SubscriptionQuota::error(
                 "gemini",
                 CredentialStatus::Valid,
                 format!("Failed to parse loadCodeAssist response: {e}"),
-            );
+            ));
         }
     };
 
@@ -2048,7 +2105,7 @@ async fn retrieve_user_quota(
     access_token: &str,
     project_id: Option<&str>,
     plan_label: Option<String>,
-) -> SubscriptionQuota {
+) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get();
 
     let mut quota_body = serde_json::json!({});
@@ -2067,42 +2124,40 @@ async fn retrieve_user_quota(
 
     let quota_resp = match quota_resp {
         Ok(r) => r,
-        Err(e) => {
-            return SubscriptionQuota::error(
-                "gemini",
-                CredentialStatus::Valid,
-                format!("Network error (retrieveUserQuota): {e}"),
-            );
-        }
+        Err(e) => return Err(format!("Network error (retrieveUserQuota): {e}")),
     };
 
     let quota_status = quota_resp.status();
     if quota_status == reqwest::StatusCode::UNAUTHORIZED
         || quota_status == reqwest::StatusCode::FORBIDDEN
     {
-        return SubscriptionQuota::error(
+        return Ok(SubscriptionQuota::error(
             "gemini",
             CredentialStatus::Expired,
             format!("Authentication failed (HTTP {quota_status})."),
-        );
+        ));
     }
     if !quota_status.is_success() {
         let body = quota_resp.text().await.unwrap_or_default();
-        return SubscriptionQuota::error(
+        return Ok(SubscriptionQuota::error(
             "gemini",
             CredentialStatus::Valid,
             format!("retrieveUserQuota failed (HTTP {quota_status}): {body}"),
-        );
+        ));
     }
 
-    let quota_data: GeminiQuotaResponse = match quota_resp.json().await {
+    let quota_raw = match quota_resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => return Err(format!("Failed to read quota response: {e}")),
+    };
+    let quota_data: GeminiQuotaResponse = match serde_json::from_slice(&quota_raw) {
         Ok(v) => v,
         Err(e) => {
-            return SubscriptionQuota::error(
+            return Ok(SubscriptionQuota::error(
                 "gemini",
                 CredentialStatus::Valid,
                 format!("Failed to parse quota response: {e}"),
-            );
+            ));
         }
     };
 
@@ -2153,7 +2208,7 @@ async fn retrieve_user_quota(
 
     tiers.sort_by_key(|t| sort_order(&t.name));
 
-    SubscriptionQuota {
+    Ok(SubscriptionQuota {
         tool: "gemini".to_string(),
         credential_status: CredentialStatus::Valid,
         credential_message: plan_label,
@@ -2164,12 +2219,16 @@ async fn retrieve_user_quota(
         error: None,
         queried_at: Some(now_millis()),
         failure: None,
-    }
+    })
 }
 
 // ── 入口函数 ──────────────────────────────────────────────
 
 /// 查询指定 CLI 工具的官方订阅额度
+///
+/// 瞬时传输失败以 `Err` 传播（前端 reject → retry + 保留上次成功值）。Expired
+/// 分支的"过期也试一把"重试同样用 `?` 传播瞬时错误——不能折叠成"已过期"，
+/// 否则一次网络抖动会被误报成确定性的凭据过期。
 pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, String> {
     match tool {
         "claude" => {
@@ -2185,7 +2244,7 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
                 CredentialStatus::Expired => {
                     // 即使过期也尝试调用 API（token 可能实际上仍有效）
                     if let Some(token) = token {
-                        let result = query_claude_quota(&token).await;
+                        let result = query_claude_quota(&token).await?;
                         if result.success {
                             return Ok(result);
                         }
@@ -2198,7 +2257,7 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
                 }
                 CredentialStatus::Valid => {
                     let token = token.expect("token must be Some when status is Valid");
-                    Ok(query_claude_quota(&token).await)
+                    query_claude_quota(&token).await
                 }
             }
         }
@@ -2258,12 +2317,12 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
                     // Gemini access_token 仅 ~1h 有效，尝试用 refresh_token 刷新
                     if let Some(ref rt) = refresh_token {
                         if let Some(new_token) = refresh_gemini_token(rt).await {
-                            return Ok(query_gemini_quota(&new_token).await);
+                            return query_gemini_quota(&new_token).await;
                         }
                     }
                     // 刷新失败，尝试用旧 token
                     if let Some(ref token) = token {
-                        let result = query_gemini_quota(token).await;
+                        let result = query_gemini_quota(token).await?;
                         if result.success {
                             return Ok(result);
                         }
@@ -2276,7 +2335,7 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
                 }
                 CredentialStatus::Valid => {
                     let token = token.expect("token must be Some when status is Valid");
-                    Ok(query_gemini_quota(&token).await)
+                    query_gemini_quota(&token).await
                 }
             }
         }

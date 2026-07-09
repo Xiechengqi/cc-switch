@@ -3429,6 +3429,9 @@ async fn subscription_command(
             &string_arg(&args, "apiKey")?,
             optional_string_arg(&args, "accessKeyId").as_deref(),
             optional_string_arg(&args, "secretAccessKey").as_deref(),
+            optional_string_arg(&args, "codingPlanProvider").as_deref(),
+            optional_string_arg(&args, "teamOrganizationId").as_deref(),
+            optional_string_arg(&args, "teamProjectId").as_deref(),
         )
         .await
         .map_err(WebError::internal)?)),

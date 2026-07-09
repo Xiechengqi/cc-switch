@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-07-09
+
+- **上游分支：** `main`
+- **上游 HEAD：** `98ccde00`
+- **共同祖先：** `e191af4a`
+- **合并提交数：** 15
+- **主要变更：**
+  - feat(provider): 智谱团队版编程套餐额度查询（新增 `zhipu_team` `coding_plan_provider` 路由 + 组织/项目 ID 双参数）
+  - feat(claude): fallback 模型字段增加 1M context checkbox
+  - fix(codex): common-config TOML 合并/剥离从前端 smol-toml 迁到后端 `toml_edit`（保注释/键序）
+  - fix(mcp): Codex config.toml 不可解析时对 MCP 同步 fail-closed；跨 app 失败不再阻塞 MCP re-projection；导入 MCP 时透传 per-app 失败
+  - fix(provider): 切换时 common-config autosync 扩展到 Codex；unified-session 开关重写后重新投影 Codex MCP；Codex common-config 抽取排除注入产物/路由字段；backfill 剥离 provider 快照里的同步 `[mcp_servers]`
+  - fix(usage): 仪表盘刷新间隔持久化
+  - refactor(presets): 移除冗余的"OpenAI Compatible" preset；恢复 Volcengine/Doubao/BytePlus website 链接（revert）
+  - chore(presets): 上游新增 API-Key 供应商（火山 Agentplan/BytePlus/DouBaoSeed/patewayai/智谱团队版）+ new-api 赞助 banner + Kiro 分类调整——按规则全部拒绝
+- **冲突解决：**
+  - `src-tauri/src/services/coding_plan.rs`：两处冲突。①`zhipu_quota_from_body` 由 upstream 抽成返回裸 `SubscriptionQuota` 的辅助函数，末尾从 `})`（HEAD 的 `Ok(...)`）改为裸 `}` + 保留 HEAD 的 `failure: None` 字段；②`get_coding_plan_quota` 入口并存 upstream 的 `zhipu_team` 提前路由（三参数齐全校验 → `query_zhipu_team`）与 HEAD 的 empty-api_key 提前返回（后者放 zhipu_team 分支之后，避免遮挡）
+  - `src-tauri/src/lib/schemas/settings.ts`：并存 HEAD 的 `oauthQuotaRefreshIntervalMinutes` 与上游的 `usageDashboardRefreshIntervalMs`（两条独立可选字段，用途正交）
+  - `src/config/claudeProviderPresets.ts` / `src/config/codexProviderPresets.ts`：全部 take HEAD——上游插入的新 API-Key partner（火山 Agentplan/BytePlus/DouBaoSeed）按规则拒绝；drop 冗余 "OpenAI Compatible" 与 revert 官网链接对 fork 已裁剪的 preset 列表无影响
+- **手动补丁（非冲突但连带修复）：**
+  - `src-tauri/src/services/coding_plan.rs` L1285：上游新增 `query_zhipu_team` 的 `SubscriptionQuota` 字面量缺 `failure` / `subscription` 字段——补齐
+  - `src-tauri/src/web/handlers.rs`：`get_coding_plan_quota` HTTP dispatch 补 3 个新参数（`codingPlanProvider` / `teamOrganizationId` / `teamProjectId`），保持与 Tauri 命令层参数一致
+  - `src/lib/api/config.ts` L67：上游新增的 `updateTomlCommonConfigSnippet` 用了 `invoke`（Tauri 直调）而 fork 走 `invokeCommand`（HTTP fallback 感知）——改回 `invokeCommand`
+- **规则：** 拒绝所有新 API-Key 类 partner，Origin PAT 保密。
+- **验证：** `cargo check` / `cargo check --tests` / `npx tsc --noEmit` 均 exit 0。
+
+---
+
 ## 2026-07-08
 
 - **上游分支：** `main`

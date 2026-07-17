@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-07-17
+
+- **上游分支：** `main`
+- **上游 HEAD：** `c8b0d60c`（含 v3.17.0 tag）
+- **共同祖先：** `98ccde00`
+- **合并提交数：** 32
+- **主要变更：**
+  - feat(codex): Codex→Anthropic Messages 原生协议桥（`transform_codex_anthropic` / `streaming_codex_anthropic` / `codex_responses_sse` / `reasoning_bridge` 新模块；Claude Code 指纹仿真可选开关 `impersonate_claude_code`；`[1m]` → `context-1m` beta；bridge 级 prompt cache 注入）
+  - feat(codex): 内置 Codex 官方 provider 走原生 ChatGPT 登录透传（`is_codex_official_provider` + `requires_openai_auth` + authorization passthrough）；官方 OAuth 条目跳过可达性探测
+  - feat(proxy): Codex Chat 桥的会话级 `prompt_cache_key` 路由（`meta.promptCacheRouting` auto/enabled/disabled）；缓存断点注入加固；Responses reasoning/tool-call 转换加固
+  - feat(codex): provider 表单新增「默认模型」字段（TOML 顶层 model 实时写回）+ 模型映射目录行编辑 UI
+  - feat(usage): `input_token_semantics` 列（区分 input_tokens 是否含缓存写入）落 `proxy_request_logs`/`usage_daily_rollups`
+  - feat(profiles): 主页项目切换器显隐设置（`show_profile_switcher`）
+  - fix: uncategorized 编辑态 provider 补齐 API key 字段（ded0b63a）
+  - refactor(health-check): 上游删除 per-provider test config → 本仓保留该功能；接受 `model-test.ts → connectivity-check.ts` 改名
+  - revert(proxy): 上游撤销 1 小时 cache TTL 选项
+- **冲突解决：**
+  - `database/{mod.rs,schema.rs}`：上游 v12→v13（input_token_semantics）改为本仓 v31→v32 迁移；SCHEMA_VERSION=32；迁移测试同步改名 `migrate_v31_to_v32_adds_input_token_semantics_columns`；CREATE TABLE 已带新列
+  - `proxy/forwarder.rs`（13 处）：并入 Anthropic 桥全链路（endpoint 重写/请求转换/头指纹清洗/anthropic-version 补发/2xx 语义失败 failover 校验 `validate_codex_anthropic_success_response` 等接入本仓 retry loop 的 `break response` 点）；保留本仓 chat→responses 反向桥、share/OAuth 头、`update_toml_base_url`
+  - `proxy/handlers.rs`（13 处）：`handle_codex_responses_to_chat_transform`（HEAD）与 `handle_codex_anthropic_to_responses_transform` + `build_codex_anthropic_sse_response`（upstream）并存重写——upstream 版补上本仓 share_id/share_name/user_email 参数与 `SseTerminalFallback::Disabled`
+  - `proxy/providers/codex.rs`：并存 `should_convert_codex_chat_to_responses`（HEAD）与 anthropic 检测 + prompt_cache_key 注入（upstream）；`apply_codex_upstream_model` 保留本仓 `single_upstream_model` 优先；`extract_base_url`/`get_auth_info` 同时容纳 codex 官方 passthrough 与本仓 managed OAuth 占位
+  - `proxy/usage/logger.rs`：INSERT 32 列 = 本仓 share 三列 + upstream `input_token_semantics`
+  - `services/usage_stats.rs`：`row_to_request_log_detail` 33 列（share 三列 + input_token_semantics），3 处 SELECT 对齐
+  - `services/coding_plan.rs` 等 SubscriptionQuota 字面量补 `failure`/`subscription` 字段
+  - **按本仓既定决策拒绝重新引入路由限制**（对齐 b1810aba/98f78830）：删除 upstream 在 `commands/proxy.rs`/`services/provider/mod.rs`/`services/proxy.rs`（阻断 + proxy-official-warning emit + defense-in-depth）/`tray.rs`（⛔ 标记）的官方 provider 接管限制；前端 `useProviderActions`（proxyRequiredReason 警告 + officialBlockedByProxy 阻断）与 `ProviderCard`（needsRouting/noRoutingSupport/officialRouting 徽章）全部不采纳；对应 3 个 upstream 限制测试删除
+  - 上游删除 per-provider test config → 本仓保留：恢复 `ProviderTestConfig`（provider.rs/types.ts/ProviderForm testConfig 状态/ProviderAdvancedConfig HEAD 版）、`stream_check.rs merge_provider_config` + 测试、`AppSettings.stream_check_confirmed`
+  - `CodexFormFields.tsx`：并存本仓 `SingleModelMappingField` 与 upstream 目录行编辑 UI + 「默认模型」字段（补 `Input`/`ModelDropdown`/`Trash2` 等 imports、catalogRows 状态与同步 effects、props）
+  - `ProviderForm.tsx`：`codexApiFormatFromWireApi` 用 utils 导出替代本地重复定义；catalog 首行回填改 upstream 的「默认模型为空才回填」条件
+  - `useApiKeyState.ts`：采上游修复——uncategorized（category undefined）编辑态允许补齐 key；保留本仓 `allowOfficialApiKey` 例外，`cloud_provider` 不补
+  - `presets`（claude/codex/gemini）：全部 take HEAD——上游 SudoCode 六端付费 sponsor 推广、恢复的 Volcengine/Doubao/BytePlus 链接均属 API-Key 类 partner 内容，按规则拒绝；`CodexProviderPreset` 类型补 `promptCacheRouting` 字段（功能保留，预设不加）
+  - `settings.rs`：并存本仓 `oauth_quota_refresh_interval_minutes`/`stream_check_confirmed`/`enable_failover_toggle` default 与 upstream `show_profile_switcher`
+  - `commands/proxy.rs`：hot-switch 后 `refresh_selected_targets` 保留本仓 OAuth quota 刷新链
+  - tests：`claudeProviderPresets.test.ts` 移除 Kimi For Coding/Codex 预设断言（本仓预设列表已裁剪，基线即失败）；`codexChatProviderPresets.test.ts` 移除 CN 原生 Responses 预设断言（同理）；`useProviderActions.test.tsx` 移除 3 个路由限制测试
+- **手动补丁（非冲突但连带修复）：**
+  - `src/lib/api/config.ts` `updateTomlCommonConfigSnippet` / `src/lib/api/providers.ts` `ensureCodexOfficialProvider`：upstream 直调 `invoke` → 本仓 `invokeCommand`（HTTP fallback）
+  - `src/hooks/useModelTest.ts`：import 路径跟随 `model-test.ts → connectivity-check.ts` 改名
+- **规则：** 拒绝所有新 API-Key 类 partner；不重新引入路由限制/route-required UI；Origin PAT 保密。
+- **验证：** `cargo check` / `cargo check --tests` exit 0；`npx tsc --noEmit` exit 0；`cargo test migrate_v31_to_v32` 通过；vitest 511 passed / 19 failed（失败集为基线 23 个的真子集，0 个新增，另修复 4 个基线失败）。
+
+---
+
 ## 2026-07-09
 
 - **上游分支：** `main`

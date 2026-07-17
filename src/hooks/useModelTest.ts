@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import {
   modelTestProvider,
   type StreamCheckResult,
-} from "@/lib/api/model-test";
+} from "@/lib/api/connectivity-check";
 import { useResetCircuitBreaker } from "@/lib/query/failover";
 import type { AppId } from "@/lib/api";
 

@@ -6,6 +6,7 @@ import type {
   CodexApiFormat,
   CodexCatalogModel,
   CodexChatReasoning,
+  PromptCacheRoutingMode,
   SingleModelMapping,
 } from "../types";
 import type { PresetTheme } from "./claudeProviderPresets";
@@ -45,6 +46,8 @@ export interface CodexProviderPreset {
   modelMapping?: SingleModelMapping;
   // Codex Responses -> Chat Completions reasoning capability defaults
   codexChatReasoning?: CodexChatReasoning;
+  // Session-based prompt-cache routing override for Chat Completions upstreams
+  promptCacheRouting?: PromptCacheRoutingMode;
   // 供应商单独的模型测试配置（预设默认值，创建时初始化）
   testConfig?: ProviderTestConfig;
 }

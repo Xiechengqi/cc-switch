@@ -21,6 +21,7 @@ pub(crate) mod codex_chat_common;
 pub mod codex_chat_history;
 pub mod codex_image_generation;
 pub mod codex_oauth_auth;
+pub(crate) mod codex_responses_sse;
 pub mod copilot_auth;
 pub mod copilot_model_map;
 pub mod cursor_agent_proto;
@@ -51,11 +52,14 @@ pub mod gemini_shadow;
 pub mod kiro_claude;
 pub mod kiro_oauth_auth;
 pub mod models;
+pub(crate) mod reasoning_bridge;
 pub mod streaming;
+pub mod streaming_codex_anthropic;
 pub mod streaming_codex_chat;
 pub mod streaming_gemini;
 pub mod streaming_responses;
 pub mod transform;
+pub mod transform_codex_anthropic;
 pub mod transform_codex_chat;
 pub mod transform_gemini;
 pub mod transform_responses;
@@ -63,6 +67,8 @@ pub mod transform_responses;
 use crate::app_config::AppType;
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
+
+pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 // 公开导出
 pub use adapter::ProviderAdapter;
@@ -74,9 +80,11 @@ pub use claude::{
 };
 pub use codex::CodexAdapter;
 pub use codex::{
-    apply_codex_chat_upstream_model, codex_provider_upstream_model,
-    codex_provider_uses_chat_completions, is_origin_only_url, resolve_codex_chat_reasoning_config,
-    should_convert_codex_chat_to_responses, should_convert_codex_responses_to_chat,
+    apply_codex_chat_upstream_model, apply_codex_upstream_model, codex_provider_upstream_model,
+    codex_provider_uses_chat_completions, inject_codex_chat_prompt_cache_key,
+    is_codex_official_provider, is_origin_only_url, resolve_codex_catalog_tool_profile,
+    resolve_codex_chat_reasoning_config, should_convert_codex_chat_to_responses,
+    should_convert_codex_responses_to_anthropic, should_convert_codex_responses_to_chat,
 };
 pub use gemini::GeminiAdapter;
 
@@ -156,7 +164,7 @@ impl ProviderType {
             }
             ProviderType::OpenRouter => "https://openrouter.ai/api",
             ProviderType::GitHubCopilot => "https://api.githubcopilot.com",
-            ProviderType::CodexOAuth => "https://chatgpt.com/backend-api/codex",
+            ProviderType::CodexOAuth => CHATGPT_CODEX_BASE_URL,
             ProviderType::DeepSeekAccount => "https://chat.deepseek.com",
             ProviderType::KiroOAuth => "https://q.us-east-1.amazonaws.com",
             ProviderType::CursorOAuth => "https://api2.cursor.sh",

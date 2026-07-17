@@ -535,6 +535,7 @@ pub struct ProviderTestConfig {
     pub max_retries: Option<u32>,
 }
 
+
 /// 认证绑定来源
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -704,6 +705,10 @@ pub struct ProviderMeta {
     /// identity when available; generated session IDs are not sent upstream.
     #[serde(rename = "promptCacheKey", skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
+    /// Session-based prompt-cache routing for Codex Responses -> Chat conversions.
+    /// "auto" enables known-compatible upstreams; "enabled" / "disabled" are overrides.
+    #[serde(rename = "promptCacheRouting", skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_routing: Option<String>,
     /// Codex OAuth FAST mode: inject `service_tier = "priority"` for ChatGPT Codex requests.
     #[serde(rename = "codexFastMode", skip_serializing_if = "Option::is_none")]
     pub codex_fast_mode: Option<bool>,
@@ -716,6 +721,26 @@ pub struct ProviderMeta {
     /// Codex Responses -> Chat Completions reasoning capability metadata.
     #[serde(rename = "codexChatReasoning", skip_serializing_if = "Option::is_none")]
     pub codex_chat_reasoning: Option<CodexChatReasoningConfig>,
+    /// Codex → Anthropic path: whether to emulate the Claude Code client
+    /// (User-Agent / anthropic-beta / x-app + injecting the Claude Code system
+    /// prompt first line). Disabled by default; only an explicit `true` enables it.
+    #[serde(
+        rename = "impersonateClaudeCode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub impersonate_claude_code: Option<bool>,
+    /// Codex → Anthropic path: override the Anthropic `max_tokens` (output ceiling).
+    ///
+    /// Codex does not forward its `model_max_output_tokens` in the Responses
+    /// request body, so without this the path falls back to a conservative
+    /// default (8192), which truncates long or thinking-heavy responses
+    /// (`stop_reason=max_tokens`). When set (>0), this value is injected as the
+    /// request's `max_output_tokens` before conversion, taking precedence over
+    /// both any request-supplied value and the default. Kept per-provider on
+    /// purpose: a global large default would hard-400 on low-output-ceiling
+    /// models/gateways (and that error is non-retryable).
+    #[serde(rename = "maxOutputTokens", skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
     /// Custom User-Agent for local proxy routing.
     #[serde(rename = "customUserAgent", skip_serializing_if = "Option::is_none")]
     pub custom_user_agent: Option<String>,
@@ -1248,6 +1273,30 @@ mod tests {
         );
         assert!(meta.codex_image_generation_enabled());
         assert!(value.get("codex_image_generation_enabled").is_none());
+    }
+
+    #[test]
+    fn provider_meta_roundtrips_max_output_tokens() {
+        let meta = ProviderMeta {
+            max_output_tokens: Some(64000),
+            ..ProviderMeta::default()
+        };
+
+        let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
+        assert_eq!(
+            value.get("maxOutputTokens").and_then(|v| v.as_u64()),
+            Some(64000)
+        );
+        assert!(value.get("max_output_tokens").is_none());
+
+        let parsed: ProviderMeta = serde_json::from_value(value).expect("deserialize ProviderMeta");
+        assert_eq!(parsed.max_output_tokens, Some(64000));
+    }
+
+    #[test]
+    fn provider_meta_omits_max_output_tokens_when_none() {
+        let value = serde_json::to_value(ProviderMeta::default()).expect("serialize ProviderMeta");
+        assert!(value.get("maxOutputTokens").is_none());
     }
 
     #[test]

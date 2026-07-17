@@ -127,6 +127,7 @@ export interface ProviderTestConfig {
   maxRetries?: number;
 }
 
+
 export type AuthBindingSource = "provider_config" | "managed_account";
 
 export interface AuthBinding {
@@ -176,6 +177,8 @@ export interface CodexChatReasoning {
   // 声明性字段：标注上游 reasoning 回传位置。当前提取靠穷举字段，未读取此值（think_tags 尚未接线）。
   outputFormat?: CodexChatReasoningOutputFormat;
 }
+
+export type PromptCacheRoutingMode = "auto" | "enabled" | "disabled";
 
 export interface LocalProxyRequestOverrides {
   headers?: Record<string, string>;
@@ -228,12 +231,23 @@ export interface ProviderMeta {
   isFullUrl?: boolean;
   // Prompt cache key for OpenAI Responses-compatible endpoints (improves cache hit rate)
   promptCacheKey?: string;
+  // Session-based prompt-cache routing for Codex Responses -> Chat conversions.
+  // auto enables only for known-compatible upstreams; enabled/disabled are user overrides.
+  promptCacheRouting?: PromptCacheRoutingMode;
   // Codex OAuth FAST mode: injects service_tier="priority" on ChatGPT Codex requests
   codexFastMode?: boolean;
   // Codex OAuth image generation via ChatGPT Codex backend
   codexImageGenerationEnabled?: boolean;
   // Codex Responses -> Chat Completions reasoning capability metadata
   codexChatReasoning?: CodexChatReasoning;
+  // Codex → Anthropic path: emulate the Claude Code client (disabled by default; only an explicit true enables it)
+  impersonateClaudeCode?: boolean;
+  // Codex → Anthropic path: override the Anthropic max_tokens (output ceiling).
+  // Codex does not forward model_max_output_tokens in the request body; without
+  // this the path falls back to a conservative 8192 default, which can truncate
+  // long/thinking-heavy responses. When set (>0) it takes precedence over the
+  // request value and the default.
+  maxOutputTokens?: number;
   // Custom User-Agent for local proxy routing. Only applied by the local proxy.
   customUserAgent?: string;
   // Local proxy request overrides. Only applied by the local proxy after route transforms.
@@ -264,16 +278,17 @@ export type ClaudeApiFormat =
 // Codex API 格式类型
 // - "openai_responses": OpenAI Responses API 格式，直接透传
 // - "openai_chat": OpenAI Chat Completions 格式，需要本地路由转换
-export type CodexApiFormat = "openai_responses" | "openai_chat";
+// - "anthropic": native Anthropic Messages format, needs local routing to convert to Responses
+export type CodexApiFormat = "openai_responses" | "openai_chat" | "anthropic";
 
 export interface CodexCatalogModel {
   model: string;
   upstreamModel?: string;
   displayName?: string;
   contextWindow?: string | number;
-  // Native Responses (direct) profile overrides for the generated
-  // model-catalogs.json. Ignored by the chat/proxy profile.
-  // e.g. MiniMax: supportsParallelToolCalls=true, inputModalities=["text","image"].
+  // Hidden provider capability metadata for the generated model catalog.
+  // supportsParallelToolCalls is native-profile-only; inputModalities wins over
+  // automatic text-only model detection for every profile.
   supportsParallelToolCalls?: boolean;
   inputModalities?: string[];
   // Vendor's OFFICIAL base_instructions (model identity / system preamble).
@@ -378,10 +393,10 @@ export interface Settings {
   // User has confirmed the usage query first-run notice
   usageConfirmed?: boolean;
   usageDashboardRefreshIntervalMs?: number;
-  // User has confirmed the stream check first-run notice
-  streamCheckConfirmed?: boolean;
   // Whether to show the failover toggle independently on the main page
   enableFailoverToggle?: boolean;
+  // Whether to show the project profile switcher on the main page header
+  showProfileSwitcher?: boolean;
   // Preserve Codex ChatGPT login in auth.json when switching third-party providers
   preserveCodexOfficialAuthOnSwitch?: boolean;
   // Run official Codex under the shared "custom" provider id so future

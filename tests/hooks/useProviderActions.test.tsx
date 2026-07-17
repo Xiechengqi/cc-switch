@@ -242,6 +242,27 @@ describe("useProviderActions", () => {
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
   });
 
+  it("allows the built-in Codex official provider during takeover", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      id: "codex-official",
+      category: "official",
+    });
+
+    const { result } = renderHook(
+      () => useProviderActions("codex", true, true),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(switchProviderMutateAsync).toHaveBeenCalledWith("codex-official");
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
   it("should sync plugin config when switching Claude provider with integration enabled", async () => {
     switchProviderMutateAsync.mockResolvedValueOnce(undefined);
     settingsApiGetMock.mockResolvedValueOnce({

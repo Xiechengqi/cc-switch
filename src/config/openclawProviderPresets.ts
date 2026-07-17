@@ -1584,20 +1584,23 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   },
   {
     name: "SudoCode",
-    websiteUrl: "https://sudocode.us",
-    apiKeyUrl: "https://sudocode.us",
+    websiteUrl: "https://sudocode.chat",
+    apiKeyUrl:
+      "https://sudocode.chat/register?utm_source=ccswitch&utm_medium=partner",
     settingsConfig: {
-      baseUrl: "https://sudocode.us/v1",
+      baseUrl: "https://api.sudocode.chat/v1",
       apiKey: "",
       api: "openai-responses",
       models: [
         {
-          id: "gpt-5.5",
-          name: "GPT-5.5",
+          id: "gpt-5.6-sol",
+          name: "GPT-5.6 Sol",
         },
       ],
     },
     category: "third_party",
+    isPartner: true,
+    partnerPromotionKey: "sudocode",
     icon: "sudocode",
     templateValues: {
       apiKey: {
@@ -1608,7 +1611,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
     },
     suggestedDefaults: {
       model: {
-        primary: "sudocode/gpt-5.5",
+        primary: "sudocode/gpt-5.6-sol",
       },
     },
   },

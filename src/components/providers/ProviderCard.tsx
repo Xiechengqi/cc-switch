@@ -432,6 +432,16 @@ export function ProviderCard({
                 </span>
               )}
 
+              {appId === "claude-desktop" &&
+                provider.category !== "official" &&
+                provider.meta?.claudeDesktopMode === "proxy" && (
+                  <span className="inline-flex items-center rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                    {t("claudeDesktop.modeProxy", {
+                      defaultValue: "需要路由",
+                    })}
+                  </span>
+                )}
+
               {isProxyRunning && isInFailoverQueue && health && (
                 <ProviderHealthBadge
                   consecutiveFailures={health.consecutive_failures}
